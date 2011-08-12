@@ -1,0 +1,5 @@
+cmake_minimum_required(VERSION 2.8)
+message ("Processing mvstore kernel ")
+project (kernel)
+SET(KERNEL_TARGET_NAME "mvstore")
+add_subdirectory(src)

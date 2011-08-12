@@ -1,0 +1,387 @@
+//**************************************************************************************
+//
+// Copyright © 2010 VMware, Inc. All rights reserved.
+//
+// Written by Mark Venguerov 2010
+//
+//**************************************************************************************
+
+package MVStorePB;
+
+option java_package = "com.mvstore";
+option java_outer_classname = "stream";
+
+// Errors are reported using the following codes.
+enum ErrorCode {
+	RC_NOTFOUND			= 1; // Resource (PIN, property, element, page etc.) not found.
+	RC_ALREADYEXISTS	= 2; // Resource (PIN, property, element, page etc.) already exists.
+	RC_INTERNAL			= 3; // Internal error.
+	RC_NOACCESS			= 4; // Access is denied (ACLs etc.).
+	RC_NORESOURCES		= 5; // Impossible to allocate enough resources for the request (PIN too large, not enough memory etc.).
+	RC_FULL				= 6; // Disk is full.
+	RC_DEVICEERR		= 7; // i/o device error.
+	RC_DATAERROR		= 8; // Data check (parity) error.
+	RC_EOF				= 9; // [internal use only]
+	RC_TIMEOUT			= 10; // Operation interrupted by timeout.
+	RC_REPEAT			= 11; // [internal use only]
+	RC_CORRUPTED		= 12; // Data element (PIN, page, collection element etc.) is corrupted.
+	RC_CANCELED			= 13; // i/o operation was cancelled.
+	RC_VERSION			= 14; // Incompatible version.
+	RC_TRUE				= 15; // [internal use only]
+	RC_FALSE			= 16; // [internal use only]
+	RC_TYPE				= 17; // Invalid type or impossible type conversion.
+	RC_DIV0				= 18; // Division by 0.
+	RC_INVPARAM			= 19; // Invalid parameter value.
+	RC_READTX			= 20; // Attempt to modify data inside of a read-only transaction.
+	RC_OTHER			= 21; // Unspecified error.
+	RC_DEADLOCK			= 22; // Transaction interrupted (and rolled-back) due to a deadlock.
+	RC_QUOTA			= 23; // Store allocation quota exceeded.
+	RC_SHUTDOWN			= 24; // The store is being shut - transaction aborted.
+	RC_DELETED			= 25; // Attempt to modify a PIN that was deleted.
+	RC_CLOSED			= 26; // Attempt to walk a cursor after it was closed by commit/rollback.
+	RC_READONLY			= 27; // Store in read-only state (backup, logging error).
+	RC_NOSESSION		= 28; // No session set for current thread.
+	RC_INVOP			= 29; // Invalid operation for this object.
+	RC_SYNTAX			= 30; // Syntactic error in query or expression.
+}
+
+// mvStore defines a few 'special' properties (usable as Value::property).
+// Some of these properties appear automatically on PINs.
+// Some are only used in queries.
+// Others must be inserted explicitly by the client, in order to cause the advertized effect.
+// Beware: properties that are automatically updated don't imply that the PIN that holds them is automatically reloaded.
+// Note that these properties correspond with the "PROP_SPEC_*" defined in the public c++ interface.
+enum SpecProp {
+	SP_PINID		= 1; // PIN id as a property. Only used in queries, not directly on PINs. Immutable.
+	SP_DOCUMENT		= 2; // A reference to the document this PIN belongs to. Must be set.
+	SP_PARENT		= 3; // A reference to the parent PIN. Must be set.
+	SP_VALUE		= 4; // The value of the PIN, when it's dereferenced by queries. Must be set (can be an expression, using other properties of the PIN).
+	SP_CREATED		= 5; // PIN creation timestamp. Must be set at creation (to value 0). Immutable.
+	SP_CREATEDBY	= 6; // ID of the identity that created this PIN. Must be set at creation (to value 0). Immutable.
+	SP_UPDATED		= 7; // Timestamp of the last PIN modification. Updated automatically. Must be set initially (to value 0), otherwise should not be set.
+	SP_UPDATEDBY	= 8; // ID of the identity that last modified this PIN. Updated automatically. Must be set initially (to value 0), otherwise should not be set.
+	SP_ACL			= 9; // ACL. A collection of a) identity IDs with meta specifying the access privileges, or b) references to other PINs with an ACL (inheritance).
+	SP_URI			= 10; // External (RDF) URI of a PIN or class. Must be set.
+	SP_STAMP		= 11; // Stamp (unsigned integer) of the latest modification. Updated automatically. Only used in queries, not directly on PINs. Cannot be set.
+	SP_CLASSID		= 12; // ClassID of the class defined by this PIN. Immutable.
+	SP_PREDICATE	= 13; // Predicate of the class defined by this PIN. Must be set at creation. Immutable.
+	SP_NINSTANCES	= 14; // [Not implemented yet.] Number of instances of the class defined by this PIN. Updated automatically. Cannot be set.
+	SP_NDINSTANCES	= 15; // Number of soft-deleted instances of the class defined by this PIN. Updated automatically. Cannot be set.
+	SP_SUBCLASSES	= 16; // [Not implemented yet.] Collection of classes which are specializations of the class defined by this PIN. Updated automatically. Cannot be set.
+	SP_SUPERCLASSES	= 17; // [Not implemented yet.] Collection of classes which are abstractions of the class defined by this PIN. Updated automatically. Cannot be set.
+	SP_CLASS_INFO	= 18; // Bit flags describing the class defined by this PIN (CLASS_*). Immutable.
+	SP_INDEX_INFO	= 19; // Family index information (number of segments). Immutable.
+	SP_PROPERTIES	= 20; // Properties refered by the class. Immutable.
+	SP_JOIN_TRIGGER	= 21; // Triggers associated with class events.
+	SP_UPDATE_TRIGGER=22; // Triggers associated with class events.
+	SP_LEAVE_TRIGGER= 23; // Triggers associated with class events.
+	SP_REFID		= 24; // Future implementation.
+	SP_KEY			= 25; // Future implementation.
+	SP_VERSION		= 26; // Chain of versions.
+	SP_WEIGHT		= 27; // Future implementation.
+	SP_PROTOTYPE	= 28; // JavaScript-like inheritance.
+	SP_WINDOW		= 29; // Stream windowing control (size of class-related window).
+
+	SP_MAX			= 255; // Maximum reserved URIID for built-in properties and classes; 'id' field in StringMap must be greater than SP_MAX.
+}
+
+enum SpecEID {
+	EID_COLLECTION		= -1;	// Singleton value or operation applied to the whole collection.
+	EID_LAST_ELEMENT	= -2;	// Last element of a collection.
+	EID_FIRST_ELEMENT	= -3;	// First element of a collection.
+}
+
+enum OpMode {
+	OM_PURGE			= 262144;		// Purge pins rather than just delete.
+	OM_CHECK_STAMP		= 2097152;		// Forces stamp check before modification; if stamp changed the op is aborted and RC_REPEAT is returned.
+	OM_PURGE_IDS		= 1048576;		// Purge pins and reuse their IDs.
+	OM_ALL_WORDS		= 4194304;		// All words must be present in FT condition.
+	OM_DELETED			= 16777216;		// For query: return only (soft)deleted pins.
+	OM_FOR_UPDATE		= 33554432;		// Lock pins for update while reading them.
+}
+
+enum PINFlags{
+	PF_NO_REPLICATION	= 1073741824;	// Marks a pin as one which shouldn't be replicated (only when the pin is committed).
+	PF_NO_INDEX			= 536870912;	// Special pin - no indexing.
+	PF_NOTIFY			= 268435456;	// PIN generates notifications.
+	PF_REPLICATED		= 134217728;	// PIN is replicated to another store or is a replica.
+	PF_HIDDEN			= 67108864;		// Special pin - totally hidden from search/replication - accessible only through its PID.
+	PF_READONLY			= 33554432;		// Read-only pin - from remote pin cache (output only).
+	PF_DELETED			= 16777216;		// Soft-deleted pin (only output with MODE_DELETED).
+	PF_CLASS			= 8388608;		// PIN represents a class or a relation (output only).
+	PF_TRANSFORMED		= 4194304;		// PIN is a result of some transformation (other than projection, output only).
+	PF_PROJECTED		= 2097152;		// PIN is a result of a projection of a stored pin (output only).
+}
+
+
+enum MetaProps {
+	META_PART			= 128;			// Property is a reference to a PIN which is a part of this one.
+	META_FIXEDVERSION	= 64;			// Property references a fixed version of a PIN (for ref properties).
+	META_SSTORAGE		= 64;			// Store this property separately from the PIN body (for string, stream and collection property types).
+	META_NONOTIFICATION	= 32;			// This property doesn't generate notifications when modified.
+	META_NOFTINDEX		= 16;			// This property is not to be FT indexed/searched.
+	META_NONSERIALIZABLE = 8;			// Property is nonserializable (e.g. PROP_SPEC_CLASSID).
+	META_IFEXIST		= 8;			// In modify/transform - apply modification if property exists, otherwise - ignore.
+	META_IFNOTEXIST		= 4;			// In modify/transform - apply modification (OP_SET or OP_ADD) if property doesn't exist, otherwise - ignore.
+	META_DERIVED		= 4;			// This property was calculated from other properties in transform rather than stored with the pin.
+	META_RACCESS		= 2;			// [Future.] A stream should be optimized for random access.
+	META_STOPWORDS		= 1;			// Filter stop words in FT indexing.
+}
+
+enum ACLPermissions {
+	ACLP_READ	= 1;			// Read access is granted.
+	ACLP_WRITE	= 2;			// Write access is granted.
+}
+
+enum ClassFlags {
+	CF_SDELETE		= 1;		// Class supports soft-delete optimization.
+	CF_VIEW			= 2;		// Class membership is not to be indexed.
+	CF_CLUSTERED	= 4;		// [Future.] PINs belonging to class are clustered for more efficient sequential scan.
+	CF_INDEXED		= 8;		// Class membership is indexed (set by the kernel).
+	CF_UNIQUE		= 16;		// Family with unique values.
+}
+
+// mvSQL statements (query,insert,update,delete) and individual PIN modification operations can return information with various level of details.
+enum ReturnType {
+	RT_PINS			= 0; // Specifies that a query will return entire MVStream::PIN object(s) (see definition below).
+	RT_COUNT		= 1; // Specifies that a query will return a simple count.
+	RT_PIDS			= 2; // Specifies that a query will return MVStream::PIN object(s) containing only MVStream::PIN::id field.
+	RT_SRCPINS		= 3; // Like RT_PINS, but VT_EXPR and VT_QUERY are converted to string form.
+	RT_VALUES		= 4; // Specifies that a query will return Value object(s).
+}
+
+// Every PIN holds a globally unique ID.
+message PID {
+	optional uint64	id = 1; // The unique identifier of a MVStream::PIN, in the scope of PID::ident's store (and replicas).
+	optional uint32	ident = 2; // The numeric identity ID of the owner of that PIN. The combination of ident and id is globally unique.
+}
+
+// Every PIN and every entity of a PIN can be referenced.
+message Ref {
+	required PID	id = 1; // Specifies the PIN being referred to.
+	required uint32 property = 2; // Specifies the id of the property of the PIN being referred to.
+	optional uint32	eid = 3; // Specifies the collection element being referred to.
+	optional uint32	vid = 4; // [Future.] Specifies the version of the object being referred to.
+}
+
+// The Value structure can describe the value of a PIN property, or one logical update, or even a whole collection.
+// Please refer to the documentation for context on mvStore's data model: PINs, properties, values, collections and elements.
+message Value {
+	// Every value has a type. Value::type is a required field.
+	// Even though the "union" fields of Value (str, bstr, i, ui etc.) already
+	// define a type implicitly via the protocol buffer's descriptor,
+	// Value::type must always be set explicitly. This is partly
+	// to disambiguate some overlapping types (e.g. VT_UINT vs VT_URIID).
+	// Please refer to the documentation for more information on mvStore's data types.
+	enum ValueType {
+		VT_ANY			= 0; // To specify open-ended ranges
+		VT_STRING		= 1; // A standard text string.
+		VT_BSTR			= 2; // A binary string.
+		VT_URL			= 3; // A text string representing a URL.
+		VT_ENUM			= 4; // {Future.] A 32-bit unsigned enumeration value.
+
+		VT_INT			= 5; // A 32-bit signed integer.
+		VT_UINT			= 6; // A 32-bit unsigned integer.
+		VT_INT64		= 7; // A 64-bit signed integer.
+		VT_UINT64		= 8; // A 64-bit unsigned integer.
+		VT_DECIMAL		= 9; // [Future.] A resolution-independent decimal number.
+		VT_FLOAT		= 10; // A single-precision IEEE 754 floating-point number.
+		VT_DOUBLE		= 11; // A double-precision IEEE 754 floating-point number.
+
+		VT_BOOL			= 12; // A boolean.
+
+		VT_DATETIME		= 13; // A high-precision timestamp, internally stored as a 64-bit unsigned number of microseconds since epoch. Use Value::datetime, not Value::ui64.
+		VT_INTERVAL		= 14; // A high-precision time interval, internally stored as a 64-bit signed number of microseconds. Use Value::interval, not Value::i64.
+
+		VT_URIID		= 15; // A 32-bit unsigned URI ID (via Value::ui).
+		VT_IDENTITY		= 16; // A 32-bit unsigned identity ID (via Value::ui).
+
+		VT_REFID		= 18; // A reference (Ref) to a PIN.
+		VT_REFIDPROP	= 20; // A reference (Ref) to a property of a PIN.
+		VT_REFIDELT		= 22; // A reference (Ref) to a collection element of a property of a PIN.
+
+		VT_EXPR			= 23; // A stored expression, expressed in mvSQL or BLOB.
+		VT_QUERY		= 24; // A stored statement, expressed in mvSQL or BLOB.
+
+		VT_ARRAY		= 25; // A collection (array of values).
+		VT_RANGE		= 27; // A range of values, equivalent to VT_ARRAY with length=2.
+		VT_CURRENT		= 29; // An automatically-computed value, depending on the actual property (e.g. current moment in time, current user etc.).
+
+		VT_REFCID		= 30; // A reference to a PIN using it 'cid' rather than PID (for mutual references of yet uncommitted pins).
+	}
+	// The Value structure can represent a logical update on a value,
+	// in which case Value::op must be specified.
+	enum ModOp {
+		OP_SET			= 0; // Add a new property, or set a new value on an already existing property. If no eid is specified, might imply overwriting a whole collection.
+		OP_ADD			= 1; // Add an element to a property. If the property was not already a collection, it will become one. The eid field can be specified with FIRST_ELEMENT, LAST_ELEMENT or the eid of an already committed element of this collection, to control after which other element the new element is added.
+		OP_ADD_BEFORE	= 2; // Same as OP_ADD, but the element is added before the point specified with the eid field.
+		OP_MOVE			= 3; // Move the element specified by Value::eid after the element specified by Value::ui (an eid in this case).
+		OP_MOVE_BEFORE	= 4; // Move the element specified by Value::eid before the element specified by Value::ui (an eid in this case).
+		OP_DELETE		= 5; // Delete the whole property, or a single collection element if Value::ui (an eid in this case) is specified.
+		OP_EDIT			= 6; // Edit a string (VT_STRING, VT_BSTR or VT_URL), using the specification in Value::edit.
+		OP_RENAME		= 7; // Rename the property, i.e. replace the Value::property itself (with the number specified in Value::ui). Value::type must be VT_URIID.
+		OP_PLUS			= 8; // Replace the stored value v1 with v2 = (v1 + this instance).
+		OP_MINUS		= 9; // Replace the stored value v1 with v2 = (v1 - this instance).
+		OP_MUL			= 10; // Replace the stored value v1 with v2 = (v1 * this instance).
+		OP_DIV			= 11; // Replace the stored value v1 with v2 = (v1 / this instance).
+		OP_MOD			= 12; // Replace the stored value v1 with v2 = v1 % this instance (remainder of division).
+		OP_NEG			= 13; // Replace the stored value v1 with -v1. The value specified in this instance is ignored.
+		OP_NOT			= 14; // Replace the stored value v1 with ~v1 or !v1 or -v1, depending on the type.
+		OP_AND			= 15; // Replace the stored value v1 with v2 = (v1 bitand this instance).
+		OP_OR			= 16; // Replace the stored value v1 with v2 = (v1 bitor this instance).
+		OP_XOR			= 17; // Replace the stored value v1 with v2 = (v1 xor this instance).
+		OP_LSHIFT		= 18; // Replace the stored value v1 with v2 = (v1 << this instance).
+		OP_RSHIFT		= 19; // Replace the stored value v1 with v2 = (v1 >> this instance).
+		OP_MIN			= 20; // Replace the stored value v1 with v2 = min(v1, this instance).
+		OP_MAX			= 21; // Replace the stored value v1 with v2 = max(v1, this instance).
+		OP_ABS			= 22; // Replace the stored value v1 with v2 = abs(v1). The value specified in this instance is ignored.
+		OP_LN			= 23; // Replace the stored value v1 with v2 = ln(v1). The value specified in this instance is ignored.
+		OP_EXP			= 24; // Replace the stored value v1 with v2 = exp(v1). The value specified in this instance is ignored.
+		OP_POW			= 25; // Replace the stored value v1 with v2 = pow(v1,this instance).
+		OP_SQRT			= 26; // Replace the stored value v1 with v2 = sqrt(v1). The value specified in this instance is ignored.
+		OP_FLOOR		= 27; // Replace the stored value v1 with v2 = floor(v1). The value specified in this instance is ignored.
+		OP_CEIL			= 28; // Replace the stored value v1 with v2 = ceil(v1). The value specified in this instance is ignored.
+		OP_CONCAT		= 29; // Concatenate this value to the stored value.
+		OP_LOWER		= 30; // Replace the stored value with its lower-case equivalent. The value specified in this instance is ignored.
+		OP_UPPER		= 31; // Replace the stored value with its upper-case equivalent. The value specified in this instance is ignored.
+		OP_TONUM		= 32; // Coerce the stored value to any of numeric types (VT_INT - VT_DOUBLE).
+		OP_TOINUM		= 33; // Coerce the stored value to an integer numeric type (VT_INT - VT_UINT64).
+		OP_CAST			= 34; // Coerce the stored value to the type defined by tghe second argument.
+	}
+	// For string/stream value editing (Value::op == OP_EDIT).
+	// Allows to insert, delete and replace ranges.
+	message StrEdit {
+		optional string str = 1; // For Value::type == VT_STRING or VT_URL. Specifies the characters to be inserted in the existing string. Can be empty.
+		optional bytes	bstr = 2; // For Value::type == VT_BSTR. Specifies the bytes to be inserted in the existing string. Can be empty.
+		required uint32 length = 3; // Specifies how many characters/bytes should be deleted from the original string, before insertion. Can be 0.
+		optional uint64 offset = 4; // Specifies the offset at which StrEdit::length should be deleted, and StrEdit::str/StrEdit::bstr should be inserted.
+	}
+	// For ranges and collections.
+	message VArray {
+		optional uint32	l = 1; // Specifies the number of elements in the collection.
+		repeated Value	v = 2; // Each element is a Value.
+	}
+	
+	optional ValueType	type		= 1; // The type of the value.
+	optional uint32		property	= 2; // The numeric ID of the property that this value belongs to, as defined by the relevant MVStream::StringMap.
+
+	// The following fields are meant to be used as a union, based on Value::type.
+	optional string		str			= 3; // The VT_STRING or VT_URL value, or string form of VT_EXPR or VT_QUERY.
+	optional bytes		bstr		= 4; // The VT_BSTR value.
+	optional sint32		i			= 5; // The VT_INT value.
+	optional uint32		ui			= 6; // The VT_UINT or VT_URIID or VT_IDENTITY value.
+	optional sint64		i64			= 7; // The VT_INT64 value.
+	optional uint64		ui64		= 8; // The VT_UINT64 value.
+	optional float		f			= 9; // The VT_FLOAT value.
+	optional double		d			= 10; // The VT_DOUBLE value.
+	optional fixed64	datetime	= 11; // The VT_DATETIME value.
+	optional sfixed64	interval	= 12; // The VT_INTERVAL value.
+	optional PID		id			= 13; // The VT_REFID value.
+	optional VArray		varray		= 14; // The VT_ARRAY value.
+	optional Ref		ref			= 15; // The VT_REFIDPROP or VT_REFIDELT value.
+	optional bool		b			= 16; // The VT_BOOL value.
+
+	optional ModOp		op			= 17 [default = OP_SET]; // The kind of update that this Value may represent.
+	optional uint32		eid			= 18 [default = 4294967295]; // The pivot around which Value::op == OP_ADD* or OP_MOVE* operate.
+	optional uint32		meta		= 19; // [Enum to be provided soon.] Specialized additional specifiers. Corresponds to META_PROP_* in the c++ public interface.
+
+	optional StrEdit	edit		= 20; // String editing specification, required when Value::op == OP_EDIT.
+	optional uint32		units		= 21; // [Enum to be provided soon.] Unit of measurement. Can be used with Value::type == VT_FLOAT or VT_DOUBLE.
+
+	optional uint64		cid			= 128; // Client-side ID. Allows identifying the statement generated this result.
+}
+
+// MVStream encapsulates all the elements that can be inserted/retrieved in a
+// protobuf stream of mvStore objects. It can completely represent any output
+// response returned by mvStore. It can also be used to build a segment of any
+// input request sent to mvStore. mvstore.proto does not define
+// an overall structure for input streams, nor does it specify illegal sequences.
+// Incorrect usage will simply be reported as errors by mvStore.
+message MVStream
+{
+	// In an input stream sent to mvStore, specifies how a PIN message
+	// is meant to be interpreted by the store.
+	enum MODOP {
+		OP_INSERT	= 0; // A PIN insert.
+		OP_UPDATE	= 1; // A PIN update.
+		OP_DELETE	= 2; // A PIN delete.
+		OP_COPY		= 3; // A PIN copy.
+		OP_UNDELETE	= 4; // A PIN undelete.
+	}
+	// Allows to define transaction boundaries (see the big comment for MVStream, above).
+	enum TXOP {
+		TX_START			= 1; // Start a transaction, or if a transaction is already active, a nested sub-transaction.
+		TX_COMMIT			= 2; // Commit the innermost nested transaction, for the current stream.
+		TX_COMMIT_ALL		= 3; // Commit all nested transactions (including the topmost), for the current stream.
+		TX_ROLLBACK			= 4; // Rollback the innermost nested transaction, for the current stream.
+		TX_ROLLBACK_ALL		= 5; // Rollback all nested transactions (including the topmost), for the current stream.
+		TX_START_READONLY	= 6; // Start a read-only transaction.
+		TX_START_CLASSMODIFY = 7; // Start a transaction, which can modify class pins.
+	}
+	// Allows to specify name and identity mappings, to avoid repeating names.
+	// In an input stream sent to mvStore, the mapping is purely logical (the IDs are not persistent).
+	// In an output stream returned by mvStore, the mapping is the store's persistent mapping; it can be cached and reused by the client.
+	message StringMap {
+		required string	str = 1; // The name (URI or Identity).
+		required uint32 id	= 2; // The corresponding ID.
+	}
+	// Query result meta-data, returned by mvStore in an output stream.
+	message Result {
+		optional uint64		cid		= 1; // Client-side ID of corresponding MVSQL or PIN message.
+		optional ErrorCode	error	= 2; // Error code. If success - this field is omitted.
+		optional uint64		count	= 3; // Result count (only in case of success).
+		optional MODOP		op		= 4; // The operation performed.
+	}
+	// Specifies a mvsql statement, in an input stream.
+	message MVSQL {
+		required string		sq		= 1; // Specifies the mvsql statement as a string.
+		optional uint64		cid		= 2; // Client-side ID. Allows identifying results that relate to this statement.
+		optional ReturnType	rtt		= 3; // Specifies what level of details is expected in the result.
+		repeated uint32		uids	= 4; // Specifies the property ids referred to by the mvsql statement, if any.
+		repeated Value		params	= 5; // Specifies the values of the parameters in the mvsql statement, if any.
+		optional uint32		limit	= 6; // For pagination (standard).
+		optional uint32		offset	= 7; // For pagination (standard).
+		optional uint32		mode	= 8; // Special modifiers.
+		optional bool	abortOnError= 9; // Stop executing input stream if an error happened in this query
+	}
+	// In an input stream, specifies data for PIN insertion/modification/deletion.
+	// In an output stream, specifies returned data.
+	message PIN {
+		optional MODOP		op		= 1; // Operation to perform on this PIN. If missing insert is implied.
+		optional PID		id		= 2; // PIN ID (for existing PINs and update/delete/copy/undelete operations).
+		optional uint32		mode	= 3; // Special modifiers.
+		optional uint32		stamp	= 4; // PIN stamp. Only relevant in output streams returned by mvStore.
+		optional uint32		nValues	= 5; // Optional specifier for the number of values of properties. Optimization.
+		repeated Value		values	= 6; // Values of properties of the PIN.
+		optional uint64		cid		= 7; // Client-side ID. Used for references between uncommitted PINs and to relate results to the request.
+		optional ReturnType	rtt		= 8; // Return level of details specification.
+	}
+	// Will describe sets of PINs (e.g. a result of processing a join query).
+	message Compound {
+		optional uint32	nPINs		= 1; // Number of PINs in the set.
+		repeated PIN	pins		= 2; // Actual PINs in this set.
+		optional uint64	cid			= 3; // Client-side ID. Used to relate results to the request.
+	}
+	// Will provide the asynchronous status of a query run in server mode.
+	message Status {
+		optional uint32	code		= 1; // [Future.]
+		optional uint64	cid			= 2; // Client-side ID. Used to relate results to the request.
+	}
+	// For dump & load, to retain internal page layout and integrity of IDs.
+	message ReservedPages {
+		repeated uint32	pageID		= 1; // A page ID.
+	}
+	optional StringMap	owner		= 1; // Owner of the store returning results (output stream only).
+	optional uint32		storeID		= 2; // Store ID of the store returning results (output stream only).
+	repeated PIN		pins		= 3; // A set of PIN descriptions. In input streams, can be used to insert or update PINs. In output streams, describes the query result.
+	repeated StringMap	properties	= 4; // A map of property IDs vs names (URIs). In input streams sent to mvStore, the mapping is purely logical (note: by convention property IDs start at 64). In output streams returned by mvStore, the mapping is mvStore's persistent internal mapping.
+	repeated StringMap	identities	= 5; // A map of identity IDs vs names (URIs). In input streams sent to mvStore, the mapping is purely logical. In output streams, the mapping is mvStore's persistent internal mapping.
+	repeated MVSQL		stmt		= 6; // Query to be executed. Only relevant in input streams sent to mvStore.
+	repeated TXOP		txop		= 7; // A transaction operation. In practice, this will only ever contain one element.
+	repeated Result		result		= 8; // Query result meta-data. Only relevant in streams output by mvStore. Matches the specified ReturnType.
+	repeated Compound	compound	= 9; // A few PINs returned as a set.
+	repeated Status		status		= 10; // [Not available yet.] To obtain status of a transaction running asynchronously in the server. Applies to "server mode" only.
+	repeated uint32		flush		= 11; // To request immediate partial output at any known point in the stream (e.g. to obtain PIDs during a transaction).
+	repeated ReservedPages resPages	= 12; // [Future.] For dump & load.
+	repeated Value		values		= 13; // Query result as a stream of values (RT_VALUES).
+}
