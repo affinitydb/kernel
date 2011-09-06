@@ -1597,7 +1597,7 @@ TLx SInCtx::parsePrologue()
 void SInCtx::mapURI(const char *prefix,size_t lPrefix)
 {
 	if (ses!=NULL && v.type==VT_STRING) {
-		char *str=(char*)v.str; bool fCopy=v.flags!=mtype; bool fAddDel=false;
+		char *str=(char*)v.str; bool fCopy=true;/*v.flags!=mtype;*/ bool fAddDel=false;
 		if (prefix!=NULL && lPrefix!=0) {
 			const QName *pq=NULL; QName qn={prefix,lPrefix,NULL,0,false};
 			if (lastQN>=nQNames || (pq=&qNames[lastQN])->lq!=lPrefix || memcmp(prefix,pq->qpref,lPrefix)!=0)

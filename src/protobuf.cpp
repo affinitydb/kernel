@@ -371,7 +371,7 @@ public:
 							if (os.pin->properties!=NULL) for (i=0; i<os.pin->nProperties; i++)
 								{sz64=length(os.pin->properties[i],false); pinSize+=1+mv_len64(sz64)+sz64;}		// save ???
 						}
-						if (fCid && sidx==0) pinSize+=1+mv_len64(cid);
+						//if (fCid && sidx==0) pinSize+=1+mv_len64(cid);
 						os.state++; os.idx=0;
 					case 1:
 						while (os.idx<propCache.nnids)
@@ -395,7 +395,7 @@ public:
 							{push_state(ST_VALUE,&os.pin->properties[os.idx++],VALUES_TAG); goto again;}
 						os.state++;
 					case 8:
-						os.state++; if (fCid && sidx==0) VAR_OUT(CID_TAG,mv_enc64,cid);
+						os.state++; //if (fCid && sidx==0) VAR_OUT(CID_TAG,mv_enc64,cid);
 					case 9:
 						fCid=false; rtt=RTT_PINS;
 						if (sidx==0) {lbuf-=po-buf; return RC_TRUE;}

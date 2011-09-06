@@ -415,8 +415,8 @@ Cursor::~Cursor()
 RC Cursor::connect()
 {
 	if (queryOp!=NULL && (nResults=queryOp->getNOuts())!=0) {
-		if (nResults==1) queryOp->connect(&qr);
-		else if ((results=new(ses) PINEx*[nResults])==NULL) return RC_NORESOURCES;
+		if ((results=new(ses) PINEx*[nResults])==NULL) return RC_NORESOURCES;
+		else if (nResults==1) {queryOp->connect(&qr); results[0]=&qr;}
 		else {
 			memset(results,0,nResults*sizeof(PINEx*)); results[0]=&qr;
 			for (unsigned i=1; i<nResults; i++) if ((results[i]=new(ses) PINEx(ses))==NULL) return RC_NORESOURCES;
