@@ -645,7 +645,7 @@ RC Classifier::classifyAll(PIN *const *pins,unsigned nPINs,Session *ses,bool fDr
 	if ((cid=new(ses) ClassIndexData[nPINs])!=NULL) memset(cid,0,nPINs*sizeof(ClassIndexData)); else return RC_NORESOURCES;
 	Value *indexed=NULL; unsigned nIndexed=0,xIndexed=0,xSegs=0; unsigned first=~0u,last=0,nIndex=0; RC rc=RC_OK;
 	for (unsigned i=0; i<nPINs; i++) {
-		ClassIndexData &ci=cid[i]; ci.fSkip=ci.fSaveQ=true; ClassDscr cdscr={NULL,0,NULL,NULL,0};
+		ClassIndexData &ci=cid[i]; ci.fSkip=ci.fSaveQ=true; ClassDscr cdscr={NULL,0,NULL,NULL,0,PIN::defPID,PageAddr::invAddr};
 		pin=pins[i]; cdscr.id=pin->id; cdscr.addr=pin->addr; assert(pin!=NULL && (pin->mode&PIN_CLASS)!=0);
 		const Value *cv=pin->findProperty(PROP_SPEC_CLASSID); assert(cv!=NULL && cv->type==VT_URIID); cdscr.cid=cv->uid;
 		cv=pin->findProperty(PROP_SPEC_PREDICATE); assert(cv!=NULL && cv->type==VT_STMT); cdscr.query=(Stmt*)cv->stmt;

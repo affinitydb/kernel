@@ -40,11 +40,6 @@ Sort::~Sort()
 	if (pins!=NULL) ses->free(pins);
 }
 
-void Sort::connect(PINEx *result)
-{
-	res=result;
-}
-
 void Sort::connect(PINEx **results,unsigned nRes)
 {
 	if (results!=NULL && nRes!=0) res=results[0];

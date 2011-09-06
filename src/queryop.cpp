@@ -39,11 +39,6 @@ void QueryOp::connect(PINEx **results,unsigned nRes)
 	if (queryOp!=NULL) queryOp->connect(results,nRes);
 }
 
-void QueryOp::connect(PINEx *result)
-{
-	res=result; if (queryOp!=NULL) queryOp->connect(result);
-}
-
 RC QueryOp::rewind()
 {
 	return queryOp!=NULL?queryOp->rewind():RC_OK;
@@ -164,18 +159,6 @@ void BodyOp::print(SOutCtx& buf,int level) const
 
 PathOp::~PathOp()
 {
-	PathState *ps,*ps2;
-	for (ps=pst; ps!=NULL; ps=ps2) {ps2=ps->next; freeV(ps->seg); freeV(ps->rep); ses->free(ps);}
-	for (ps=freePst; ps!=NULL; ps=ps2) {ps2=ps->next; ses->free(ps);}
-	if (fCopied) {
-		for (unsigned i=0; i<nPathSeg; i++) if (path[i].filter!=NULL) path[i].filter->destroy();
-		ses->free((void*)path); if (params!=NULL) freeV((Value*)params,nParams,ses);
-	}
-}
-
-void PathOp::connect(PINEx *result)
-{
-	res=result; queryOp->connect(&pex);
 }
 
 void PathOp::connect(PINEx **results,unsigned nRes)
@@ -185,96 +168,69 @@ void PathOp::connect(PINEx **results,unsigned nRes)
 
 RC PathOp::next(const PINEx *)
 {
-	RC rc; unsigned i; const Value *pv; bool fOK;
-	if (res!=NULL) res->cleanup();
-	if ((state&QST_EOF)!=0) return RC_EOF;
-	if ((state&QST_INIT)!=0) {
-		state&=~QST_INIT; if (nSkip>0 && (rc=initSkip())!=RC_OK) return rc;
-		for (i=0; i<nPathSeg; i++) if (path[i].rmin!=0) {fThrough=false; break;}
-	}
+	RC rc; const Value *pv; bool fOK;
+	if (res!=NULL) res->cleanup(); if ((state&QST_EOF)!=0) return RC_EOF;
+	if ((state&QST_INIT)!=0) {state&=~QST_INIT; if (nSkip>0 && (rc=initSkip())!=RC_OK) return rc;}
 	for (;;) {
 		if (pst==NULL) {
 			if ((rc=queryOp->next())!=RC_OK) {state|=QST_EOF; return rc;}
-			if ((rc=push(0,1))!=RC_OK) return rc; pst->seg.setError(path[0].pid);
-			if ((rc=getData(pex,&pst->seg,1,NULL,ses,path[0].eid))!=RC_OK) {state|=QST_EOF; return rc;}
-			pst->state=2; if (fThrough) {if (res!=NULL) *res=pex; return RC_OK;}
+			if ((rc=push())!=RC_OK) return rc; pst->v[0].setError(path[0].pid);
+			if ((rc=getData(pex,&pst->v[0],1,NULL,ses,path[0].eid))!=RC_OK) {state|=QST_EOF; return rc;}
+			pst->state=2; pst->vidx=0; if (fThrough) {if (res!=NULL) *res=pex; return RC_OK;}
 		}
 		switch (pst->state) {
 		case 0:
 			pst->state=1; assert(pst!=NULL && pst->idx>0);
 			if (pst->idx>=nPathSeg && pst->rcnt>=path[pst->idx-1].rmin && path[pst->idx-1].filter==NULL) {/*printf("->\n");*/ return RC_OK;}
 		case 1:
-			pst->state=4; //printf("%*s(%d,%d):"_LX_FM"\n",(pst->idx-1+pst->rcnt-1)*2,"",pst->idx,pst->rcnt,res->id.pid);
+			pst->state=2; //printf("%*s(%d,%d):"_LX_FM"\n",(pst->idx-1+pst->rcnt-1)*2,"",pst->idx,pst->rcnt,res->id.pid);
 			if ((rc=getBody(*res))!=RC_OK || (res->hpin->hdr.descr&HOH_HIDDEN)!=0) 
 				{res->cleanup(); if (rc==RC_OK || rc==RC_NOACCESS || rc==RC_REPEAT || rc==RC_DELETED) {pop(); continue;} else {state|=QST_EOF; return rc;}}
 			fOK=path[pst->idx-1].filter==NULL || ses->getStore()->queryMgr->condSatisfied((const Expr* const*)&path[pst->idx-1].filter,1,(const PINEx**)&res,1,params,nParams,ses);
 			if (!fOK && !path[pst->idx-1].fLast) {res->cleanup(); pop(); continue;}
-			if ((pst->rcnt<path[pst->idx-1].rmax||path[pst->idx-1].rmax==0xFFFF) && (rc=ses->getStore()->queryMgr->loadV(pst->rep,path[pst->idx-1].pid,*res,LOAD_SSV,ses,path[pst->idx-1].eid))!=RC_OK && rc!=RC_NOTFOUND)
-				{res->cleanup(); state|=QST_EOF; return rc;}
-			if (fOK) {
+			if (pst->rcnt<path[pst->idx-1].rmax||path[pst->idx-1].rmax==0xFFFF) {
+				if ((rc=ses->getStore()->queryMgr->loadV(pst->v[1],path[pst->idx-1].pid,*res,LOAD_SSV|LOAD_REF,ses,path[pst->idx-1].eid))==RC_OK) {if (pst->v[1].type!=VT_ERROR) pst->vidx=1;}
+				else if (rc!=RC_NOTFOUND) {res->cleanup(); state|=QST_EOF; return rc;}
+			}
+			if (fOK && pst->rcnt>=path[pst->idx-1].rmin) {
 				//pst->nSucc++;
-				if (pst->idx>=nPathSeg) {if (pst->rcnt>=path[pst->idx-1].rmin && path[pst->idx-1].filter!=NULL) {/*printf("->\n");*/ return RC_OK;}}
-				else {
+				if (pst->idx<nPathSeg) {
 					assert(pst->rcnt<=path[pst->idx-1].rmax||path[pst->idx-1].rmax==0xFFFF);
 					for (;;) {
-						if ((rc=ses->getStore()->queryMgr->loadV(pst->seg,path[pst->idx].pid,*res,LOAD_SSV,ses,path[pst->idx].eid))!=RC_OK && rc!=RC_NOTFOUND)
+						if ((rc=ses->getStore()->queryMgr->loadV(pst->v[0],path[pst->idx].pid,*res,LOAD_SSV|LOAD_REF,ses,path[pst->idx].eid))!=RC_OK && rc!=RC_NOTFOUND)
 							{res->cleanup(); state|=QST_EOF; return rc;}
-						if (rc==RC_OK && pst->seg.type!=VT_ERROR) {pst->state=2; break;} if (path[pst->idx].rmin!=0) break;
-						if (pst->idx+1>=nPathSeg) return RC_OK; push(pst->idx+1,1); pst->state=6;
+						if (rc==RC_OK && pst->v[0].type!=VT_ERROR) {pst->vidx=0; break;}
+						if (path[pst->idx].rmin!=0) break; if (pst->idx+1>=nPathSeg) return RC_OK; 
+						unsigned s=pst->vidx; pst->vidx=0; if ((rc=push())!=RC_OK) return rc; pst->next->vidx=s;
 					}
+				} else if (path[pst->idx-1].filter!=NULL) {/*printf("->\n");*/ return RC_OK;}
 				}
-			}
-			res->cleanup(); if (pst->state!=2) continue;
+			res->cleanup();
 		case 2:
-			pst->state=4;
-			switch (pst->seg.type) {
-			default: continue;		// rmin==0 -> goto next seg
-			case VT_REF: if (res!=NULL) *res=pst->seg.pin->getPID(); push(pst->idx+1,1); continue;
-			case VT_REFID: if (res!=NULL) *res=pst->seg.id; push(pst->idx+1,1); continue;
+			if (pst->vidx>=2) {pop(); continue;}	// rmin==0 && pst->nSucc==0 -> goto next seg
+			switch (pst->v[pst->vidx].type) {
+			default: pst->vidx++; continue;		// rmin==0 -> goto next seg
+			case VT_REF: if (res!=NULL) *res=pst->v[pst->vidx].pin->getPID(); if ((rc=push())!=RC_OK) return rc; pst->next->vidx++; continue;
+			case VT_REFID: if (res!=NULL) *res=pst->v[pst->vidx].id; if ((rc=push())!=RC_OK) return rc; pst->next->vidx++; continue;
 			case VT_STRUCT:
 				//????
 				continue;
 			case VT_COLLECTION: case VT_ARRAY: pst->state=3; pst->cidx=0; break;
 			}
 		case 3:
-			pv=pst->seg.type==VT_COLLECTION?pst->seg.nav->navigate(pst->cidx==0?GO_FIRST:GO_NEXT):pst->cidx<pst->seg.length?&pst->seg.varray[pst->cidx]:(const Value*)0;
+			pv=pst->v[pst->vidx].type==VT_COLLECTION?pst->v[pst->vidx].nav->navigate(pst->cidx==0?GO_FIRST:GO_NEXT):pst->cidx<pst->v[pst->vidx].length?&pst->v[pst->vidx].varray[pst->cidx]:(const Value*)0;
 			if (pv!=NULL) {
 				pst->cidx++;
 				switch (pv->type) {
 				default: continue;
-				case VT_REF: if (res!=NULL) *res=pv->pin->getPID(); push(pst->idx+1,1); continue;
-				case VT_REFID: if (res!=NULL) *res=pv->id; push(pst->idx+1,1); continue;
+				case VT_REF: if (res!=NULL) *res=pv->pin->getPID(); if ((rc=push())!=RC_OK) return rc; continue;
+				case VT_REFID: if (res!=NULL) *res=pv->id; if ((rc=push())!=RC_OK) return rc; continue;
 				case VT_STRUCT:
 					//????
 					continue;
 				}
 			}
-			// rmin==0 && pst->nSucc==0 -> goto next seg
-		case 4:
-			switch (pst->rep.type) {
-			default: pop(); continue;
-			case VT_REF: if (res!=NULL) *res=pst->rep.pin->getPID(); pst->state=6; push(pst->idx,pst->rcnt+1); continue;
-			case VT_REFID: if (res!=NULL) *res=pst->rep.id; pst->state=6; push(pst->idx,pst->rcnt+1); continue;
-			case VT_STRUCT:
-				//????
-				continue;
-			case VT_ARRAY: case VT_COLLECTION: pst->state=5; pst->cidx=0; break;
-			}
-		case 5:
-			pv=pst->rep.type==VT_COLLECTION?pst->rep.nav->navigate(pst->cidx==0?GO_FIRST:GO_NEXT):pst->cidx<pst->rep.length?&pst->rep.varray[pst->cidx]:(const Value*)0;
-			if (pv!=NULL) {
-				pst->cidx++;
-				switch (pv->type) {
-				default: continue;
-				case VT_REF: if (res!=NULL) *res=pv->pin->getPID(); push(pst->idx,pst->rcnt+1); continue;
-				case VT_REFID: if (res!=NULL) *res=pv->id; push(pst->idx,pst->rcnt+1); continue;
-				case VT_STRUCT:
-					//????
-					continue;
-				}
-			}
-		case 6:
-			pop(); break;
+			pst->vidx++; pst->state=2; continue;
 		}
 	}
 }
@@ -288,8 +244,8 @@ RC PathOp::rewind()
 RC PathOp::release()
 {
 	for (PathState *ps=pst; ps!=NULL; ps=ps->next) {
-		if (ps->seg.type==VT_COLLECTION) ps->seg.nav->navigate(GO_FINDBYID,STORE_COLLECTION_ID);
-		if (ps->rep.type==VT_COLLECTION) ps->rep.nav->navigate(GO_FINDBYID,STORE_COLLECTION_ID);
+		if (ps->v[0].type==VT_COLLECTION) ps->v[0].nav->navigate(GO_FINDBYID,STORE_COLLECTION_ID);
+		if (ps->v[1].type==VT_COLLECTION) ps->v[1].nav->navigate(GO_FINDBYID,STORE_COLLECTION_ID);
 	}
 	// ???
 	return QueryOp::release();
@@ -573,7 +529,7 @@ RC PropDNF::orP(PropDNF *&dnf,size_t& ldnf,const PropertyID *pids,ulong np,MemAl
 
 RC PropDNF::flatten(size_t ldnf,PropertyID *&ps,unsigned& nPids,MemAlloc *ma) const
 {
-	unsigned cnt=0; PropertyID *ins=NULL; RC rc;
+	unsigned cnt=0; RC rc;
 	for (const PropDNF *p=this,*end=(const PropDNF*)((byte*)this+ldnf); p<end; p=(const PropDNF*)((byte*)(p+1)+int(p->nIncl+p->nExcl-1)*sizeof(PropertyID))) {
 		unsigned i=0;
 		if (p==this && nIncl!=0) {

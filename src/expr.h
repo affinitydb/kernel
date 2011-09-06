@@ -93,7 +93,7 @@ public:
 	static	RC		deserialize(Expr*&,const byte *&buf,const byte *const ebuf,MemAlloc*);
 	static	Expr	*clone(const Expr *exp,MemAlloc *ma);
 	static	RC		getI(const Value& v,long& num);
-	static	RC		path(Value *v,PropertyID pid,unsigned flags,ElementID eid=STORE_COLLECTION_ID,Expr *filter=NULL,ClassID cls=STORE_INVALID_CLASSID,unsigned rmin=1,unsigned rmax=1);
+	static	RC		path(Value *&top,const byte *&codePtr,const Value *params,unsigned nParams,MemAlloc *ma);
 private:
 	Expr(uint32_t lE,ushort lS,ushort flg) : hdr(lE,lS,flg) {}
 	Expr(const ExprHdr& h) : hdr(h) {}
@@ -192,28 +192,15 @@ struct AggAcc
 	RC			result(Value& res);
 };
 
-class PathIt : public INav
+class PathIt : public INav, public Path
 {
-	struct QElt	{
-		QElt		*next;
-		unsigned	depth;
-		Value		src;
-	};
-	const	PropertyID	pid;
-	const	ElementID	eid;
-	Expr	*const		filter;
-	const	ClassID		cls;
-	const	unsigned	rmin,rmax;
-	QElt				*next,*last;
-	unsigned			depth;
-	bool				fRef;
-	bool				fDFS;
-	unsigned			idx;
+	const	bool	fDFS;
 	Value				src;
+	Value			res;
+	unsigned		sidx;
 public:
-	PathIt(PropertyID pi,ElementID ei,Expr *flt,ClassID cl,unsigned rm,unsigned rx) 
-		: pid(pi),eid(ei),filter(flt),cls(cl),rmin(rm),rmax(rx),next(NULL),last(NULL),depth(0),idx(0) {src.setError();}
-	~PathIt();
+	PathIt(MemAlloc *m,const PathSeg *ps,unsigned nP,const Value *pars,unsigned nPars,const Value& v,bool fD) : Path(ma,ps,nP,pars,nPars,false),fDFS(fD),sidx(0) {src=v; res.setError();}
+	virtual	~PathIt();
 
 	const	Value	*navigate(GO_DIR=GO_NEXT,ElementID=STORE_COLLECTION_ID);
 	ElementID		getCurrentID();

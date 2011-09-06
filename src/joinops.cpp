@@ -18,12 +18,6 @@ MergeIDOp::~MergeIDOp()
 	for (ulong i=0; i<nOps; i++) delete ops[i].qop;
 }
 
-void MergeIDOp::connect(PINEx *result)
-{
-	for (ulong i=0; i<nOps; i++) if (ops[i].qop!=NULL) ops[i].qop->connect(result);		//????
-	res=result;
-}
-
 void MergeIDOp::connect(PINEx **results,unsigned nRes)
 {
 	if (results!=NULL && nRes!=0) res=results[0];	///???
@@ -128,17 +122,13 @@ MergeOp::~MergeOp()
 	delete queryOp2;
 }
 
-void MergeOp::connect(PINEx *result)
-{
-	res=result; queryOp->connect(result); queryOp2->connect(pR);
-}
-
 void MergeOp::connect(PINEx **results,unsigned nRes)
 {
 	if (results!=NULL && nRes!=0) {
 		res=results[0]; unsigned nOuts1=queryOp->getNOuts();
 		queryOp->connect(results,nRes>nOuts1?nOuts1:nRes);
-		if (nOuts1+queryOp2->getNOuts()<=nRes) {
+		if (nRes==1) queryOp2->connect(pR);
+		else if (nOuts1+queryOp2->getNOuts()<=nRes) {
 			queryOp2->connect(results+nOuts1,nRes-nOuts1); pR=results[nOuts1];	//???
 		} else {
 			//???

@@ -281,15 +281,13 @@ RC QueryPrc::loadVH(Value& v,const HeapPageMgr::HeapV *hprop,const PINEx& cb,ulo
 			} else {
 				Navigator *nav;
 				if ((mode&LOAD_CARDINALITY)!=0) v.set(~0u);
-				else {
-					if (ma==NULL && (ma=Session::getSession())==NULL) return RC_NOSESSION;
-					if ((nav=new(ma) Navigator(cb.addr,hprop->getID(),coll,mode,ma))==NULL) v.setError(pid);
+				else if (ma==NULL && (ma=Session::getSession())==NULL) return RC_NOSESSION;
+				else if ((nav=new(ma) Navigator(cb.addr,hprop->getID(),coll,mode,ma))==NULL) v.setError(pid);
 					else {
 						ma->addObj(nav); v.nav=nav; v.flags=ma->getAType(); v.type=VT_COLLECTION; 
 						v.eid=STORE_COLLECTION_ID; v.length=1; v.meta=ty.flags; v.op=OP_SET;
 					}
 				}
-			}
 			v.property=pid; return RC_OK;
 		}
 		const HeapPageMgr::HeapVV *coll=(const HeapPageMgr::HeapVV*)((byte*)cb.hp+offset);
@@ -298,17 +296,20 @@ RC QueryPrc::loadVH(Value& v,const HeapPageMgr::HeapV *hprop,const PINEx& cb,ulo
 			if (ty.getFormat()!=HDF_SHORT || coll->cnt>1) {
 				MemAlloc *al=ma!=NULL?ma:(MemAlloc*)Session::getSession(); if (al==NULL) return RC_NOSESSION;
 				v.type=VT_ARRAY; v.length=coll->cnt; v.eid=STORE_COLLECTION_ID; v.meta=ty.flags; v.op=OP_SET;
-				v.varray=(Value*)al->malloc(v.length*sizeof(Value)); ulong i; RC rc=RC_OK; uint8_t flg=0;
+				v.varray=(Value*)al->malloc(v.length*sizeof(Value)); ulong i,j; RC rc=RC_OK; uint8_t flg=0;
 				if (v.varray==NULL) {v.type=VT_ERROR; v.property=pid; return RC_NORESOURCES;}
-				for (i=0; i<v.length; i++) {
-					const HeapPageMgr::HeapV *elt=&coll->start[i];
-					if ((rc=loadV(const_cast<Value&>(v.varray[i]),elt->type,elt->offset,cb.hp,mode,ma,elt->getID()))!=RC_OK) break;
-					flg|=v.varray[i].flags&VF_SSV; const_cast<Value&>(v.varray[i]).property=STORE_INVALID_PROPID;
+				for (i=j=0; i<v.length; i++) {
+					const HeapPageMgr::HeapV *elt=&coll->start[i]; ValueType vt;
+					if ((mode&LOAD_REF)==0 || (vt=elt->type.getType())==VT_REFID || vt==VT_STRUCT /*&& ??? */) {
+						if ((rc=loadV(const_cast<Value&>(v.varray[j]),elt->type,elt->offset,cb.hp,mode,ma,elt->getID()))!=RC_OK) break;
+						flg|=v.varray[j].flags&VF_SSV; const_cast<Value&>(v.varray[j]).property=STORE_INVALID_PROPID; j++;
 				}
-				if (rc==RC_OK && (flg&VF_SSV)!=0 && (mode&LOAD_SSV)!=0 && (rc=loadSSVs(const_cast<Value*>(v.varray),i,mode,Session::getSession(),al))==RC_OK) flg=0;
-				if (i<v.length||rc!=RC_OK) {
+				}
+				if (rc==RC_OK && (flg&VF_SSV)!=0 && (mode&LOAD_SSV)!=0 && (rc=loadSSVs(const_cast<Value*>(v.varray),j,mode,Session::getSession(),al))==RC_OK) flg=0;
+				if (rc==RC_OK && (mode&LOAD_REF)!=0) {if ((v.length=j)==0) {al->free((void*)v.varray); v.setError();}}
+				else if (j<v.length||rc!=RC_OK) {
 					report(MSG_ERROR,"loadV: cannot load collection %08X, %08X:%04X\n",pid,cb.hp->hdr.pageID,cb.addr.idx);
-					while (i--!=0) freeV(const_cast<Value&>(v.varray[i]));
+					while (j--!=0) freeV(const_cast<Value&>(v.varray[j]));
 					al->free(const_cast<Value*>(v.varray)); v.setError(pid);
 					return rc==RC_OK?RC_CORRUPTED:rc;
 				}
@@ -325,6 +326,7 @@ RC QueryPrc::loadVH(Value& v,const HeapPageMgr::HeapV *hprop,const PINEx& cb,ulo
 															HeapPageMgr::getPrefix(cb.id):ctx->getPrefix())) return RC_NOTFOUND;
 	if (eid==STORE_COLLECTION_ID||eid==STORE_FIRST_ELEMENT)
 		eid=cb.hpin->hasRemoteID() && (hprop->type.flags&META_PROP_LOCAL)==0 && cb.hpin->getAddr(id)?HeapPageMgr::getPrefix(id):ctx->getPrefix();
+	if ((mode&LOAD_REF)!=0 && ty.getType()!=VT_REFID && ty.getType()!=VT_STRUCT /* || ???*/) {v.setError(pid); return RC_OK;}
 	RC rc=loadV(v,ty,offset,cb.hp,mode,ma,eid); v.property=pid; return rc;
 }
 

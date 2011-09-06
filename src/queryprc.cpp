@@ -415,8 +415,8 @@ Cursor::~Cursor()
 RC Cursor::connect()
 {
 	if (queryOp!=NULL && (nResults=queryOp->getNOuts())!=0) {
-		if ((results=new(ses) PINEx*[nResults])==NULL) return RC_NORESOURCES;
-		else if (nResults==1) {queryOp->connect(&qr); results[0]=&qr;}
+		if (nResults==1) queryOp->connect(&qr);
+		else if ((results=new(ses) PINEx*[nResults])==NULL) return RC_NORESOURCES;
 		else {
 			memset(results,0,nResults*sizeof(PINEx*)); results[0]=&qr;
 			for (unsigned i=1; i<nResults; i++) if ((results[i]=new(ses) PINEx(ses))==NULL) return RC_NORESOURCES;
@@ -601,12 +601,12 @@ RC Cursor::next(IPIN *pins[],unsigned nPins,unsigned& nRet)
 						if (rc==RC_OK) {
 							unsigned nP=min(nPins,nResults);
 							for (unsigned i=0; i<nP; i++) {
-								PIN *pin=NULL;
-								if (results[i]->id.pid==STORE_INVALID_PID) {
-									if (results[i]->props==NULL || results[i]->nProps==NULL) pins[i]=NULL;
-									else if ((pin=new(ses) PIN(ses,PIN::defPID,PageAddr::invAddr,PIN_READONLY|PIN_TRANSFORMED,(Value*)results[i]->props,results[i]->nProps))==NULL) {rc=RC_NORESOURCES; break;}
-									else {pins[i]=pin; results[i]->props=NULL; results[i]->nProps=0;}
-								} else if ((rc=ses->getStore()->queryMgr->loadPIN(ses,results[i]->id,pin,mode|LOAD_ENAV,results[i],ses))==RC_OK) pins[i]=pin; else break;
+								PIN *pin=NULL; PINEx *pe=results!=NULL?results[i]:&qr;
+								if (pe->id.pid==STORE_INVALID_PID) {
+									if (pe->props==NULL || pe->nProps==0) pins[i]=NULL;
+									else if ((pin=new(ses) PIN(ses,PIN::defPID,PageAddr::invAddr,PIN_READONLY|PIN_TRANSFORMED,(Value*)pe->props,pe->nProps))==NULL) {rc=RC_NORESOURCES; break;}
+									else {pins[i]=pin; pe->props=NULL; pe->nProps=0;}
+								} else if ((rc=ses->getStore()->queryMgr->loadPIN(ses,pe->id,pin,mode|LOAD_ENAV,pe,ses))==RC_OK) pins[i]=pin; else break;
 							}
 							if (rc==RC_OK) {cnt++; nRet=nP;}
 						}

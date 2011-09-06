@@ -21,7 +21,7 @@ using namespace MVStoreKernel;
 RC MVStoreKernel::copyV(const Value &from,Value &to,MemAlloc *ma)
 {
 	try {
-		ulong i; RC rc; Value v; size_t ll; const uint8_t flags=from.flags;
+		ulong i; RC rc; Value v; size_t ll;
 		if (&to!=&from) to=from; to.flags=NO_HEAP;
 		if (ma!=NULL) switch (from.type) {
 		default: break;
@@ -38,7 +38,6 @@ RC MVStoreKernel::copyV(const Value &from,Value &to,MemAlloc *ma)
 			to.nav=v.nav; to.flags=ma->getAType(); break;
 		case VT_STRUCT:
 			//???
-			break;
 		case VT_ARRAY:
 			assert(from.varray!=NULL && from.length>0);
 			if ((v.varray=(Value*)ma->malloc(from.length*sizeof(Value)))==NULL) {to.setError(from.property); return RC_NORESOURCES;}

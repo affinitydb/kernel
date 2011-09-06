@@ -227,7 +227,6 @@ public:
 	friend	class	Class;
 	friend	class	SyncStreamIn;
 	friend	class	ServerStreamIn;
-	friend	class	PathOp;
 	friend	class	QueryOp;
 	friend	class	MergeOp;
 	friend	class	LoopJoin;

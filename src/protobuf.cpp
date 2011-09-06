@@ -586,18 +586,18 @@ public:
 					switch (os.state) {
 					default: goto error;
 					case 0:
-						sz=os.res->rc==RC_OK?1+mv_len64(os.res->cnt):1+mv_len32(os.res->rc);
+						sz=os.res->rc==RC_OK?1+mv_len64(os.res->cnt):1+mv_len32(unsigned(os.res->rc));
 						if (fCid) sz+=1+mv_len64(cid);
-						if (os.res->op!=MODOP_QUERY) sz+=1+mv_len32(os.res->op);
+						if (os.res->op!=MODOP_QUERY) sz+=1+mv_len32(unsigned(os.res->op));
 						os.state++; VAR_OUT(RESULT_TAG,mv_enc32,sz);
 					case 1:
 						os.state++; if (fCid) VAR_OUT(RES_CID_TAG,mv_enc64,cid);
 					case 2:
 						os.state++;
 						if (os.res->rc==RC_OK) {VAR_OUT(RES_COUNT_TAG,mv_enc64,os.res->cnt);}
-						else {VAR_OUT(RES_ERR_TAG,mv_enc32,os.res->rc);}
+						else {VAR_OUT(RES_ERR_TAG,mv_enc32,unsigned(os.res->rc));}
 					case 3:
-						os.state++; if (os.res->op!=MODOP_QUERY) VAR_OUT(RES_OP_TAG,mv_enc32,os.res->op);
+						os.state++; if (os.res->op!=MODOP_QUERY) VAR_OUT(RES_OP_TAG,mv_enc32,unsigned(os.res->op));
 					case 4:
 						lbuf-=po-buf; return RC_TRUE;
 					}

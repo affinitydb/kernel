@@ -214,11 +214,11 @@ private:
 	QVarID	findVar(const Value& v,const union QVarRef *vars,unsigned nVars) const;
 	struct	FreeV	{static void free(Value& v) {freeV(v);}};
 	template<typename T> struct	NoFree	{static void free(T) {}};
-	template<typename T,typename freeV,int size=256> struct Stack {
+	template<typename T,typename fV,int size=256> struct Stack {
 		T		stk[size];
 		T		*ptr;
 		Stack() : ptr(stk) {}
-		~Stack() {while (ptr>stk) freeV::free(*--ptr);}
+		~Stack() {while (ptr>stk) fV::free(*--ptr);}
 		void	push(T v) {if (ptr==stk+size) throw RC_NORESOURCES; *ptr++=v;}
 		T*		pop(int n) {return ptr>=stk+n?ptr-=n:(T*)0;}
 		T		pop() {assert(ptr>stk); return *--ptr;}

@@ -750,7 +750,7 @@ RC SearchKey::toKey(const Value **ppv,ulong nv,const IndexSeg *kds,int idx,Sessi
 			}
 			if (rc!=RC_OK) break;
 			if (nv>1) {
-				bool fDesc=(ks.flags&ORD_DESC)!=0,fBeg; uint32_t l,l0=fDesc?2:1;
+				bool fDesc=(ks.flags&ORD_DESC)!=0,fBeg=false; uint32_t l,l0=fDesc?2:1;
 				if (type!=KT_BIN && type!=KT_REF) l=extKeyLen[type];
 				else {
 					l=v.ptr.l; fBeg=ks.op==OP_BEGINS&&idx>=0;
@@ -952,15 +952,16 @@ RC SearchKey::getValues(Value *vals,unsigned nv,const IndexSeg *kd,unsigned nFie
 					if (b<KT_BIN) memcpy(&pv->i,s,ls);
 					else if (b==KT_REF) {
 						if (ls==0) return RC_CORRUPTED;
+						r.pid=STORE_INVALID_PROPID; r.eid=STORE_COLLECTION_ID; r.vid=STORE_CURRENT_VERSION;
 						try {
 							PINRef pr(ses->getStore()->storeID,s,ls);
-							if (kd->type==VT_REFIDELT) r.eid=(pr.def&PR_U2)!=0?pr.u2:STORE_COLLECTION_ID;
-							if (kd->type==VT_REFIDELT||kd->type==VT_REFIDPROP) r.eid=(pr.def&PR_U1)!=0?pr.u1:STORE_INVALID_PROPID;
+							if (kd->type==VT_REFIDELT && (pr.def&PR_U2)!=0) r.eid=pr.u2;
+							if ((kd->type==VT_REFIDELT||kd->type==VT_REFIDPROP) && (pr.def&PR_U1)!=0) r.pid=pr.u1;
 							r.id=pr.id;
 						} catch (RC &rc) {return rc;}
 						if (kd->type==VT_REFID) pv->set(r.id);
 						else if ((pr=(RefVID*)ma->malloc(sizeof(RefVID)))==NULL) return RC_NORESOURCES;
-						else {r.vid=STORE_CURRENT_VERSION; *pr=r; pv->set(*pr); pv->flags=ma->getAType();}
+						else {*pr=r; pv->set(*pr); pv->flags=ma->getAType();}
 						pv->property=kd->propID;
 					} else if (kd->type==VT_STRING || kd->type==VT_URL) {
 						if ((p=ma->malloc(ls+1))==NULL) return RC_NORESOURCES;

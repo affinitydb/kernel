@@ -37,7 +37,7 @@ RC QueryPrc::deletePINs(Session *ses,const PIN *const *pins,const PID *pids,unsi
 			PID pid=pids[np++]; cb=pid; if (pcb==NULL) pcb=&cb;
 			if (isRemote(pid) && fPurge && (rc=ctx->netMgr->remove(pid,cb.addr))!=RC_OK) throw rc!=RC_FALSE?rc:RC_NOTFOUND;
 			ushort pinDescr=0; ClassID cid=STORE_INVALID_CLASSID; unsigned nProps=0; const HeapPageMgr::HeapV *hprop;
-			byte fwdbuf[sizeof(HeapPageMgr::HeapObjHeader)+PageAddrSize]; bool fDelFwd=false; PageAddr fwd=PageAddr::invAddr,deleted;
+			byte fwdbuf[sizeof(HeapPageMgr::HeapObjHeader)+PageAddrSize]; bool fDelFwd=false; PageAddr fwd=PageAddr::invAddr,deleted=PageAddr::invAddr;
 			FTList *ftl=NULL; ChangeInfo fti; ulong i; Value v; IStoreNotification::NotificationData *ndata=NULL;
 			for (;;) {
 				if (pcb->pb.isNull() && (rc=getBody(*pcb,TVO_UPD,flgs))!=RC_OK) throw rc;

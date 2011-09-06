@@ -340,7 +340,7 @@ RC Stmt::render(SOutCtx& out) const
 		if (values!=NULL) for (i=0; i<nValues; i++) {
 			const Value& v=values[i];
 			if (v.property!=STORE_INVALID_PROPID && v.op<=OP_CONCAT) {
-				unsigned op=v.op>=(uint8_t)OP_FIRST_EXPR?OP_SET:v.op==OP_ADD_BEFORE?OP_ADD:v.op==OP_MOVE_BEFORE?OP_MOVE:v.op;
+				unsigned op=v.op>=(uint8_t)OP_FIRST_EXPR?OP_SET:v.op==(uint8_t)OP_ADD_BEFORE?OP_ADD:v.op==(uint8_t)OP_MOVE_BEFORE?OP_MOVE:v.op;
 				if (op==prev) {if (!out.append(", ",2)) return RC_NORESOURCES;}
 				else if (out.append(opKWs[op].s,opKWs[op].l)) prev=op; else return RC_NORESOURCES;
 				if ((rc=out.renderName(v.property))!=RC_OK) return rc;
@@ -1718,7 +1718,7 @@ void SInCtx::parse(Value& res,const QVarRef *vars,unsigned nVars,unsigned pflags
 			}
 			oprs.push(vv); v.setError(); est=1; continue;
 		case LX_LBR:
-			lx=est==0?OP_RANGE:(est=0,LX_FILTER); break;
+			lx=est==0?(TLx)OP_RANGE:(est=0,(TLx)LX_FILTER); break;
 		case LX_LCBR:
 			if (est!=0) {lx=LX_REPEAT; est=0;} break;
 		case LX_QUEST:
@@ -1890,7 +1890,7 @@ void SInCtx::parse(Value& res,const QVarRef *vars,unsigned nVars,unsigned pflags
 			case LX_REPEAT:
 			lx_repeat:
 				if (lx!=LX_RCBR) throw SY_MISRCBR; if (nvals>3) throw SY_MANYARG;
-				if (nvals<3) i=1;
+				if (nvals<3) i=~0u;
 				else {
 					vals=oprs.top(2);
 					switch (vals[0].type) {
@@ -1906,11 +1906,11 @@ void SInCtx::parse(Value& res,const QVarRef *vars,unsigned nVars,unsigned pflags
 				switch (vals[0].type) {
 				default: throw SY_MISNUM;
 				case VT_INT64: case VT_UINT64: case VT_FLOAT: case VT_DOUBLE: throw SY_INVNUM;
-				case VT_PARAM: vals[0].ui=(0x8000|vals[0].refPath.refN)<<16|i; vals[0].type=VT_UINT; break;
+				case VT_PARAM: vals[0].ui=(0x8000|vals[0].refPath.refN)<<16|(i!=~0u?i:0x8000|vals[0].refPath.refN); vals[0].type=VT_UINT; break;
 				case VT_INT: if (vals[0].i<0) throw SY_INVNUM; vals[0].type=VT_UINT;
 				case VT_UINT:
 					if (vals[0].ui>0x7FFFF) vals[0].ui=0xFFFF; else if (vals[0].ui==0||i<0x8000&&i>vals[0].ui) throw SY_INVNUM;
-					vals[0].ui=vals[0].ui<<16|i; break;
+					vals[0].ui=vals[0].ui<<16|(i!=~0u?i:vals[0].ui); break;
 				}
 				ops.push(OpF(LX_PATHQ,1)); goto next_lx;
 			case LX_PATHQ:

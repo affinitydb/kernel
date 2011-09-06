@@ -8,6 +8,7 @@ Written by Mark Venguerov 2008 - 2010
 
 #include "maps.h"
 #include "queryprc.h"
+#include "parser.h"
 #include "expr.h"
 #include "blob.h"
 
@@ -22,6 +23,21 @@ TransOp::~TransOp()
 		}
 		ses->free((void*)outs);
 	}
+}
+
+void TransOp::connect(PINEx **results,unsigned nRes)
+{
+#if 0
+	if (queryOp!=NULL && (nResults=queryOp->getNOuts())!=0) {
+		if (nResults==1) queryOp->connect(&qr);
+		else if ((results=new(ses) PINEx*[nResults])==NULL) return RC_NORESOURCES;
+		else {
+			memset(results,0,nResults*sizeof(PINEx*)); results[0]=&qr;
+			for (unsigned i=1; i<nResults; i++) if ((results[i]=new(ses) PINEx(ses))==NULL) return RC_NORESOURCES;
+			queryOp->connect(results,nResults);
+		}
+	}
+#endif
 }
 
 RC TransOp::next(const PINEx *skip)
@@ -157,8 +173,14 @@ RC TransOp::next(const PINEx *skip)
 
 void TransOp::getOpDescr(QODescr& qdscr)
 {
+	queryOp->getOpDescr(qdscr); qdscr.level++;
+	//???
 }
 
 void TransOp::print(SOutCtx& buf,int level) const
 {
+	buf.fill('\t',level); buf.append("access: ",8);
+	for (unsigned i=0; i<nOuts; i++) {
+	}
+	buf.append("\n",1);
 }

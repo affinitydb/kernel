@@ -1229,8 +1229,8 @@ RC QueryPrc::findCandidateSSVs(CandidateSSVs& cs,const Value *pv,ulong nv,bool f
 			length=splitLength(pv); dl=sizeof(HRefSSV);
 			if (length!=0 && !fSplit && act!=NULL && length<act->ssvThreshold) continue;
 			if (mi!=NULL && (mi->pInfo->flags&(PM_NEWCOLL|PM_SCOLL))==(PM_NEWCOLL|PM_SCOLL)) {
-				dl+=long(sizeof(HeapPageMgr::HeapVV)+sizeof(HeapPageMgr::HeapV));
-				length+=long(sizeof(HeapPageMgr::HeapVV)+sizeof(HeapPageMgr::HeapV));
+				dl+=long(sizeof(HeapPageMgr::HeapVV)+sizeof(HeapPageMgr::HeapKey));
+				length+=long(sizeof(HeapPageMgr::HeapVV)+sizeof(HeapPageMgr::HeapKey));
 			}
 			break;	// sizeof(HeapLOB) ???
 		case VT_ARRAY:
@@ -1238,7 +1238,7 @@ RC QueryPrc::findCandidateSSVs(CandidateSSVs& cs,const Value *pv,ulong nv,bool f
 				if ((rc=findCandidateSSVs(cs,pv->varray,pv->length,fSplit,ma,act,pv->property))!=RC_OK) return rc;
 				continue;
 			}
-			length=sizeof(HeapPageMgr::HeapVV);
+			length=sizeof(HeapPageMgr::HeapVV)-sizeof(HeapPageMgr::HeapV)+sizeof(HeapPageMgr::HeapKey);
 			for (j=0; j<pv->length; j++) {
 				if ((rc=estimateLength(pv->varray[j],dl,MODE_PREFIX_READ,xSize,ma))!=RC_OK) return rc;
 				length+=ceil(dl,HP_ALIGN)+sizeof(HeapPageMgr::HeapV);
@@ -1249,13 +1249,14 @@ RC QueryPrc::findCandidateSSVs(CandidateSSVs& cs,const Value *pv,ulong nv,bool f
 				// ???
 				continue;
 			}
-			length=sizeof(HeapPageMgr::HeapVV);
+			length=sizeof(HeapPageMgr::HeapVV)-sizeof(HeapPageMgr::HeapV)+sizeof(HeapPageMgr::HeapKey);
 			for (cv=pv->nav->navigate(GO_FIRST); cv!=NULL; cv=pv->nav->navigate(GO_NEXT)) {
 				if ((rc=estimateLength(*cv,dl,MODE_PREFIX_READ,xSize,ma))!=RC_OK) return rc;
 				length+=ceil(dl,HP_ALIGN)+sizeof(HeapPageMgr::HeapV);
 			}
 			dl=sizeof(HeapPageMgr::HeapExtCollection); break;
 		case VT_STRUCT:
+			length=sizeof(HeapPageMgr::HeapVV)-sizeof(HeapPageMgr::HeapV);
 			//???
 			break;
 		}

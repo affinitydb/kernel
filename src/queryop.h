@@ -87,7 +87,6 @@ protected:
 public:
 						QueryOp(Session *ses,QueryOp *qop,ulong mode);
 	virtual				~QueryOp();
-	virtual	void		connect(PINEx *result);
 	virtual	void		connect(PINEx **results,unsigned nRes);
 	virtual	RC			next(const PINEx *skip=NULL) = 0;
 	virtual	RC			rewind();
@@ -99,6 +98,7 @@ public:
 	virtual	void		print(SOutCtx& buf,int level) const = 0;
 	virtual	RC			release();
 	void	operator	delete(void *p) {if (p!=NULL) ((QueryOp*)p)->ses->free(p);}
+	void				connect(PINEx *result) {connect(&result,1);}
 	void				setSkip(ulong n) {nSkip=n;}
 	ulong				getSkip() const {return nSkip;}
 	Session				*getSession() const {return ses;}
@@ -256,7 +256,6 @@ public:
 	MergeIDOp(Session *s,ulong md,bool f) : QueryOp(s,NULL,md|QO_UNIQUE),fOr(f),nOps(0),cur(~0u) {nOuts=1;}
 	void	*operator new(size_t s,Session *ses,ulong no) throw() {return ses->malloc(s+int(no-1)*sizeof(QueryOpS));}
 	virtual	~MergeIDOp();
-	void	connect(PINEx *result);
 	void	connect(PINEx **results,unsigned nRes);
 	RC		next(const PINEx *skip=NULL);
 	RC		rewind();
@@ -289,7 +288,6 @@ public:
 		: QueryOp(s,qop1,md|QO_UNIQUE),queryOp2(qop2),propID1(pid1),propID2(pid2),op(qo),mstate(0),didx(0),pexR(s),saveR(s),pR(&pexR),pids(NULL)
 			{vals[0].setError(),vals[1].setError(),vals[2].setError(); if (qo==QRY_EXCEPT) nOuts=1; else nOuts+=qop2->getNOuts();}
 	virtual	~MergeOp();
-	void	connect(PINEx *result);
 	void	connect(PINEx **results,unsigned nRes);
 	RC		next(const PINEx *skip=NULL);
 	RC		rewind();
@@ -423,7 +421,6 @@ class Sort : public QueryOp
 
 public:
 	virtual		~Sort();
-	void		connect(PINEx *result);
 	void		connect(PINEx **results,unsigned nRes);
 	RC			next(const PINEx *skip=NULL);
 	RC			rewind();
@@ -450,39 +447,12 @@ private:
 	friend	class	OutRun;
 };
 
-class PathOp : public QueryOp
+class PathOp : public QueryOp, public Path
 {
-	struct PathState {
-		PathState	*next;
-		int			state;
-		unsigned	idx;
-		unsigned	rcnt;
-		Value		seg;
-		Value		rep;
-		unsigned	cidx;
-	};
-	const	PathSeg	*const	path;
-	const	unsigned		nPathSeg;
-	const	Value	*const	params;
-	const	unsigned		nParams;
-	const	bool			fCopied;
-	bool					fThrough;
-	PathState				*pst;
-	PathState				*freePst;
 	PINEx					pex;
-private:
-	RC push(unsigned i,unsigned r) {
-		PathState *ps;
-		if ((ps=freePst)!=NULL) freePst=ps->next; else if ((ps=new(ses) PathState)==NULL) return RC_NORESOURCES;
-		ps->next=pst; ps->state=0; ps->cidx=0; ps->idx=i; ps->rcnt=r; ps->seg.setError(); ps->rep.setError(); pst=ps;
-		return RC_OK;
-	}
-	void pop() {PathState *ps=pst; if (ps!=NULL) {pst=ps->next; freeV(ps->seg); freeV(ps->rep); ps->next=freePst; freePst=ps;}}
 public:
-	PathOp(Session *s,QueryOp *qop,const PathSeg *ps,unsigned nSegs,const Value *pars,unsigned nP,bool fC)
-		: QueryOp(s,qop,0),path(ps),nPathSeg(nSegs),params(pars),nParams(nP),fCopied(fC),fThrough(true),pst(NULL),freePst(NULL),pex(s) {}
+	PathOp(Session *s,QueryOp *qop,const PathSeg *ps,unsigned nSegs,const Value *pars,unsigned nP,bool fC) : QueryOp(s,qop,0),Path(s,ps,nSegs,pars,nP,fC),pex(s) {}
 	virtual		~PathOp();
-	void		connect(PINEx *result);
 	void		connect(PINEx **results,unsigned nRes);
 	RC			next(const PINEx *skip=NULL);
 	RC			rewind();
@@ -510,6 +480,7 @@ class TransOp : public QueryOp
 public:
 	TransOp(Session *s,QueryOp *q,const ValueV *os,unsigned nO,ulong mode,bool fC) : QueryOp(s,q,mode),outs(os),fCopied(fC) {nOuts=nO;}
 	virtual		~TransOp();
+	void		connect(PINEx **results,unsigned nRes);
 	RC			next(const PINEx *skip=NULL);
 	void		getOpDescr(QODescr&);
 	void		print(SOutCtx& buf,int level) const;

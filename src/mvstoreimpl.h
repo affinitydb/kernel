@@ -81,6 +81,49 @@ struct OrderSegQ
 	uint16_t		lPref;
 };
 
+class Path
+{
+protected:
+	struct PathState {
+		PathState	*next;
+		int			state;
+		unsigned	idx;
+		unsigned	rcnt;
+		unsigned	vidx;
+		unsigned	cidx;
+		Value		v[2];
+	};
+	MemAlloc		*const	ma;
+	const	PathSeg	*const	path;
+	const	unsigned		nPathSeg;
+	const	Value	*const	params;
+	const	unsigned		nParams;
+	const	bool			fCopied;
+	bool					fThrough;
+	PathState				*pst;
+	PathState				*freePst;
+protected:
+	Path(MemAlloc *m,const PathSeg *ps,unsigned nP,const Value *pars,unsigned nPars,bool fC) 
+		: ma(m),path(ps),nPathSeg(nP),params(pars),nParams(nPars),fCopied(fC),fThrough(true),pst(NULL),freePst(NULL)
+			{for (unsigned i=0; i<nP; i++) if (ps[i].rmin!=0) {fThrough=false; break;}}
+	~Path() {
+		PathState *ps,*ps2;
+		for (ps=pst; ps!=NULL; ps=ps2) {ps2=ps->next; freeV(ps->v[0]); freeV(ps->v[1]); ma->free(ps);}
+		for (ps=freePst; ps!=NULL; ps=ps2) {ps2=ps->next; ma->free(ps);}
+		if (fCopied) {
+			for (unsigned i=0; i<nPathSeg; i++) if (path[i].filter!=NULL) path[i].filter->destroy();
+			ma->free((void*)path); if (params!=NULL) freeV((Value*)params,nParams,ma);
+		}
+	}
+	RC push() {
+		PathState *ps;
+		if ((ps=freePst)!=NULL) freePst=ps->next; else if ((ps=new(ma) PathState)==NULL) return RC_NORESOURCES;
+		if (pst==0) ps->idx=0,ps->rcnt=1; else if (pst->vidx==0) ps->idx=pst->idx+1,ps->rcnt=1; else ps->idx=pst->idx,ps->rcnt=pst->rcnt+1;
+		ps->state=0; ps->vidx=2; ps->cidx=0; ps->v[0].setError(); ps->v[1].setError(); ps->next=pst; pst=ps; return RC_OK;
+	}
+	void pop() {PathState *ps=pst; if (ps!=NULL) {pst=ps->next; freeV(ps->v[0]); freeV(ps->v[1]); ps->next=freePst; freePst=ps;}}
+};
+
 /**
  * PIN flags (continuation of flags in mvstore.h)
  */

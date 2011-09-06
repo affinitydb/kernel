@@ -57,8 +57,8 @@ RC Expr::eval(const Expr *const *exprs,ulong nExp,Value& result,const PINEx **va
 			}
 		}
 		assert(top>=stack && top<=stack+exp->hdr.lStack);
-		TIMESTAMP ts; const PINEx *vi; const Value *v; RC rc=RC_OK; ElementID eid; Expr *filter; ClassID fcls;
-		byte op=*codePtr++; const bool ff=(op&0x80)!=0; int nops; unsigned fop,rmin,rmax; uint32_t u,propID;
+		TIMESTAMP ts; const PINEx *vi; const Value *v; RC rc=RC_OK; ElementID eid;
+		byte op=*codePtr++; const bool ff=(op&0x80)!=0; int nops; unsigned fop; uint32_t u,propID;
 		switch (op&=0x7F) {
 		case OP_CON:
 			assert(top<stack+exp->hdr.lStack); top->flags=0;
@@ -94,38 +94,8 @@ RC Expr::eval(const Expr *const *exprs,ulong nExp,Value& result,const PINEx **va
 			top++; break;
 		case OP_ELT: u=*codePtr++; mv_dec32(codePtr,propID); mv_dec32(codePtr,eid); eid=mv_dec32zz(eid); goto prop;
 		case OP_PATH:
-			u=ff?*codePtr++:0; --top; eid=STORE_COLLECTION_ID; filter=NULL; fcls=STORE_INVALID_CLASSID; rmin=rmax=1;
-			switch (u&0xE0) {
-			default: break;
-			case 0x20:	rmin=0; rmax=1; break;
-			case 0x40:	rmin=1; rmax=~0u; break;
-			case 0x60:	rmin=0; rmax=~0u; break;
-			case 0x80: mv_dec32(codePtr,rmin); mv_dec32(codePtr,rmax); break;
-			case 0xA0:
-				mv_dec32(codePtr,rmin); // rmin=rmax=params[rmin];
-				break;
-			case 0xC0:
-				mv_dec32(codePtr,rmin); mv_dec32(codePtr,rmax);
-				// rmin=params[rmin]; rmax=params[rmax];
-				break;
-			}
-			switch (u&0x18) {
-			case 0: break;
-			case 0x08: mv_dec32(codePtr,eid); eid=mv_dec32zz((uint32_t)eid); break;
-			case 0x10: if (top->type!=VT_INT && top->type!=VT_UINT) rc=RC_TYPE; else eid=(top--)->ui; break;	// convert type?
-			case 0x18:
-				rc=deserialize(filter,codePtr,codeEnd,ses!=NULL?ses:(ses=Session::getSession()));
-				//classID ??
-				break;
-			}
-			if ((u&0x04)==0) {mv_dec32(codePtr,propID);}
-			else if (top->type==VT_URIID) propID=(top--)->uid;
-			else {
-				// str -> URIID ???
-				rc=RC_TYPE;
-			}
-			if ((rc!=RC_OK || (rc=path(top,propID,u,eid,filter,fcls,rmin,rmax))!=RC_OK) && cntCatch!=0) rc=RC_OK;
-			if (filter!=NULL) filter->destroy();	// used in PathIt?
+			if ((rc=path(top,codePtr,params,nParams,ma))!=RC_OK && rc!=RC_CORRUPTED && rc!=RC_NORESOURCES && cntCatch!=0)
+				{(top++)->setError(); rc=RC_OK;}
 			break;
 		case OP_CURRENT:
 			switch (*codePtr++) {
@@ -193,43 +163,153 @@ RC Expr::eval(const Expr *const *exprs,ulong nExp,Value& result,const PINEx **va
 	}
 }
 
-RC Expr::path(Value *v,PropertyID pid,unsigned flags,ElementID eid,Expr *filter,ClassID fcls,unsigned rmin,unsigned rmax)
+RC Expr::path(Value *&top,const byte *&codePtr,const Value *params,unsigned nParams,MemAlloc *ma)
 {
-	for (RC rc=RC_INTERNAL;;) {
-		// (flags&0xE0)!=0 -> rmin/rmax
-		// (flags&0x01)!=0 -> fRef
-		// (flags&0x02)!=0 -> fDFS
-		switch (v->type) {
-		default: return RC_TYPE;
-		case VT_REF:
-			// getValue
+	const byte *pc=codePtr; const unsigned nPathSeg=*pc++; if (nPathSeg==0) return RC_CORRUPTED;
+	PathSeg *path=new(ma) PathSeg[nPathSeg]; if (path==NULL) return RC_NORESOURCES;
+	const byte *dscr=pc; pc+=nPathSeg; RC rc=RC_OK; --top;
+	for (unsigned i=0; i<nPathSeg; i++) {
+		PathSeg& sg=path[i]; byte u=*dscr++; Expr *filter=NULL;
+		sg.eid=STORE_COLLECTION_ID; sg.filter=NULL; sg.cls=STORE_INVALID_CLASSID; sg.rmin=sg.rmax=1; sg.fLast=(u&1)!=0;
+		switch (u&0xE0) {
+		default: break;
+		case 0x20: sg.rmin=0; break;
+		case 0x40: sg.rmax=~0u; break;
+		case 0x60: sg.rmin=0; sg.rmax=~0u; break;
+		case 0x80: mv_dec32(pc,sg.rmin); mv_dec32(pc,sg.rmax); break;
+		case 0xA0:
+			mv_dec32(pc,sg.rmin);
+			if (sg.rmin>=nParams) rc=RC_NOTFOUND;
+			else if (params[sg.rmin].type!=VT_UINT && params[sg.rmin].type!=VT_INT) rc=RC_TYPE;
+			else if (params[sg.rmin].type==VT_INT && params[sg.rmin].i<0) rc=RC_INVPARAM;
+			else sg.rmin=sg.rmax=params[sg.rmin].ui;
 			break;
-		case VT_REFID:
-			// get values
-			break;
-		case VT_ARRAY:
-			// check refs, create PathIt
-			break;
-		case VT_COLLECTION:
-			// create PathIt
-			break;
-		case VT_STRUCT:
-			//???
+		case 0xC0:
+			mv_dec32(pc,sg.rmin); mv_dec32(pc,sg.rmax);
+			if (sg.rmin>=nParams||sg.rmax>=nParams) rc=RC_NOTFOUND;
+			else if (params[sg.rmin].type!=VT_UINT && params[sg.rmin].type!=VT_INT || params[sg.rmax].type!=VT_UINT && params[sg.rmax].type!=VT_INT) rc=RC_TYPE;
+			else if (params[sg.rmin].type==VT_INT && params[sg.rmin].i<0 || params[sg.rmax].type==VT_INT && params[sg.rmax].i<0 || params[sg.rmin].ui>params[sg.rmax].ui) rc=RC_INVPARAM;
+			else {sg.rmin=params[sg.rmin].ui; sg.rmax=params[sg.rmax].ui;}
 			break;
 		}
-		return rc==RC_NOTFOUND&&rmin==0?RC_OK:rc;
+		switch (u&0x18) {
+		case 0: break;
+		case 0x08: mv_dec32(pc,sg.eid); sg.eid=mv_dec32zz((uint32_t)sg.eid); break;
+		case 0x10: if (top->type!=VT_INT && top->type!=VT_UINT) rc=RC_TYPE; else sg.eid=(top--)->ui; break;	// convert type?
+		case 0x18:
+//???		rc=deserialize(filter,pc,codeEnd,ses!=NULL?ses:(ses=Session::getSession()));
+			if (rc==RC_OK) sg.filter=filter; //classID ??
+			break;
+		}
+		if ((u&0x04)==0) {mv_dec32(pc,sg.pid);}
+		else if (top->type==VT_URIID) sg.pid=(top--)->uid;
+		else {
+			// str -> URIID ???
+			rc=RC_TYPE;
+		}
 	}
+	if (rc==RC_OK) {
+		PathIt *pi=new(ma) PathIt(ma,path,nPathSeg,params,nParams,*top,true);		// ff -> fDFS
+		if (pi==NULL) rc=RC_NORESOURCES; else (top++)->set(pi);
+	}
+	if (rc!=RC_OK) {
+		// free filters ???
+		ma->free(path);
+	}
+	codePtr=pc; return rc;
 }
 
 PathIt::~PathIt()
 {
-	//???
+	if (path!=NULL) ma->free((void*)path);
+	freeV(src); freeV(res);
 }
 
 const Value *PathIt::navigate(GO_DIR dir,ElementID eid)
 {
-	//...
-	return NULL;
+	switch (dir) {
+	case GO_FINDBYID:
+		if (eid==STORE_COLLECTION_ID) {
+			// release
+		}
+	default: return NULL;
+	case GO_FIRST: sidx=0; while(pst!=NULL) pop();
+	case GO_NEXT: break;
+	}
+	RC rc; const Value *pv; bool fOK=false;
+	for (;;) {
+		if (pst==NULL) {
+			switch (src.type) {
+			default:
+				if (sidx!=0) return NULL;
+				pv=&src; break;
+			case VT_ARRAY:
+				if (sidx>=src.length) return NULL;
+				pv=&src.varray[sidx]; break;
+			case VT_COLLECTION:
+				if ((pv=src.nav->navigate(sidx==0?GO_FIRST:GO_NEXT))==NULL) return NULL;
+				break;
+			}
+			sidx++;
+			if ((rc=push())!=RC_OK) return NULL; pst->v[0].setError(path[0].pid);
+//			if ((rc=getData(pex,&pst->v[0],1,NULL,ses,path[0].eid))!=RC_OK) {state|=QST_EOF; return rc;}
+			pst->state=2; pst->vidx=0; if (fThrough) return &res;
+		}
+		switch (pst->state) {
+		case 0:
+			pst->state=1; assert(pst!=NULL && pst->idx>0);
+			if (pst->idx>=nPathSeg && pst->rcnt>=path[pst->idx-1].rmin && path[pst->idx-1].filter==NULL) {/*printf("->\n");*/ return &res;}
+		case 1:
+			pst->state=2; //printf("%*s(%d,%d):"_LX_FM"\n",(pst->idx-1+pst->rcnt-1)*2,"",pst->idx,pst->rcnt,res->id.pid);
+//			if ((rc=getBody(*res))!=RC_OK || (res->hpin->hdr.descr&HOH_HIDDEN)!=0)
+//				{res->cleanup(); if (rc==RC_OK || rc==RC_NOACCESS || rc==RC_REPEAT || rc==RC_DELETED) {pop(); continue;} else {state|=QST_EOF; return rc;}}
+//			fOK=path[pst->idx-1].filter==NULL || ses->getStore()->queryMgr->condSatisfied((const Expr* const*)&path[pst->idx-1].filter,1,(const PINEx**)&res,1,params,nParams,ses);
+			if (!fOK && !path[pst->idx-1].fLast) {MVStoreKernel::freeV(res); res.setError(); pop(); continue;}
+			if (pst->rcnt<path[pst->idx-1].rmax||path[pst->idx-1].rmax==0xFFFF) {
+//				if ((rc=ses->getStore()->queryMgr->loadV(pst->v[1],path[pst->idx-1].pid,*res,LOAD_SSV|LOAD_REF,ses,path[pst->idx-1].eid))==RC_OK) {if (pst->v[1].type!=VT_ERROR) pst->vidx=1;}
+//				else if (rc!=RC_NOTFOUND) {freeV(res); res.setError(); return NULL;}
+			}
+			if (fOK && pst->rcnt>=path[pst->idx-1].rmin) {
+				//pst->nSucc++;
+				if (pst->idx<nPathSeg) {
+					assert(pst->rcnt<=path[pst->idx-1].rmax||path[pst->idx-1].rmax==0xFFFF);
+					for (;;) {
+//						if ((rc=ses->getStore()->queryMgr->loadV(pst->v[0],path[pst->idx].pid,*res,LOAD_SSV|LOAD_REF,ses,path[pst->idx].eid))!=RC_OK && rc!=RC_NOTFOUND)
+//							{freeV(res); res.setError(); return NULL;}
+						if (rc==RC_OK && pst->v[0].type!=VT_ERROR) {pst->vidx=0; break;}
+						if (path[pst->idx].rmin!=0) break; if (pst->idx+1>=nPathSeg) return &res;
+						unsigned s=pst->vidx; pst->vidx=0; if ((rc=push())!=RC_OK) return NULL; pst->next->vidx=s;
+					}
+				} else if (path[pst->idx-1].filter!=NULL) {/*printf("->\n");*/ return &res;}
+			}
+			freeV(res); res.setError();
+		case 2:
+			if (pst->vidx>=2) {pop(); continue;}	// rmin==0 && pst->nSucc==0 -> goto next seg
+			switch (pst->v[pst->vidx].type) {
+			default: pst->vidx++; continue;		// rmin==0 -> goto next seg
+//			case VT_REF: if (res!=NULL) *res=pst->v[pst->vidx].pin->getPID(); if ((rc=push())!=RC_OK) return rc; pst->next->vidx++; continue;
+//			case VT_REFID: if (res!=NULL) *res=pst->v[pst->vidx].id; if ((rc=push())!=RC_OK) return rc; pst->next->vidx++; continue;
+			case VT_STRUCT:
+				//????
+				continue;
+			case VT_COLLECTION: case VT_ARRAY: pst->state=3; pst->cidx=0; break;
+			}
+		case 3:
+			pv=pst->v[pst->vidx].type==VT_COLLECTION?pst->v[pst->vidx].nav->navigate(pst->cidx==0?GO_FIRST:GO_NEXT):pst->cidx<pst->v[pst->vidx].length?&pst->v[pst->vidx].varray[pst->cidx]:(const Value*)0;
+			if (pv!=NULL) {
+				pst->cidx++;
+				switch (pv->type) {
+				default: continue;
+//				case VT_REF: if (res!=NULL) *res=pv->pin->getPID(); if ((rc=push())!=RC_OK) return rc; continue;
+//				case VT_REFID: if (res!=NULL) *res=pv->id; if ((rc=push())!=RC_OK) return rc; continue;
+				case VT_STRUCT:
+					//????
+					continue;
+				}
+			}
+			pst->vidx++; pst->state=2; continue;
+		}
+	}
 }
 
 ElementID PathIt::getCurrentID()
@@ -1369,7 +1449,7 @@ RC ExprCompileCtx::compileNode(const ExprTree *node,ulong flg)
 	if (isBool(node->op)) {
 		return RC_INTERNAL;		//compileCondition(node,???,0);
 	}
-	unsigned i; RC rc; byte *p; uint32_t lbl; Expr *filter;
+	unsigned i,j; RC rc; byte *p; uint32_t lbl; const Value *pv;
 	unsigned l=node->nops!=SInCtx::opDscr[node->op].nOps[0]?3:1; 
 	byte f=(node->flags&CASE_INSENSITIVE_OP)!=0?CND_NCASE:0;
 	switch ((byte)node->op) {
@@ -1410,11 +1490,17 @@ RC ExprCompileCtx::compileNode(const ExprTree *node,ulong flg)
 		if ((node->flags&UNSIGNED_OP)!=0) {f|=CND_UNS; l++;}
 		break;
 	case OP_PATH:
-		if ((rc=compileValue(node->operands[0],flg))!=RC_OK) return rc;
-		if (node->operands[1].type==VT_URIID) {f=0; l=mv_len32(node->operands[1].uid);}
-		else {f=0x4; l=0; if ((rc=compileValue(node->operands[1],flg))!=RC_OK) return rc;}
+		for (i=1,pv=&node->operands[0]; pv->type==VT_EXPRTREE && ((ExprTree*)pv->exprt)->op==OP_PATH; pv=&((ExprTree*)pv->exprt)->operands[0]) 
+			if (++i>=256) return RC_INVOP;
+		if ((rc=compileValue(*pv,flg))!=RC_OK) return rc;
+		if ((p=alloc(i+2))==NULL) return RC_NORESOURCES;
+		p[0]=OP_PATH; p[1]=(byte)i; p+=2;		// fDFS -> 0x80
+		for (j=0; j<i; node=(ExprTree*)node->operands[0].exprt) {
+			assert(node->op==OP_PATH); f=(node->flags&FILTER_LAST_OP)!=0?1:0;
+			if (node->operands[1].type==VT_URIID) l=mv_len32(node->operands[1].uid);
+			else if ((rc=compileValue(node->operands[1],flg))==RC_OK) f|=0x04,l=0; else return rc;
 		if (node->nops<4) f|=(node->flags&(QUEST_PATH_OP|PLUS_PATH_OP|STAR_PATH_OP))<<5;
-		filter=NULL;
+			Expr *filter=NULL;
 		if (node->nops>2) {
 			switch (node->operands[2].type) {
 			case VT_ERROR: break;
@@ -1435,8 +1521,9 @@ RC ExprCompileCtx::compileNode(const ExprTree *node,ulong flg)
 				// const1,2, param1, param1,2
 			}
 		}
-		if ((p=alloc((f!=0?2:1)+l))==NULL) return RC_NORESOURCES;
-		if (f==0) *p++=OP_PATH; else {p[0]=OP_PATH|0x80; p[1]=f; p+=2;}
+			p[i-j-1]=f; 
+			if (l!=0) {
+				byte *pp=alloc(l); if (pp==NULL) return RC_NORESOURCES;
 		switch (f&0xE0) {
 		default: break;
 		case 0x80: //mv_dec32(codePtr,rmin); mv_dec32(codePtr,rmax); break;
@@ -1450,10 +1537,12 @@ RC ExprCompileCtx::compileNode(const ExprTree *node,ulong flg)
 		}
 		switch (f&0x18) {
 		default: break;
-		case 0x08: l=mv_enc32zz(node->operands[2].i); mv_enc32(p,l); break;
-		case 0x18: p=filter->serialize(p); break;		// classID??
+				case 0x08: l=mv_enc32zz(node->operands[2].i); mv_enc32(pp,l); break;
+				case 0x18: pp=filter->serialize(pp); break;		// classID??
+				}
+				if ((f&4)==0) mv_enc32(pp,node->operands[1].uid);
+			}
 		}
-		if ((f&4)==0) mv_enc32(p,node->operands[1].uid);
 		return RC_OK;
 	default:
 		if (node->op<OP_ALL && (SInCtx::opDscr[node->op].flags&_A)!=0 && (node->flags&DISTINCT_OP)!=0) {f|=CND_DISTINCT; if (l==1) l=2;}
