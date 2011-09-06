@@ -69,7 +69,7 @@ RC Expr::eval(const Expr *const *exprs,ulong nExp,Value& result,const PINEx **va
 			if ((u=*codePtr++)>=nParams) {if (ff) (top++)->set(0u); else if (cntCatch!=0) (top++)->setError(); else rc=RC_NOTFOUND; break;}
 			v=&params[u]; 
 			if (v->type==VT_VARREF) {u=v->refPath.refN; if (v->length==0) goto var; propID=v->refPath.id; eid=v->eid; goto prop;}
-			if (ff) top->set(1u); else {*top=*v; top->flags=v->flags&VF_EXT|NO_HEAP;}
+			if (ff) top->set(1u); else {*top=*v; top->flags=NO_HEAP;}
 			top++; break;
 		case OP_VAR: u=*codePtr++;
 		var:
@@ -205,7 +205,7 @@ RC Expr::path(Value *v,PropertyID pid,unsigned flags,ElementID eid,Expr *filter,
 			// getValue
 			break;
 		case VT_REFID:
-			// safeLoadValue
+			// get values
 			break;
 		case VT_ARRAY:
 			// check refs, create PathIt
@@ -213,8 +213,9 @@ RC Expr::path(Value *v,PropertyID pid,unsigned flags,ElementID eid,Expr *filter,
 		case VT_COLLECTION:
 			// create PathIt
 			break;
-//		case VT_STRUCT:
-//			break;
+		case VT_STRUCT:
+			//???
+			break;
 		}
 		return rc==RC_NOTFOUND&&rmin==0?RC_OK:rc;
 	}
@@ -226,11 +227,6 @@ PathIt::~PathIt()
 }
 
 const Value *PathIt::navigate(GO_DIR dir,ElementID eid)
-{
-	const Value *v=navigateNR(dir,eid); release(); return v;
-}
-
-const Value	*PathIt::navigateNR(GO_DIR op,ElementID eid)
 {
 	//...
 	return NULL;
@@ -254,22 +250,12 @@ RC PathIt::getElementByID(ElementID,Value&)
 
 INav  *PathIt::clone() const
 {
-	return clone(Session::getSession());
-}
-
-INav *PathIt::clone(MemAlloc *ma) const
-{
 	return NULL;
 }
 
 unsigned long PathIt::count() const
 {
 	return ~0UL;
-}
-
-void PathIt::release()
-{
-	//???
 }
 
 void PathIt::destroy()
@@ -279,7 +265,7 @@ void PathIt::destroy()
 
 RC Expr::calc(ExprOp op,Value& arg,const Value *moreArgs,int nargs,unsigned flags,MemAlloc *ma,const PINEx **vars,ulong nVars)
 {
-	int cmp,i; RC rc=RC_OK; long start,lstr; const Value *arg2,*arg3,*pv; unsigned dtPart; Expr *expr;
+	int cmp,i; RC rc=RC_OK; long start,lstr; const Value *arg2,*arg3,*pv; unsigned dtPart;
 	Value *rng,*args,val,val2; uint32_t len,sht; byte *p; char *s; RefVID *rv; Session *ses;
 	switch (op) {
 	case OP_PLUS:
@@ -676,16 +662,12 @@ RC Expr::calc(ExprOp op,Value& arg,const Value *moreArgs,int nargs,unsigned flag
 			}
 			return rc;
 		case VT_COLLECTION:
-			for (arg2=(arg.flags&VF_EXT)!=0?arg.nav->navigate(GO_FIRST):
-				((IntNav*)arg.nav)->navigateNR(GO_FIRST),rc=RC_FALSE; arg2!=NULL;
-					arg2=(arg.flags&VF_EXT)!=0?arg.nav->navigate(GO_NEXT):
-								((IntNav*)arg.nav)->navigateNR(GO_NEXT)) {
+			for (arg2=arg.nav->navigate(GO_FIRST),rc=RC_FALSE; arg2!=NULL; arg2=arg.nav->navigate(GO_NEXT)) {
 				val=*arg2; val.flags=val.flags&~HEAP_TYPE_MASK|NO_HEAP;
 				rc=calc(op,val,moreArgs,2,flags,ma); freeV(val);
 				if (rc==RC_TRUE) {if (op==OP_EQ) break;} else if (rc!=RC_FALSE || op!=OP_EQ) break;
 			}
-			if ((arg.flags&VF_EXT)==0) ((IntNav*)arg.nav)->release();
-			return rc;
+			arg.nav->navigate(GO_FINDBYID,STORE_COLLECTION_ID); return rc;
 		}
 		switch (moreArgs->type) {
 		default: cmp=cvcmp(arg,*moreArgs,flags); break;
@@ -696,15 +678,11 @@ RC Expr::calc(ExprOp op,Value& arg,const Value *moreArgs,int nargs,unsigned flag
 			}
 			break;
 		case VT_COLLECTION:
-			for (arg2=(moreArgs->flags&VF_EXT)!=0?moreArgs->nav->navigate(GO_FIRST):
-				((IntNav*)moreArgs->nav)->navigateNR(GO_FIRST); arg2!=NULL;
-					arg2=(moreArgs->flags&VF_EXT)!=0?moreArgs->nav->navigate(GO_NEXT):
-								((IntNav*)moreArgs->nav)->navigateNR(GO_NEXT),cmp=-2) {
+			for (arg2=moreArgs->nav->navigate(GO_FIRST); arg2!=NULL; arg2=moreArgs->nav->navigate(GO_NEXT),cmp=-2) {
 				val=arg; val.flags=val.flags&~HEAP_TYPE_MASK|NO_HEAP; cmp=cvcmp(val,*arg2,flags); freeV(val);
 				if (op==OP_EQ) {if (cmp==0) break;} else if (cmp==-2 || cmp>=-1 && (compareCodeTab[op-OP_EQ]&1<<(cmp+1))==0) break;
 			}
-			if ((moreArgs->flags&VF_EXT)==0) ((IntNav*)moreArgs->nav)->release();
-			break;
+			moreArgs->nav->navigate(GO_FINDBYID,STORE_COLLECTION_ID); break;
 		}
 		switch (cmp) {
 		case -3: return RC_TYPE;
@@ -720,14 +698,9 @@ RC Expr::calc(ExprOp op,Value& arg,const Value *moreArgs,int nargs,unsigned flag
 				rc=calc(op,const_cast<Value&>(arg.varray[--len]),moreArgs,2,flags,ma);
 			return rc;
 		case VT_COLLECTION:
-			for (arg2=(arg.flags&VF_EXT)!=0?arg.nav->navigate(GO_FIRST):
-				((IntNav*)arg.nav)->navigateNR(GO_FIRST),rc=RC_FALSE; rc==RC_FALSE && arg2!=NULL;
-					arg2=(arg.flags&VF_EXT)!=0?arg.nav->navigate(GO_NEXT):
-								((IntNav*)arg.nav)->navigateNR(GO_NEXT)) {
-				val=*arg2; val.flags=val.flags&~HEAP_TYPE_MASK|NO_HEAP; rc=calc(op,val,moreArgs,2,flags,ma); freeV(val);
-			}
-			if ((arg.flags&VF_EXT)==0) ((IntNav*)arg.nav)->release();
-			return rc;
+			for (arg2=arg.nav->navigate(GO_FIRST),rc=RC_FALSE; rc==RC_FALSE && arg2!=NULL; arg2=arg.nav->navigate(GO_NEXT))
+				{val=*arg2; val.flags=val.flags&~HEAP_TYPE_MASK|NO_HEAP; rc=calc(op,val,moreArgs,2,flags,ma); freeV(val);}
+			arg.nav->navigate(GO_FINDBYID,STORE_COLLECTION_ID); return rc;
 		}
 		if (op==OP_IS_A) switch (moreArgs->type) {
 		default: return RC_TYPE;
@@ -747,17 +720,13 @@ RC Expr::calc(ExprOp op,Value& arg,const Value *moreArgs,int nargs,unsigned flag
 			}
 			return RC_FALSE;
 		case VT_COLLECTION:
-			for (arg2=(moreArgs->flags&VF_EXT)!=0?moreArgs->nav->navigate(GO_FIRST):
-				((IntNav*)moreArgs->nav)->navigateNR(GO_FIRST),rc=RC_FALSE; arg2!=NULL;
-					arg2=(moreArgs->flags&VF_EXT)!=0?moreArgs->nav->navigate(GO_NEXT):
-								((IntNav*)moreArgs->nav)->navigateNR(GO_NEXT)) {
+			for (arg2=moreArgs->nav->navigate(GO_FIRST),rc=RC_FALSE; arg2!=NULL; arg2=moreArgs->nav->navigate(GO_NEXT)) {
 				if (arg2->type==VT_URIID) {
 					//...
 					//  if ok -> break;
 				}
 			}
-			if ((moreArgs->flags&VF_EXT)==0) ((IntNav*)moreArgs->nav)->release();
-			return rc;
+			moreArgs->nav->navigate(GO_FINDBYID,STORE_COLLECTION_ID); return rc;
 		} else switch (moreArgs->type) {
 		default: return cvcmp(arg,*moreArgs,flags|CND_EQ)==0?RC_TRUE:RC_FALSE;
 		case VT_RANGE:
@@ -788,10 +757,7 @@ RC Expr::calc(ExprOp op,Value& arg,const Value *moreArgs,int nargs,unsigned flag
 			}
 			return RC_FALSE;
 		case VT_COLLECTION:
-			for (arg2=(moreArgs->flags&VF_EXT)!=0?moreArgs->nav->navigate(GO_FIRST):
-				((IntNav*)moreArgs->nav)->navigateNR(GO_FIRST),rc=RC_FALSE; arg2!=NULL;
-					arg2=(moreArgs->flags&VF_EXT)!=0?moreArgs->nav->navigate(GO_NEXT):
-								((IntNav*)moreArgs->nav)->navigateNR(GO_NEXT)) {
+			for (arg2=moreArgs->nav->navigate(GO_FIRST),rc=RC_FALSE; arg2!=NULL; arg2=moreArgs->nav->navigate(GO_NEXT)) {
 				val=arg; val.flags=val.flags&~HEAP_TYPE_MASK|NO_HEAP; bool f;
 				// CND_IS -> check class membership
 				if (arg2->type!=VT_RANGE) f=cvcmp(val,*arg2,flags|CND_EQ)==0;
@@ -805,8 +771,7 @@ RC Expr::calc(ExprOp op,Value& arg,const Value *moreArgs,int nargs,unsigned flag
 				}
 				if ((val.flags&HEAP_TYPE_MASK)!=NO_HEAP) freeV(val); if (f) {rc=RC_TRUE; break;}
 			}
-			if ((moreArgs->flags&VF_EXT)==0) ((IntNav*)moreArgs->nav)->release();
-			return rc;
+			moreArgs->nav->navigate(GO_FINDBYID,STORE_COLLECTION_ID); return rc;
 		}
 		break;
 	case OP_CONTAINS:	// optimization (Boyer-Moore etc.)
@@ -840,15 +805,11 @@ RC Expr::calc(ExprOp op,Value& arg,const Value *moreArgs,int nargs,unsigned flag
 				break;
 #endif
 			}
-			for (arg2=(arg.flags&VF_EXT)!=0?arg.nav->navigate(GO_FIRST):
-				((IntNav*)arg.nav)->navigateNR(GO_FIRST); rc==RC_FALSE && arg2!=NULL;
-					arg2=(arg.flags&VF_EXT)!=0?arg.nav->navigate(GO_NEXT):
-								((IntNav*)arg.nav)->navigateNR(GO_NEXT)) {
+			for (arg2=arg.nav->navigate(GO_FIRST); rc==RC_FALSE && arg2!=NULL; arg2=arg.nav->navigate(GO_NEXT)) {
 				val=*arg2; val.flags=val.flags&~HEAP_TYPE_MASK|NO_HEAP;
 				rc=calc(op,val,moreArgs,2,flags,ma); freeV(val);
 			}
-			if ((arg.flags&VF_EXT)==0) ((IntNav*)arg.nav)->release();
-			return rc;
+			arg.nav->navigate(GO_FINDBYID,STORE_COLLECTION_ID); return rc;
 		}
 		switch (moreArgs->type) {
 		default: break;
@@ -872,12 +833,8 @@ RC Expr::calc(ExprOp op,Value& arg,const Value *moreArgs,int nargs,unsigned flag
 				break;
 #endif
 			}
-			for (arg2=(moreArgs->flags&VF_EXT)!=0?moreArgs->nav->navigate(GO_FIRST):
-				((IntNav*)moreArgs->nav)->navigateNR(GO_FIRST); rc==RC_FALSE && arg2!=NULL;
-					arg2=(moreArgs->flags&VF_EXT)!=0?moreArgs->nav->navigate(GO_NEXT):
-				((IntNav*)moreArgs->nav)->navigateNR(GO_NEXT)) rc=calc(op,val,arg2,2,flags,ma);
-			if ((moreArgs->flags&VF_EXT)==0) ((IntNav*)moreArgs->nav)->release();
-			return rc;
+			for (arg2=moreArgs->nav->navigate(GO_FIRST); rc==RC_FALSE && arg2!=NULL; arg2=moreArgs->nav->navigate(GO_NEXT)) rc=calc(op,val,arg2,2,flags,ma);
+			moreArgs->nav->navigate(GO_FINDBYID,STORE_COLLECTION_ID); return rc;
 		}
 		if ((arg2=strOpConv(arg,moreArgs,val))==NULL) return RC_TYPE;
 		if (arg.length>=arg2->length) switch (arg.type) {
@@ -1045,26 +1002,8 @@ RC Expr::calc(ExprOp op,Value& arg,const Value *moreArgs,int nargs,unsigned flag
 		if (arg.type==VT_STRING) {
 			// try to compile
 		}
-		switch (arg.type) {
-		case VT_EXPR:
-			expr=(Expr*)arg.expr;
-			if ((rc=Expr::eval(&expr,1,val,vars,nVars,moreArgs,nargs-1,ma))!=RC_OK) return rc;
-			freeV(arg); arg=val; break;
-		case VT_STMT:
-			switch (((Stmt*)arg.stmt)->getOp()) {
-			default: break;
-			case STMT_QUERY:
-				//??? return IntNav based on Cursor
-				break;
-			case STMT_INSERT:
-				if ((flags&CND_INSERT)==0) return RC_INVOP;
-				//??? return VT_REFID (or  collection if >1 insert)
-				break;
-			}
-			break;
-		default:
-			break;
-		}
+		if ((ses=Session::getSession())==NULL) return RC_NOSESSION;
+		if ((rc=ses->getStore()->queryMgr->eval(ses,&arg,arg,vars,nVars,moreArgs,nargs-1,ses,false))!=RC_OK) return rc;
 		break;
 	default:
 		return RC_INTERNAL;
@@ -1150,13 +1089,11 @@ RC Expr::calcAgg(ExprOp op,Value& res,const Value *more,unsigned nargs,unsigned 
 	case VT_COLLECTION:
 		if (op==OP_COUNT && (flags&CND_DISTINCT)==0) aa.count+=pv->nav->count();
 		else {
-			for (cv=(pv->flags&VF_EXT)!=0?pv->nav->navigate(GO_FIRST):((IntNav*)pv->nav)->navigateNR(GO_FIRST); cv!=NULL;
-				cv=(pv->flags&VF_EXT)!=0?pv->nav->navigate(GO_NEXT):((IntNav*)pv->nav)->navigateNR(GO_NEXT))
+			for (cv=pv->nav->navigate(GO_FIRST); cv!=NULL; cv=pv->nav->navigate(GO_NEXT))
 				if ((flags&CND_DISTINCT)==0) aa.next(*cv);
 				else {
 					//...
 				}
-			if ((pv->flags&VF_EXT)==0) ((IntNav*)pv->nav)->release();
 		}
 		break;
 	case VT_STMT:
@@ -1279,41 +1216,42 @@ enum CmpCvT {_N,_L,_R,_VL,_VR,_VB,_WL,_WR,_WB,_S=0x80,_LS=_L|_S,_RS=_R|_S};
 static const CmpCvT cmpConvTab[VT_ALL][VT_ALL] = 
 {
 /*
-ERR STR BST URL ENU INT UI  I64 U64 DEC FLT DBL BOO DT  ITV URI IDN REF RFI RFV RFIV RFE RFIE EXP QRY ARR NAV RNG STM NOW PRM VAR EXPT 
+ERR STR BST URL ENU INT UI  I64 U64 DEC FLT DBL BOO DT  ITV URI IDN REF RFI RFV RFIV RFE RFIE EXP QRY ARR COL SRU RNG STM NOW PRM VAR EXPT 
 */
-{_N,_N, _N, _N, _N, _N, _N, _N, _N, _N, _N, _N, _N, _N, _N, _N, _N, _N, _N, _N, _N,  _N, _N,  _N, _N, _N, _N, _N, _N, _N, _N, _N, _N,  }, //VT_ERROR
-{_N,_N, _R, _L, _L, _RS,_RS,_RS,_RS,_L, _RS,_RS,_RS,_L, _L, _L, _L, _VR,_WR,_L, _L,  _L, _L,  _N, _N, _N, _N, _N, _L, _L, _N, _N, _N,  }, //VT_STRING
-{_N,_L, _N, _L, _L, _L, _L, _L, _L, _L, _L, _L, _L, _L, _L, _N, _N, _VR,_WR,_N, _N,  _N, _N,  _N, _N, _N, _N, _N, _N, _L, _N, _N, _N,  }, //VT_BSTR
-{_N,_R, _R, _N, _N, _N, _N, _N, _N, _N, _N, _N, _N, _N, _N, _N, _N, _VR,_WR,_L, _L,  _L, _L,  _N, _N, _N, _N, _N, _N, _N, _N, _N, _N,  }, //VT_URL
-{_N,_R, _R, _N, _N, _N, _N, _N, _N, _N, _N, _N, _N, _N, _N, _N, _N, _VR,_WR,_N, _N,  _N, _N,  _N, _N, _N, _N, _N, _N, _N, _N, _N, _N,  }, //VT_ENUM
-{_N,_LS,_R, _N, _N, _N, _R, _R, _R, _N, _R, _R, _L, _N, _N, _N, _N, _VR,_WR,_N, _N,  _N, _N,  _N, _N, _N, _N, _N, _N, _N, _N, _N, _N,  }, //VT_INT
-{_N,_LS,_R, _N, _N, _L, _N, _R, _R, _N, _R, _R, _L, _N, _N, _N, _N, _VR,_WR,_N, _N,  _N, _N,  _N, _N, _N, _N, _N, _N, _N, _N, _N, _N,  }, //VT_UINT
-{_N,_LS,_R, _N, _N, _L, _L, _N, _R, _N, _R, _R, _L, _N, _N, _N, _N, _VR,_WR,_N, _N,  _N, _N,  _N, _N, _N, _N, _N, _N, _N, _N, _N, _N,  }, //VT_INT64
-{_N,_LS,_R, _N, _N, _L, _L, _L, _N, _N, _R, _R, _L, _N, _N, _N, _N, _VR,_WR,_N, _N,  _N, _N,  _N, _N, _N, _N, _N, _N, _N, _N, _N, _N,  }, //VT_UINT64
-{_N,_R, _R, _N, _N, _N, _N, _N, _N, _N, _N, _N, _N, _N, _N, _N, _N, _VR,_WR,_N, _N,  _N, _N,  _N, _N, _N, _N, _N, _N, _N, _N, _N, _N,  }, //VT_DECIMAL	?????
-{_N,_LS,_R, _N, _N, _L, _L, _L, _L, _N, _N, _R, _N, _N, _N, _N, _N, _VR,_WR,_N, _N,  _N, _N,  _N, _N, _N, _N, _N, _N, _N, _N, _N, _N,  }, //VT_FLOAT
-{_N,_LS,_R, _N, _N, _L, _L, _L, _L, _N, _L, _N, _N, _N, _N, _N, _N, _VR,_WR,_N, _N,  _N, _N,  _N, _N, _N, _N, _N, _N, _N, _N, _N, _N,  }, //VT_DOUBLE
-{_N,_R, _R, _N, _N, _R, _R, _R, _R, _N, _N, _N, _N, _N, _N, _N, _N, _VR,_WR,_N, _N,  _N, _N,  _N, _N, _N, _N, _N, _N, _N, _N, _N, _N,  }, //VT_BOOL
-{_N,_R, _R, _N, _N, _N, _N, _N, _N, _N, _N, _N, _N, _N, _N, _N, _N, _VR,_WR,_N, _N,  _N, _N,  _N, _N, _N, _N, _N, _N, _L, _N, _N, _N,  }, //VT_DATETIME
-{_N,_R, _R, _N, _N, _N, _N, _N, _N, _N, _N, _N, _N, _N, _N, _N, _N, _VR,_WR,_N, _N,  _N, _N,  _N, _N, _N, _N, _N, _N, _N, _N, _N, _N,  }, //VT_INTERVAL
-{_N,_R, _N, _N, _N, _N, _N, _N, _N, _N, _N, _N, _N, _N, _N, _N, _N, _VR,_WR,_N, _N,  _N, _N,  _N, _N, _N, _N, _N, _N, _N, _N, _N, _N,  }, //VT_URIID
-{_N,_R, _N, _N, _N, _N, _N, _N, _N, _N, _N, _N, _N, _N, _N, _N, _N, _VR,_WR,_N, _N,  _N, _N,  _N, _N, _N, _N, _N, _N, _N, _N, _N, _N,  }, //VT_IDENTITY
-{_N,_VL,_N, _VL,_VL,_VL,_VL,_VL,_VL,_VL,_VL,_VL,_VL,_VL,_VL,_VL,_VL,_N, _R, _VB,_VB, _VB,_VB, _VL,_VL,_VL,_VL,_VL,_VL,_VL,_VL,_VL,_VL, },//VT_REF
-{_N,_WL,_WL,_WL,_WL,_WL,_WL,_WL,_WL,_WL,_WL,_WL,_WL,_WL,_WL,_WL,_WL,_L, _N, _WB,_WB, _WB,_WB, _WL,_WL,_WL,_WL,_WL,_WL,_WL,_WL,_WL,_WL, },//VT_REFID
-{_N,_R, _N, _R, _N, _N, _N, _N, _N, _N, _N, _N, _N, _N, _N, _N, _N, _VB,_WB,_N, _N,  _N, _N,  _N, _N, _N, _N, _N, _N, _N, _N, _N, _N,  }, //VT_REFPROP
-{_N,_R, _N, _R, _N, _N, _N, _N, _N, _N, _N, _N, _N, _N, _N, _N, _N, _VB,_WB,_N, _N,  _N, _N,  _N, _N, _N, _N, _N, _N, _N, _N, _N, _N,  }, //VT_REFIDPROP
-{_N,_R, _N, _R, _N, _N, _N, _N, _N, _N, _N, _N, _N, _N, _N, _N, _N, _VB,_WB,_N, _N,  _N, _N,  _N, _N, _N, _N, _N, _N, _N, _N, _N, _N,  }, //VT_REFELT
-{_N,_R, _N, _R, _N, _N, _N, _N, _N, _N, _N, _N, _N, _N, _N, _N, _N, _VB,_WB,_N, _N,  _N, _N,  _N, _N, _N, _N, _N, _N, _N, _N, _N, _N,  }, //VT_REFIDELT
-{_N,_N, _N, _N, _N, _N, _N, _N, _N, _N, _N, _N, _N, _N, _N, _N, _N, _VR,_WR,_N, _N,  _N, _N,  _N, _N, _N, _N, _N, _N, _N, _N, _N, _N,  }, //VT_EXPR
-{_N,_N, _N, _N, _N, _N, _N, _N, _N, _N, _N, _N, _N, _N, _N, _N, _N, _VR,_WR,_N, _N,  _N, _N,  _N, _N, _N, _N, _N, _N, _N, _N, _N, _N,  }, //VT_STMT
-{_N,_N, _N, _N, _N, _N, _N, _N, _N, _N, _N, _N, _N, _N, _N, _N, _N, _VR,_WR,_N, _N,  _N, _N,  _N, _N, _N, _N, _N, _N, _N, _N, _N, _N,  }, //VT_ARRAY
-{_N,_N, _N, _N, _N, _N, _N, _N, _N, _N, _N, _N, _N, _N, _N, _N, _N, _VR,_WR,_N, _N,  _N, _N,  _N, _N, _N, _N, _N, _N, _N, _N, _N, _N,  }, //VT_COLLECTION
-{_N,_N, _N, _N, _N, _N, _N, _N, _N, _N, _N, _N, _N, _N, _N, _N, _N, _VR,_WR,_N, _N,  _N, _N,  _N, _N, _N, _N, _N, _N, _N, _N, _N, _N,  }, //VT_RANGE
-{_N,_R, _N, _N, _N, _N, _N, _N, _N, _N, _N, _N, _N, _N, _N, _N, _N, _VR,_WR,_N, _N,  _N, _N,  _N, _N, _N, _N, _N, _N, _N, _N, _N, _N,  }, //VT_STREAM
-{_N,_R, _R, _N, _N, _N, _N, _N, _N, _N, _N, _N, _N, _R, _N, _N, _N, _VR,_WR,_N, _N,  _N, _N,  _N, _N, _N, _N, _N, _N, _N, _N, _N, _N,  }, //VT_CURRENT		//???
-{_N,_N, _N, _N, _N, _N, _N, _N, _N, _N, _N, _N, _N, _N, _N, _N, _N, _VR,_WR,_N, _N,  _N, _N,  _N, _N, _N, _N, _N, _N, _N, _N, _N, _N,  }, //VT_PARAM
-{_N,_N, _N, _N, _N, _N, _N, _N, _N, _N, _N, _N, _N, _N, _N, _N, _N, _VR,_WR,_N, _N,  _N, _N,  _N, _N, _N, _N, _N, _N, _N, _N, _N, _N,  }, //VT_VARREF
-{_N,_N, _N, _N, _N, _N, _N, _N, _N, _N, _N, _N, _N, _N, _N, _N, _N, _VR,_WR,_N, _N,  _N, _N,  _N, _N, _N, _N, _N, _N, _N, _N, _N, _N,  }, //VT_EXPRTREE
+{_N,_N, _N, _N, _N, _N, _N, _N, _N, _N, _N, _N, _N, _N, _N, _N, _N, _N, _N, _N, _N,  _N, _N,  _N, _N, _N, _N, _N, _N, _N, _N, _N, _N, _N,  }, //VT_ERROR
+{_N,_N, _R, _L, _L, _RS,_RS,_RS,_RS,_L, _RS,_RS,_RS,_L, _L, _L, _L, _VR,_WR,_L, _L,  _L, _L,  _N, _N, _N, _N, _N, _N, _L, _L, _N, _N, _N,  }, //VT_STRING
+{_N,_L, _N, _L, _L, _L, _L, _L, _L, _L, _L, _L, _L, _L, _L, _N, _N, _VR,_WR,_N, _N,  _N, _N,  _N, _N, _N, _N, _N, _N, _N, _L, _N, _N, _N,  }, //VT_BSTR
+{_N,_R, _R, _N, _N, _N, _N, _N, _N, _N, _N, _N, _N, _N, _N, _N, _N, _VR,_WR,_L, _L,  _L, _L,  _N, _N, _N, _N, _N, _N, _N, _N, _N, _N, _N,  }, //VT_URL
+{_N,_R, _R, _N, _N, _N, _N, _N, _N, _N, _N, _N, _N, _N, _N, _N, _N, _VR,_WR,_N, _N,  _N, _N,  _N, _N, _N, _N, _N, _N, _N, _N, _N, _N, _N,  }, //VT_ENUM
+{_N,_LS,_R, _N, _N, _N, _R, _R, _R, _N, _R, _R, _L, _N, _N, _N, _N, _VR,_WR,_N, _N,  _N, _N,  _N, _N, _N, _N, _N, _N, _N, _N, _N, _N, _N,  }, //VT_INT
+{_N,_LS,_R, _N, _N, _L, _N, _R, _R, _N, _R, _R, _L, _N, _N, _N, _N, _VR,_WR,_N, _N,  _N, _N,  _N, _N, _N, _N, _N, _N, _N, _N, _N, _N, _N,  }, //VT_UINT
+{_N,_LS,_R, _N, _N, _L, _L, _N, _R, _N, _R, _R, _L, _N, _N, _N, _N, _VR,_WR,_N, _N,  _N, _N,  _N, _N, _N, _N, _N, _N, _N, _N, _N, _N, _N,  }, //VT_INT64
+{_N,_LS,_R, _N, _N, _L, _L, _L, _N, _N, _R, _R, _L, _N, _N, _N, _N, _VR,_WR,_N, _N,  _N, _N,  _N, _N, _N, _N, _N, _N, _N, _N, _N, _N, _N,  }, //VT_UINT64
+{_N,_R, _R, _N, _N, _N, _N, _N, _N, _N, _N, _N, _N, _N, _N, _N, _N, _VR,_WR,_N, _N,  _N, _N,  _N, _N, _N, _N, _N, _N, _N, _N, _N, _N, _N,  }, //VT_DECIMAL	?????
+{_N,_LS,_R, _N, _N, _L, _L, _L, _L, _N, _N, _R, _N, _N, _N, _N, _N, _VR,_WR,_N, _N,  _N, _N,  _N, _N, _N, _N, _N, _N, _N, _N, _N, _N, _N,  }, //VT_FLOAT
+{_N,_LS,_R, _N, _N, _L, _L, _L, _L, _N, _L, _N, _N, _N, _N, _N, _N, _VR,_WR,_N, _N,  _N, _N,  _N, _N, _N, _N, _N, _N, _N, _N, _N, _N, _N,  }, //VT_DOUBLE
+{_N,_R, _R, _N, _N, _R, _R, _R, _R, _N, _N, _N, _N, _N, _N, _N, _N, _VR,_WR,_N, _N,  _N, _N,  _N, _N, _N, _N, _N, _N, _N, _N, _N, _N, _N,  }, //VT_BOOL
+{_N,_R, _R, _N, _N, _N, _N, _N, _N, _N, _N, _N, _N, _N, _N, _N, _N, _VR,_WR,_N, _N,  _N, _N,  _N, _N, _N, _N, _N, _N, _N, _L, _N, _N, _N,  }, //VT_DATETIME
+{_N,_R, _R, _N, _N, _N, _N, _N, _N, _N, _N, _N, _N, _N, _N, _N, _N, _VR,_WR,_N, _N,  _N, _N,  _N, _N, _N, _N, _N, _N, _N, _N, _N, _N, _N,  }, //VT_INTERVAL
+{_N,_R, _N, _N, _N, _N, _N, _N, _N, _N, _N, _N, _N, _N, _N, _N, _N, _VR,_WR,_N, _N,  _N, _N,  _N, _N, _N, _N, _N, _N, _N, _N, _N, _N, _N,  }, //VT_URIID
+{_N,_R, _N, _N, _N, _N, _N, _N, _N, _N, _N, _N, _N, _N, _N, _N, _N, _VR,_WR,_N, _N,  _N, _N,  _N, _N, _N, _N, _N, _N, _N, _N, _N, _N, _N,  }, //VT_IDENTITY
+{_N,_VL,_N, _VL,_VL,_VL,_VL,_VL,_VL,_VL,_VL,_VL,_VL,_VL,_VL,_VL,_VL,_N, _R, _VB,_VB, _VB,_VB, _VL,_VL,_VL,_VL,_VL,_VL,_VL,_VL,_VL,_VL,_VL, },//VT_REF
+{_N,_WL,_WL,_WL,_WL,_WL,_WL,_WL,_WL,_WL,_WL,_WL,_WL,_WL,_WL,_WL,_WL,_L, _N, _WB,_WB, _WB,_WB, _WL,_WL,_WL,_WL,_WL,_WL,_WL,_WL,_WL,_WL,_WL, },//VT_REFID
+{_N,_R, _N, _R, _N, _N, _N, _N, _N, _N, _N, _N, _N, _N, _N, _N, _N, _VB,_WB,_N, _N,  _N, _N,  _N, _N, _N, _N, _N, _N, _N, _N, _N, _N, _N,  }, //VT_REFPROP
+{_N,_R, _N, _R, _N, _N, _N, _N, _N, _N, _N, _N, _N, _N, _N, _N, _N, _VB,_WB,_N, _N,  _N, _N,  _N, _N, _N, _N, _N, _N, _N, _N, _N, _N, _N,  }, //VT_REFIDPROP
+{_N,_R, _N, _R, _N, _N, _N, _N, _N, _N, _N, _N, _N, _N, _N, _N, _N, _VB,_WB,_N, _N,  _N, _N,  _N, _N, _N, _N, _N, _N, _N, _N, _N, _N, _N,  }, //VT_REFELT
+{_N,_R, _N, _R, _N, _N, _N, _N, _N, _N, _N, _N, _N, _N, _N, _N, _N, _VB,_WB,_N, _N,  _N, _N,  _N, _N, _N, _N, _N, _N, _N, _N, _N, _N, _N,  }, //VT_REFIDELT
+{_N,_N, _N, _N, _N, _N, _N, _N, _N, _N, _N, _N, _N, _N, _N, _N, _N, _VR,_WR,_N, _N,  _N, _N,  _N, _N, _N, _N, _N, _N, _N, _N, _N, _N, _N,  }, //VT_EXPR
+{_N,_N, _N, _N, _N, _N, _N, _N, _N, _N, _N, _N, _N, _N, _N, _N, _N, _VR,_WR,_N, _N,  _N, _N,  _N, _N, _N, _N, _N, _N, _N, _N, _N, _N, _N,  }, //VT_STMT
+{_N,_N, _N, _N, _N, _N, _N, _N, _N, _N, _N, _N, _N, _N, _N, _N, _N, _VR,_WR,_N, _N,  _N, _N,  _N, _N, _N, _N, _N, _N, _N, _N, _N, _N, _N,  }, //VT_ARRAY
+{_N,_N, _N, _N, _N, _N, _N, _N, _N, _N, _N, _N, _N, _N, _N, _N, _N, _VR,_WR,_N, _N,  _N, _N,  _N, _N, _N, _N, _N, _N, _N, _N, _N, _N, _N,  }, //VT_COLLECTION
+{_N,_N, _N, _N, _N, _N, _N, _N, _N, _N, _N, _N, _N, _N, _N, _N, _N, _VR,_WR,_N, _N,  _N, _N,  _N, _N, _N, _N, _N, _N, _N, _N, _N, _N, _N,  }, //VT_STRUCT
+{_N,_N, _N, _N, _N, _N, _N, _N, _N, _N, _N, _N, _N, _N, _N, _N, _N, _VR,_WR,_N, _N,  _N, _N,  _N, _N, _N, _N, _N, _N, _N, _N, _N, _N, _N,  }, //VT_RANGE
+{_N,_R, _N, _N, _N, _N, _N, _N, _N, _N, _N, _N, _N, _N, _N, _N, _N, _VR,_WR,_N, _N,  _N, _N,  _N, _N, _N, _N, _N, _N, _N, _N, _N, _N, _N,  }, //VT_STREAM
+{_N,_R, _R, _N, _N, _N, _N, _N, _N, _N, _N, _N, _N, _R, _N, _N, _N, _VR,_WR,_N, _N,  _N, _N,  _N, _N, _N, _N, _N, _N, _N, _N, _N, _N, _N,  }, //VT_CURRENT		//???
+{_N,_N, _N, _N, _N, _N, _N, _N, _N, _N, _N, _N, _N, _N, _N, _N, _N, _VR,_WR,_N, _N,  _N, _N,  _N, _N, _N, _N, _N, _N, _N, _N, _N, _N, _N,  }, //VT_PARAM
+{_N,_N, _N, _N, _N, _N, _N, _N, _N, _N, _N, _N, _N, _N, _N, _N, _N, _VR,_WR,_N, _N,  _N, _N,  _N, _N, _N, _N, _N, _N, _N, _N, _N, _N, _N,  }, //VT_VARREF
+{_N,_N, _N, _N, _N, _N, _N, _N, _N, _N, _N, _N, _N, _N, _N, _N, _N, _VR,_WR,_N, _N,  _N, _N,  _N, _N, _N, _N, _N, _N, _N, _N, _N, _N, _N,  }, //VT_EXPRTREE
 };
 
 const Value *Expr::cmpOpConv(Value& arg,const Value *arg2,Value& buf)
@@ -2109,7 +2047,7 @@ RC ExprTree::normalizeArray(Value *vals,unsigned nvals,Value& res,MemAlloc *ma,S
 				for (k=0; k<l; ++j,++k) pv[j].eid=prefix+j;
 				ma->free((void*)vals[i].varray); break;
 			case VT_COLLECTION:
-				for (cv=((IntNav*)vals[i].nav)->navigateNR(GO_FIRST),k=j; cv!=NULL; cv=((IntNav*)vals[i].nav)->navigateNR(GO_NEXT),++j) {
+				for (cv=vals[i].nav->navigate(GO_FIRST),k=j; cv!=NULL; cv=vals[i].nav->navigate(GO_NEXT),++j) {
 					if ((rc=copyV(*cv,pv[j],ma))!=RC_OK) {while (j--!=k) freeV(pv[j]); ma->free(pv); return rc;}
 					pv[j].eid=prefix+j;
 				}
@@ -2133,7 +2071,7 @@ ExprTree::ExprTree(ExprOp o,ushort no,ushort vr,ulong f,const Value *ops,Session
 	if ((f&COPY_VALUES_OP)!=0) for (unsigned i=0; i<no; i++) {
 		Value& oper=*const_cast<Value*>(&operands[i]); RC rc;
 		if (oper.type==VT_EXPRTREE) {assert(((ExprTree*)ops[i].exprt)->op!=OP_CON); oper.flags=SES_HEAP;}
-		else  {oper.flags=VF_EXT|NO_HEAP; if ((rc=copyV(oper,oper,ses))!=RC_OK) throw rc;}
+		else  {oper.flags=NO_HEAP; if ((rc=copyV(oper,oper,ses))!=RC_OK) throw rc;}
 	}
 }
 

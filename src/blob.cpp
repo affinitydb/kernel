@@ -111,12 +111,7 @@ size_t StreamX::readChunk(uint64_t offset,void *buf,size_t maxLength)
 
 IStream	*StreamX::clone() const
 {
-	return clone(Session::getSession());
-}
-
-IStream	*StreamX::clone(MemAlloc *ma) const
-{
-	return ma!=NULL?new(ma) StreamX(start,len,type,ma):(StreamX*)0;
+	Session *ses=Session::getSession(); return new(ses) StreamX(start,len,type,ses);
 }
 
 RC StreamX::reset()
@@ -509,18 +504,15 @@ Navigator::~Navigator()
 
 const Value *Navigator::navigate(GO_DIR op,ElementID ei)
 {
-	const Value *res=navigateNR(op,ei); ecb.release(); return res;
-}
-
-const Value *Navigator::navigateNR(GO_DIR op,ElementID ei)
-{
-	Value w,*res=NULL;
-	if (ecb.get(op,op==GO_FINDBYID?ei:STORE_COLLECTION_ID,true)==RC_OK && 
+	Value w,*res=NULL; bool fRelease=(mode&LOAD_ENAV)!=0;
+	if (op==GO_FINDBYID && ei==STORE_COLLECTION_ID) fRelease=true;
+	else if (ecb.get(op,op==GO_FINDBYID?ei:STORE_COLLECTION_ID,true)==RC_OK && 
 			ctx->queryMgr->loadV(w,ecb.hdr->type,ecb.hdr->type.isCompact()?*(ushort*)((byte*)(ecb.hdr+1)+ecb.hdr->shift):
 			ushort((byte*)(ecb.hdr+1)-(byte*)ecb.tp)+ecb.hdr->shift,(const HeapPageMgr::HeapPage*)ecb.tp,mode|LOAD_SSV,Session::getSession())==RC_OK) {
 		freeV(curValue); curValue=w; curValue.property=STORE_INVALID_PROPID; curValue.eid=ecb.eid; res=&curValue;
 		if (type!=VT_ANY && curValue.type!=type && convV(curValue,curValue,type)!=RC_OK) res=NULL;
 	}
+	if (fRelease) ecb.release();
 	return res;
 }
 
@@ -534,11 +526,6 @@ RC Navigator::getPageAddr(const ElementDataHdr *hdr,PageAddr& addr)
 		HRefSSV href; memcpy(&href,pData,sizeof(HRefSSV)); addr.pageID=href.pageID; addr.idx=href.idx;
 	}
 	return RC_OK;
-}
-
-void Navigator::release()
-{
-	ecb.release();
 }
 
 ElementID Navigator::getCurrentID()
@@ -562,12 +549,7 @@ RC Navigator::getElementByID(ElementID eid,Value& v)
 
 INav *Navigator::clone() const
 {
-	return clone(Session::getSession());
-}
-
-INav *Navigator::clone(MemAlloc *ma) const
-{
-	return ma!=NULL?new(ma) Navigator(heapAddr,propID,ecb.coll,mode,ma):(Navigator*)0;
+	MemAlloc *ma=allc!=NULL?allc:(MemAlloc*)Session::getSession(); return new(ma) Navigator(heapAddr,propID,ecb.coll,mode,ma);
 }
 
 unsigned long Navigator::count() const

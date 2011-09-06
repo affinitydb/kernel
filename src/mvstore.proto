@@ -204,10 +204,11 @@ message Value {
 		VT_QUERY		= 24; // A stored statement, expressed in mvSQL or BLOB.
 
 		VT_ARRAY		= 25; // A collection (array of values).
-		VT_RANGE		= 27; // A range of values, equivalent to VT_ARRAY with length=2.
-		VT_CURRENT		= 29; // An automatically-computed value, depending on the actual property (e.g. current moment in time, current user etc.).
+		VT_STRUCT		= 27; // A composite value.
+		VT_RANGE		= 28; // A range of values, equivalent to VT_ARRAY with length=2.
+		VT_CURRENT		= 30; // An automatically-computed value, depending on the actual property (e.g. current moment in time, current user etc.).
 
-		VT_REFCID		= 30; // A reference to a PIN using it 'cid' rather than PID (for mutual references of yet uncommitted pins).
+		VT_REFCID		= 31; // A reference to a PIN using it 'cid' rather than PID (for mutual references of yet uncommitted pins).
 	}
 	// The Value structure can represent a logical update on a value,
 	// in which case Value::op must be specified.

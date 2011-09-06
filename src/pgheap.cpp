@@ -50,7 +50,7 @@ RC HeapPageMgr::update(PBlock *pb,size_t len,ulong info,const byte *rec,size_t l
 		if ((flags&TXMGR_UNDO)==0) break;
 		if ((hdr=hp->getObject(off=hp->getOffset(idx)))==NULL || hdr->getType()!=HO_FORWARD) return RC_CORRUPTED;
 		if (off+sizeof(HeapObjHeader)+PageAddrSize!=hp->freeSpace) hp->scatteredFreeSpace+=sizeof(HeapObjHeader)+PageAddrSize; else hp->freeSpace=off;
-		(*hp)[idx]=0; op=HPOP_INSERT; lrec-=PageAddrSize;
+		(*hp)[idx]=0; op=HPOP_INSERT; lrec-=PageAddrSize; lr=ceil(lrec,HP_ALIGN);
 	case HPOP_INSERT: case HPOP_DELETE: case HPOP_PURGE: case HPOP_PURGE_IDS:
 		if ((idx&0x8000)!=0) {
 			idxs=(PageIdx*)rec; nObjs=idx&~0x8000; rec+=nObjs*sizeof(PageIdx);
@@ -73,7 +73,7 @@ RC HeapPageMgr::update(PBlock *pb,size_t len,ulong info,const byte *rec,size_t l
 			if (l2>hp->contFree()) {
 				hp->compact();
 				if (l2>hp->contFree()) {
-					report(MSG_ERROR,"Page %08X overflow in INSERT, requested: %d, available: %d\n",hp->hdr.pageID,lrec,hp->contFree());
+					report(MSG_ERROR,"Page %08X overflow in INSERT, requested: %d, available: %d\n",hp->hdr.pageID,l2,hp->contFree());
 					return RC_PAGEFULL;
 				}
 			}
@@ -370,7 +370,7 @@ RC HeapPageMgr::update(PBlock *pb,size_t len,ulong info,const byte *rec,size_t l
 			}
 			if (size_t(ol+nl+extra)>hp->contFree()) {
 				if (size_t(nl+extra)>hp->totalFree()) {
-					report(MSG_ERROR,"Page %08X overflow in %s, requested: %d, available: %d\n",fNewProp?"ADDPROP":"ADDCELT",hp->hdr.pageID,nl+extra,hp->totalFree());
+					report(MSG_ERROR,"Page %08X overflow in %s, requested: %d, available: %d\n",hp->hdr.pageID,fNewProp?"ADDPROP":"ADDCELT",nl+extra,hp->totalFree());
 					PINOP_ERROR(RC_PAGEFULL);
 				}
 				hp->compact(false,idx,fNewProp||coll==NULL?ushort(~0u):hidx);
@@ -616,6 +616,7 @@ const HeapPageMgr::HeapTypeInfo HeapPageMgr::typeInfo[VT_ALL] =
 	{0,					0},						//	VT_STMT
 	{0,					0},						//	VT_ARRAY
 	{0,					0},						//	VT_COLLECTION
+	{0,					0},						//	VT_STRUCT
 	{0,					0},						//	VT_RANGE
 	{sizeof(HRefSSV),	sizeof(uint32_t)-1},	//	VT_STREAM
 	{0,					0},						//	VT_CURRENT
@@ -672,6 +673,9 @@ ushort HeapPageMgr::dataLength(HType vt,const byte *pData,const byte *frame,ulon
 			len+=coll->length();
 		}
 		return len;
+	case VT_STRUCT:
+		//???
+		break;
 	}
 	return ty<VT_ALL?typeInfo[ty].length:0;
 }
@@ -907,6 +911,9 @@ size_t HeapPageMgr::HeapPIN::expLength(const byte *frame) const
 			for (int i=coll->cnt; --i>=0; ++elt)
 				if (elt->type.getFormat()==HDF_COMPACT && elt->type.getType()==VT_REFID) len+=PageAddrSize;
 		}
+		break;
+	case VT_STRUCT:
+		//???
 		break;
 	}
 	return len;

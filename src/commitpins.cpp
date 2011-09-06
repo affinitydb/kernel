@@ -79,7 +79,7 @@ RC QueryPrc::commitPINs(Session *ses,PIN *const *pins,unsigned nPins,unsigned mo
 		pin->length = sizeof(HeapPageMgr::HeapPIN) + (pin->id.pid==STORE_INVALID_PID||(pin->mode&COMMIT_FORCED)!=0?0:
 												pin->id.ident==STORE_OWNER?sizeof(OID):sizeof(OID)+sizeof(IdentityID));
 		size_t lBig=0,lOther=0; ulong nBig=0; ElementID rPrefix=pin->getPrefix(ctx); PropertyID xPropID=STORE_INVALID_PROPID;
-		bool fCID=false; size_t len,l; ulong k; const Value *cv; const Stmt *qry;
+		bool fCID=false; size_t len,l; const Value *cv; const Stmt *qry;
 		for (j=0; j<pin->nProperties; j++) {
 			Value *pv=&pin->properties[j]; PropertyID pid=pv->property;
 			assert(j==0 || pin->properties[j-1].property<pid); 
@@ -150,11 +150,15 @@ RC QueryPrc::commitPINs(Session *ses,PIN *const *pins,unsigned nPins,unsigned mo
 				if ((pin->mode&PIN_CLASS)==0) {rc=RC_INVPARAM; goto finish;}
 				break;
 			} else if (pid>STORE_MAX_PROPID) {rc=RC_INVPARAM; goto finish;}
-			switch (pv->type) {
-			case VT_ARRAY:
-				len=sizeof(HeapPageMgr::HeapVV)-sizeof(HeapPageMgr::HeapV)+sizeof(HeapPageMgr::HeapKey); pv->eid=STORE_COLLECTION_ID;
-				for (k=0; k<pv->length; ++k) {
-					const Value *cv=&pv->varray[k];
+			if (pv->type==VT_ARRAY || pv->type==VT_COLLECTION) {
+				len=sizeof(HeapPageMgr::HeapVV)-sizeof(HeapPageMgr::HeapV)+sizeof(HeapPageMgr::HeapKey);
+				INav *nav=pv->type==VT_COLLECTION?pv->nav:NULL; pv->eid=STORE_COLLECTION_ID; unsigned k=0;
+				for (cv=nav!=NULL?nav->navigate(GO_FIRST):pv->varray; cv!=NULL; cv=nav!=NULL?nav->navigate(GO_NEXT):++k<pv->length?&pv->varray[k]:(Value*)0) {
+					if (pv->type==VT_ARRAY) switch (cv->type) {
+					default: break;
+					case VT_EXPR: case VT_STMT: if ((cv->meta&META_PROP_EVAL)==0) break;
+					case VT_PARAM: case VT_VARREF: if ((rc=eval(ses,cv,*(Value*)cv,NULL,0,params,nParams+1,ses,true))!=RC_OK) goto finish; //pin->PINex
+					}
 					if ((rc=estimateLength(*cv,l,0,threshold,ses))!=RC_OK) goto finish;
 					if (l>=bigThreshold) {lBig+=l; nBig++;} else lOther+=l;
 					len+=ceil(l,HP_ALIGN)+sizeof(HeapPageMgr::HeapV);
@@ -162,19 +166,12 @@ RC QueryPrc::commitPINs(Session *ses,PIN *const *pins,unsigned nPins,unsigned mo
 					if ((cv->meta&META_PROP_PART)!=0 && (cv->type==VT_REF || cv->type==VT_REFID)) pin->mode|=COMMIT_PARTS;
 				}
 				if (len>threshold || (pv->meta&META_PROP_SSTORAGE)!=0) {pv->flags|=VF_SSV|VF_PREFIX; len=sizeof(HeapPageMgr::HeapExtCollection);}
-				break;
-			case VT_COLLECTION:
-				len=sizeof(HeapPageMgr::HeapVV)-sizeof(HeapPageMgr::HeapV)+sizeof(HeapPageMgr::HeapKey); k=0; pv->eid=STORE_COLLECTION_ID;
-				for (cv=pv->nav->navigate(GO_FIRST); cv!=NULL; ++k,cv=pv->nav->navigate(GO_NEXT)) {
-					if ((rc=estimateLength(*cv,l,0,threshold,ses))!=RC_OK) goto finish;
-					if (l>=bigThreshold) {lBig+=l; nBig++;} else lOther+=l;
-					len+=ceil(l,HP_ALIGN)+sizeof(HeapPageMgr::HeapV);
-					pv->flags|=cv->flags&(VF_PREFIX|VF_REF|VF_STRING); if (fGenEIDs) cv->eid=k+prefix;		// ???
-					if ((cv->meta&META_PROP_PART)!=0 && (cv->type==VT_REF || cv->type==VT_REFID)) pin->mode|=COMMIT_PARTS;
+			} else {
+				switch (pv->type) {
+				default: break;
+				case VT_EXPR: case VT_STMT: if ((pv->meta&META_PROP_EVAL)==0) break;
+				case VT_PARAM: case VT_VARREF: if ((rc=eval(ses,pv,*pv,NULL,0,params,nParams+1,ses,true))!=RC_OK) goto finish; //pin->PINex
 				}
-				if (len>threshold || (pv->meta&META_PROP_SSTORAGE)!=0) {pv->flags|=VF_SSV|VF_PREFIX; len=sizeof(HeapPageMgr::HeapExtCollection);}
-				break;
-			default:
 				if ((rc=estimateLength(*pv,len,0,threshold,ses))!=RC_OK) goto finish;
 				if ((pv->meta&META_PROP_PART)!=0 && (pv->type==VT_REF || pv->type==VT_REFID)) pin->mode|=COMMIT_PARTS;
 				if ((pv->flags&VF_SSV)==0 && (pv->meta&META_PROP_SSTORAGE)!=0 && len>0) switch (pv->type) {
@@ -185,7 +182,6 @@ RC QueryPrc::commitPINs(Session *ses,PIN *const *pins,unsigned nPins,unsigned mo
 				if (pv->eid==STORE_COLLECTION_ID) pv->eid=rPrefix;
 				else if (pv->eid!=prefix && pv->eid!=rPrefix) len=sizeof(HeapPageMgr::HeapVV)+sizeof(HeapPageMgr::HeapKey)+ceil(len,HP_ALIGN);
 				if (len>=bigThreshold) {lBig+=len; nBig++;} else lOther+=len;
-				break;
 			}
 			if ((pv->flags&VF_SSV)!=0) pin->mode|=COMMIT_SSVS;
 			if ((pv->flags&VF_PREFIX)!=0) pin->mode|=COMMIT_PREFIX;
@@ -421,13 +417,16 @@ finish:
 						if (fP && loadValue(ses,pin->id,pv->property,pv2->eid,w)==RC_OK) {freeV(*pv2); *pv2=w;}
 					}
 				}}
-				if (fProc && (pv->flags&VF_SSV)!=0 && loadValue(ses,pin->id,pv->property,STORE_COLLECTION_ID,w)==RC_OK)
+				if (fProc && (pv->flags&VF_SSV)!=0 && loadValue(ses,pin->id,pv->property,STORE_COLLECTION_ID,w,LOAD_ENAV)==RC_OK)
 					{freeV(*pv); *pv=w;}
 				break;
 			case VT_COLLECTION:
 				for (cv=pv->nav->navigate(GO_FIRST); cv!=NULL; cv=pv->nav->navigate(GO_NEXT))
 					if (cv->type==VT_STREAM && cv->stream.prefix!=NULL) {ses->free(cv->stream.prefix); cv->stream.prefix=NULL;}
-				if (fProc && loadValue(ses,pin->id,pv->property,STORE_COLLECTION_ID,w)==RC_OK) {freeV(*pv); *pv=w;}
+				if (fProc && loadValue(ses,pin->id,pv->property,STORE_COLLECTION_ID,w,LOAD_ENAV)==RC_OK) {freeV(*pv); *pv=w;}
+				break;
+			case VT_STRUCT:
+				//???
 				break;
 			}
 		}
@@ -451,21 +450,20 @@ finish:
 					if (rc==RC_OK) rc=ctx->ftMgr->process(ftl,inf.id,inf.docID);
 				}
 			}
-			if (rc==RC_OK && (pin->mode&PIN_DELETED)==0 && ctx->queryMgr->notification!=NULL) {
-				const bool fNotify=(pin->mode&PIN_NOTIFY)!=0 || (pin->mode&(PIN_REPLICATED|PIN_NO_REPLICATION))==PIN_REPLICATED;
-				if (pin->nProperties>0 && (fNotify||(clr.notif&CLASS_NOTIFY_NEW)!=0)) {
+			if (rc==RC_OK && (pin->mode&PIN_DELETED)==0) {
+				if ((pin->mode&(PIN_NO_REPLICATION|PIN_REPLICATED))==PIN_REPLICATED) rc=ses->replicate(pin);			// and replication is active
+				if (rc==RC_OK && ctx->queryMgr->notification!=NULL && ((pin->mode&PIN_NOTIFY)!=0||(clr.notif&CLASS_NOTIFY_NEW)!=0)) {
 					IStoreNotification::NotificationEvent evt={pin->id,NULL,0,NULL,0,fRepSes};
 					if ((evt.events=(IStoreNotification::EventData*)mem.malloc((clr.nClasses+1)*sizeof(IStoreNotification::EventData)))!=NULL) {
 						if ((clr.notif&CLASS_NOTIFY_NEW)!=0) for (ulong i=0; i<clr.nClasses; i++) if ((clr.classes[i]->notifications&CLASS_NOTIFY_NEW)!=0) {
 							IStoreNotification::EventData& ev=(IStoreNotification::EventData&)evt.events[evt.nEvents++];
 							ev.type=IStoreNotification::NE_CLASS_INSTANCE_ADDED; ev.cid=clr.classes[i]->cid;
 						}
-						if (fNotify) {
+						if ((pin->mode&PIN_NOTIFY)!=0) {
 							IStoreNotification::EventData& ev=(IStoreNotification::EventData&)evt.events[evt.nEvents];
-							ev.cid=STORE_INVALID_CLASSID; ev.type=IStoreNotification::NE_PIN_CREATED;
-							if ((pin->mode&PIN_NOTIFY)!=0) evt.nEvents++;
+							ev.cid=STORE_INVALID_CLASSID; ev.type=IStoreNotification::NE_PIN_CREATED; evt.nEvents++;
 						}
-						if (evt.nEvents>0||fNotify) {
+						if (evt.nEvents>0) {
 							evt.nData=pin->nProperties;
 							evt.data=(IStoreNotification::NotificationData*)mem.malloc(evt.nData*sizeof(IStoreNotification::NotificationData));
 							if (evt.data!=NULL) for (unsigned i=0; i<evt.nData; i++) {
@@ -475,17 +473,12 @@ finish:
 							}
 						}
 						if (evt.nEvents>0) try {ctx->queryMgr->notification->notify(&evt,1,ses->getTXID());} catch (...) {}
-						if (!fRepSes && (pin->mode&(PIN_REPLICATED|PIN_NO_REPLICATION))==PIN_REPLICATED && !isRemote(pin->id)) {
-							if (fNotify && (pin->mode&PIN_NOTIFY)==0) evt.nEvents++;
-//							try {ctx->queryMgr->notification->replicationNotify(&evt,1,ses->getTXID());} catch (...) {}
 						}
 					}
 				}
 			}
-		}
-		pin->mode&=~COMMIT_MASK;
-		while (pin->parent!=NULL) {ParentInfo *pi=pin->parent; pin->parent=pi->next; ses->free(pi);}
-		mem.truncate(mrk); pin->stamp=0; if (rc!=RC_OK) pin->addr=PageAddr::invAddr; clr.nClasses=clr.nIndices=clr.notif=0;
+		pin->mode&=~COMMIT_MASK; pin->stamp=0; clr.nClasses=clr.nIndices=clr.notif=0;
+		mem.truncate(mrk); if (rc!=RC_OK) pin->addr=PageAddr::invAddr;
 	}
 	if (rc==RC_OK && classPINs!=NULL && nClassPINs>0) rc=ctx->classMgr->classifyAll(classPINs,nClassPINs,ses);
 	if (rc==RC_OK) {tx.ok(); ses->nTotalIns+=nInserted; ses->tx.nInserted+=nInserted;}
@@ -579,6 +572,9 @@ RC QueryPrc::estimateLength(const Value& v,size_t& res,ulong mode,size_t thresho
 			len+=ceil(l,HP_ALIGN)+sizeof(HeapPageMgr::HeapV); v.flags|=pv->flags&(VF_STRING|VF_REF|VF_PREFIX);
 		}
 		res=len<=threshold?len:(v.flags|=VF_SSV,sizeof(HeapPageMgr::HeapExtCollection)); break;
+	case VT_STRUCT:
+		//???
+		break;
 	case VT_STREAM:
 		if (v.stream.is==NULL) return RC_INVPARAM;
 		if ((mode&MODE_PREFIX_READ)==0) {
@@ -674,6 +670,9 @@ bool QueryPrc::checkRef(const Value& v,PIN *const *pins,unsigned nPins)
 			default: if (pv->type==VT_ERROR || pv->type>=VT_ARRAY) return false;
 			}
 		}
+		break;
+	case VT_STRUCT:
+		//???
 		break;
 	}
 	return true;
@@ -796,6 +795,9 @@ RC QueryPrc::persistValue(const Value& v,ushort& sht,HType& vt,ushort& offs,byte
 			if ((rc=Collection::persist(v,*(HeapPageMgr::HeapExtCollection*)buf,Session::getSession(),true))!=RC_OK) return rc;	// maxPages ???
 			len=sizeof(HeapPageMgr::HeapExtCollection); vt.setType(VT_ARRAY,HDF_LONG);
 		}
+		break;
+	case VT_STRUCT:
+		//???
 		break;
 	case VT_CURRENT:
 		switch (v.i) {

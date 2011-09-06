@@ -803,64 +803,85 @@ RC SearchKey::toKey(const Value **ppv,ulong nv,const IndexSeg *kds,int idx,Sessi
 	return rc;
 }
 
-int MVStoreKernel::cmpMSeg(const byte *s1,ushort l1,const byte *s2,ushort l2,ushort *segN,ushort *left)
+__forceinline int decode(const byte *&s,ushort& l,byte& ty,byte& mod,void *buf,ushort& ls)
 {
-	int ret=0; ushort ns=0;
-	for (;;ns++) {
-		byte b1=*s1++,b2=*s2++; --l1,--l2; ushort ls1,ls2;
-		if (b1*b2==0) {if (b1==b2) ls1=ls2=0; else {ret=b1==0?-1:1; break;}}
+	if (l--==0) throw 0; mod=0; ls=0; if ((ty=*s++)==0) return -1;
+	if (ty<byte(~KT_ALL)||ty==byte(~KT_BIN)||ty==byte(~KT_REF)) {
+		if (ty<byte(~KT_ALL)) {ls=ty; ty=KT_BIN;}
+		else if (l--==0) throw 1;
 		else {
-			bool fDesc=false,fBeg1=false,fBeg2=false;
-			union {uint32_t ui; uint64_t ui64; int32_t i; int64_t i64; float f; double d;} v1,v2;
-			if (b1<byte(~KT_ALL)||b1==byte(~KT_BIN)||b1==byte(~KT_REF)) {
-				if (b1<byte(~KT_ALL)) {ls1=b1; b1=byte(~KT_BIN);}
-				else if (l1--==0) {ret=2; break;}
-				else {
-					byte bb=*s1++; fDesc=(bb&0x80)!=0; fBeg1=(bb&0x40)!=0; ls1=bb&0x1F; 
-					if ((bb&0x20)!=0) {
-						if (l1--==0) {ret=-2; break;}
-						if (((ls1|=*s1++<<5)&0x1000)!=0) {if (l1--!=0) ls1=(ls1&~0x1000)|*s1++<<12; else {ret=-2; break;}}
-					}
-				}
-				if (b2<byte(~KT_ALL)) {ls2=b2; if (b1!=byte(~KT_BIN)) {ret=-2; break;}}
-				else if (b2==byte(~KT_ALL)) {ret=-1; break;}
-				else if (b2!=b1 || l2--==0 || (((b2=*s2++)&0x80)!=0)!=fDesc) {ret=-2; break;}
-				else {
-					fBeg2=(b2&0x40)!=0; ls2=b2&0x1F; 
-					if ((b2&0x20)!=0) {
-						if (l2--==0) {ret=-2; break;}
-						if (((ls2|=*s2++<<5)&0x1000)!=0) {if (l2--!=0) ls2=(ls2&~0x1000)|*s2++<<12; else {ret=-2; break;}}
-					}
-				}
-				b1=byte(~b1); if (l1<ls1||l2<ls2) {ret=-2; break;}
-			} else if (b1==byte(~KT_ALL)) {if (b1==b2) ls1=ls2=0; else {ret=1; break;}}
-			else if (b2==byte(~KT_ALL)) {ret=-1; break;}
-			else if (b1!=b2) {ret=-2; break;}
-			else {
-				assert(b1==byte(~KT_MSEG)||b1>byte(~KT_BIN));
-				if (b1!=byte(~KT_MSEG)) b1=byte(~b1);
-				else {if (l1--!=0&&l2--!=0&&(b1=*s1++)==*s2++) fDesc=true; else {ret=-2; break;}}
-				ls1=ls2=SearchKey::extKeyLen[b1]; if (l1<ls1||l2<ls2) {ret=-2; break;}
-				memcpy(&v1.ui64,s1,ls1); memcpy(&v2.ui64,s2,ls2);
+			mod=*s++; ls=mod&0x1F; ty=byte(~ty);
+			if ((mod&0x20)!=0) {
+				if (l--==0) throw 2;
+				if (((ls|=*s++<<5)&0x1000)!=0) {if (l--!=0) ls=(ls&~0x1000)|*s++<<12; else throw 3;}
 			}
-			switch (b1) {
-			default: break;
-			case KT_UINT: ret=cmp3(v1.ui,v2.ui); break;
-			case KT_UINT64: ret=cmp3(v1.ui64,v2.ui64); break;
-			case KT_INT: ret=cmp3(v1.i,v2.i); break;
-			case KT_INT64: ret=cmp3(v1.i64,v2.i64); break;
-			case KT_FLOAT: ret=cmp3(v1.f,v2.f); break;
-			case KT_DOUBLE: ret=cmp3(v1.d,v2.d); break;
-			case KT_REF: ret=PINRef::cmpPIDs(s1,ls1,s2,ls2); break;
-			case KT_BIN: if ((ret=memcmp(s1,s2,min(ls1,ls2)))==0) ret=ls1<ls2?fBeg1?0:-1:ls1==ls2?0:fBeg2?0:1; break;
-			}
-			if (ret!=0) {if (fDesc) ret=-ret; break;}
 		}
-		assert(l1>=ls1 && l2>=ls2); s1+=ls1; l1-=ls1; s2+=ls2; l2-=ls2;
-		if (l2==0) {ret=left!=NULL?(*left=l1,0):l1==0?0:-2; break;}
-		if (l1==0) {ret=-2; break;}
+		if (l<ls) throw 4;
+	} else if (ty==byte(~KT_ALL)) return 1;
+	else {
+		if (ty==byte(~KT_MSEG)) {if (l--!=0) {ty=*s++; mod=0x80; assert(ty<KT_ALL);} else throw 5;}
+		else {assert(ty>byte(~KT_BIN)); ty=byte(~ty);}
+		ls=SearchKey::extKeyLen[ty]; if (l<ls) throw 6; memcpy(buf,s,ls);
 	}
-	if (segN!=NULL) *segN=ns; return ret;
+	return 0;
+}
+
+int cmpSeg(const byte *&s1,ushort& l1,const byte *&s2,ushort& l2)
+{
+	byte ty1,mod1,ty2,mod2; ushort ls1,ls2;
+	union {uint32_t ui; uint64_t ui64; int32_t i; int64_t i64; float f; double d;} v1,v2;
+	int r1=decode(s1,l1,ty1,mod1,&v1,ls1),r2=decode(s2,l2,ty2,mod2,&v2,ls2),cmp=cmp3(r1,r2);
+	if (cmp==0 && r1==0) {
+		if (ty1!=ty2) {
+			// convert
+			throw -1000;
+		}
+		switch (ty1) {
+		default: break;
+		case KT_UINT: cmp=cmp3(v1.ui,v2.ui); break;
+		case KT_UINT64: cmp=cmp3(v1.ui64,v2.ui64); break;
+		case KT_INT: cmp=cmp3(v1.i,v2.i); break;
+		case KT_INT64: cmp=cmp3(v1.i64,v2.i64); break;
+		case KT_FLOAT: cmp=cmp3(v1.f,v2.f); break;
+		case KT_DOUBLE: cmp=cmp3(v1.d,v2.d); break;
+		case KT_REF: cmp=PINRef::cmpPIDs(s1,ls1,s2,ls2); break;
+		case KT_BIN: if ((cmp=memcmp(s1,s2,min(ls1,ls2)))==0) cmp=ls1<ls2?(mod1&0x40)!=0?0:-1:ls1==ls2?0:(mod2&0x40)!=0?0:1; break;
+		}
+		if (((mod1|mod2)&0x80)!=0) cmp=-cmp;
+	}
+	s1+=ls1; l1-=ls1; s2+=ls2; l2-=ls2; return cmp;
+}
+
+int MVStoreKernel::cmpMSeg(const byte *s1,ushort l1,const byte *s2,ushort l2)
+{
+	try {
+		do {int cmp=cmpSeg(s1,l1,s2,l2); if (cmp!=0) return cmp;} while (l1*l2!=0);
+		if ((l1|l2)==0) return 0;
+	} catch (int) {
+		// report
+	}
+	return -2;
+}
+
+bool MVStoreKernel::isHyperRect(const byte *s1,ushort l1,const byte *s2,ushort l2)
+{
+	try {
+		do {int cmp=cmpSeg(s1,l1,s2,l2); if (cmp!=0) return (l1|l2)!=0;} while (l1*l2!=0);
+	} catch (int) {
+		// report
+	}
+	return false;
+}
+
+bool MVStoreKernel::checkHyperRect(const byte *s1,ushort l1,const byte *s2,ushort l2)
+{
+	try {
+		do {int cmp=cmpSeg(s1,l1,s2,l2); if (cmp>0) return false;} while (l1*l2!=0);
+		return l1==0;
+	} catch (int) {
+		// report
+	}
+	return false;
 }
 
 ushort MVStoreKernel::calcMSegPrefix(const byte *s1,ushort l1,const byte *s2,ushort l2)
@@ -925,7 +946,7 @@ RC SearchKey::getValues(Value *vals,unsigned nv,const IndexSeg *kd,unsigned nFie
 					ls=SearchKey::extKeyLen[b];
 				}
 				if (l<ls) return RC_CORRUPTED;
-				if (fFilter) pv=(Value*)mv_bsrcmp<Value,PropertyID>(kd->propID,vals,nv); else if (i>=nv) break; else pv=&vals[i];
+				if (fFilter) pv=(Value*)BIN<Value,PropertyID,ValCmp>::find(kd->propID,vals,nv); else if (i>=nv) break; else pv=&vals[i];
 				if (pv!=NULL && pv->property==kd->propID) {
 					pv->type=kd->type; pv->flags=NO_HEAP; pv->meta=0; pv->eid=STORE_COLLECTION_ID; pv->op=OP_SET; pv->length=ls;
 					if (b<KT_BIN) memcpy(&pv->i,s,ls);
@@ -953,7 +974,7 @@ RC SearchKey::getValues(Value *vals,unsigned nv,const IndexSeg *kd,unsigned nFie
 			assert(l>=ls); s+=ls; l-=ls;
 		}
 	} else {
-		if (fFilter && nv>1) vals=(Value*)mv_bsrcmp<Value,PropertyID>(kd->propID,vals,nv);
+		if (fFilter && nv>1) vals=(Value*)BIN<Value,PropertyID,ValCmp>::find(kd->propID,vals,nv);
 		else if (vals->property!=kd->propID) {if (vals->property==PROP_SPEC_ANY) vals->property=kd->propID; else vals=NULL;}
 		if (vals!=NULL) {
 			vals->flags=NO_HEAP;

@@ -41,24 +41,28 @@ __forceinline	void freeV(Value& v) {if ((v.flags&HEAP_TYPE_MASK)!=NO_HEAP) freeV
 
 #define PIDKeySize		(sizeof(uint64_t)+sizeof(IdentityID))
 
-class IntNav : public INav
-{
-public:
-	virtual	INav		*clone(MemAlloc *ma) const = 0;
-	virtual	const Value	*navigateNR(GO_DIR op,ElementID=STORE_COLLECTION_ID) = 0;
-	virtual	void		release() = 0;
-};
-
 struct PropertyList
 {
 	PropertyID	*props;
 	unsigned	nProps;
 };
 
-struct TDescriptor
+struct ValueV
 {
 	Value		*vals;
 	unsigned	nValues;
+};
+
+class ValCmp
+{
+public:
+	__forceinline static int cmp(const Value& v,PropertyID pid) {return cmp3(v.property,pid);}
+};
+
+class QNameCmp
+{
+public:
+	__forceinline static int cmp(const QName& lhs,const QName& rhs) {int c=memcmp(lhs.qpref,rhs.qpref,lhs.lq<rhs.lq?lhs.lq:rhs.lq); return c!=0?c:cmp3(lhs.lq,rhs.lq);}
 };
 
 #define	MODP_EIDS	0x0001
@@ -75,15 +79,6 @@ struct OrderSegQ
 	};
 	uint16_t		flags;
 	uint16_t		lPref;
-};
-
-struct ParentInfo
-{
-	ParentInfo	*next;
-	class	PIN	*pin;
-	PID			id;
-	PropertyID	propID;
-	ElementID	eid;
 };
 
 /**
@@ -106,7 +101,6 @@ class PIN : public IPIN
 	uint32_t			mode;
 	mutable	PageAddr	addr;
 	PIN					*nextPIN;
-	ParentInfo			*parent;
 	union {
 		uint32_t		stamp;
 		size_t			length;
@@ -114,7 +108,7 @@ class PIN : public IPIN
 
 public:
 	PIN(Session *s,const PID& i,const PageAddr& a,ulong md=0,Value *vals=NULL,ulong nvals=0)
-		: id(i),ses(s),properties(vals),nProperties(nvals),mode(md),addr(a),nextPIN(NULL) {parent=NULL; length=0;}
+		: id(i),ses(s),properties(vals),nProperties(nvals),mode(md),addr(a),nextPIN(NULL) {length=0;}
 	virtual		~PIN();
 	const PID&	getPID() const;
 	bool		isLocal() const;
@@ -140,8 +134,6 @@ public:
 	IPIN		*clone(const Value *overwriteValues=NULL,unsigned nOverwriteValues=0,unsigned mode=0);
 	IPIN		*project(const PropertyID *properties,unsigned nProperties,const PropertyID *newProps=NULL,unsigned mode=0);
 	RC			modify(const Value *values,unsigned nValues,unsigned mode,const ElementID *eids,unsigned*);
-	RC			makePart(IPIN *parent,PropertyID pid,ElementID=STORE_COLLECTION_ID);
-	RC			makePart(const PID& parentID,PropertyID pid,ElementID=STORE_COLLECTION_ID);
 	RC			setExpiration(uint32_t);
 	RC			setNotification(bool fReset=false);
 	RC			setReplicated();
@@ -154,7 +146,7 @@ public:
 	void		operator delete(void *p) {if (((PIN*)p)->ses!=NULL) ((PIN*)p)->ses->free(p);/* else ???*/}
 	RC			modify(const Value *pv,ulong epos,ulong eid,ulong flags,Session *ses);
 	const PageAddr& getAddr() const {return addr;}
-	__forceinline const Value *findProperty(PropertyID pid) const {return mv_bsrcmp<Value,PropertyID>(pid,properties,nProperties);}
+	__forceinline const Value *findProperty(PropertyID pid) const {return BIN<Value,PropertyID,ValCmp>::find(pid,properties,nProperties);}
 	ElementID	getPrefix(StoreCtx *ctx) const {return id.pid==STORE_INVALID_PID||id.ident==STORE_INVALID_IDENTITY?ctx->getPrefix():StoreCtx::genPrefix(ushort(id.pid>>48));}
 	static PIN*	getPIN(const PID& id,VersionID vid,Session *ses,ulong mode=0);
 	static const Value *findElement(const Value *pv,ulong eid) {

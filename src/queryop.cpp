@@ -17,7 +17,7 @@ Written by Mark Venguerov 2004 - 2010
 
 using namespace MVStoreKernel;
 
-QueryOp::QueryOp(Session *s,QueryOp *qop,ulong md) : ses(s),queryOp(qop),mode(md),state(QST_INIT),nSkip(0)
+QueryOp::QueryOp(Session *s,QueryOp *qop,ulong md) : ses(s),queryOp(qop),mode(md),state(QST_INIT),nSkip(0),res(NULL),nOuts(qop!=NULL?qop->nOuts:1)
 {
 }
 
@@ -28,9 +28,20 @@ QueryOp::~QueryOp()
 
 RC QueryOp::initSkip()
 {
-	PINEx qr(ses); RC rc=RC_OK;
-	while (nSkip!=0) if ((rc=next(qr))!=RC_OK || (--nSkip,rc=ses->testAbortQ())!=RC_OK) break;
+	RC rc=RC_OK;
+	while (nSkip!=0) if ((rc=next())!=RC_OK || (--nSkip,rc=ses->testAbortQ())!=RC_OK) break;
 	return rc;
+}
+
+void QueryOp::connect(PINEx **results,unsigned nRes)
+{
+	if (results!=NULL && nRes==1) res=results[0];
+	if (queryOp!=NULL) queryOp->connect(results,nRes);
+}
+
+void QueryOp::connect(PINEx *result)
+{
+	res=result; if (queryOp!=NULL) queryOp->connect(result);
 }
 
 RC QueryOp::rewind()
@@ -40,8 +51,8 @@ RC QueryOp::rewind()
 
 RC QueryOp::count(uint64_t& cnt,ulong nAbort)
 {
-	uint64_t c=0; RC rc; PINEx qr(ses);
-	while ((rc=next(qr))==RC_OK) if (++c>nAbort) return RC_TIMEOUT;
+	uint64_t c=0; RC rc;
+	while ((rc=next())==RC_OK) if (++c>nAbort) return RC_TIMEOUT;
 	cnt=c; return rc==RC_EOF?RC_OK:rc;
 }
 
@@ -84,31 +95,37 @@ RC QueryOp::release()
 	return queryOp!=NULL?queryOp->release():RC_OK;
 }
 
+RC QueryOp::getBody(PINEx& pe)
+{
+	RC rc; if ((pe.epr.flags&PINEX_ADDRSET)==0) pe=PageAddr::invAddr;
+	if ((rc=ses->getStore()->queryMgr->getBody(pe,(mode&QO_FORUPDATE)!=0?TVO_UPD:TVO_READ,0))==RC_OK&&(rc=ses->testAbortQ())==RC_OK) {
+		assert(pe.getAddr().defined() && (pe.epr.flags&PINEX_ADDRSET)!=0);
+	}
+	return rc;
+}
+
 //------------------------------------------------------------------------------------------------
 
-RC BodyOp::next(PINEx& qr,const PINEx *skip)
+RC BodyOp::next(const PINEx *skip)
 {
-	RC rc=RC_OK; assert(ses!=NULL);
+	RC rc=RC_OK; assert(ses!=NULL && res!=NULL);
 	if ((state&QST_INIT)!=0) {state&=~QST_INIT; if (nSkip>0 && (rc=initSkip())!=RC_OK) return rc;}
 //	if (op==GO_FIRST || op==GO_LAST) state&=~(QST_BOF|QST_EOF); else if ((state&(op==GO_NEXT?QST_EOF:QST_BOF))!=0) return RC_EOF;
-	for (; (rc=queryOp->next(qr,skip))==RC_OK; skip=NULL) {
-		if ((qr.epr.flags&PINEX_ADDRSET)==0) qr=PageAddr::invAddr;
-		if ((rc=ses->getStore()->queryMgr->getBody(qr,(mode&QO_FORUPDATE)!=0?TVO_UPD:TVO_READ,0,queryOp))!=RC_OK||(rc=ses->testAbortQ())!=RC_OK)
-			{qr.cleanup(); if (rc==RC_NOACCESS || rc==RC_REPEAT || rc==RC_DELETED) {qr.cleanup(); continue;} else return rc;}
-		assert(qr.getAddr().defined() && (qr.epr.flags&PINEX_ADDRSET)!=0);
-		if ((qr.hpin->hdr.descr&HOH_HIDDEN)!=0) {qr.cleanup(); continue;}
+	for (; (rc=queryOp->next(skip))==RC_OK; skip=NULL) {
+		if ((rc=getBody(*res))!=RC_OK || (res->hpin->hdr.descr&HOH_HIDDEN)!=0) 
+			{res->cleanup(); if (rc==RC_OK || rc==RC_NOACCESS || rc==RC_REPEAT || rc==RC_DELETED) continue; else return rc;}
 #if 0
-		if (ses->inWriteTx() && (qr.epr.flags&(fWrite?PINEX_XLOCKED:PINEX_LOCKED))==0 && (flt==NULL||!flt->ignore())) {
+		if (ses->inWriteTx() && (res->epr.flags&(fWrite?PINEX_XLOCKED:PINEX_LOCKED))==0 && (flt==NULL||!flt->ignore())) {
 			if (flt!=NULL && ses->hasLatched()) flt->release();
-			if (qr.id.pid==STORE_INVALID_PID && (rc=qr.unpack())!=RC_OK) return rc;
-			if ((rc=ses->getStore()->lockMgr->lock(fWrite?LOCK_EXCLUSIVE:LOCK_SHARED,ses,qr.id,&RLQ))!=RC_OK
+			if (res->id.pid==STORE_INVALID_PID && (rc=res->unpack())!=RC_OK) return rc;
+			if ((rc=ses->getStore()->lockMgr->lock(fWrite?LOCK_EXCLUSIVE:LOCK_SHARED,ses,res->id,&RLQ))!=RC_OK
 				|| (rc=ses->testAbortQ())!=RC_OK) return rc;
-			if (fWrite && !qr.pb.isNull() && !qr.pb->isULocked() && !qr.pb->isXLocked()) qr.cleanup();
-			qr.epr.flags|=fWrite?PINEX_XLOCKED|PINEX_LOCKED:PINEX_LOCKED;
+			if (fWrite && !res->pb.isNull() && !res->pb->isULocked() && !res->pb->isXLocked()) res->cleanup();
+			res->epr.flags|=fWrite?PINEX_XLOCKED|PINEX_LOCKED:PINEX_LOCKED;
 		}
-		if ((qr.epr.flags&PINEX_ACL_CHKED)==0 && (iid=ses->getIdentity())!=STORE_OWNER) {
+		if ((res->epr.flags&PINEX_ACL_CHKED)==0 && (iid=ses->getIdentity())!=STORE_OWNER) {
 			rc=ses->getStore()->queryMgr->checkACLs(qr,iid,fWrite?GP_FORUPDATE:0,false);
-			if (rc==RC_OK) qr.epr.flags|=PINEX_ACL_CHKED; else fOK=rc==RC_FALSE; 
+			if (rc==RC_OK) res->epr.flags|=PINEX_ACL_CHKED; else fOK=rc==RC_FALSE; 
 			if ((rc=ses->testAbortQ())!=RC_OK) return rc;
 		}
 #endif
@@ -120,7 +137,7 @@ RC BodyOp::next(PINEx& qr,const PINEx *skip)
 
 RC BodyOp::rewind()
 {
-	// ??? reset cash
+	// ??? reset cache
 	return queryOp!=NULL?queryOp->rewind():RC_OK;
 }
 	
@@ -137,7 +154,7 @@ void BodyOp::reorder(bool f)
 
 void BodyOp::print(SOutCtx& buf,int level) const
 {
-	buf.fill('\t',level); buf.append("project: ",9);
+	buf.fill('\t',level); buf.append("access: ",8);
 	if (nProps==0) buf.append("*\n",2);
 	else for (unsigned i=0; i<nProps; i++) {buf.renderName(props[i]); if (i+1<nProps) buf.append(", ",2); else buf.append("\n",1);}
 	if (queryOp!=NULL) queryOp->print(buf,level+1);
@@ -147,128 +164,133 @@ void BodyOp::print(SOutCtx& buf,int level) const
 
 PathOp::~PathOp()
 {
-	if (nav!=NULL) nav->destroy(); if (arr!=NULL) freeV(arr,lArr,ses); if (vals!=NULL) freeV(vals,nvals,ses);
-	for (unsigned i=0; i<nPathSeg; i++) if (props[i].props!=NULL) ses->free(props[i].props);
+	PathState *ps,*ps2;
+	for (ps=pst; ps!=NULL; ps=ps2) {ps2=ps->next; freeV(ps->seg); freeV(ps->rep); ses->free(ps);}
+	for (ps=freePst; ps!=NULL; ps=ps2) {ps2=ps->next; ses->free(ps);}
 	if (fCopied) {
 		for (unsigned i=0; i<nPathSeg; i++) if (path[i].filter!=NULL) path[i].filter->destroy();
-		ses->free((void*)path);
+		ses->free((void*)path); if (params!=NULL) freeV((Value*)params,nParams,ses);
 	}
 }
 
-RC PathOp::next(PINEx& qr,const PINEx *)
+void PathOp::connect(PINEx *result)
 {
-	RC rc; qr.cleanup();
+	res=result; queryOp->connect(&pex);
+}
+
+void PathOp::connect(PINEx **results,unsigned nRes)
+{
+	res=results[0]; queryOp->connect(&pex);
+}
+
+RC PathOp::next(const PINEx *)
+{
+	RC rc; unsigned i; const Value *pv; bool fOK;
+	if (res!=NULL) res->cleanup();
+	if ((state&QST_EOF)!=0) return RC_EOF;
 	if ((state&QST_INIT)!=0) {
 		state&=~QST_INIT; if (nSkip>0 && (rc=initSkip())!=RC_OK) return rc;
-		for (unsigned i=0; i<nPathSeg; i++) {
-			unsigned np=i+1<nPathSeg?2:1;
-			if (path[i].filter!=NULL) {
-				// get req props np+=
-			}
-			if (np!=0) {
-				if ((props[i].props=new(ses) PropertyID[np])==NULL) return RC_NORESOURCES;
-				np=0;
-				if (path[i].filter!=NULL) {
-					//...
-				}
-				if (i+1<nPathSeg && (rc=mv_bins<PropertyID,unsigned>(props[i].props,np,path[i+1].pid,NULL))!=RC_OK) return rc;
-				if ((rc=mv_bins<PropertyID,unsigned>(props[i].props,np,path[i].pid,NULL))!=RC_OK) return rc;
-				props[i].nProps=np; if (np>nvals) nvals=np;
-			}
-		}
-		if (nvals!=0 && (vals=new(ses) Value[nvals])==NULL) return RC_NORESOURCES;
-		for (unsigned i=0; i<nvals; i++) vals[i].setError();
+		for (i=0; i<nPathSeg; i++) if (path[i].rmin!=0) {fThrough=false; break;}
 	}
-	for (;;) switch (pstate) {
-	case 0:
-		if (nav!=NULL || arr!=NULL) for (;;) {
-			const Value *cv=nav!=NULL?nav->navigateNR(GO_NEXT):++cidx<lArr?&arr[cidx]:(const Value*)0;
-			if (cv!=NULL) {
-				switch (cv->type) {
+	for (;;) {
+		if (pst==NULL) {
+			if ((rc=queryOp->next())!=RC_OK) {state|=QST_EOF; return rc;}
+			if ((rc=push(0,1))!=RC_OK) return rc; pst->seg.setError(path[0].pid);
+			if ((rc=getData(pex,&pst->seg,1,NULL,ses,path[0].eid))!=RC_OK) {state|=QST_EOF; return rc;}
+			pst->state=2; if (fThrough) {if (res!=NULL) *res=pex; return RC_OK;}
+		}
+		switch (pst->state) {
+		case 0:
+			pst->state=1; assert(pst!=NULL && pst->idx>0);
+			if (pst->idx>=nPathSeg && pst->rcnt>=path[pst->idx-1].rmin && path[pst->idx-1].filter==NULL) {/*printf("->\n");*/ return RC_OK;}
+		case 1:
+			pst->state=4; //printf("%*s(%d,%d):"_LX_FM"\n",(pst->idx-1+pst->rcnt-1)*2,"",pst->idx,pst->rcnt,res->id.pid);
+			if ((rc=getBody(*res))!=RC_OK || (res->hpin->hdr.descr&HOH_HIDDEN)!=0) 
+				{res->cleanup(); if (rc==RC_OK || rc==RC_NOACCESS || rc==RC_REPEAT || rc==RC_DELETED) {pop(); continue;} else {state|=QST_EOF; return rc;}}
+			fOK=path[pst->idx-1].filter==NULL || ses->getStore()->queryMgr->condSatisfied((const Expr* const*)&path[pst->idx-1].filter,1,(const PINEx**)&res,1,params,nParams,ses);
+			if (!fOK && !path[pst->idx-1].fLast) {res->cleanup(); pop(); continue;}
+			if ((pst->rcnt<path[pst->idx-1].rmax||path[pst->idx-1].rmax==0xFFFF) && (rc=ses->getStore()->queryMgr->loadV(pst->rep,path[pst->idx-1].pid,*res,LOAD_SSV,ses,path[pst->idx-1].eid))!=RC_OK && rc!=RC_NOTFOUND)
+				{res->cleanup(); state|=QST_EOF; return rc;}
+			if (fOK) {
+				//pst->nSucc++;
+				if (pst->idx>=nPathSeg) {if (pst->rcnt>=path[pst->idx-1].rmin && path[pst->idx-1].filter!=NULL) {/*printf("->\n");*/ return RC_OK;}}
+				else {
+					assert(pst->rcnt<=path[pst->idx-1].rmax||path[pst->idx-1].rmax==0xFFFF);
+					for (;;) {
+						if ((rc=ses->getStore()->queryMgr->loadV(pst->seg,path[pst->idx].pid,*res,LOAD_SSV,ses,path[pst->idx].eid))!=RC_OK && rc!=RC_NOTFOUND)
+							{res->cleanup(); state|=QST_EOF; return rc;}
+						if (rc==RC_OK && pst->seg.type!=VT_ERROR) {pst->state=2; break;} if (path[pst->idx].rmin!=0) break;
+						if (pst->idx+1>=nPathSeg) return RC_OK; push(pst->idx+1,1); pst->state=6;
+					}
+				}
+			}
+			res->cleanup(); if (pst->state!=2) continue;
+		case 2:
+			pst->state=4;
+			switch (pst->seg.type) {
+			default: continue;		// rmin==0 -> goto next seg
+			case VT_REF: if (res!=NULL) *res=pst->seg.pin->getPID(); push(pst->idx+1,1); continue;
+			case VT_REFID: if (res!=NULL) *res=pst->seg.id; push(pst->idx+1,1); continue;
+			case VT_STRUCT:
+				//????
+				continue;
+			case VT_COLLECTION: case VT_ARRAY: pst->state=3; pst->cidx=0; break;
+			}
+		case 3:
+			pv=pst->seg.type==VT_COLLECTION?pst->seg.nav->navigate(pst->cidx==0?GO_FIRST:GO_NEXT):pst->cidx<pst->seg.length?&pst->seg.varray[pst->cidx]:(const Value*)0;
+			if (pv!=NULL) {
+				pst->cidx++;
+				switch (pv->type) {
 				default: continue;
-				case VT_REFID: pex=cv->id; break;
-				case VT_REF: pex=cv->pin->getPID(); break;
-				/* case VT_STRUCT: find PROP_SPEC_REF */
+				case VT_REF: if (res!=NULL) *res=pv->pin->getPID(); push(pst->idx+1,1); continue;
+				case VT_REFID: if (res!=NULL) *res=pv->id; push(pst->idx+1,1); continue;
+				case VT_STRUCT:
+					//????
+					continue;
 				}
-				pstate++;
-				if (path[idx].filter==NULL && idx+1>=nPathSeg && rep>=path[idx].rmin) {qr=pex; return RC_OK;}
-			} else if (nav!=NULL) {nav->destroy(); nav=NULL;} else {freeV(arr,lArr,ses); arr=NULL; lArr=cidx=0;}
-			break;
-		}
-		if (pstate==0) {
-			pstate++;
-			//if (queue not empty) {
-				// get PID, idx, rep from queue
-				//if fOut && ! filter -> fNext=false, save PID,idx,rep,  return it
-			//} else {
-				idx=rep=0;
-				if ((state&QST_EOF)!=0) return RC_EOF;
-				if ((rc=queryOp->next(pex))!=RC_OK) {state|=QST_EOF; return rc;}
-			//}
-		}
-	case 1:
-		if (props[idx].props!=NULL && props[idx].nProps!=0) {
-			unsigned np=props[idx].nProps;
-			for (unsigned i=0; i<nvals; i++) {freeV(vals[i]); vals[i].setError(i<np?props[idx].props[i]:STORE_INVALID_PROPID);}
-			if ((rc=getData(pex,vals,np,NULL,ses,path[idx].eid))!=RC_OK) return rc;	//???
-			if (path[idx].filter!=NULL) {
-				// check, fail -> pstate=0; continue;
-				pstate++; if (idx+1>=nPathSeg && rep>=path[idx].rmin) {qr=pex; return RC_OK;}
 			}
-		}
-	case 2:
-		if (idx+1<nPathSeg && rep>=path[idx].rmin) {
-			const Value *pv=mv_bsrcmp<Value,PropertyID>(path[idx+1].pid,vals,props[idx].nProps); assert(pv!=NULL);
-			switch (pv->type) {
-			default: break;
-			case VT_REF:
-			case VT_REFID:
-				//push(pv->id,idx+1,1);
-			// case VT_STRUCT:
-			case VT_ARRAY:
-			case VT_COLLECTION:
-				if ((!path[idx+1].fLast || idx+2==nPathSeg) && path[idx+1].eid!=STORE_COLLECTION_ID) {
-					// find it, if VT_REFID, VT_STRUCT -> push
-				} else {
-					// scan all, if VT_REFID, VT_STRUCT -> push
+			// rmin==0 && pst->nSucc==0 -> goto next seg
+		case 4:
+			switch (pst->rep.type) {
+			default: pop(); continue;
+			case VT_REF: if (res!=NULL) *res=pst->rep.pin->getPID(); pst->state=6; push(pst->idx,pst->rcnt+1); continue;
+			case VT_REFID: if (res!=NULL) *res=pst->rep.id; pst->state=6; push(pst->idx,pst->rcnt+1); continue;
+			case VT_STRUCT:
+				//????
+				continue;
+			case VT_ARRAY: case VT_COLLECTION: pst->state=5; pst->cidx=0; break;
+			}
+		case 5:
+			pv=pst->rep.type==VT_COLLECTION?pst->rep.nav->navigate(pst->cidx==0?GO_FIRST:GO_NEXT):pst->cidx<pst->rep.length?&pst->rep.varray[pst->cidx]:(const Value*)0;
+			if (pv!=NULL) {
+				pst->cidx++;
+				switch (pv->type) {
+				default: continue;
+				case VT_REF: if (res!=NULL) *res=pv->pin->getPID(); push(pst->idx,pst->rcnt+1); continue;
+				case VT_REFID: if (res!=NULL) *res=pv->id; push(pst->idx,pst->rcnt+1); continue;
+				case VT_STRUCT:
+					//????
+					continue;
 				}
-				break;
 			}
-		}
-		if (rep<path[idx].rmax || path[idx].rmax==0xFFFF) {
-			const Value *pv=mv_bsrcmp<Value,PropertyID>(path[idx].pid,vals,props[idx].nProps); assert(pv!=NULL);
-			switch (pv->type) {
-			default: break;
-			case VT_REF:
-				// put to qr
-			case VT_REFID:
-				//push(pv->id,idx,rep+1);
-				break;
-			// case VT_STRUCT:
-			case VT_ARRAY:
-			case VT_COLLECTION:
-				if ((!path[idx].fLast || idx+1==nPathSeg) && path[idx].eid!=STORE_COLLECTION_ID) {
-					// find it, if VT_REFID, VT_STRUCT -> push
-				} else {
-					// scan all, if VT_REFID, VT_STRUCT -> push
-				}
-				break;
-			}
+		case 6:
+			pop(); break;
 		}
 	}
 }
 
 RC PathOp::rewind()
 {
-	idx=rep=cidx=pstate=0; pex.cleanup();
-	if (nav!=NULL) {nav->destroy(); nav=NULL;}
-	if (arr!=NULL) {freeV(arr,lArr,ses); arr=NULL; lArr=0;}
-	if (vals!=NULL) for (unsigned i=0; i<nvals; i++) {freeV(vals[i]); vals[i].setError();}
+	pex.cleanup(); while(pst!=NULL) pop();
 	return queryOp!=NULL?queryOp->rewind():RC_OK;
 }
 
 RC PathOp::release()
 {
+	for (PathState *ps=pst; ps!=NULL; ps=ps->next) {
+		if (ps->seg.type==VT_COLLECTION) ps->seg.nav->navigate(GO_FINDBYID,STORE_COLLECTION_ID);
+		if (ps->rep.type==VT_COLLECTION) ps->rep.nav->navigate(GO_FINDBYID,STORE_COLLECTION_ID);
+	}
 	// ???
 	return QueryOp::release();
 }
@@ -277,6 +299,7 @@ void PathOp::getOpDescr(QODescr& qop)
 {
 	if (queryOp!=NULL) {
 		queryOp->getOpDescr(qop); qop.level++;
+		qop.flags&=~(QO_UNIQUE|QO_ALLPROPS|QO_PIDSORT|QO_REVERSIBLE);
 		//...
 	}
 }
@@ -290,30 +313,33 @@ void PathOp::print(SOutCtx& buf,int level) const
 
 //------------------------------------------------------------------------------------------------
 
-GroupOp::~GroupOp()
+AggOp::~AggOp()
 {
 }
 
-RC GroupOp::next(PINEx&,const PINEx*)
+RC AggOp::next(const PINEx*)
 {
 	//???
 	return RC_OK;
 }
 
-RC GroupOp::rewind()
+RC AggOp::rewind()
 {
 	if (queryOp!=NULL) queryOp->rewind();
 	// reset currect group
 	return RC_OK;
 }
 
-void GroupOp::getOpDescr(QODescr& dscr)
+void AggOp::getOpDescr(QODescr& dscr)
 {
-	if (queryOp!=NULL) queryOp->getOpDescr(dscr);
-	//...
+	if (queryOp!=NULL) {
+		queryOp->getOpDescr(dscr);
+		dscr.flags&=~(QO_UNIQUE|QO_ALLPROPS|QO_PIDSORT|QO_REVERSIBLE);
+		//...
+	}
 }
 
-void GroupOp::print(SOutCtx& buf,int level) const
+void AggOp::print(SOutCtx& buf,int level) const
 {
 	buf.fill('\t',level); buf.append("group ",5);
 #if 0
@@ -355,15 +381,15 @@ Filter::~Filter()
 	}
 }
 
-RC Filter::next(PINEx& qr,const PINEx *skip)
+RC Filter::next(const PINEx *skip)
 {
-	RC rc=RC_OK; assert(ses!=NULL);
+	RC rc=RC_OK; assert(ses!=NULL && res!=NULL);
 	if ((state&QST_INIT)!=0) {state&=~QST_INIT; if (nSkip>0 && (rc=initSkip())!=RC_OK) return rc;}
 //	if (op==GO_FIRST || op==GO_LAST) state&=~(QST_BOF|QST_EOF); else if ((state&(op==GO_NEXT?QST_EOF:QST_BOF))!=0) return RC_EOF;
 	if ((state&QST_EOF)!=0) return RC_EOF;
-	for (; (rc=queryOp->next(qr,skip))==RC_OK; skip=NULL) {
-		if ((mode&QO_NODATA)==0 && (rc=queryOp->getData(qr,NULL,0))!=RC_OK) break;
-		if (lProps!=0 && !condProps.test(&qr,lProps)) continue; bool fOK=true;
+	for (; (rc=queryOp->next(skip))==RC_OK; skip=NULL) {
+		if ((mode&QO_NODATA)==0 && (rc=queryOp->getData(*res,NULL,0))!=RC_OK) break;
+		if (lProps!=0 && !condProps.test(res,lProps)) continue; bool fOK=true;
 		if ((mode&QO_CLASS)==0) {
 			for (CondIdx *ci=condIdx; ci!=NULL; ci=ci->next) {
 				if (ci->param>=nParams) {fOK=false; break;}
@@ -371,7 +397,7 @@ RC Filter::next(PINEx& qr,const PINEx *skip)
 				if (ci->expr!=NULL) {
 					// ???
 				} else {
-					Value vv; if (qr.getValue(ci->ks.propID,vv,LOAD_SSV,NULL)!=RC_OK) {fOK=false; break;}
+					Value vv; if (res->getValue(ci->ks.propID,vv,LOAD_SSV,NULL)!=RC_OK) {fOK=false; break;}
 					RC rc=Expr::calc((ExprOp)ci->ks.op,vv,pv,2,(ci->ks.flags&ORD_NCASE)!=0?CND_NCASE:0,ses);
 					freeV(vv); if (rc!=RC_TRUE) {fOK=false; break;}
 				}
@@ -379,10 +405,10 @@ RC Filter::next(PINEx& qr,const PINEx *skip)
 			if (!fOK) continue;
 		}
 		if (queries!=NULL && nQueries>0) {
-			for (ulong i=0; i<nQueries; i++) if (!queries[i].qry->checkConditions(&qr,queries[i].params,queries[i].nParams,ses)) {fOK=false; break;}
+			for (ulong i=0; i<nQueries; i++) if (!queries[i].qry->checkConditions(res,queries[i].params,queries[i].nParams,ses)) {fOK=false; break;}
 			if (!fOK) continue;
 		}
-		const PINEx *pp=&qr;
+		const PINEx *pp=res;
 		if (conds==NULL || ses->getStore()->queryMgr->condSatisfied(nConds>1?conds:&cond,nConds,&pp,1,params,nParams,ses,(mode&QO_CLASS)!=0)) break;
 	}
 	if (rc!=RC_OK) state|=QST_EOF;		//op==GO_FIRST||op==GO_LAST?QST_BOF|QST_EOF:op==GO_NEXT?QST_EOF:QST_BOF;
@@ -406,13 +432,13 @@ ArrayFilter::~ArrayFilter()
 {
 }
 
-RC ArrayFilter::next(PINEx& qr,const PINEx *skip)
+RC ArrayFilter::next(const PINEx *skip)
 {
-	RC rc=RC_EOF;
+	RC rc=RC_EOF; assert(res!=NULL);
 	if ((state&QST_INIT)!=0) {state&=~QST_INIT; if (nSkip>0 && (rc=initSkip())!=RC_OK) return rc;}
-	if (nPids!=0) for (; (rc=queryOp->next(qr,skip))==RC_OK; skip=NULL) {
-		if (qr.id.pid==STORE_INVALID_PID && qr.unpack()!=RC_OK) continue;
-		if (mv_bsrc<PID,const PID&>(qr.id,pids,nPids)!=NULL) return RC_OK;
+	if (nPids!=0) for (; (rc=queryOp->next(skip))==RC_OK; skip=NULL) {
+		if (res->id.pid==STORE_INVALID_PID && res->unpack()!=RC_OK) continue;
+		if (BIN<PID>::find(res->id,pids,nPids)!=NULL) return RC_OK;
 	}
 	return rc;
 }
@@ -547,22 +573,14 @@ RC PropDNF::orP(PropDNF *&dnf,size_t& ldnf,const PropertyID *pids,ulong np,MemAl
 
 RC PropDNF::flatten(size_t ldnf,PropertyID *&ps,unsigned& nPids,MemAlloc *ma) const
 {
-	unsigned cnt=0; PropertyID *ins=NULL;
+	unsigned cnt=0; PropertyID *ins=NULL; RC rc;
 	for (const PropDNF *p=this,*end=(const PropDNF*)((byte*)this+ldnf); p<end; p=(const PropDNF*)((byte*)(p+1)+int(p->nIncl+p->nExcl-1)*sizeof(PropertyID))) {
 		unsigned i=0;
 		if (p==this && nIncl!=0) {
 			if (nPids<nIncl && (ma==NULL || (ps=(PropertyID*)ma->realloc(ps,(nPids=nIncl)*sizeof(PropertyID)))==NULL)) return RC_NORESOURCES;
 			memcpy(ps,pids,(i=cnt=nIncl)*sizeof(PropertyID)); if ((byte*)(p+1)+int(p->nIncl-1)*sizeof(PropertyID)==(byte*)end) break;
 		}
-		for (unsigned all=p->nIncl+p->nExcl; i<all; i++) if (mv_bsrc(p->pids[i],ps,cnt,&ins)==NULL) {
-			if (nPids<=cnt) {
-				ptrdiff_t sht=ins-ps;
-				if (ma==NULL || (ps=(PropertyID*)ma->realloc(ps,(nPids=cnt+1)*sizeof(PropertyID)))==NULL) return RC_NORESOURCES;
-				ins=ps+sht;
-			}
-			if (ins<&ps[cnt]) memmove(ins+1,ins,(byte*)&ps[cnt]-(byte*)ins);
-			*ins=p->pids[i]; cnt++;
-		}
+		for (unsigned all=p->nIncl+p->nExcl; i<all; i++) if ((rc=BIN<PropertyID>::insert(ps,cnt,p->pids[i],p->pids[i],ma,&nPids))!=RC_OK) return rc;
 	}
 	nPids=cnt; return RC_OK;
 }

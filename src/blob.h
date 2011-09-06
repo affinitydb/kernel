@@ -41,7 +41,6 @@ public:
 	size_t				read(void *buf,size_t maxLength);
 	size_t				readChunk(uint64_t offset,void *buf,size_t l);
 	IStream				*clone() const;
-	IStream				*clone(MemAlloc *ma) const;
 	RC					reset();
 	void				destroy();
 	void				destroyObj();
@@ -169,7 +168,7 @@ public:
 	const static IndexFormat collFormat;
 };
 
-class Navigator : public IntNav, public Tree, public ObjDealloc
+class Navigator : public INav, public Tree, public ObjDealloc
 {
 	const	PageAddr						heapAddr;
 	const	PropertyID						propID;
@@ -179,8 +178,6 @@ class Navigator : public IntNav, public Tree, public ObjDealloc
 	Value									curValue;
 	ValueType								type;
 public:
-	Navigator() : Tree(NULL),heapAddr(),propID(STORE_INVALID_PROPID),mode(0),allc(NULL),ecb(NULL,*this,NULL),type(VT_ANY) {curValue.setError();}
-public:
 	Navigator(const PageAddr& addr,PropertyID pid,const HeapPageMgr::HeapExtCollection *coll,ulong md,MemAlloc *ma);
 	virtual					~Navigator();
 	const	Value			*navigate(GO_DIR=GO_NEXT,ElementID=STORE_COLLECTION_ID);
@@ -188,9 +185,6 @@ public:
 	const	Value			*getCurrentValue();
 	RC						getElementByID(ElementID,Value&);
 	INav	*clone() const;
-	INav	*clone(MemAlloc *ma) const;
-	const	Value			*navigateNR(GO_DIR=GO_NEXT,ElementID=STORE_COLLECTION_ID);
-	void					release();
 	unsigned	long		count() const;	
 	void					destroy();
 	void					destroyObj();

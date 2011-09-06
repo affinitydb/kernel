@@ -29,7 +29,7 @@ Sort::Sort(QueryOp *qop,const OrderSegQ *os,unsigned nsgs,ulong md,unsigned nP,c
 		if ((md&QO_VCOPIED)!=0 && (sortSegs[i].expr=Expr::clone(sortSegs[i].expr,ses))==NULL) throw RC_NORESOURCES;
 		index[i]=nValues++;
 	} else if (sortSegs[i].pid==PROP_SPEC_ANY) index[i]=nValues++;
-	else index[i]=unsigned(mv_bsrc(sortSegs[i].pid,pids,nPids)-pids);
+	else index[i]=unsigned(BIN<PropertyID>::find(sortSegs[i].pid,pids,nPids)-pids);
 }
 
 Sort::~Sort()
@@ -38,6 +38,16 @@ Sort::~Sort()
 	if (nValues>nPropIDs && (mode&QO_VCOPIED)!=0) for (unsigned i=0; i<nSegs; i++)
 		if ((sortSegs[i].flags&ORDER_EXPR)!=0) sortSegs[i].expr->destroy();
 	if (pins!=NULL) ses->free(pins);
+}
+
+void Sort::connect(PINEx *result)
+{
+	res=result;
+}
+
+void Sort::connect(PINEx **results,unsigned nRes)
+{
+	if (results!=NULL && nRes!=0) res=results[0];
 }
 
 __forceinline const byte *getSortID(const EncPINRef **ep,byte& lp)
@@ -153,9 +163,10 @@ void Sort::quickSort(ulong nPins)
 
 RC Sort::sort(ulong nAbort)
 {
-	PINEx qr(ses); RC rc=RC_OK,rc2; ulong nRunPins=0; nAllPins=0;
+	PINEx qr(ses); queryOp->connect(&qr);
+	RC rc=RC_OK,rc2; ulong nRunPins=0; nAllPins=0;
 	assert(queryOp!=NULL && pins==NULL && esRuns==NULL);
-	for (; rc==RC_OK && ((rc=queryOp->next(qr))==RC_OK || rc==RC_EOF); qr.cleanup()) {
+	for (; rc==RC_OK && ((rc=queryOp->next())==RC_OK || rc==RC_EOF); qr.cleanup()) {
 		if ((rc2=ses->testAbortQ())!=RC_OK) {rc=rc2; break;}
 		if (rc==RC_OK) {
 			if (qr.epr.lref==0 && (rc2=qr.pack())!=RC_OK) rc=rc2;
@@ -218,8 +229,8 @@ RC Sort::sort(ulong nAbort)
 		case 0: memUsed+=pinMem.length(mrk); break;
 		case 1:
 			// changeFColl();
-			{const Value &av=vals[index[iArr]],*cv; IntNav *nav=av.type==VT_COLLECTION?(IntNav*)vals[index[iArr]].nav:(IntNav*)0;
-			if (nav==NULL) cv=&av.varray[0]; else cv=nav->navigateNR(GO_FIRST);
+			{const Value &av=vals[index[iArr]],*cv; INav *nav=av.type==VT_COLLECTION?vals[index[iArr]].nav:(INav*)0;
+			if (nav==NULL) cv=&av.varray[0]; else cv=nav->navigate(GO_FIRST);
 			for (uint32_t i=0,nv=av.length; cv!=NULL; ep=NULL) {
 				if (ep==NULL) {
 					if (nRunPins>=lPins) {
@@ -237,7 +248,7 @@ RC Sort::sort(ulong nAbort)
 					nAllPins+=nRunPins; fRepeat=false; if ((rc=writeRun(nRunPins,memUsed))!=RC_OK) break;
 					nRunPins=0; pinMem.release();		// better, reset() (without mem deallocation)
 				}
-				if (nav!=NULL) cv=nav->navigateNR(GO_NEXT); else if (++i<nv) ++cv; else break;
+				if (nav!=NULL) cv=nav->navigate(GO_NEXT); else if (++i<nv) ++cv; else break;
 			}
 			if (nav!=NULL) nav->destroy(); else {/*???*/}
 			}
@@ -577,7 +588,7 @@ public:
 		assert((ulong)(pos-page)<esFile->pageLen());
 
 		const byte *end=pos; size_t len; mv_dec32(pos,len); end+=len; assert((ulong)(end-page)<=esFile->pageLen());
-		const EncPINRef *hdr=(const EncPINRef *)pos; pos+=sizeof(uint16_t)+1+hdr->lref; assert((ulong)(pos-page)<esFile->pageLen());
+		const EncPINRef *hdr=(const EncPINRef *)pos; pos+=sizeof(uint16_t)+1+hdr->lref; assert((ulong)(pos-page)<=esFile->pageLen());
 
 #if defined(__x86_64__) || defined(IA64) || defined(_M_X64) || defined(_M_IA64)
 		if (sort->nValues==0 && hdr->lref<sizeof(EncPINRef*) && hdr->flags==0)		// flags alignment???
@@ -690,9 +701,9 @@ void Sort::esCleanup()
 	if (esFile!=NULL) {delete esFile; esFile=NULL;}
 }
 
-RC Sort::next(PINEx& qr,const PINEx *skip)
+RC Sort::next(const PINEx *skip)
 {
-	qr.cleanup(); qr=PIN::defPID; RC rc=RC_OK;
+	res->cleanup(); *res=PIN::defPID; RC rc=RC_OK;
 	if ((state&QST_INIT)!=0) {
 		state&=~QST_INIT; assert(memUsed==0 && nAllPins==0 && pins==NULL && esRuns==NULL);
 //		size_t minMem=ses->getStore()->fileMgr->getPageSize()*4;
@@ -731,12 +742,12 @@ RC Sort::next(PINEx& qr,const PINEx *skip)
 		const EncPINRef *ep=pins[idx];
 #if defined(__x86_64__) || defined(IA64) || defined(_M_X64) || defined(_M_IA64)
 		if ((((ptrdiff_t)ep)&1)!=0) {
-			qr.epr.flags=0; qr.epr.lref=byte((ptrdiff_t)ep)>>1; memcpy(qr.epr.buf,(byte*)&ep+1,qr.epr.lref);
+			res->epr.flags=0; res->epr.lref=byte((ptrdiff_t)ep)>>1; memcpy(res->epr.buf,(byte*)&ep+1,res->epr.lref);
 		} else
 #endif
-		 memcpy(&qr.epr,ep,ep->trunc<8>());
+		 memcpy(&res->epr,ep,ep->trunc<8>());
 	} else if (esRuns!=NULL) {
-		if ((rc=esnext(qr))!=RC_OK) return rc;
+		if ((rc=esnext(*res))!=RC_OK) return rc;
 	} else return RC_EOF;
 	return ses->testAbortQ();
 }
@@ -765,7 +776,7 @@ RC Sort::loadData(PINEx& qr,Value *pv,unsigned nv,MemAlloc *ma,ElementID eid)
 	const Value *vals=getValues(pins!=NULL?pins[idx]:esRuns[curRun].top());
 	if (vals==NULL) rc=RC_NOTFOUND;
 	else if (pv==NULL || nv==0) {qr.props=vals; qr.nProps=nPropIDs; qr.mode&=~PINEX_DESTROY;}
-	else for (ulong i=0; rc==RC_OK && i<nv; i++) for (unsigned j=0; ;j++)	// mv_bsrc???
+	else for (ulong i=0; rc==RC_OK && i<nv; i++) for (unsigned j=0; ;j++)	// BS::find???
 		if (j>=nPropIDs) {pv[i].setError(pv[i].property); break;}
 		else if (propIDs[j]==pv[i].property) {
 			if (ma==NULL) {pv[i]=vals[j]; pv[i].flags=NO_HEAP;} else rc=copyV(vals[j],pv[i],ma);
@@ -785,7 +796,7 @@ void Sort::reorder(bool)
 
 void Sort::getOpDescr(QODescr& qop)
 {
-	if (queryOp!=NULL) {queryOp->getOpDescr(qop); qop.flags&=~(QO_STREAM|QO_ALLPROPS); qop.level++; qop.nIn=1;}
+	if (queryOp!=NULL) {queryOp->getOpDescr(qop); qop.flags&=~(QO_STREAM|QO_ALLPROPS); qop.level++;}
 	qop.sort=sortSegs; qop.nSegs=nSegs; if (nPropIDs==0) qop.flags|=QO_PIDSORT|(mode&QO_UNIQUE);
 }
 

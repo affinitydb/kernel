@@ -24,10 +24,12 @@ namespace MVStoreKernel
 #define	LOAD_SSV			0x2000
 #define	LOAD_REF			0x1000
 #define	LOAD_COLLECTION		0x0800
+#define	LOAD_ENAV			0x0400
 
 /**
  * Internal MODE_* flags
  */
+#define	MODE_WITH_EVAL		0x80000000
 #define	MODE_PREFIX_READ	0x40000000
 #define	MODE_OLDLEN			0x20000000
 #define	MODE_REFRESH		0x10000000
@@ -42,7 +44,6 @@ namespace MVStoreKernel
 #define	VF_PREFIX			0x08
 #define	VF_REF				0x10
 #define	VF_STRING			0x20
-#define	VF_EXT				0x80
 
 struct	OrderSegQ;
 struct	PropDNF;

@@ -35,8 +35,8 @@ RC QueryCtx::process(QueryOp *&qop)
 	
 	if ((mode&MODE_COUNT)==0 && qv->stype!=SEL_COUNT) {
 		sortReq=stmt->orderBy; nSortReq=stmt->nOrderBy;
-		if (qv->dscr!=NULL) for (unsigned i=0,xPropsReq=0; i<qv->nDscr; i++) {
-			const TDescriptor &td=qv->dscr[i]; RC rc;
+		if (qv->outs!=NULL) for (unsigned i=0,xPropsReq=0; i<qv->nOuts; i++) {
+			const ValueV &td=qv->outs[i]; RC rc;
 			for (unsigned j=0; j<td.nValues; j++) switch (td.vals[j].type) {
 			case VT_EXPRTREE:
 				//???
@@ -51,7 +51,7 @@ RC QueryCtx::process(QueryOp *&qop)
 				if (td.vals[j].length!=1) {
 					// 'all_props' necessary for var td.vals[j].refPath.refN
 				} else if (td.vals[j].refPath.refN==0) {
-					if ((rc=mv_bins<PropertyID,unsigned>(*(PropertyID**)&propsReq,nPropsReq,td.vals[j].refPath.id,ses,&xPropsReq))!=RC_OK) return rc;
+					if ((rc=BIN<PropertyID>::insert(*(PropertyID**)&propsReq,nPropsReq,td.vals[j].refPath.id,td.vals[j].refPath.id,ses,&xPropsReq))!=RC_OK) return rc;
 				} else {
 					// other vars
 				}
@@ -67,8 +67,8 @@ RC QueryCtx::process(QueryOp *&qop)
 	case DT_DISTINCT: case DT_DEFAULT:
 		if ((dscr.flags&QO_UNIQUE)==0) {
 			QueryOp *q=new(ses,0,nPropsReq) Sort(qop,NULL,0,flg|QO_UNIQUE,0,propsReq,nPropsReq);
-			if (q!=NULL) qop=q; else {delete qop; qop=NULL; return RC_NORESOURCES;}
-			qop->unique(false);
+			if (q==NULL) {delete qop; qop=NULL; return RC_NORESOURCES;}
+			qop=q;
 		}
 		break;
 	case DT_DISTINCT_VALUES:
@@ -161,7 +161,7 @@ RC JoinVar::build(class QueryCtx& qctx,class QueryOp *&q) const
 	if (rc==RC_OK)  {
 		qctx.nqs-=nVars;
 		if (groupBy!=NULL && nGroupBy!=0)
-			rc=qctx.group(q,groupBy,nGroupBy,dscr!=NULL?dscr[0].vals:NULL,dscr!=NULL?dscr[0].nValues:0,nHavingConds==1?&havingCond:havingConds,nHavingConds);
+			rc=qctx.group(q,groupBy,nGroupBy,outs!=NULL?outs[0].vals:NULL,outs!=NULL?outs[0].nValues:0,nHavingConds==1?&havingCond:havingConds,nHavingConds);
 	}
 	return rc;
 }
@@ -363,17 +363,27 @@ RC SimpleVar::build(class QueryCtx& qctx,class QueryOp *&q) const
 		if (rc==RC_OK) {
 			if (fArrayFilter) {if ((qq=new(nPids,qctx.ses) ArrayFilter(qctx.ses,qctx.src[nqs0],pids,nPids))!=NULL) qctx.src[nqs0]=qq; else rc=RC_NORESOURCES;}
 			if (rc==RC_OK && path!=NULL && nPathSeg!=0) {
-				const PathSeg *ps=path;
+				const PathSeg *ps=path; const Value *pars=qctx.pars;
 				if ((qctx.flg&QO_VCOPIED)!=0) {
+					bool fParams=false;
 					if ((ps=new(qctx.ses) PathSeg[nPathSeg])==NULL) rc=RC_NORESOURCES;
 					else {
 						memcpy((PathSeg*)ps,path,nPathSeg*sizeof(PathSeg));
-						for (unsigned i=0; i<nPathSeg; i++) 
-							if (ps[i].filter!=NULL && (((PathSeg*)ps)[i].filter=Expr::clone((Expr*)ps[i].filter,qctx.ses))==NULL)
-								{qctx.ses->free((void*)ps); rc=RC_NORESOURCES; break;}
+						for (unsigned i=0; i<nPathSeg; i++) if (ps[i].filter!=NULL) {
+							fParams=true;
+							if ((((PathSeg*)ps)[i].filter=Expr::clone((Expr*)ps[i].filter,qctx.ses))==NULL) {qctx.ses->free((void*)ps); rc=RC_NORESOURCES; fParams=false; break;}
+						}
+						if (fParams && pars!=NULL && (rc=copyV(pars,qctx.nPars,*(Value**)&pars,qctx.ses))!=RC_OK) qctx.ses->free((void*)ps);	// free filters
 					}
 				}
-				if (rc==RC_OK) {if ((qq=new(qctx.ses,nPathSeg) PathOp(qctx.ses,qctx.src[nqs0],ps,nPathSeg,(qctx.flg&QO_VCOPIED)!=0))!=NULL) qctx.src[nqs0]=qq; else rc=RC_NORESOURCES;}
+				if (rc==RC_OK) {
+					QODescr qd; qctx.src[nqs0]->getOpDescr(qd);
+					if (BIN<PropertyID>::find(ps[0].pid,qd.props,qd.nProps)==NULL) {
+						QueryOp *q=new(qctx.ses,1) BodyOp(qctx.ses,qctx.src[nqs0],&ps[0].pid,1,qctx.flg);
+						if (q!=NULL) qctx.src[nqs0]=q; else rc=RC_NORESOURCES;
+					}
+					if ((qq=new(qctx.ses) PathOp(qctx.ses,qctx.src[nqs0],ps,nPathSeg,pars,qctx.nPars,(qctx.flg&QO_VCOPIED)!=0))!=NULL) qctx.src[nqs0]=qq; else rc=RC_NORESOURCES;
+				}
 			}
 		}
 	}
@@ -388,7 +398,7 @@ RC SimpleVar::build(class QueryCtx& qctx,class QueryOp *&q) const
 		if ((q=qctx.src[nqs0])!=NULL && (condProps!=NULL && lProps>0 || nConds!=0 || condIdx!=NULL || qctx.ncqs>ncqs0))
 			rc=qctx.filter(q,nConds==1?&cond:conds,nConds,condProps,lProps,condIdx,qctx.ncqs-ncqs0);
 		if (rc==RC_OK && groupBy!=NULL && nGroupBy!=0)
-			rc=qctx.group(q,groupBy,nGroupBy,dscr!=NULL?dscr[0].vals:NULL,dscr!=NULL?dscr[0].nValues:0,nHavingConds==1?&havingCond:havingConds,nHavingConds);
+			rc=qctx.group(q,groupBy,nGroupBy,outs!=NULL?outs[0].vals:NULL,outs!=NULL?outs[0].nValues:0,nHavingConds==1?&havingCond:havingConds,nHavingConds);
 	}
 	qctx.nqs=nqs0; qctx.ncqs=ncqs0; return rc;		//???
 }
@@ -417,15 +427,15 @@ RC QueryCtx::sort(QueryOp *&qop,QODescr& dscr,const OrderSegQ *os,unsigned no)
 				//??? extract properties from expr, change pi to malloc
 				fAll=true;
 			} else if (os[i].pid==PROP_SPEC_PINID) {no=i+1; break;}
-			else {PropertyID *pp=(PropertyID*)pi; mv_bins(pp,nps,os[i].pid,NULL);}
+			else {PropertyID *pp=(PropertyID*)pi; BIN<PropertyID>::insert(pp,nps,os[i].pid,os[i].pid,NULL);}
 		}
 		if ((dscr.flags&QO_ALLPROPS)==0 && (pi!=NULL && nps!=0 || fAll)) {
-			bool fProj=true; const PropertyID *pp=dscr.props,*pp2;
+			bool fBody=true; const PropertyID *pp=dscr.props,*pp2;
 			if (pp!=NULL && !fAll) for (unsigned i=0,l=dscr.nProps; ;i++)
-				if (i>=nps) {fProj=false; break;} 
-				else if (l==0 || (pp2=mv_bsrc(pi[i],pp,l))==NULL) break;
+				if (i>=nps) {fBody=false; break;} 
+				else if (l==0 || (pp2=BIN<PropertyID>::find(pi[i],pp,l))==NULL) break;
 				else {l-=unsigned(pp2-pp)+1; pp=pp2+1;}
-			if (fProj) {
+			if (fBody) {
 				QueryOp *q=new(ses,nps) BodyOp(ses,qop,pi,nps,flg);
 				if (q!=NULL) qop=q; else return RC_NORESOURCES;
 			}
@@ -554,7 +564,7 @@ RC QueryCtx::filter(QueryOp *&qop,const Expr *const *conds,unsigned nConds,const
 			bool fProj=true; const PropertyID *pp=dscr.props,*pp2;
 			if (pp!=NULL) for (unsigned i=0,l=dscr.nProps; ;i++)
 				if (i>=nPids) {fProj=false; break;} 
-				else if (l==0 || (pp2=mv_bsrc(pids[i],pp,l))==NULL) break;
+				else if (l==0 || (pp2=BIN<PropertyID>::find(pids[i],pp,l))==NULL) break;
 				else {l-=unsigned(pp2-pp)+1; pp=pp2+1;}
 			if (fProj) {
 				if (propsReq!=NULL && nPropsReq!=0) {
@@ -570,7 +580,7 @@ RC QueryCtx::filter(QueryOp *&qop,const Expr *const *conds,unsigned nConds,const
 	bool fOK=true; 
 	if (pars!=NULL && nPars>0) {
 		if ((flg&QO_VCOPIED)!=0) {if (copyV(pars,nPars,flt->params,ses)!=RC_OK) fOK=false;}
-		else {flt->params=(Value*)pars; for (unsigned i=0; i<nPars; i++) pars[i].flags=VF_EXT;}
+		else {flt->params=(Value*)pars; for (unsigned i=0; i<nPars; i++) pars[i].flags=NO_HEAP;}
 	}
 	if (fOK && conds!=NULL) {
 		flt->nConds=nConds;
@@ -605,7 +615,7 @@ RC QueryCtx::group(QueryOp *&qop,const OrderSegQ *gb,unsigned nG,const Value *tr
 		if (trs==NULL || nTrs==0) {
 			// get them from gb/nG
 		}
-		QueryOp *q=new(ses,nG,nTrs) GroupOp(ses,qop,nG,trs,nTrs,mode);
+		QueryOp *q=new(ses,nG,nTrs) AggOp(ses,qop,nG,trs,nTrs,mode);
 		if (q==NULL) rc=RC_NORESOURCES;
 		else {qop=q; if (having!=NULL && nHaving!=0) rc=filter(qop,having,nHaving,NULL,0);}
 	}

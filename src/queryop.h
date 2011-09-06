@@ -64,20 +64,12 @@ class SOutCtx;
 
 struct QODescr {
 	ulong				flags;
-	ulong				nIn;
-	ulong				nOut;
 	ulong				level;
 	const OrderSegQ		*sort;
 	ulong				nSegs;
 	const PropertyID	*props;
 	ulong				nProps;
-	QODescr() : flags(0),nIn(0),nOut(1),level(0),sort(NULL),nSegs(0),props(NULL),nProps(0) {}
-};
-
-class ReleaseLatches
-{
-public: 
-	virtual RC release()=0;
+	QODescr() : flags(0),level(0),sort(NULL),nSegs(0),props(NULL),nProps(0) {}
 };
 
 class QueryOp : public ReleaseLatches
@@ -89,11 +81,15 @@ protected:
 	ulong				mode;
 	ulong				state;
 	ulong				nSkip;
+	PINEx				*res;
+	unsigned			nOuts;
 	RC					initSkip();
 public:
 						QueryOp(Session *ses,QueryOp *qop,ulong mode);
 	virtual				~QueryOp();
-	virtual	RC			next(PINEx&,const PINEx *skip=NULL) = 0;
+	virtual	void		connect(PINEx *result);
+	virtual	void		connect(PINEx **results,unsigned nRes);
+	virtual	RC			next(const PINEx *skip=NULL) = 0;
 	virtual	RC			rewind();
 	virtual	RC			count(uint64_t& cnt,ulong nAbort=~0ul);
 	virtual	RC			loadData(PINEx& qr,Value *pv,unsigned nv,MemAlloc *ma=NULL,ElementID eid=STORE_COLLECTION_ID);
@@ -106,7 +102,9 @@ public:
 	void				setSkip(ulong n) {nSkip=n;}
 	ulong				getSkip() const {return nSkip;}
 	Session				*getSession() const {return ses;}
+	unsigned			getNOuts() const {return nOuts;}
 	RC					getData(PINEx& qr,Value *pv,unsigned nv,const PINEx *qr2=NULL,MemAlloc *ma=NULL,ElementID eid=STORE_COLLECTION_ID);
+	RC					getBody(PINEx& pe);
 };
 
 // Scan operators
@@ -124,10 +122,11 @@ public:
 	FullScan(Session *s,uint32_t msk=HOH_DELETED|HOH_HIDDEN,ulong md=0,bool fCl=false)
 		: QueryOp(s,NULL,md),mask(msk),fClasses(fCl),dirPageID(INVALID_PAGEID),heapPageID(INVALID_PAGEID),idx(~0u),slot(0) {}
 	virtual		~FullScan();
-	RC			next(PINEx&,const PINEx *skip=NULL);
+	RC			next(const PINEx *skip=NULL);
 	RC			rewind();
 	void		getOpDescr(QODescr&);
 	void		print(SOutCtx& buf,int level) const;
+	RC			release();
 };
 
 class ClassScan : public QueryOp
@@ -137,7 +136,7 @@ class ClassScan : public QueryOp
 public:
 	ClassScan(Session *ses,class Class *cls,ulong md);
 	virtual		~ClassScan();
-	RC			next(PINEx&,const PINEx *skip=NULL);
+	RC			next(const PINEx *skip=NULL);
 	RC			rewind();
 	RC			count(uint64_t& cnt,ulong nAbort=~0ul);
 	void		getOpDescr(QODescr&);
@@ -165,7 +164,7 @@ public:
 	IndexScan(Session *ses,ClassIndex& idx,ulong flg,ulong np,ulong md);
 	virtual				~IndexScan();
 	void				*operator new(size_t s,Session *ses,ulong nRng,ClassIndex& idx) {return ses->malloc(s+nRng*2*sizeof(SearchKey)+idx.getNSegs()*(sizeof(OrderSegQ)+sizeof(PropertyID)));}
-	RC					next(PINEx&,const PINEx *skip=NULL);
+	RC					next(const PINEx *skip=NULL);
 	RC					rewind();
 	RC					count(uint64_t& cnt,ulong nAbort=~0ul);
 	RC					loadData(PINEx& qr,Value *pv,unsigned nv,MemAlloc *ma=NULL,ElementID eid=STORE_COLLECTION_ID);
@@ -178,14 +177,14 @@ public:
 
 class ArrayScan : public QueryOp
 {
-	PID			*pids;
-	ulong		nPids;
-	ulong		idx;
+	PID				*pids;
+	ulong			nPids;
+	ulong			idx;
 public:
 	ArrayScan(Session *ses,const PID *pds,ulong nP,ulong md);
 	void*		operator new(size_t s,Session *ses,ulong nPids) throw() {return ses->malloc(s+nPids*sizeof(PID));}
 	virtual		~ArrayScan();
-	RC			next(PINEx&,const PINEx *skip=NULL);
+	RC			next(const PINEx *skip=NULL);
 	RC			rewind();
 	RC			count(uint64_t& cnt,ulong nAbort=~0ul);
 	void		getOpDescr(QODescr&);
@@ -210,7 +209,7 @@ public:
 	void	*operator new(size_t s,Session *ses,ulong nps,size_t lw) throw() {return ses->malloc(s+lw+(nps==0?0:(nps-1)*sizeof(PropertyID)));}
 	FTScan(Session *ses,const char *w,size_t lW,const PropertyID *pids,ulong nps,ulong md,ulong f,bool fStp);
 	virtual		~FTScan();
-	RC			next(PINEx&,const PINEx *skip=NULL);
+	RC			next(const PINEx *skip=NULL);
 	RC			rewind();
 	void		getOpDescr(QODescr&);
 	void		print(SOutCtx& buf,int level) const;
@@ -232,7 +231,7 @@ public:
 	PhraseFlt(Session *ses,FTScan *const *fts,ulong ns,ulong md);
 	virtual		~PhraseFlt();
 	void		*operator new(size_t s,Session *ses,ulong ns) throw() {return ses->malloc(s+int(ns-1)*sizeof(FTScanS));}
-	RC			next(PINEx&,const PINEx *skip=NULL);
+	RC			next(const PINEx *skip=NULL);
 	RC			rewind();
 	void		getOpDescr(QODescr&);
 	void		print(SOutCtx& buf,int level) const;
@@ -254,10 +253,12 @@ protected:
 	ulong			cur;
 	QueryOpS		ops[1];
 public:
-	MergeIDOp(Session *s,ulong md,bool f) : QueryOp(s,NULL,md|QO_UNIQUE),fOr(f),nOps(0),cur(~0u) {}
+	MergeIDOp(Session *s,ulong md,bool f) : QueryOp(s,NULL,md|QO_UNIQUE),fOr(f),nOps(0),cur(~0u) {nOuts=1;}
 	void	*operator new(size_t s,Session *ses,ulong no) throw() {return ses->malloc(s+int(no-1)*sizeof(QueryOpS));}
 	virtual	~MergeIDOp();
-	RC		next(PINEx&,const PINEx *skip=NULL);
+	void	connect(PINEx *result);
+	void	connect(PINEx **results,unsigned nRes);
+	RC		next(const PINEx *skip=NULL);
 	RC		rewind();
 	RC		loadData(PINEx& qr,Value *pv,unsigned nv,MemAlloc *ma=NULL,ElementID eid=STORE_COLLECTION_ID);
 	void	reorder(bool);
@@ -278,16 +279,19 @@ class MergeOp : public QueryOp
 	Value				vals[3];
 	PID					saveID;
 	EncPINRef			saveEPR;
+	PINEx				pexR;
 	PINEx				saveR;
-	PINEx				nextR;
+	PINEx				*pR;
 	class	PIDStore	*pids;
 
 public:
 	MergeOp(Session *s,QueryOp *qop1,PropertyID pid1,QueryOp *qop2,PropertyID pid2,QUERY_SETOP qo,ulong md)
-		: QueryOp(s,qop1,md|QO_UNIQUE),queryOp2(qop2),propID1(pid1),propID2(pid2),op(qo),mstate(0),didx(0),saveR(s),nextR(s),pids(NULL)
-		{vals[0].setError(),vals[1].setError(),vals[2].setError();}
+		: QueryOp(s,qop1,md|QO_UNIQUE),queryOp2(qop2),propID1(pid1),propID2(pid2),op(qo),mstate(0),didx(0),pexR(s),saveR(s),pR(&pexR),pids(NULL)
+			{vals[0].setError(),vals[1].setError(),vals[2].setError(); if (qo==QRY_EXCEPT) nOuts=1; else nOuts+=qop2->getNOuts();}
 	virtual	~MergeOp();
-	RC		next(PINEx&,const PINEx *skip=NULL);
+	void	connect(PINEx *result);
+	void	connect(PINEx **results,unsigned nRes);
+	RC		next(const PINEx *skip=NULL);
 	RC		rewind();
 	RC		loadData(PINEx& qr,Value *pv,unsigned nv,MemAlloc *ma=NULL,ElementID eid=STORE_COLLECTION_ID);
 	void	unique(bool);
@@ -305,7 +309,7 @@ class HashOp : public QueryOp
 public:
 	HashOp(Session *s,QueryOp *qop1,QueryOp *qop2) : QueryOp(s,qop1,0),queryOp2(qop2),pids(NULL) {}
 	virtual	~HashOp();
-	RC		next(PINEx&,const PINEx *skip=NULL);
+	RC		next(const PINEx *skip=NULL);
 	void	getOpDescr(QODescr&);
 	void	reorder(bool);
 	void	print(SOutCtx& buf,int level) const;
@@ -331,7 +335,7 @@ class LoopJoin : public QueryOp
 	void* operator new(size_t s,Session *ses,ulong nCondProps) throw() {return ses->malloc(s+int(nCondProps-1)*sizeof(PropertyID));}
 public:
 	virtual	~LoopJoin();
-	RC		next(PINEx&,const PINEx *skip=NULL);
+	RC		next(const PINEx *skip=NULL);
 	RC		rewind();
 	void	getOpDescr(QODescr&);
 	void	print(SOutCtx& buf,int level) const;
@@ -348,7 +352,7 @@ public:
 	BodyOp(Session *s,QueryOp *q,const PropertyID *pps,ulong nP,ulong mode=0) : QueryOp(s,q,mode),nProps(nP)
 											{if (pps!=NULL && nP!=0) memcpy((PropertyID*)props,pps,nP*sizeof(PropertyID));}
 	void*		operator new(size_t s,Session *ses,unsigned nProps) throw() {return ses->malloc(s+nProps*sizeof(PropertyID));}
-	RC			next(PINEx&,const PINEx *skip=NULL);
+	RC			next(const PINEx *skip=NULL);
 	RC			rewind();
 	RC			loadData(PINEx& qr,Value *pv,unsigned nv,MemAlloc *ma=NULL,ElementID eid=STORE_COLLECTION_ID);
 	void		reorder(bool);
@@ -374,7 +378,7 @@ public:
 	Filter(Session *ses,QueryOp *qop,ulong nPars,size_t lp,ulong nqs,ulong md);
 	void*		operator new(size_t s,Session *ses,size_t lp) throw() {return ses->malloc(s+lp);}
 	virtual		~Filter();
-	RC			next(PINEx&,const PINEx *skip=NULL);
+	RC			next(const PINEx *skip=NULL);
 	void		print(SOutCtx& buf,int level) const;
 	friend	class	QueryCtx;
 };
@@ -387,7 +391,7 @@ public:
 	ArrayFilter(Session *ses,QueryOp *q,const PID *pds,ulong nP);
 	void*		operator	new(size_t s,ulong nPids,Session *ses) throw() {return ses->malloc(s+nPids*sizeof(PID));}
 	virtual		~ArrayFilter();
-	RC			next(PINEx&,const PINEx *skip=NULL);
+	RC			next(const PINEx *skip=NULL);
 	void		print(SOutCtx& buf,int level) const;
 };
 
@@ -419,7 +423,9 @@ class Sort : public QueryOp
 
 public:
 	virtual		~Sort();
-	RC			next(PINEx&,const PINEx *skip=NULL);
+	void		connect(PINEx *result);
+	void		connect(PINEx **results,unsigned nRes);
+	RC			next(const PINEx *skip=NULL);
 	RC			rewind();
 	RC			count(uint64_t& cnt,ulong nAbort=~0ul);
 	RC			loadData(PINEx& qr,Value *pv,unsigned nv,MemAlloc *ma=NULL,ElementID eid=STORE_COLLECTION_ID);
@@ -446,39 +452,52 @@ private:
 
 class PathOp : public QueryOp
 {
+	struct PathState {
+		PathState	*next;
+		int			state;
+		unsigned	idx;
+		unsigned	rcnt;
+		Value		seg;
+		Value		rep;
+		unsigned	cidx;
+	};
 	const	PathSeg	*const	path;
 	const	unsigned		nPathSeg;
+	const	Value	*const	params;
+	const	unsigned		nParams;
 	const	bool			fCopied;
-	unsigned				idx;
-	unsigned				rep;
-	IntNav					*nav;
-	Value					*arr;
-	unsigned				lArr;
-	unsigned				cidx;
-	unsigned				pstate;
+	bool					fThrough;
+	PathState				*pst;
+	PathState				*freePst;
 	PINEx					pex;
-	Value					*vals;
-	unsigned				nvals;
-	PropertyList			props[1];
+private:
+	RC push(unsigned i,unsigned r) {
+		PathState *ps;
+		if ((ps=freePst)!=NULL) freePst=ps->next; else if ((ps=new(ses) PathState)==NULL) return RC_NORESOURCES;
+		ps->next=pst; ps->state=0; ps->cidx=0; ps->idx=i; ps->rcnt=r; ps->seg.setError(); ps->rep.setError(); pst=ps;
+		return RC_OK;
+	}
+	void pop() {PathState *ps=pst; if (ps!=NULL) {pst=ps->next; freeV(ps->seg); freeV(ps->rep); ps->next=freePst; freePst=ps;}}
 public:
-	PathOp(Session *s,QueryOp *qop,const PathSeg *ps,unsigned nSegs,bool fC) : QueryOp(s,qop,0),path(ps),nPathSeg(nSegs),fCopied(fC),
-				idx(0),rep(0),nav(NULL),arr(NULL),lArr(0),cidx(0),pstate(0),pex(s),vals(NULL),nvals(0) {memset(props,0,nPathSeg*sizeof(PropertyList));}
+	PathOp(Session *s,QueryOp *qop,const PathSeg *ps,unsigned nSegs,const Value *pars,unsigned nP,bool fC)
+		: QueryOp(s,qop,0),path(ps),nPathSeg(nSegs),params(pars),nParams(nP),fCopied(fC),fThrough(true),pst(NULL),freePst(NULL),pex(s) {}
 	virtual		~PathOp();
-	void		*operator new(size_t s,Session *ses,unsigned nSegs) {return ses->malloc(s+int(nSegs-1)*sizeof(PropertyList));}
-	RC			next(PINEx&,const PINEx *skip=NULL);
+	void		connect(PINEx *result);
+	void		connect(PINEx **results,unsigned nRes);
+	RC			next(const PINEx *skip=NULL);
 	RC			rewind();
 	void		getOpDescr(QODescr&);
 	void		print(SOutCtx& buf,int level) const;
 	RC			release();
 };
 
-class GroupOp : public QueryOp
+class AggOp : public QueryOp
 {
 public:
-	GroupOp(Session *s,QueryOp *q,unsigned nGroup,const Value *trs,unsigned nTrs,ulong mode) : QueryOp(s,q,mode) {}
-	virtual		~GroupOp();
+	AggOp(Session *s,QueryOp *q,unsigned nGroup,const Value *trs,unsigned nTrs,ulong mode) : QueryOp(s,q,mode) {}
+	virtual		~AggOp();
 	void*		operator new(size_t s,Session *ses,unsigned nG,unsigned nTrs) throw() {return ses->malloc(s+nG*sizeof(OrderSegQ)+nTrs*sizeof(Value));}
-	RC			next(PINEx&,const PINEx *skip=NULL);
+	RC			next(const PINEx *skip=NULL);
 	RC			rewind();
 	void		getOpDescr(QODescr&);
 	void		print(SOutCtx& buf,int level) const;
@@ -486,13 +505,12 @@ public:
 
 class TransOp : public QueryOp
 {
-	const	TDescriptor	*dscr;
-	const	unsigned	nDscr;
+	const	ValueV		*outs;
 	const	bool		fCopied;
 public:
-	TransOp(Session *s,QueryOp *q,const TDescriptor *td,unsigned nT,ulong mode,bool fC) : QueryOp(s,q,mode),dscr(td),nDscr(nT),fCopied(fC) {}
+	TransOp(Session *s,QueryOp *q,const ValueV *os,unsigned nO,ulong mode,bool fC) : QueryOp(s,q,mode),outs(os),fCopied(fC) {nOuts=nO;}
 	virtual		~TransOp();
-	RC			next(PINEx&,const PINEx *skip=NULL);
+	RC			next(const PINEx *skip=NULL);
 	void		getOpDescr(QODescr&);
 	void		print(SOutCtx& buf,int level) const;
 };

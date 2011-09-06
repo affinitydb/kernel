@@ -18,7 +18,7 @@ RC QueryPrc::loadPIN(Session *ses,const PID& id,PIN *&pin,unsigned mode,PINEx *p
 {
 	PINEx cb(ses,id); RC rc=RC_OK; assert(pin==NULL||pin->ses==ses);
 	if (pcb==NULL) {pcb=&cb; cb.addr=pin!=NULL?pin->addr:PageAddr::invAddr;}
-	if (pcb->props==NULL && pcb->pb.isNull() && (rc=getBody(*pcb,TVO_READ,(mode&MODE_DELETED)!=0?GB_DELETED:0,NULL,vid))!=RC_OK)		// tvo?
+	if (pcb->props==NULL && pcb->pb.isNull() && (rc=getBody(*pcb,TVO_READ,(mode&MODE_DELETED)!=0?GB_DELETED:0,vid))!=RC_OK)		// tvo?
 		{if (rc==RC_DELETED && pin!=NULL) pin->mode|=PIN_DELETED; return rc;}
 
 	MemAlloc *mm=ma!=NULL?ma:(MemAlloc*)ses;
@@ -75,14 +75,14 @@ RC QueryPrc::getClassInfo(Session *ses,PIN *pin)
 				ElementID prefix=ctx->getPrefix();
 				for (unsigned i=0; i<nPids; i++) {va[i].setURIID(pids[i]); va[i].eid=prefix+i;}
 				vv.set(va,nPids); vv.setPropID(PROP_SPEC_PROPERTIES);
-				if ((rc=mv_binscmp<Value,uint32_t>(pin->properties,pin->nProperties,vv,ses))!=RC_OK) ses->free(va);
+				if ((rc=BIN<Value,PropertyID,ValCmp,uint32_t>::insert(pin->properties,pin->nProperties,vv.property,vv,ses))!=RC_OK) ses->free(va);
 			}
 		}
 	}
 	if (rc==RC_OK && (cls->getFlags()&CLASS_INDEXED)!=0) {
 		if ((cv=pin->findProperty(PROP_SPEC_CLASS_INFO))==NULL) {
 			vv.set((unsigned)CLASS_INDEXED); vv.setPropID(PROP_SPEC_CLASS_INFO);
-			rc=mv_binscmp<Value,uint32_t>(pin->properties,pin->nProperties,vv,ses);
+			rc=BIN<Value,PropertyID,ValCmp,uint32_t>::insert(pin->properties,pin->nProperties,vv.property,vv,ses);
 		}
 		if ((ci=cls->getIndex())!=NULL) {
 			if (pin->findProperty(PROP_SPEC_INDEX_INFO)!=NULL) rc=RC_CORRUPTED;
@@ -93,15 +93,15 @@ RC QueryPrc::getClassInfo(Session *ses,PIN *pin)
 					ElementID prefix=ctx->getPrefix();
 					for (unsigned i=0; i<nFields; i++) {pv[i].setU64(0ULL); pv[i].iseg=*is++; pv[i].eid=prefix+i;}
 					vv.set(pv,nFields); vv.setPropID(PROP_SPEC_INDEX_INFO);
-					rc=mv_binscmp<Value,uint32_t>(pin->properties,pin->nProperties,vv,ses);
+					rc=BIN<Value,PropertyID,ValCmp,uint32_t>::insert(pin->properties,pin->nProperties,vv.property,vv,ses);
 				}
 			}
 		}
 		if (rc==RC_OK) {
 			vv.setU64(nPINs); vv.setPropID(PROP_SPEC_NINSTANCES);
-			if ((rc=mv_binscmp<Value,uint32_t>(pin->properties,pin->nProperties,vv,ses))==RC_OK && nDeletedPINs!=0) {
+			if ((rc=BIN<Value,PropertyID,ValCmp,uint32_t>::insert(pin->properties,pin->nProperties,vv.property,vv,ses))==RC_OK && nDeletedPINs!=0) {
 				vv.setU64(nDeletedPINs); vv.setPropID(PROP_SPEC_NDINSTANCES);
-				rc=mv_binscmp<Value,uint32_t>(pin->properties,pin->nProperties,vv,ses);
+				rc=BIN<Value,PropertyID,ValCmp,uint32_t>::insert(pin->properties,pin->nProperties,vv.property,vv,ses);
 			}
 		}
 	}
@@ -124,21 +124,13 @@ RC QueryPrc::loadValue(Session *ses,const PID& id,PropertyID propID,ElementID ei
 	PINEx cb(ses,id); RC rc; return (rc=getBody(cb))!=RC_OK?rc:loadV(res,propID,cb,mode|LOAD_SSV,ses,eid);
 }
 
-RC QueryPrc::safeLoadValue(Session *ses,const PID& id,PropertyID propID,ElementID eid,Value& res,const PINEx **vars,unsigned nVars,ulong mode)
-{
-	PINEx cb(ses,id); RC rc=getBody(cb,TVO_READ,GB_SAFE);
-	if (rc==RC_FALSE) {
-		//...if not -> load vars, free pages, get this
-		//...if PGCTL_NOREL -> deadlock
-	}
-	return rc==RC_OK?loadV(res,propID,cb,mode|LOAD_SSV,ses,eid):rc;
-}
-
 RC QueryPrc::loadSSVs(Value *values,unsigned nValues,unsigned mode,Session *ses,MemAlloc *ma)
 {
 	for (ulong i=0; i<nValues; ++i) {
 		Value& v=values[i]; RC rc;
 		if ((v.flags&VF_SSV)!=0) switch (v.type) {
+		case VT_STRUCT:
+			//????
 		case VT_ARRAY:
 			if ((rc=loadSSVs(const_cast<Value*>(v.varray),v.length,mode,ses,ma))!=RC_OK) return rc;
 			v.flags&=~VF_SSV; break;
@@ -150,7 +142,7 @@ RC QueryPrc::loadSSVs(Value *values,unsigned nValues,unsigned mode,Session *ses,
 			const HeapPageMgr::HeapPage *hp = (const HeapPageMgr::HeapPage *)pb->getPageBuf(); 
 			if ((rc=loadSSV(v,href->type.getType(),hp->getObject(hp->getOffset(href->idx)),mode,ma))!=RC_OK) return rc;
 			for (ulong j=i+1; j<nValues; j++) if ((values[j].flags&VF_SSV)!=0) {
-				if (values[j].type==VT_ARRAY) {
+				if (values[j].type==VT_ARRAY || values[j].type==VT_STRUCT) {
 					// ???
 				} else {
 					href=(const HRefSSV *)&values[j].id; assert(values[j].type==VT_STREAM);
@@ -249,7 +241,7 @@ RC QueryPrc::loadV(Value& v,ulong propID,const PINEx& cb,ulong mode,MemAlloc *ma
 	}
 	if (cb.props!=NULL) {
 		//?????
-		const Value *pv=mv_bsrcmp<Value,PropertyID>(propID,cb.props,cb.nProps);
+		const Value *pv=BIN<Value,PropertyID,ValCmp>::find(propID,cb.props,cb.nProps);
 		if ((mode&LOAD_CARDINALITY)!=0) {
 			v.set(unsigned(pv==NULL?0u:pv->type==VT_ARRAY?pv->length:pv->type==VT_COLLECTION?pv->nav->count():1u));
 			v.property=propID; return RC_OK;

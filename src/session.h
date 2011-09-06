@@ -221,6 +221,7 @@ struct SubTx
 	PageSet		defClass;
 	PageSet		defFree;
 	ulong		nInserted;
+	SubAlloc::SubMark rmark;
 	SubTx(Session *s);
 	~SubTx();
 	void		addTxDelete(TxDelete *td) {if (td!=NULL) {td->next=txDelete; txDelete=td;}}
@@ -228,6 +229,12 @@ struct SubTx
 	RC			addToHeap(const PageID *pids,ulong nPages,bool fC) {return fC?defClass.add(pids,nPages):defHeap.add(pids,nPages);}
 	bool		testHeap(PageID pid) {for (SubTx *tx=this; tx!=NULL; tx=tx->next) if (tx->defHeap[pid]) return true; return false;}
 	void		cleanup();
+};
+
+class ReleaseLatches
+{
+public: 
+	virtual RC release() = 0;
 };
 
 class Session : public MemAlloc
@@ -263,6 +270,8 @@ class Session : public MemAlloc
 	RW_LockType		classLocked;
 	volatile bool	fAbort;
 	ulong			txil;
+	SubAlloc		*repl;
+	ReleaseLatches	*rlatch;
 
 	unsigned		itf;
 	char			*URIBase;
@@ -343,6 +352,7 @@ public:
 	void			regLatched(PBlock *pb) {assert(!isLatched(pb)&&nLatched<MAXLATCHED); latched[nLatched++]=pb;}
 	void			unregLatched(PBlock *pb) {assert(isLatched(pb)); if (latched[--nLatched]!=pb) for (int i=nLatched; --i>=0;)
 												if (latched[i]==pb) {do latched[i]=latched[i+1]; while (++i<nLatched); break;}}
+	RC				releaseLatches() const {return rlatch!=NULL?rlatch->release():RC_OK;}
 
 	RC				pushTx();
 	RC				popTx(bool fCommit,bool fAll);
@@ -350,6 +360,8 @@ public:
 
 	RC				addToHeap(PageID pid,bool fC) {return tx.addToHeap(pid,fC);}
 	RC				addToHeap(const PageID *pids,ulong nPages,bool fC) {return tx.addToHeap(pids,nPages,fC);}
+
+	RC				replicate(const class PIN *pin);
 
 	static	bool	hasPrefix(const char *name,size_t lName);
 
@@ -376,6 +388,8 @@ public:
 	friend	class	SInCtx;
 	friend	class	SOutCtx;
 	friend	class	Classifier;
+	friend	class	Cursor;
+	friend	class	Stmt;
 };
 
 };

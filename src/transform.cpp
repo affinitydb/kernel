@@ -15,22 +15,22 @@ using namespace MVStoreKernel;
 
 TransOp::~TransOp()
 {
-	if (fCopied && dscr!=NULL) {
-		for (ulong i=0; i<nDscr; i++) if (dscr[i].vals!=NULL) {
-			for (ulong j=0; j<dscr[i].nValues; j++) freeV(dscr[i].vals[j]);
-			ses->free(dscr[i].vals);
+	if (fCopied && outs!=NULL) {
+		for (ulong i=0; i<nOuts; i++) if (outs[i].vals!=NULL) {
+			for (ulong j=0; j<outs[i].nValues; j++) freeV(outs[i].vals[j]);
+			ses->free(outs[i].vals);
 		}
-		ses->free((void*)dscr);
+		ses->free((void*)outs);
 	}
 }
 
-RC TransOp::next(PINEx &qr,const PINEx *skip)
+RC TransOp::next(const PINEx *skip)
 {
-	RC rc=RC_OK; //unsigned nP=0; ulong i,np=nDscr; //min(npins,(unsigned)nDscr);
+	RC rc=RC_OK; //unsigned nP=0; ulong i,np=nOuts; //min(npins,(unsigned)nOuts);
 #if 0
 //	for (i=0; i<np; ++nP,++i) if ((pins[i]=new(ses) PIN(ses,PIN::defPID,PageAddr::invAddr))==NULL) {rc=RC_NORESOURCES; break;}
 	for (i=0; rc==RC_OK && i<np; i++) {
-		PIN *pin=NULL/*pins[i]*/; const PIN *in; const TDescriptor &td=dscr[i];
+		PIN *pin=NULL/*pins[i]*/; const PIN *in; const ValueV &td=outs[i];
 		for (ulong j=0; rc==RC_OK && j<td.nValues; j++) {
 			const Value& v=td.vals[j],*pv=&v,*cv; Value w; ValueType ty=VT_ANY; ExprOp op=OP_SET;
 			if (v.type==VT_VARREF && v.length==0) {
@@ -40,7 +40,7 @@ RC TransOp::next(PINEx &qr,const PINEx *skip)
 					const Value *props=in->properties; ulong nprops=in->nProperties;
 					if (props!=NULL) for (ulong k=0; k<nprops; ++props,++k)
 						if ((v.meta&META_PROP_IFNOTEXIST)==0 || pin->findProperty(props->property)==NULL) {
-							w=*props; w.flags=w.flags&VF_EXT|NO_HEAP; w.op=v.op; w.meta|=META_PROP_DERIVED;
+							w=*props; w.flags=NO_HEAP; w.op=v.op; w.meta|=META_PROP_DERIVED;
 							if ((rc=pin->modify(&w,v.op==OP_ADD_BEFORE?STORE_FIRST_ELEMENT:STORE_COLLECTION_ID,w.eid,0,ses))!=RC_OK) break;
 						}
 				} else {
@@ -71,7 +71,7 @@ RC TransOp::next(PINEx &qr,const PINEx *skip)
 			switch (v.type) {
 			case VT_VARREF:
 				if ((v.refPath.flags&RPTH_RESPIN)!=0) {
-					if (v.refPath.refN>=nDscr && (v.meta&META_PROP_IFEXIST)==0) rc=RC_NOTFOUND;
+					if (v.refPath.refN>=nOuts && (v.meta&META_PROP_IFEXIST)==0) rc=RC_NOTFOUND;
 					if (v.refPath.refN<np) {in=pins[v.refPath.refN]; assert(in!=NULL);} else continue;
 					if (v.length==0) {w.set((IPIN*)in); pv=&w;}
 					else if ((pv=in->findProperty(v.length==1?v.refPath.id:v.refPath.ids[0]))==NULL)
@@ -139,7 +139,6 @@ RC TransOp::next(PINEx &qr,const PINEx *skip)
 					}
 					if (rc!=RC_OK) continue;
 				} else if (pv->type==VT_COLLECTION) {
-					if ((pv->flags&VF_EXT)!=0) {rc=RC_TYPE; continue;}
 					((Navigator*)pv->nav)->setType(ty);
 				} else {
 					if (pv!=&w) {w=*pv; w.flags=w.flags&~HEAP_TYPE_MASK|NO_HEAP; pv=&w;}

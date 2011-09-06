@@ -58,11 +58,11 @@ PBlock *FullScan::init(bool& fMyPage,bool fLast)
 	state|=QST_BOF|QST_EOF; return NULL;
 }
 
-RC FullScan::next(PINEx& qr,const PINEx *)
+RC FullScan::next(const PINEx *)
 {
-	PBlock *pb=NULL; bool fMyPage=true; assert(qr.ses==ses);
-	if (!qr.pb.isNull() && qr.pb->getPageID()==heapPageID) {pb=qr.pb; fMyPage=!qr.pb.isSet(PGCTL_NOREL); qr.pb=NULL;}
-	qr.cleanup(); RC rc; PBlockP pDir;
+	PBlock *pb=NULL; bool fMyPage=true; assert(res==NULL || res->ses==ses);
+	if (res!=NULL && !res->pb.isNull() && res->pb->getPageID()==heapPageID) {pb=res->pb; fMyPage=!res->pb.isSet(PGCTL_NOREL); res->pb=NULL;}
+	res->cleanup(); RC rc; PBlockP pDir;
 	if (idx==~0u && (pb=init(fMyPage))==NULL) return RC_EOF;
 	for (;;) {
 		if ((rc=ses->testAbortQ())!=RC_OK) return rc;
@@ -81,21 +81,21 @@ RC FullScan::next(PINEx& qr,const PINEx *)
 			} else if ((mode&QO_FORUPDATE)!=0 && !pb->isULocked() && !pb->isXLocked()) pb=NULL;
 		}
 		if (pb!=NULL && slot<((const HeapPageMgr::HeapPage*)pb->getPageBuf())->nSlots) {
-			qr.hp=(const HeapPageMgr::HeapPage *)pb->getPageBuf(); qr.addr.pageID=qr.hp->hdr.pageID;
-			while (slot<qr.hp->nSlots) {
-				qr.hpin=(const HeapPageMgr::HeapPIN *)qr.hp->getObject(qr.hp->getOffset(PageIdx(slot))); qr.addr.idx=(PageIdx)slot++;
-				if (qr.hpin==NULL) {
-					qr.pb=(PBlock*)pb;
-					if (ses->getStore()->lockMgr->getTVers(qr,(mode&QO_FORUPDATE)!=0?TVO_UPD:TVO_READ)==RC_OK && qr.tv!=NULL) {
+			res->hp=(const HeapPageMgr::HeapPage *)pb->getPageBuf(); res->addr.pageID=res->hp->hdr.pageID;
+			while (slot<res->hp->nSlots) {
+				res->hpin=(const HeapPageMgr::HeapPIN *)res->hp->getObject(res->hp->getOffset(PageIdx(slot))); res->addr.idx=(PageIdx)slot++;
+				if (res->hpin==NULL) {
+					res->pb=(PBlock*)pb;
+					if (ses->getStore()->lockMgr->getTVers(*res,(mode&QO_FORUPDATE)!=0?TVO_UPD:TVO_READ)==RC_OK && res->tv!=NULL) {
 						// check deleted in uncommitted tx
 					}
-					qr.pb=NULL;
-				} else if (qr.hpin->hdr.getType()==HO_PIN) {
-					if (!qr.hpin->getAddr(const_cast<PID&>(qr.id))) {const_cast<PID&>(qr.id).pid=qr.addr; const_cast<PID&>(qr.id).ident=STORE_OWNER;}
+					res->pb=NULL;
+				} else if (res->hpin->hdr.getType()==HO_PIN) {
+					if (!res->hpin->getAddr(const_cast<PID&>(res->id))) {const_cast<PID&>(res->id).pid=res->addr; const_cast<PID&>(res->id).ident=STORE_OWNER;}
 					if (!ses->inWriteTx()) {
 						// check deleted before/inserted in uncommited
 					}
-					if ((qr.hpin->hdr.descr&mask)==mask>>16) {qr.pb=(PBlock*)pb; if (!fMyPage) qr.pb.set(PGCTL_NOREL); qr.epr.flags|=PINEX_ADDRSET; return RC_OK;}
+					if ((res->hpin->hdr.descr&mask)==mask>>16) {res->pb=(PBlock*)pb; if (!fMyPage) res->pb.set(PGCTL_NOREL); res->epr.flags|=PINEX_ADDRSET; return RC_OK;}
 				}
 			}
 		}
@@ -107,6 +107,14 @@ RC FullScan::rewind()
 {
 	idx=~0u;
 	//???if (fMyPage && pb!=NULL) pb->release((mode&QO_FORUPDATE)!=0?QMGR_UFORCE:0);
+	return RC_OK;
+}
+
+RC FullScan::release()
+{
+	if (res!=NULL && !res->pb.isNull()) {
+		res->pb.release();
+	}
 	return RC_OK;
 }
 
@@ -135,9 +143,9 @@ ClassScan::~ClassScan()
 	if (scan!=NULL) scan->destroy();
 }
 
-RC ClassScan::next(PINEx& qr,const PINEx *skip)
+RC ClassScan::next(const PINEx *skip)
 {
-	qr.cleanup(); qr=PIN::defPID; RC rc;
+	RC rc; if (res!=NULL) {res->cleanup(); *res=PIN::defPID;}
 	if ((state&QST_INIT)!=0) {
 		state&=~QST_INIT; if ((scan=ses->getStore()->classMgr->getClassMap().scan(ses,&key,&key,SCAN_EXACT))==NULL) return RC_NORESOURCES;
 		if (nSkip>0 && (rc=scan->skip(nSkip))!=RC_OK || (rc=ses->testAbortQ())!=RC_OK) {state|=QST_EOF|QST_BOF; return rc;}
@@ -145,7 +153,7 @@ RC ClassScan::next(PINEx& qr,const PINEx *skip)
 	size_t lData; const byte *er; byte *sk=NULL,lsk=0; assert(scan!=NULL);
 	if (skip!=NULL && (skip->epr.lref!=0 || skip->unpack()==RC_OK)) {sk=skip->epr.buf; lsk=skip->epr.lref;}
 	if ((state&QST_EOF)==0) while ((er=(const byte*)scan->nextValue(lData,GO_NEXT,sk,lsk))!=NULL) {
-		if ((rc=ses->testAbortQ())==RC_OK) {memcpy(qr.epr.buf,er,qr.epr.lref=(byte)lData); if ((mode&QO_CHECKED)!=0) qr.epr.flags|=PINEX_ACL_CHKED;}
+		if ((rc=ses->testAbortQ())==RC_OK && res!=NULL) {memcpy(res->epr.buf,er,res->epr.lref=(byte)lData); if ((mode&QO_CHECKED)!=0) res->epr.flags|=PINEX_ACL_CHKED;}
 		return rc;
 	}
 	state|=QST_EOF;
@@ -231,9 +239,10 @@ RC IndexScan::init(bool fF)
 	return rc==RC_OK?ses->testAbortQ():rc;
 }
 
-RC IndexScan::next(PINEx& qr,const PINEx *skip)
+RC IndexScan::next(const PINEx *skip)
 {
-	qr.cleanup(); qr=PIN::defPID; RC rc; size_t l; const byte *er;
+	RC rc; size_t l; const byte *er;
+	if (res!=NULL) {res->cleanup(); *res=PIN::defPID;}
 	if ((state&QST_INIT)!=0) {
 		state&=~QST_INIT; if ((rc=init())!=RC_OK) return rc;
 	} else if (scan==NULL) return RC_EOF;
@@ -244,13 +253,16 @@ RC IndexScan::next(PINEx& qr,const PINEx *skip)
 		while ((er=(const byte*)scan->nextValue(l,GO_NEXT))!=NULL) {
 			if ((rc=ses->testAbortQ())!=RC_OK) return rc;
 			// if (PINRef::hasU1() && PINRef::u1!=classID) continue;
-			qr=PIN::defPID; memcpy(qr.epr.buf,er,qr.epr.lref=(byte)l);
 			if ((mode&QO_UNIQUE)!=0 && PINRef::isColl(er,l)) {
-				if (pids!=NULL) {if ((*pids)[qr]) continue;}
+				PINEx pex(ses); memcpy(pex.epr.buf,er,pex.epr.lref=(byte)l);
+				if (pids!=NULL) {if ((*pids)[pex]) continue;}
 				else if ((pids=new(ses) PIDStore(ses))==NULL) return RC_NORESOURCES;
-				(*pids)+=qr;
+				(*pids)+=pex;
 			}
-			if ((mode&QO_CHECKED)!=0) qr.epr.flags|=PINEX_ACL_CHKED;
+			if (res!=NULL) {
+				*res=PIN::defPID; memcpy(res->epr.buf,er,res->epr.lref=(byte)l);
+				if ((mode&QO_CHECKED)!=0) res->epr.flags|=PINEX_ACL_CHKED;
+			}
 			return RC_OK;
 		}
 		if (nRanges==0 || rangeIdx+1>=nRanges) break;
@@ -299,7 +311,7 @@ RC IndexScan::loadData(PINEx& qr,Value *pv,unsigned nv,MemAlloc *ma,ElementID ei
 			if ((pv=vals=new(ses) Value[nv])==NULL) return RC_NORESOURCES;
 			for (unsigned i=0; i<nv; i++) vals[i].setError(is[i].propID);
 		} else for (unsigned i=0; i<nv; i++) {freeV(vals[i]); vals[i].setError(is[i].propID);}
-		qr.props=pv; qr.nProps=nv; qr.epr.flags&=~PINEX_DESTROY;
+		res->props=pv; res->nProps=nv; res->epr.flags&=~PINEX_DESTROY;
 	}
 	return scan->getKey().getValues(pv,nv,index.getIndexSegs(),index.getNSegs(),ses,true,ma);
 }
@@ -366,14 +378,14 @@ ArrayScan::~ArrayScan()
 {
 }
 
-RC ArrayScan::next(PINEx& qr,const PINEx *skip)
+RC ArrayScan::next(const PINEx *skip)
 {
-	qr.cleanup(); qr.epr.flags=PINEX_EXTPID; if (pids==NULL) return RC_EOF;
+	if (res!=NULL) {res->cleanup(); res->epr.flags=PINEX_EXTPID;} if (pids==NULL) return RC_EOF;
 	if ((state&QST_INIT)!=0) {
 		state&=~QST_INIT;
 		if (nSkip>0) {if (nSkip<nPids) idx=nSkip,nSkip=0; else {nSkip-=(idx=nPids); return RC_EOF;}}
 	}
-	if (idx>=nPids) return RC_EOF; qr=pids[idx++];
+	if (idx>=nPids) return RC_EOF; if (res!=NULL) {*res=pids[idx++];}
 	return RC_OK;
 }
 
@@ -411,9 +423,9 @@ FTScan::~FTScan()
 	for (ulong i=0; i<nScans; i++) if (scans[i].scan!=NULL) scans[i].scan->destroy();
 }
 
-RC FTScan::next(PINEx& qr,const PINEx *skip)
+RC FTScan::next(const PINEx *skip)
 {
-	RC rc=RC_OK; qr.epr.lref=0; qr=PIN::defPID;
+	RC rc=RC_OK; if (res!=NULL) {res->epr.lref=0; *res=PIN::defPID;}
 	if ((state&QST_INIT)!=0) {
 		state&=~QST_INIT;
 		scans[0].scan=ses->getStore()->ftMgr->getIndexFT().scan(ses,&word,&word,fStop?SCAN_EXCLUDE_START|SCAN_PREFIX:SCAN_PREFIX);
@@ -424,52 +436,53 @@ RC FTScan::next(PINEx& qr,const PINEx *skip)
 //		{PINRef pr(ses->getStore()->storeID,skip->id); pr.def|=PR_PID2; pr.id2=skip->id; lsk0=pr.enc(skbuf); sk0=skbuf;}
 
 //	if ((state&QOS_FIRST)==0) {for (ulong i=0; i<nScans; i++) scans[i].state|=QOS_FIRST; state&=~(QOS_BEG|QOS_EOF);}
-	if ((state&QOS_EOF)==0) state&=~QOS_FIRST; else {qr.cleanup(); return RC_EOF;}
+	if ((state&QOS_EOF)==0) state&=~QOS_FIRST; else {res->cleanup(); return RC_EOF;}
 //	if (skip!=NULL && skip->type!=VT_REFID) skip=NULL; 
 	current.setError(); rc=RC_EOF;
 	for (ulong i=0,prev=~0u; i<nScans; i++) {
 		FTScanS& qs=scans[i]; int cmp=0;
 		if ((qs.state&QOS_EOF)==0) {
 			if ((qs.state&QOS_ADV)!=0) {
-				qr.cleanup(); qs.state&=~QOS_ADV; byte *sk=sk0; size_t lsk=lsk0;
+				if (res!=NULL) res->cleanup(); qs.state&=~QOS_ADV; byte *sk=sk0; size_t lsk=lsk0;
 				for (GO_DIR sop=(qs.state&QOS_FIRST)!=0?(qs.state&=~QOS_FIRST,GO_FIRST):GO_NEXT; (er=(const byte*)qs.scan->nextValue(lData,sop,sk,lsk))!=NULL; sop=GO_NEXT) {
 					if ((rc=ses->testAbortQ())!=RC_OK) return rc;
 #if 0
-					memcpy(qr.ref,er,qr.lref=(byte)lData);
+					memcpy(res->ref,er,res->lref=(byte)lData);
 #else
 					try {
 						PINRef pr(ses->getStore()->storeID,er,lData);
 						if (nPids>0) {
 							bool fFound=false;
-							if ((pr.def&PR_U1)!=0)
-								for (ulong i=0; i<nPids; i++) if (pids[i]==pr.u1) {fFound=true; break;}
+							if ((pr.def&PR_U1)!=0) for (ulong i=0; i<nPids; i++) if (pids[i]==pr.u1) {fFound=true; break;}
 							if (!fFound) {sk=NULL; lsk=0; continue;}
 						}
 						if ((flags&QFT_RET_NO_PARTS)!=0 && (pr.def&PR_PID2)!=0 && pr.id2.pid!=STORE_INVALID_PID) {sk=NULL; lsk=0; continue;}
-						if ((pr.def&PR_PID2)==0 || pr.id2.pid==STORE_INVALID_PID || pr.id2.ident==STORE_INVALID_IDENTITY || (flags&QFT_RET_NO_DOC)!=0)
-							qr=pr.id;
-						else {
-							qr=pr.id2; //if ((flags&QFT_RET_PARTS)!=0) ret=pr.id;	// out of order!!!
+						if (res!=NULL) {
+							if ((pr.def&PR_PID2)==0 || pr.id2.pid==STORE_INVALID_PID || pr.id2.ident==STORE_INVALID_IDENTITY || (flags&QFT_RET_NO_DOC)!=0)
+								*res=pr.id;
+							else {
+								*res=pr.id2; //if ((flags&QFT_RET_PARTS)!=0) ret=pr.id;	// out of order!!!
+							}
 						}
-						if (skip==NULL || cmpPIDs(qr.id,skip->id)>=0) break;
+						if (skip==NULL || cmpPIDs(res->id,skip->id)>=0) break;
 					} catch (RC&) {continue;}		// report???
 #endif
 				}
 				qs.scan->release();
 				if (er==NULL) {
 					rc=RC_EOF; qs.state|=QOS_EOF;
-					if (current.type==VT_REFID) {qr.cleanup(); qr=current.id; /*qr.flags=PINEX_COLLECTION;*/}
+					if (current.type==VT_REFID && res!=NULL) {res->cleanup(); *res=current.id; /*res->flags=PINEX_COLLECTION;*/}
 				} else {
-					rc=RC_OK; qs.id=qr.id;
-					if (current.type==VT_REFID && (cmp=cmpPIDs(current.id,qr.id))<0) {
-						qr.cleanup(); qr=current.id; /*qr.flags=PINEX_COLLECTION;*/
+					rc=RC_OK; if (res!=NULL) qs.id=res->id;		//???
+					if (current.type==VT_REFID && (cmp=cmpPIDs(current.id,res->id))<0) {
+						res->cleanup(); *res=current.id; /*res->flags=PINEX_COLLECTION;*/
 					} else {
 						if (prev!=~0u && cmp!=0) scans[prev].state&=~QOS_ADV; 
 						prev=i; current.set(qs.id); qs.state|=QOS_ADV;
 					}
 				}
 			} else if (current.type!=VT_REFID || (cmp=cmpPIDs(qs.id,current.id))<0) {
-				rc=RC_OK; qr.cleanup(); qr=qs.id; current.set(qs.id); /*qr.flags=PINEX_COLLECTION;*/
+				rc=RC_OK; res->cleanup(); *res=qs.id; current.set(qs.id); /*res->flags=PINEX_COLLECTION;*/
 				if (prev!=~0u) scans[prev].state&=~QOS_ADV; prev=i; qs.state|=QOS_ADV;
 			} else if (cmp==0) qs.state|=QOS_ADV;
 		}
@@ -511,24 +524,24 @@ PhraseFlt::~PhraseFlt()
 	for (ulong i=0; i<nScans; i++) delete scans[i].scan;
 }
 
-RC PhraseFlt::next(PINEx &qr,const PINEx *skip)
+RC PhraseFlt::next(const PINEx *skip)
 {
-	RC rc=RC_OK; qr.cleanup(); qr=PIN::defPID;
+	RC rc=RC_OK; if (res!=NULL) {res->cleanup(); *res=PIN::defPID;}
 	if ((state&QST_INIT)!=0) {state&=~QST_INIT; if (nSkip>0 && (rc=initSkip())!=RC_OK) return rc;}
 //		if ((state&QOS_FIRST)==0) {for (ulong i=0; i<nScans; i++) scans[i].state|=QOS_FIRST; state&=~(QOS_BEG|QOS_EOF);}
-	if ((state&QOS_EOF)==0) state&=~QOS_FIRST; else {qr.cleanup(); return RC_EOF;}
+	if ((state&QOS_EOF)==0) state&=~QOS_FIRST; else {res->cleanup(); return RC_EOF;}
 //	if (skip!=NULL && skip->type!=VT_REFID) skip=NULL; 
 //	if (skip!=NULL && (current.type!=VT_REFID || cmpPIDs(current.id,skip->id)<=0)) current.set(skip->id);
 //	skip=current.type==VT_REFID?&current:(Value*)0;
 	for (ulong i=0,nOK=0; nOK<nScans; ) {
-		FTScanS& qs=scans[i]; qr.cleanup(); if ((qs.state&QOS_EOF)!=0) {rc=RC_EOF; break;}
-		if ((rc=qs.scan->next(qr,skip))!=RC_OK) {qs.state|=QOS_EOF; qs.scan->release(); break;}
+		FTScanS& qs=scans[i]; res->cleanup(); if ((qs.state&QOS_EOF)!=0) {rc=RC_EOF; break;}
+		if ((rc=qs.scan->next(skip))!=RC_OK) {qs.state|=QOS_EOF; qs.scan->release(); break;}
 		// compare PropertyID -> save it
 #if 0
-		if (current.type!=VT_REFID) {current.set(qr.id); /*skip=&current;*/ nOK=1;}
-		else if (qr.id==current.id) nOK++;
-		else if (cmpPIDs(qr.id,current.id)<0) continue;
-		else {current.id=qr.id; nOK=1;}
+		if (current.type!=VT_REFID) {current.set(res->id); /*skip=&current;*/ nOK=1;}
+		else if (res->id==current.id) nOK++;
+		else if (cmpPIDs(res->id,current.id)<0) continue;
+		else {current.id=res->id; nOK=1;}
 #endif
 		qs.scan->release(); i=(i+1)%nScans;
 	}

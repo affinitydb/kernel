@@ -187,81 +187,41 @@ __forceinline uint32_t mv_rev(uint32_t u) {return mv_rot(u,8)&0x00FF00FF|mv_rot(
 
 template<typename T> __forceinline int cmp3(T x,T y) {return (x>y)-(x<y);}
 
-template<typename T,typename Key> __forceinline const T *mv_bsrc(Key key,const T *arr,ulong nElts,T** ins=NULL)
+template<typename T> class DefCmp
 {
-	if (arr==NULL || nElts==0) {if (ins!=NULL) *ins=(T*)arr; return NULL;}
-	for (;;) {
-		ulong k=nElts>>1; const T *q=&arr[k]; if (*q==key) return q;
-		if (*q>key) {if (k!=0) nElts=k; else {if (ins!=NULL) *ins=(T*)q; return NULL;}}
-		else if ((nElts-=k+1)==0) {if (ins!=NULL) *ins=(T*)q+1; return NULL;} else arr=q+1;
-	}
-}
+public:
+	__forceinline static int cmp(T x,T y) {return cmp3(x,y);}
+};
 
-template<typename T,typename Key> __forceinline const T *mv_bsrcmp(Key key,const T *arr,ulong nElts,T** ins=NULL)
+template<typename T,typename Key=T,class C=DefCmp<Key>,typename N=unsigned> class BIN
 {
-	if (arr==NULL || nElts==0) {if (ins!=NULL) *ins=(T*)arr; return NULL;}
-	for (;;) {
-		ulong k=nElts>>1; const T *q=&arr[k]; int cmp=q->cmp(key); if (cmp==0) return q;
-		if (cmp>0) {if (k!=0) nElts=k; else {if (ins!=NULL) *ins=(T*)q; return NULL;}}
-		else if ((nElts-=k+1)==0) {if (ins!=NULL) *ins=(T*)q+1; return NULL;} else arr=q+1;
+public:
+	__forceinline static const T *find(Key key,const T *arr,N nElts,T** ins=NULL) {
+		N k=0; const T *r=NULL;
+		if (arr!=NULL) while (nElts!=0) {
+			k=nElts>>1; const T *q=&arr[k]; int c=C::cmp(*q,key);
+			if (c==0) {r=q; break;} if (c>0) nElts=k; else {nElts-=++k; arr+=k; k=0;}
+		}
+		if (ins!=NULL) *ins=(T*)&arr[k]; return r;
 	}
-}
-
-template<typename T,typename Key> __forceinline const T *mv_bsrcptr(Key key,const T **arr,ulong nElts,T*** ins=NULL)
-{
-	if (arr==NULL || nElts==0) {if (ins!=NULL) *ins=(T**)arr; return NULL;}
-	for (;;) {
-		ulong k=nElts>>1; const T *q=arr[k]; int cmp=q->cmp(key);
-		if (cmp==0) {if (ins!=NULL) *ins=(T**)&arr[k]; return q;}
-		if (cmp>0) {if (k!=0) nElts=k; else {if (ins!=NULL) *ins=(T**)&arr[k]; return NULL;}}
-		else if ((nElts-=k+1)==0) {if (ins!=NULL) *ins=(T**)&arr[k+1]; return NULL;} else arr+=k+1;
+	__forceinline static const T *find(Key key,const T **arr,N nElts,const T*** ins=NULL) {
+		N k=0; const T *r=NULL;
+		if (arr!=NULL) while (nElts!=0) {
+			k=nElts>>1; const T *q=arr[k]; int c=C::cmp(q,key); 
+			if (c==0) {r=q; break;} if (c>0) nElts=k; else {nElts-=++k; arr+=k; k=0;}
+		}
+		if (ins!=NULL) *ins=(const T**)&arr[k]; return r;
 	}
-}
-
-template<typename T,typename N> __forceinline RC mv_bins(T *&arr,N& n,T newElt,MemAlloc *ma,N *xn=NULL)
-{
-	T *ins=NULL;
-	if (mv_bsrc<T,T>(newElt,arr,n,&ins)==NULL) {
+	__forceinline static RC insert(T *&arr,N& n,Key key,T newElt,MemAlloc *ma,N *xn=NULL) {
+		T *ins=NULL; if (find(key,(const T*)arr,n,&ins)!=NULL) return RC_OK;
 		if ((arr==NULL || xn==NULL || n>=*xn) && ma!=NULL) {
 			ptrdiff_t sht=ins-arr;
 			if ((arr=(T*)ma->realloc(arr,(xn==NULL?n+1:*xn+=(*xn==0?10:*xn/2))*sizeof(T)))==NULL) return RC_NORESOURCES;
 			ins=arr+sht;
 		}
-		if (ins<&arr[n]) memmove(ins+1,ins,(byte*)&arr[n]-(byte*)ins);
-		*ins=newElt; n++;
+		if (ins<&arr[n]) memmove(ins+1,ins,(byte*)&arr[n]-(byte*)ins); *ins=newElt; n++; return RC_OK;
 	}
-	return RC_OK;
-}
-
-template<typename T,typename N> __forceinline RC mv_binscmp(T *&arr,N& n,T newElt,MemAlloc *ma,N *xn=NULL)
-{
-	T *ins=NULL;
-	if (mv_bsrcmp<T,T>(newElt,arr,n,&ins)==NULL) {
-		if ((arr==NULL || xn==NULL || n>=*xn) && ma!=NULL) {
-			ptrdiff_t sht=ins-arr;
-			if ((arr=(T*)ma->realloc(arr,(xn==NULL?n+1:*xn+=(*xn==0?10:*xn/2))*sizeof(T)))==NULL) return RC_NORESOURCES;
-			ins=arr+sht;
-		}
-		if (ins<&arr[n]) memmove(ins+1,ins,(byte*)&arr[n]-(byte*)ins);
-		*ins=newElt; n++;
-	}
-	return RC_OK;
-}
-
-template<typename T,typename Key,typename N> __forceinline RC mv_binsptr(T **&arr,N& n,T *newElt,Key key,MemAlloc *ma,N *xn=NULL)
-{
-	T **ins=NULL;
-	if (mv_bsrcptr<T,Key>(key,(const T**)arr,n,&ins)==NULL) {
-		if ((arr==NULL || xn==NULL || n>=*xn) && ma!=NULL) {
-			ptrdiff_t sht=ins-arr;
-			if ((arr=(T**)ma->realloc(arr,(xn==NULL?n+1:*xn+=(*xn==0?10:*xn/2))*sizeof(T*)))==NULL) return RC_NORESOURCES;
-			ins=arr+sht;
-		}
-		if (ins<&arr[n]) memmove(ins+1,ins,(byte*)&arr[n]-(byte*)ins);
-		*ins=newElt; n++;
-	}
-	return RC_OK;
-}
+};
 
 class CRC32
 {

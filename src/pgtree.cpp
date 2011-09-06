@@ -519,7 +519,8 @@ RC TreePageMgr::update(PBlock *pb,size_t len,ulong info,const byte *rec,size_t l
 					}
 				}
 				--tp->info.nEntries; tp->info.sibling=INVALID_PAGEID;
-				if (tp->info.lPrefix!=tps->oldPrefSize) {assert(tp->info.nEntries<=1||tp->info.lPrefix>tps->oldPrefSize); tp->changePrefixSize(tps->oldPrefSize);}
+				if (tp->info.lPrefix!=tps->oldPrefSize) 
+					{assert(tp->info.nEntries<=1||tp->info.lPrefix>tps->oldPrefSize); tp->changePrefixSize(tps->oldPrefSize); if (!fVarKey) lElt=tp->info.calcEltSize();}
 				if (tp2->info.nEntries>0) {
 					if (tp2->info.lPrefix!=tps->oldPrefSize) {assert(tp2->info.lPrefix>tps->oldPrefSize); tp2->changePrefixSize(tps->oldPrefSize);}
 					if (tp->info.scatteredFreeSpace>0) tp->compact();
@@ -2444,8 +2445,8 @@ int TreePageMgr::TreePage::testKey(const SearchKey& key,ushort idx,bool fPrefix)
 	if (info.lPrefix>0) {
 		pref=info.fmt.isFixedLenKey()?(const byte*)&info.prefix:(const byte*)this+((PagePtr*)&info.prefix)->offset;
 		if (key.type==KT_MSEG) {
-			if ((res=cmpMSeg(pkey,lkey,pref,info.lPrefix,NULL,&lsib))!=0) return res;
-			if (lsib!=0) {pkey+=lkey-lsib; lkey=lsib;} else return fPrefix?0:-1;
+			//if ((res=cmpMSegPrefix(pkey,lkey,pref,info.lPrefix,&lsib))!=0) return res;
+			//if (lsib!=0) {pkey+=lkey-lsib; lkey=lsib;} else return fPrefix?0:-1;
 		} else if (key.type==KT_REF) {
 			//...
 		} else {
@@ -2486,14 +2487,14 @@ bool TreePageMgr::TreePage::findKey(const SearchKey& skey,ulong& pos) const
 	ulong nEnt=info.nSearchKeys; if (nEnt==0) {pos=0; return false;}
 	if (!info.fmt.isFixedLenKey()) {
 		const byte *pkey=(const byte*)skey.getPtr2(),*pref=NULL; int cmp;
-		ushort lkey=skey.v.ptr.l,ll; const bool fPR=info.fmt.isRefKeyOnly();
+		ushort lkey=skey.v.ptr.l; const bool fPR=info.fmt.isRefKeyOnly();
 		if (info.lPrefix>0) {
 			pref=(byte*)this+((PagePtr*)&info.prefix)->offset;
 			if (skey.type==KT_MSEG) {
-				cmp=cmpMSeg(pkey,lkey,pref,info.lPrefix,NULL,&ll);
-				if (cmp<0) {pos=0; return false;} else if (cmp>0) {pos=nEnt; return false;}
-				else if (ll==0) {pos=0; return info.nEntries==1;}
-				pkey+=lkey-ll; lkey=ll;
+//				cmp=cmpMSegPrefix(pkey,lkey,pref,info.lPrefix,&ll);
+//				if (cmp<0) {pos=0; return false;} else if (cmp>0) {pos=nEnt; return false;}
+//				else if (ll==0) {pos=0; return info.nEntries==1;}
+//				pkey+=lkey-ll; lkey=ll;
 			} else if (skey.type==KT_REF) {
 				//...
 			} else {

@@ -71,7 +71,7 @@ RC QueryPrc::deletePINs(Session *ses,const PIN *const *pins,const PID *pids,unsi
 					}
 				}
 			}
-			const bool fNotify=(pinDescr&HOH_HIDDEN)==0 && notification!=NULL && ((clr.notif&CLASS_NOTIFY_DELETE)!=0 || (pinDescr&(HOH_REPLICATED|HOH_NOTIFICATION))!=0);
+			const bool fNotify=(pinDescr&HOH_HIDDEN)==0 && notification!=NULL && ((clr.notif&CLASS_NOTIFY_DELETE)!=0 || (pinDescr&HOH_NOTIFICATION)!=0);
 			if (nProps!=0) {
 				if (fNotify) {
 					if ((vals=(Value*)ses->malloc((nvals=nProps)*(sizeof(Value)+sizeof(IStoreNotification::NotificationData))))==NULL) throw RC_NORESOURCES;
@@ -96,7 +96,7 @@ RC QueryPrc::deletePINs(Session *ses,const PIN *const *pins,const PID *pids,unsi
 					case VT_REFID:
 						if ((hprop->type.flags&META_PROP_PART)!=0) {
 							if (!fNotify && (rc=loadV(v,hprop->type,hprop->offset,pcb->hp,0,NULL))!=RC_OK ||
-								(rc=mv_bins<PID,unsigned>(parts,nParts,pv->id,ses,&xParts))!=RC_OK) throw rc;
+								(rc=BIN<PID>::insert(parts,nParts,pv->id,pv->id,ses,&xParts))!=RC_OK) throw rc;
 						}
 						break;
 					case VT_STREAM:
@@ -122,7 +122,7 @@ RC QueryPrc::deletePINs(Session *ses,const PIN *const *pins,const PID *pids,unsi
 								if (pv->type==VT_ARRAY) {
 									if (j<pv->length) cv=&pv->varray[j]; else break;
 								} else if (pv->type==VT_COLLECTION) {
-									if ((cv=((IntNav*)pv->nav)->navigateNR(j==0?GO_FIRST:GO_NEXT))==NULL) break;
+									if ((cv=pv->nav->navigate(j==0?GO_FIRST:GO_NEXT))==NULL) break;
 								} else if (j==0) cv=pv; else break;
 								if ((cv->flags&VF_SSV)!=0) {
 									//...
@@ -134,11 +134,14 @@ RC QueryPrc::deletePINs(Session *ses,const PIN *const *pins,const PID *pids,unsi
 									}
 									break;
 								case VT_REFID:
-									if ((hprop->type.flags&META_PROP_PART)!=0 && (rc=mv_bins<PID,unsigned>(parts,nParts,cv->id,ses,&xParts))!=RC_OK) throw rc;
+									if ((hprop->type.flags&META_PROP_PART)!=0 && (rc=BIN<PID>::insert(parts,nParts,cv->id,cv->id,ses,&xParts))!=RC_OK) throw rc;
 									break;
 								}
 							}
 						}
+						break;
+					case VT_STRUCT:
+						//???
 						break;
 					}
 				}
@@ -176,10 +179,7 @@ RC QueryPrc::deletePINs(Session *ses,const PIN *const *pins,const PID *pids,unsi
 						IStoreNotification::EventData& ev=(IStoreNotification::EventData&)evt.events[evt.nEvents++];
 						ev.type=IStoreNotification::NE_CLASS_INSTANCE_REMOVED; ev.cid=clr.classes[i]->cid;
 					}
-					if (evt.nEvents>0) {
-						if ((pinDescr&HOH_NOTIFICATION)!=0 || clr.nClasses>0) try {ctx->queryMgr->notification->notify(&evt,1,ses->getTXID());} catch (...) {}
-//						if ((pinDescr&HOH_REPLICATED)!=0 && !fRepSes) try {ctx->queryMgr->notification->replicationNotify(&evt,1,ses->getTXID());} catch (...) {}
-					}
+					try {ctx->queryMgr->notification->notify(&evt,1,ses->getTXID());} catch (...) {}
 					if (evt.events!=NULL) ses->free((void*)evt.events);
 				}
 				if (vals!=NULL) {freeV(vals,nvals,ses); vals=NULL; nvals=0;}
@@ -190,6 +190,9 @@ RC QueryPrc::deletePINs(Session *ses,const PIN *const *pins,const PID *pids,unsi
 				default: addr.pageID=refs[j].href.pageID; addr.idx=refs[j].href.idx; rc=deleteData(addr); break;
 				case VT_STREAM: assert((refs[j].pv->flags&VF_SSV)==0); rc=((StreamX*)refs[j].pv->stream.is)->deleteData(ses); break;
 				case VT_COLLECTION: if (refs[j].pv->nav!=NULL) rc=((Navigator*)refs[j].pv->nav)->deleteData(ses); break;
+				case VT_STRUCT:
+					//???
+					break;
 				}
 #endif
 				for (i=0; i<nSSVs; i++) freeV(SSVs[i]); nSSVs=0;

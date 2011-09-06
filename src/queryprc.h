@@ -73,17 +73,17 @@ struct ChangeInfo
 
 struct PropInfo
 {
-	PropertyID						propID;
+	PropertyID					propID;
 	const HeapPageMgr::HeapV	*hprop;
-	struct	ModInfo					*first;
-	struct	ModInfo					*last;
-	ulong							nElts;
-	ulong							flags;
-	ulong							maxKey;
-	long							delta;
-	long							nDelta;
-	class	Collection				*pcol;
-	int	cmp(PropertyID pid) const {return cmp3(propID,pid);}
+	struct	ModInfo				*first;
+	struct	ModInfo				*last;
+	ulong						nElts;
+	ulong						flags;
+	ulong						maxKey;
+	long						delta;
+	long						nDelta;
+	class	Collection			*pcol;
+	class PropInfoCmp {public: __forceinline static int	cmp(const PropInfo *pi,PropertyID pid) {return cmp3(pi->propID,pid);}};
 };
 
 struct ModInfo
@@ -151,7 +151,7 @@ class QueryPrc
 	RC		loadSSVs(Value *values,unsigned nValues,unsigned mode,Session *ses,MemAlloc *ma);
 	RC		loadSSV(Value& val,ValueType ty,const HeapPageMgr::HeapObjHeader *hobj,unsigned mode,MemAlloc *ma);
 
-	RC		getBody(PINEx& cb,TVOp tvo=TVO_READ,ulong flags=0,class ReleaseLatches *rl=NULL,VersionID=STORE_CURRENT_VERSION);
+	RC		getBody(PINEx& cb,TVOp tvo=TVO_READ,ulong flags=0,VersionID=STORE_CURRENT_VERSION);
 	bool	checkRef(const Value& val,PIN *const *pins,unsigned nPins);
 	RC		makeRoom(PIN *pin,ushort lxtab,PBlock *pb,Session *ses,size_t reserve);
 	RC		rename(ChangeInfo& inf,PropertyID pid,ulong flags,bool fSync);
@@ -163,6 +163,7 @@ class QueryPrc
 	RC		getRefValues(const PID& id,Value *&vals,ulong& nValues,ulong mode,PINEx& cb);
 	RC		apply(Session *ses,STMT_OP op,PINEx& qr,const Value *values,unsigned nValues,unsigned mode,PIN *pin=NULL,const Value *params=NULL,unsigned nParams=0);
 	RC		count(QueryOp *qop,uint64_t& cnt,unsigned long nAbort,const OrderSegQ *os=NULL,unsigned nos=0);
+	RC		eval(Session *ses,const Value *pv,Value& res,const PINEx **vars,ulong nVars,const Value *params,unsigned nParams,MemAlloc *ma,bool fInsert);
 
 	size_t	splitLength(const Value *pv);
 	RC		estimateLength(const Value& v,size_t& res,ulong mode,size_t threshold,MemAlloc *ma,PageID pageID=INVALID_PAGEID,size_t *rlen=NULL);
@@ -180,7 +181,6 @@ public:
 
 	RC		loadPIN(Session *ses,const PID& id,PIN *&pin,unsigned mode=0,PINEx *pcb=NULL,MemAlloc *ma=NULL,VersionID=STORE_CURRENT_VERSION);
 	RC		loadValue(Session *ses,const PID& id,PropertyID pid,ElementID eid,Value& res,ulong mode=0);
-	RC		safeLoadValue(Session *ses,const PID& id,PropertyID pid,ElementID eid,Value& res,const PINEx **vars,unsigned nVars,ulong mode=0);
 	RC		loadValues(Value *pv,unsigned nv,const PID& id,Session *ses,ulong mode=0);
 	RC		getPINValue(const PID& id,Value& res,ulong mode,Session *ses);
 	RC		diffPIN(const PIN *pin,PINEx& cb,Value *&diffProps,ulong& nDiffProps,Session *ses);
@@ -189,7 +189,6 @@ public:
 	RC		deletePINs(Session *ses,const PIN *const *pins,const PID *pids,unsigned nPins,unsigned mode,PINEx *pcb=NULL);
 	RC		undeletePINs(Session *ses,const PID *pids,unsigned nPins);
 	RC		setFlag(Session *ses,const PID& id,PageAddr *addr,ushort flag,bool fReset);
-	RC		makePart(Session *ses,PIN *pin,const PID& parID,PropertyID propID,ElementID eid);
 	RC		loadData(const PageAddr& addr,byte *&p,size_t& len,MemAlloc *ma);
 	RC		persistData(IStream *stream,const byte *str,size_t lstr,PageAddr& addr,uint64_t&,const PageAddr* =NULL,PBlockP* =NULL);
 	RC		editData(Session *ses,PageAddr &addr,uint64_t& length,const Value&,PBlockP *pbp=NULL,byte *pOld=NULL);

@@ -122,6 +122,7 @@ namespace MVStore
 	#define	MODE_COPY_VALUES			0x00080000	/**< used in createUncommittedPIN() and IStmt::execute() to copy Values (parameters, query expressions, etc.) passed rather than assume ownership */
 	#define	MODE_FORCE_EIDS				0x00100000	/**< used only in replication */
 	#define	MODE_PURGE_IDS				0x00100000	/**< in deletePINs(): purge pins and reuse their slots on pages (so their IDs are not unique) */
+	#define	MODE_PART					0x00100000	/**< in nested insert: create a part */
 	#define	MODE_CHECK_STAMP			0x00200000	/**< forces stamp check before modification; if stamp changed the op is aborted and RC_REPEAT is returned */
 	#define	MODE_HOLD_RESULT			0x00200000	/**< for IStmt::execute(): don't close result set on transaction commit/rollback */
 	#define	MODE_ALL_WORDS				0x00400000	/**< all words must be present in FT condition */
@@ -299,6 +300,7 @@ namespace MVStore
 
 		VT_ARRAY,						/**< a collection property, i.e. a property composed of sub-properties */
 		VT_COLLECTION,					/**< collection iterator interface for big collections */
+		VT_STRUCT,						/**< composite value */
 		VT_RANGE,						/**< range of values for OP_IN, equivalent to VT_ARRAY with length = 2 */
 		VT_STREAM,						/**< IStream interface */
 		VT_CURRENT,						/**< current moment in time, current user, etc. */
@@ -309,6 +311,14 @@ namespace MVStore
 
 		VT_ALL
 	};
+
+	inline	bool	isRef(ValueType vt) {return vt>=VT_REF && vt<=VT_REFIDELT;}
+	inline	bool	isInteger(ValueType vt) {return vt>=VT_INT && vt<=VT_UINT64;}
+	inline	bool	isNumeric(ValueType vt) {return vt>=VT_INT && vt<=VT_DOUBLE;}
+	inline	bool	isString(ValueType vt) {return vt>=VT_STRING && vt<=VT_URL;}
+	inline	bool	isLiteral(ValueType vt) {return vt>=VT_STRING && vt<VT_STREAM;}
+	inline	bool	isCollection(ValueType vt) {return vt==VT_ARRAY || vt==VT_COLLECTION;}
+	inline	bool	isComposite(ValueType vt) {return vt>=VT_ARRAY || vt<=VT_STRUCT;}
 
 	/**
 	 * Supported operations for expressions and property modifications
@@ -397,6 +407,8 @@ namespace MVStore
 		OP_ALL
 	};
 
+	inline	bool	isBool(ExprOp op) {return op>=OP_FIRST_BOOLEAN && op<=OP_LAST_BOOLEAN;}
+
 	/**
 	 * operation modifiers (bit flags) passed to IExprTree::expr(...)
 	 */
@@ -415,15 +427,6 @@ namespace MVStore
 	#define	FOR_ALL_RIGHT_OP		0x0040	// quantification of the right argument of a comparison
 	#define	EXISTS_RIGHT_OP			0x0080	// quantification of the right argument of a comparison
 	#define	NULLS_NOT_INCLUDED_OP	0x0100	// missing property doesn't satisfy OP_NE (or !OP_EQ) condition
-
-	inline	bool	isRef(ValueType vt) {return vt>=VT_REF && vt<=VT_REFIDELT;}
-	inline	bool	isInteger(ValueType vt) {return vt>=VT_INT && vt<=VT_UINT64;}
-	inline	bool	isNumeric(ValueType vt) {return vt>=VT_INT && vt<=VT_DOUBLE;}
-	inline	bool	isString(ValueType vt) {return vt>=VT_STRING && vt<=VT_URL;}
-	inline	bool	isLiteral(ValueType vt) {return vt>=VT_STRING && vt<VT_STREAM;}
-	inline	bool	isCollection(ValueType vt) {return vt==VT_ARRAY || vt==VT_COLLECTION;}
-
-	inline	bool	isBool(ExprOp op) {return op>=OP_FIRST_BOOLEAN && op<=OP_LAST_BOOLEAN;}
 
 	struct	Value;
 	class	IPIN;
@@ -584,6 +587,7 @@ namespace MVStore
 		void	set(const RefV& re) {type=uint8_t(re.eid==STORE_COLLECTION_ID?VT_REFPROP:VT_REFELT); property=STORE_INVALID_PROPID; flags=0; op=OP_SET; eid=STORE_COLLECTION_ID; length=1; ref=re; meta=0;}
 		void	set(Value *coll,uint32_t nValues) {type=VT_ARRAY; property=STORE_INVALID_PROPID; flags=0; op=OP_SET; eid=STORE_COLLECTION_ID; length=nValues; varray=coll; meta=0;}
 		void	set(INav *nv) {type=VT_COLLECTION; property=STORE_INVALID_PROPID; flags=0; op=OP_SET; eid=STORE_COLLECTION_ID; length=1; nav=nv; meta=0;}
+		void	setStruct(Value *coll,uint32_t nValues) {type=VT_STRUCT; property=STORE_INVALID_PROPID; flags=0; op=OP_SET; eid=STORE_COLLECTION_ID; length=nValues; varray=coll; meta=0;}
 		void	set(bool bl) {type=VT_BOOL; property=STORE_INVALID_PROPID; flags=0; op=OP_SET; eid=STORE_COLLECTION_ID; length=sizeof(bool); b=bl; meta=0;}
 		void	setDateTime(uint64_t datetime) {type=VT_DATETIME; property=STORE_INVALID_PROPID; flags=0; op=OP_SET; eid=STORE_COLLECTION_ID; length=sizeof(uint64_t); ui64=datetime; meta=0;}
 		void	setInterval(int64_t intvl) {type=VT_INTERVAL; property=STORE_INVALID_PROPID; flags=0; op=OP_SET; eid=STORE_COLLECTION_ID; length=sizeof(int64_t); i64=intvl; meta=0;}
@@ -613,8 +617,6 @@ namespace MVStore
 		void		setPropID(PropertyID p) {property=p;}
 		PropertyID	getPropID() const {return property;}
 		bool		isFTIndexable() const {return type==VT_STRING||type==VT_STREAM&&stream.is->dataType()==VT_STRING;}
-		int			cmp(PropertyID pid) const {return (property>pid)-(property<pid);}
-		int			cmp(const Value& v) const {return (property>v.property)-(property<v.property);}
 	};
 
 	/**
@@ -656,8 +658,6 @@ namespace MVStore
 		virtual	IPIN		*project(const PropertyID *properties,unsigned nProperties,const PropertyID *newProps=NULL,unsigned mode=0) = 0;
 		virtual	RC			modify(const Value *values,unsigned nValues,unsigned mode=0,
 									const ElementID *eids=NULL,unsigned *pNFailed=NULL) = 0;
-		virtual	RC			makePart(IPIN *parent,PropertyID pid,ElementID=STORE_COLLECTION_ID) = 0;
-		virtual	RC			makePart(const PID& parentID,PropertyID pid,ElementID=STORE_COLLECTION_ID) = 0;
 
 		virtual	RC			setExpiration(uint32_t) = 0;
 		virtual	RC			setNotification(bool fReset=false) = 0;
@@ -676,7 +676,6 @@ namespace MVStore
 		const	char	*str;
 		size_t			lstr;
 		bool			fDel;
-		int		cmp(const QName& rhs) const {int c=memcmp(qpref,rhs.qpref,lq<rhs.lq?lq:rhs.lq); return c!=0?c:lq<rhs.lq?-1:lq==rhs.lq?0:1;}
 	};
 
 	struct MV_EXP CompilationError
@@ -994,6 +993,24 @@ namespace MVStore
 		virtual	void		*alloc(size_t) = 0;
 		virtual	void		*realloc(void *,size_t) = 0;
 		virtual	void		free(void *) = 0;
+	};
+
+	class MV_EXP IConnection
+	{
+	public:
+		static	IConnection	*create(MVStoreCtx,const char *identityName=NULL,const char *password=NULL);
+		virtual	RC			setURIBase(const char *URIBase) = 0;
+		virtual	RC			addURIPrefix(const char *name,const char *URIprefix) = 0;
+		virtual	void		close() = 0;
+
+		virtual	RC			process(const unsigned char *buf,size_t lBuf) = 0;
+		virtual	RC			read(unsigned char *buf,size_t lBuf,size_t& lRead) = 0;
+
+		virtual	RC			setIsolationLevel(TXI_LEVEL) = 0;
+		virtual	RC			startTransaction(TX_TYPE=TXT_READWRITE,TXI_LEVEL=TXI_DEFAULT) = 0;
+		virtual	RC			commit(bool fAll=false) = 0;
+		virtual	RC			rollback(bool fAll=false) = 0;
+
 	};
 }
 

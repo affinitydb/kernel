@@ -177,6 +177,9 @@ RC TxMgr::commit(Session *ses,bool fAll,bool fFlush)
 			if (ses->reuse.ssvPages!=NULL) for (ulong i=0; i<ses->reuse.nSSVPages; i++)
 				ctx->ssvMgr->HeapPageMgr::reuse(ses->reuse.ssvPages[i].pid,ses->reuse.ssvPages[i].space,ctx);
 			ses->txState=ses->txState&~0xFFFFul|TX_COMMITTED;
+			if (ses->repl!=NULL) {
+				// pass replication stream
+			}
 		}
 		cleanup(ses);
 	}
@@ -215,7 +218,7 @@ void TxMgr::cleanup(Session *ses,bool fAbort)
 {
 	if (ses->heldLocks!=NULL) ctx->lockMgr->releaseLocks(ses,0,fAbort); ses->unlockClass();
 	if (ses->tx.next!=NULL) ses->popTx(false,true); ses->tx.defFree.cleanup(); ses->tx.cleanup(); ses->reuse.cleanup();
-	ses->xHeapPage=INVALID_PAGEID; ses->nTotalIns=0;
+	ses->xHeapPage=INVALID_PAGEID; ses->nTotalIns=0; delete ses->repl; ses->repl=NULL;
 	if (ses->getTxState()!=TX_NOTRAN) {
 		if ((ses->txState&TX_READONLY)==0) {
 			MutexP lck(&lock); assert(ses->txcid==NO_TXCID); assert(nActive>0 && ses->list.isInList()); 

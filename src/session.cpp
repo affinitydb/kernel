@@ -65,8 +65,8 @@ Session::Session(StoreCtx *ct,MemAlloc *ma)
 	: txid(INVALID_TXID),txcid(NO_TXCID),txState(TX_NOTRAN),sFlags(0),identity(STORE_INVALID_IDENTITY),
 	list(this),lockReq(this),heldLocks(NULL),nLatched(0),firstLSN(0),undoNextLSN(0),flushLSN(0),sesLSN(0),nLogRecs(0),
 	tx(this),subTxCnt(0),mini(NULL),nTotalIns(0),xHeapPage(INVALID_PAGEID),forcedPage(INVALID_PAGEID),classLocked(RW_NO_LOCK),fAbort(false),
-	itf(0),URIBase(NULL),lURIBaseBuf(0),lURIBase(0),qNames(NULL),nQNames(0),fStdOvr(false),ctx(ct),mem(ma),iTrace(NULL),traceMode(0),
-	defExpiration(0),allocCtrl(NULL),tzShift(0)
+	txil(0),repl(NULL),itf(0),URIBase(NULL),lURIBaseBuf(0),lURIBase(0),qNames(NULL),nQNames(0),fStdOvr(false),ctx(ct),mem(ma),
+	iTrace(NULL),traceMode(0),defExpiration(0),allocCtrl(NULL),tzShift(0)
 {
 	extAddr.pageID=INVALID_PAGEID; extAddr.idx=INVALID_INDEX;
 #ifdef WIN32
@@ -93,7 +93,8 @@ void Session::cleanup()
 		ctx->lockMgr->releaseSession(this);
 		if (classLocked!=RW_NO_LOCK) {ctx->classMgr->getLock()->unlock(); classLocked=RW_NO_LOCK;}
 		while (nLatched>0) latched[--nLatched]->release(PGCTL_NOREG);
-		tx.cleanup();
+		tx.cleanup(); delete repl; repl=NULL;
+		if (rlatch!=NULL) {rlatch->release(); rlatch=NULL;}
 		if (reuse.pinPages!=NULL) for (ulong i=0; i<reuse.nPINPages; i++)
 			ctx->heapMgr->HeapPageMgr::reuse(reuse.pinPages[i].pid,reuse.pinPages[i].space,ctx);
 		if (reuse.ssvPages!=NULL) for (ulong i=0; i<reuse.nSSVPages; i++)
@@ -219,7 +220,7 @@ RC Session::setPrefix(const char *qs,size_t lq,const char *str,size_t ls)
 	}
 	QName qn={strdup(qs,this),fColon?lq:lq-1,strdup(str,this),ls,false};
 	qn.fDel=qn.lstr!=0 && (qn.str[qn.lstr-1]=='/'||qn.str[qn.lstr-1]=='#'||qn.str[qn.lstr-1]=='?');
-	return mv_binscmp<QName,unsigned>(qNames,nQNames,qn,this);
+	return BIN<QName,const QName&,QNameCmp>::insert(qNames,nQNames,qn,qn,this);
 }
 
 RC Session::pushTx()
@@ -227,6 +228,7 @@ RC Session::pushTx()
 	SubTx *st=new(this) SubTx(this); if (st==NULL) return RC_NORESOURCES;
 	memcpy(st,&tx,sizeof(SubTx)); new(&tx) SubTx(this); 
 	tx.next=st; tx.lastLSN=st->lastLSN; tx.subTxID=++subTxCnt;
+	if (repl!=NULL) repl->mark(tx.rmark);
 	return RC_OK;
 }
 
@@ -246,7 +248,10 @@ RC Session::popTx(bool fCommit,bool fAll)
 			}
 			if (tx.txClass!=NULL) {Classifier::merge(tx.txClass,st->txClass); tx.txClass=NULL;}
 		} else if (fAll) st->nInserted=nTotalIns=0;
-		else {ctx->lockMgr->releaseLocks(this,tx.subTxID,true); st->nInserted-=tx.nInserted; nTotalIns-=tx.nInserted;}
+		else {
+			ctx->lockMgr->releaseLocks(this,tx.subTxID,true); st->nInserted-=tx.nInserted; nTotalIns-=tx.nInserted;
+			if (repl!=NULL) repl->truncate(tx.rmark);
+		}
 		st->lastLSN=tx.lastLSN;	//???
 		tx.next=NULL; tx.~SubTx(); memcpy(&tx,st,sizeof(SubTx)); free(st); if (!fAll) break;
 	}

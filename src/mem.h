@@ -92,6 +92,8 @@ public:
 	void	mark(SubMark& sm) {sm.ext=extents; sm.end=ptr;}
 	size_t	length(const SubMark& mrk);
 	void	truncate(const SubMark& sm,size_t s=0);
+	void	*getBuffer(size_t& left) {if (extentLeft==0) expand(0); left=extentLeft; return ptr;}
+	void	setLeft(size_t left) {assert(left<=extentLeft); ptr+=extentLeft-left; extentLeft=left;}
 	template<typename T> class it {
 		SubExt			*ext;
 		byte			*end;

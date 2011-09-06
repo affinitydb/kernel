@@ -116,7 +116,7 @@ class TVers
 public:
 	TVers(PageIdx i,LockHdr *h,void *t,TVState s=TV_UPD,bool fC=false) : idx(i),hdr(h),tv(t),state(s),fCommited(fC) {}
 	~TVers();
-	int					cmp(PageIdx i) const {return cmp3(idx,i);}
+	class TVersCmp {public: __forceinline static int cmp(const TVers *tv,PageIdx i) {return cmp3(tv->idx,i);}};
 	friend	struct		LockHdr;
 	friend	class		LockMgr;
 };
@@ -167,7 +167,7 @@ public:
 	LockMgr(class StoreCtx *ct,ILockNotification *lno);
 	~LockMgr();
 	void	*operator new(size_t s,StoreCtx *ctx) {void *p=ctx->malloc(s); if (p==NULL) throw RC_NORESOURCES; return p;}
-	RC		lock(LockType,PINEx& pe,class ReleaseLatches *rls=NULL,ulong flags=0);
+	RC		lock(LockType,PINEx& pe,ulong flags=0);
 	RC		getTVers(class PINEx& pe,TVOp tvo=TVO_READ);
 	VBlock	*getVBlock(PageID pid) {PageVTab::Find findVB(pageVTab,pid); PageV *pv=findVB.findLock(RW_S_LOCK); if (pv!=NULL) ++pv->fixCnt; findVB.unlock(); return pv;}
 

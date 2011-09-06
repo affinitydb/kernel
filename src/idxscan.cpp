@@ -66,7 +66,7 @@ private:
 	bool checkBounds(const TreePageMgr::TreePage* tp,bool fNext,bool fSibling=false) {
 		const SearchKey *bound=fNext?finish:start; if (bound==NULL||!bound->isSet()) return true;
 		int cmp=tp->testKey(*bound,ushort(fSibling?~0ul:index),(state&SCAN_PREFIX)!=0);
-		return cmp!=0?cmp==(fNext?1:-1):(state&(fNext?SCAN_EXCLUDE_END:SCAN_EXCLUDE_START))==0;
+		return cmp==0?(state&(fNext?SCAN_EXCLUDE_END:SCAN_EXCLUDE_START))==0:fNext?cmp>0:cmp<0;
 	}
 	void saveKey() {
 		assert((state&SCAN_EXACT)==0);
@@ -135,9 +135,8 @@ public:
 			if (ifmt.isPinRef()) state|=SC_PINREF;
 			else if (ifmt.isFixedLenData()||(state&SC_UNIQUE)==0&&!ifmt.isVarMultiData()) {state|=SC_FIXED; lElt=ifmt.dataLength();}
 			assert(start==NULL || start->type==ifmt.keyType()); assert(start!=NULL || (state&SCAN_EXACT)==0);
-			if ((state&SCAN_EXACT)==0 && (st!=NULL && st->type==KT_MSEG || fi!=NULL && fi->type==KT_MSEG) && (st==NULL || fi==NULL || st->cmp(*fi)!=0)) {
-				fHyper=true; // check >1 seg and difference is before n-1
-			}
+			if ((state&SCAN_EXACT)==0 && (st!=NULL && st->type==KT_MSEG && (fi==NULL || fi->type==KT_MSEG) || fi!=NULL && fi->type==KT_MSEG))
+				fHyper=st==NULL || fi==NULL || isHyperRect(st->getPtr2(),st->v.ptr.l,fi->getPtr2(),fi->v.ptr.l);
 	}
 	virtual ~TreeScanImpl() {
 		if (subpg!=NULL) subpg->release(); if (savedKey!=NULL) ses->free(savedKey); if (buf!=NULL) ses->free(buf);
@@ -230,7 +229,7 @@ public:
 						if (index>=tp->info.nSearchKeys) fAdv=true;
 						else if (!checkBounds(tp,true)) {pb.release(); return RC_EOF;}
 					} else if (skip==NULL && (state&SCAN_EXCLUDE_START)!=0 && ++index>=tp->info.nSearchKeys) fAdv=true;
-				}
+				} else if (finish!=NULL && !checkBounds(tp,true)) {pb.release(); return RC_EOF;}
 				if (fAdv) for (index=0;;) {
 					if (!tp->hasSibling() || !checkBounds(tp,true,true)) {pb.release(); return RC_EOF;}
 					if ((pb=ctx->bufMgr->getPage(tp->info.sibling,ctx->trpgMgr,PGCTL_COUPLE|QMGR_SCAN,pb))==NULL) return RC_EOF;
@@ -274,11 +273,15 @@ public:
 				if ((state&SCAN_EXACT)==0) state&=~SC_BOF;
 			}
 retkey:
+			state|=SC_KEYSET;
 			if (fHyper) {
-				skip=NULL;
-				// check key is inside hyper rectangle, if not -> continue;
+				skip=NULL; saveKey(); if (savedKey==NULL) return RC_NORESOURCES;
+				if (start!=NULL && !checkHyperRect(start->getPtr2(),start->v.ptr.l,savedKey->getPtr2(),savedKey->v.ptr.l) ||
+					finish!=NULL && !checkHyperRect(savedKey->getPtr2(),savedKey->v.ptr.l,finish->getPtr2(),finish->v.ptr.l))
+						{op=fF?GO_NEXT:GO_PREVIOUS; continue;}
+				// exclude boundaries, skip to next
 			}
-			if (keycb!=NULL) keycb->newKey(); state|=SC_KEYSET; return RC_OK;
+			if (keycb!=NULL) keycb->newKey(); return RC_OK;
 		}
 	}
 	const void *nextValue(size_t& lD,GO_DIR op,const byte *sk,size_t lsk) {

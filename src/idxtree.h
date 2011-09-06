@@ -21,7 +21,9 @@ class Session;
 
 enum TREE_KT {KT_UINT, KT_UINT64, KT_INT, KT_INT64, KT_FLOAT, KT_DOUBLE, KT_BIN, KT_REF, KT_MSEG, KT_ALL};
 
-extern	int		cmpMSeg(const byte *s1,ushort l1,const byte *s2,ushort l2,ushort *segN=NULL,ushort *left=NULL);
+extern	int		cmpMSeg(const byte *s1,ushort l1,const byte *s2,ushort l2);
+extern	bool	isHyperRect(const byte *s1,ushort l1,const byte *s2,ushort l2);
+extern	bool	checkHyperRect(const byte *s1,ushort l1,const byte *s2,ushort l2);
 extern	ushort	calcMSegPrefix(const byte *s1,ushort l1,const byte *s2,ushort l2);
 
 union IndexKeyV {

@@ -112,8 +112,8 @@ RC Classifier::initClasses(Session *ses)
 				if (cb.hpin==NULL || (cb.hpin->hdr.descr&HOH_CLASS)==0) {rc=RC_CORRUPTED; break;}
 #else
 			Class *coc=getClass(STORE_CLASS_OF_CLASSES); if (coc==NULL) return RC_CORRUPTED;
-			ClassScan cs(ses,coc,0); coc->release(); PINEx cb(ses); Value v;
-			while ((rc=cs.next(cb))==RC_OK && (rc=ctx->queryMgr->getBody(cb))==RC_OK) {
+			ClassScan cs(ses,coc,0); coc->release(); PINEx cb(ses); cs.connect(&cb); Value v;
+			while ((rc=cs.next())==RC_OK && (rc=ctx->queryMgr->getBody(cb))==RC_OK) {
 #endif
 				ulong flags=cb.getValue(PROP_SPEC_CLASS_INFO,v,0,NULL)==RC_OK && (v.type==VT_UINT||v.type==VT_INT)?v.ui:CLASS_INDEXED;
 				if ((flags&CLASS_INDEXED)!=0) {
@@ -395,7 +395,7 @@ RC ClassPropIndex::classify(const PINEx *pin,ClassResult& res)
 RC ClassPropIndex::classify(const ClassRef *cr,const PINEx *pin,ClassResult& res)
 {
 	const ClassRef **cins=NULL; RC rc;
-	if (mv_bsrcptr<const ClassRef,ClassID>(cr->cid,res.classes,res.nClasses,&cins)==NULL) {
+	if (BIN<ClassRef,ClassID,ClassRef::ClassRefCmp>::find(cr->cid,res.classes,res.nClasses,&cins)==NULL) {
 		if (cr->nConds==0 || pin->ses->getStore()->queryMgr->condSatisfied(cr->nConds==1?&cr->cond:cr->conds,cr->nConds,&pin,1,NULL,0,pin->ses,true)) {
 			if ((cr->flags&CLASS_VIEW)==0) {
 				if (res.nClasses>=res.xClasses) {
@@ -454,8 +454,8 @@ RC Classifier::rebuildAll(Session *ses)
 	if (ses==NULL) return RC_NOSESSION; assert(fInit && ses->inWriteTx());
 	RC rc=classMap.dropTree(); if (rc!=RC_OK) return rc;
 	PINEx qr(ses); ses->resetAbortQ(); MutexP lck(&lock); ClassResult clr(ses,ses->getStore());
-	QueryOp *qop=new(ses) FullScan(ses,HOH_HIDDEN); rc=qop!=NULL?RC_OK:RC_NORESOURCES;
-	while (rc==RC_OK && (rc=qop->next(qr))==RC_OK) {
+	QueryOp *qop=new(ses) FullScan(ses,HOH_HIDDEN); if (qop!=NULL) qop->connect(&qr); else rc=RC_NORESOURCES;
+	while (rc==RC_OK && (rc=qop->next())==RC_OK) {
 		if ((rc=classify(&qr,clr))==RC_OK && clr.classes!=NULL && clr.nClasses>0) 
 			rc=index(ses,&qr,clr,(qr.hpin->hdr.descr&HOH_DELETED)!=0?CI_INSERTD:CI_INSERT); // data for other indices!!!
 		clr.nClasses=clr.nIndices=0;
@@ -672,7 +672,7 @@ RC Classifier::classifyAll(PIN *const *pins,unsigned nPINs,Session *ses,bool fDr
 					if (ci.cd->cidx->nSegs>xSegs) xSegs=ci.cd->cidx->nSegs;
 					for (ulong i=0; i<ci.cd->cidx->nSegs; i++) {
 						Value v; v.setPropID(ci.cd->cidx->indexSegs[i].propID);
-						if ((rc=mv_binscmp<Value,unsigned>(indexed,nIndexed,v,ses,&xIndexed))!=RC_OK) break;
+						if ((rc=BIN<Value,PropertyID,ValCmp>::insert(indexed,nIndexed,v.property,v,ses,&xIndexed))!=RC_OK) break;
 					}
 				}
 			}
@@ -705,10 +705,10 @@ RC Classifier::classifyAll(PIN *const *pins,unsigned nPINs,Session *ses,bool fDr
 		} else {
 			qop=new(ses) FullScan(ses,HOH_HIDDEN); rc=qop!=NULL?RC_OK:RC_NORESOURCES; fTest=true;
 		}
-		const Value **vals=NULL; 
-		struct ArrayVal {ArrayVal *prev; const Value *cv; uint32_t idx,vidx;} *freeAV=NULL;
+		if (qop!=NULL) qop->connect(&qr);	//??? many ???
+		const Value **vals=NULL; struct ArrayVal {ArrayVal *prev; const Value *cv; uint32_t idx,vidx;} *freeAV=NULL;
 		if (xSegs>0 && (vals=(const Value**)alloca(xSegs*sizeof(Value*)))==NULL) rc=RC_NORESOURCES;
-		while (rc==RC_OK && (rc=qop->next(qr))==RC_OK) {
+		while (rc==RC_OK && (rc=qop->next())==RC_OK) {
 			byte extc[XPINREFSIZE]; bool fExtC=false,fLoaded=false; byte lextc=0;
 			if (qr.epr.lref!=0) PINRef::changeFColl(qr.epr.buf,qr.epr.lref,false);
 			for (cctx.idx=first; cctx.idx<=last; cctx.idx++) {
@@ -738,7 +738,7 @@ RC Classifier::classifyAll(PIN *const *pins,unsigned nPINs,Session *ses,bool fDr
 							const unsigned nSegs=ci.cd->cidx->nSegs; ArrayVal *avs0=NULL,*avs=NULL; assert(nSegs<=xSegs);
 							for (unsigned k=nNulls=0; k<nSegs; k++) {
 								IndexSeg& ks=ci.cd->cidx->indexSegs[k];
-								const Value *cv=vals[k]=mv_bsrcmp<Value,PropertyID>(ks.propID,indexed,nIndexed); assert(cv!=NULL);
+								const Value *cv=vals[k]=BIN<Value,PropertyID,ValCmp>::find(ks.propID,indexed,nIndexed); assert(cv!=NULL);
 								if (cv->type==VT_ANY) nNulls++;
 								else if (cv->type==VT_ARRAY || cv->type==VT_COLLECTION) {
 									ArrayVal *av=freeAV;
@@ -944,7 +944,7 @@ RC Classifier::index(Session *ses,const PINEx *pin,const ClassResult& clr,ClassI
 			for (unsigned k=0; k<nSegs; k++) {
 				IndexSeg& ks=cidx->indexSegs[k]; SegInfo &si=pks[k];
 				si.pid=ks.propID; si.pi=NULL; si.ssv=NewV; si.mi=NULL; si.flags=ks.flags; si.idx=0; si.prev=~0u; si.fLoaded=false; si.v.setError();
-				if (ppi!=NULL && (si.pi=mv_bsrcptr<PropInfo,PropertyID>(si.pid,ppi,npi))!=NULL && si.pi->first!=NULL) {
+				if (ppi!=NULL && (si.pi=BIN<PropInfo,PropertyID,PropInfo::PropInfoCmp>::find(si.pid,ppi,npi))!=NULL && si.pi->first!=NULL) {
 					if ((si.pi->flags&PM_NEWPROP)!=0) {
 						phaseMask=phaseMask&~PHASE_UPDATE|PHASE_INSERT; phaseMask2&=~PHASE_UPDCOLL;
 						if ((si.flags&(ORD_NULLS_BEFORE|ORD_NULLS_AFTER))!=0) phaseMask|=PHASE_DELNULLS;
@@ -1134,12 +1134,12 @@ const ClassRef *ClassPropIndex::find(ClassID cid,const PropertyID *pids,ulong np
 		else if (++idx<npids) pn=pn->down;
 		else {pc=pn->classes; np=pn->nClasses; break;}
 	}
-	return pc!=NULL?mv_bsrcptr<ClassRef,ClassID>(cid,pc,np):(ClassRef*)0;
+	return pc!=NULL?BIN<ClassRef,ClassID,ClassRef::ClassRefCmp>::find(cid,pc,np):(ClassRef*)0;
 }
 
 RC ClassPropIndex::remove(ClassID cid,const PropertyID *pids,ulong npids)
 {
-	ulong idx=0; const ClassRef **pc; ulong *np; ClassRef **del,*cr;
+	ulong idx=0; const ClassRef **pc,**del; ulong *np; ClassRef *cr;
 	if (pids==NULL || npids==0) {pc=other; np=&nOther;}
 	else for (PIdxNode *pn=root;;) {
 		PropertyID pid=pids[idx];
@@ -1148,7 +1148,7 @@ RC ClassPropIndex::remove(ClassID cid,const PropertyID *pids,ulong npids)
 		else if (++idx<npids) pn=pn->down;
 		else {pc=pn->classes; np=&pn->nClasses; break;}
 	}
-	if (pc!=NULL && (cr=(ClassRef*)mv_bsrcptr<ClassRef,ClassID>(cid,pc,*np,&del))!=NULL) {
+	if (pc!=NULL && (cr=(ClassRef*)BIN<ClassRef,ClassID,ClassRef::ClassRefCmp>::find(cid,pc,*np,&del))!=NULL) {
 		--*np; assert(del!=NULL && cr==*del);
 		if (del<&pc[*np]) memmove(del,del+1,(byte*)&pc[*np]-(byte*)del);
 		if (--cr->refCnt==0) {

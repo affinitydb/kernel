@@ -62,7 +62,7 @@ template<class T> inline T* LockMgr::alloc(SLIST_HEADER& sHdr)
 	return t0;
 }
 
-RC LockMgr::lock(LockType lt,PINEx& pe,ReleaseLatches *rl,ulong flags)
+RC LockMgr::lock(LockType lt,PINEx& pe,ulong flags)
 {
 	RC rc=RC_OK; assert(lt<LOCK_ALL);
 	if (pe.ses==NULL) return RC_NOSESSION;
@@ -101,7 +101,7 @@ RC LockMgr::lock(LockType lt,PINEx& pe,ReleaseLatches *rl,ulong flags)
 		} while ((gl=gl->other)!=NULL);
 		while ((lh->grantedMask&mask)!=0) {
 			//if (lockNotification!=NULL && (rc=lockNotification->beforeWait(pe.ses,pe.id,ILockNotification::LT_SHARED))!=RC_OK) ...
-			bool fDL=rl!=NULL && rl->release()!=RC_OK; if (!fDL && !pe.pb.isNull()) pe.pb.release();
+			bool fDL=pe.ses->releaseLatches()!=RC_OK; if (!fDL && !pe.pb.isNull()) pe.pb.release();
 			if (fDL || pe.ses->nLatched>0) {lh->release(this,pe.ses->lockReq.sem); return RC_DEADLOCK;}	//  rollback???
 			lh->conflictMask|=lockConflictMatrix[lt]; pe.ses->lockReq.lt=lt; pe.ses->lockReq.rc=RC_REPEAT;
 			pe.ses->lockReq.next=lh->waiting; lh->waiting=pe.ses;
@@ -218,20 +218,19 @@ RC LockMgr::getTVers(PINEx& pe,TVOp tvo)
 			else {++pv->fixCnt; pageVTab.insertNoLock(pv); pe.pb->setVBlock(pv);}
 		}
 		RWLockP lck(&pv->lock,RW_S_LOCK);
-		pe.tv=(TVers*)mv_bsrcptr<TVers,PageIdx>(pe.addr.idx,(const TVers**)pv->vArray,pv->nTV);
+		pe.tv=(TVers*)BIN<TVers,PageIdx,TVers::TVersCmp>::find(pe.addr.idx,(const TVers**)pv->vArray,pv->nTV);
 		if (pe.tv==NULL && (tvo!=TVO_READ || pe.ses->inWriteTx())) {
-			lck.set(NULL); lck.set(&pv->lock,RW_X_LOCK); TVers **ins=NULL;
-			if ((pe.tv=(TVers*)mv_bsrcptr<TVers,PageIdx>(pe.addr.idx,(const TVers**)pv->vArray,pv->nTV,&ins))==NULL) {
+			lck.set(NULL); lck.set(&pv->lock,RW_X_LOCK); const TVers **ins=NULL;
+			if ((pe.tv=(TVers*)BIN<TVers,PageIdx,TVers::TVersCmp>::find(pe.addr.idx,(const TVers**)pv->vArray,pv->nTV,&ins))==NULL) {
 				LockHdr *lh=tvo!=TVO_INS?new(alloc<LockHdr>(freeHeaders)) LockHdr(pe.tv):(LockHdr*)0;
 				if ((pe.tv=new(ctx) TVers(pe.addr.idx,lh,NULL))==NULL) return RC_NORESOURCES;
 				if (pv->vArray==NULL || pv->nTV>=pv->xTV) {
-					ptrdiff_t sht=ins-(TVers**)pv->vArray;
+					ptrdiff_t sht=ins-(const TVers**)pv->vArray;
 					if ((pv->vArray=(TVers**)ctx->realloc(pv->vArray,(pv->xTV+=(pv->xTV==0?10:pv->xTV/2))*sizeof(TVers*)))==NULL) 
 						{pv->nTV=pv->xTV=0; return RC_NORESOURCES;}
-					ins=pv->vArray+sht;
+					ins=(const TVers**)pv->vArray+sht;
 				}
-				if (ins<&pv->vArray[pv->nTV]) memmove(ins+1,ins,(byte*)&pv->vArray[pv->nTV]-(byte*)ins);
-				*ins=pe.tv; pv->nTV++;
+				if (ins<&pv->vArray[pv->nTV]) memmove(ins+1,ins,(byte*)&pv->vArray[pv->nTV]-(byte*)ins); *ins=pe.tv; pv->nTV++;
 			}
 		}
 	}

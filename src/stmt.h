@@ -91,8 +91,8 @@ protected:
 	DistinctType	dtype;
 	MemAlloc *const	ma;
 	char			*name;
-	TDescriptor		*dscr;
-	unsigned		nDscr;
+	ValueV			*outs;
+	unsigned		nOuts;
 	PropertyList	*varProps;
 	unsigned		nVarProps;
 	union {
@@ -231,8 +231,9 @@ class Stmt : public IStmt
 	unsigned		nOrderBy;
 	Value			*values;
 	unsigned		nValues;
+	unsigned		nNested;
 public:
-	Stmt(ulong md,MemAlloc *m,STMT_OP sop=STMT_QUERY) : op(sop),mode(md),ma(m),top(NULL),nTop(0),vars(NULL),nVars(0),orderBy(NULL),nOrderBy(0),values(NULL),nValues(0) {}
+	Stmt(ulong md,MemAlloc *m,STMT_OP sop=STMT_QUERY) : op(sop),mode(md),ma(m),top(NULL),nTop(0),vars(NULL),nVars(0),orderBy(NULL),nOrderBy(0),values(NULL),nValues(0),nNested(0) {}
 	virtual	~Stmt();
 	QVarID	addVariable(const ClassSpec *classes=NULL,unsigned nClasses=0,IExprTree *cond=NULL);
 	QVarID	addVariable(const PID& pid,PropertyID propID,IExprTree *cond=NULL);
@@ -290,6 +291,7 @@ private:
 	RC				processCondition(class ExprTree*,QVar *qv,int level=0);
 	QVar			*findVar(QVarID id) const {QVar *qv=vars; while (qv!=NULL&&qv->id!=id) qv=qv->next; return qv;}
 	RC				render(const QVar *qv,SOutCtx& out) const;
+	RC				getNested(PIN **ppins,PIN *pins,unsigned& cnt,Session *ses,PIN *parent=NULL) const;
 	static	bool	classOK(const QVar *);
 	friend class	Class;
 	friend class	Classifier;
@@ -311,17 +313,21 @@ class Cursor : public ICursor
 	const	ulong		mode;
 	const	SelectType	stype;
 	const	STMT_OP		op;
+	PINEx				**results;
+	unsigned			nResults;
+	PINEx				qr;
 	TXID				txid;
 	TXCID				txcid;
 	uint64_t			cnt;
 	TxSP				tx;
 	bool				fSnapshot;
+	bool				fNoRel;
 	void	operator	delete(void *p) {if (p!=NULL) ((Cursor*)p)->ses->free(p);}
 	RC					skip();
 public:
 	Cursor(QueryOp *qop,uint64_t nRet,ulong md,const Value *vals,unsigned nV,Session *s,STMT_OP sop=STMT_QUERY,SelectType ste=SEL_PINSET,bool fSS=false)
-		: queryOp(qop),ses(s),nReturn(nRet),values(vals),nValues(nV),mode(md&~(LOAD_CARDINALITY|LOAD_EXT_ADDR|LOAD_SSV)),stype(ste),op(sop),
-		txid(INVALID_TXID),txcid(NO_TXCID),cnt(0),tx(s),fSnapshot(fSS) {}
+		: queryOp(qop),ses(s),nReturn(nRet),values(vals),nValues(nV),mode(md&~(LOAD_CARDINALITY|LOAD_EXT_ADDR|LOAD_SSV|LOAD_ENAV)),stype(ste),op(sop),
+		results(NULL),nResults(0),qr(s),txid(INVALID_TXID),txcid(NO_TXCID),cnt(0),tx(s),fSnapshot(fSS),fNoRel(false) {}
 	virtual				~Cursor();
 	IPIN				*next();
 	RC					next(Value&);
@@ -329,6 +335,26 @@ public:
 	RC					next(IPIN *pins[],unsigned nPins,unsigned& nRet);
 	RC					rewind();
 	void				destroy();
+
+	RC					connect();
+	RC					release() {return queryOp!=NULL?queryOp->release():RC_OK;}
+	void				setNoRel() {fNoRel=true;}
+};
+
+class CursorNav : public INav
+{
+	Cursor	*const	curs;
+	Value			v;
+public:
+	CursorNav(Cursor *cu) : curs(cu) {v.setError(); if (cu!=NULL) cu->setNoRel();}
+	~CursorNav()	{freeV(v); if (curs!=NULL) curs->destroy();}
+	const	Value	*navigate(GO_DIR=GO_NEXT,ElementID=STORE_COLLECTION_ID);
+	ElementID		getCurrentID();
+	const	Value	*getCurrentValue();
+	RC				getElementByID(ElementID,Value&);
+	INav			*clone() const;
+	unsigned long	count() const;
+	void			destroy();
 };
 
 };

@@ -42,7 +42,6 @@ namespace MVStoreKernel
 #define	CND_SORT		0x80000000
 #define	CND_EQ			0x40000000
 #define	CND_NE			0x20000000
-#define	CND_INSERT		0x10000000
 
 #define	CND_EXISTS_R	0x0800
 #define	CND_FORALL_R	0x0400
@@ -129,7 +128,6 @@ public:
 	const	Value&	getOperand(unsigned idx) const;
 	unsigned		getFlags() const;
 	bool			operator==(const ExprTree& rhs) const;
-	bool			isEval() const {return true; /*???*/}
 	RC				render(int prty,SOutCtx&) const;
 	RC				toPathSeg(PathSeg& ps,MemAlloc *ma) const;
 	void			setFlags(unsigned flags,unsigned mask);
@@ -194,7 +192,7 @@ struct AggAcc
 	RC			result(Value& res);
 };
 
-class PathIt : public IntNav
+class PathIt : public INav
 {
 	struct QElt	{
 		QElt		*next;
@@ -218,14 +216,11 @@ public:
 	~PathIt();
 
 	const	Value	*navigate(GO_DIR=GO_NEXT,ElementID=STORE_COLLECTION_ID);
-	const	Value	*navigateNR(GO_DIR op,ElementID=STORE_COLLECTION_ID);
 	ElementID		getCurrentID();
 	const	Value	*getCurrentValue();
 	RC				getElementByID(ElementID,Value&);
 	INav			*clone() const;
-	INav			*clone(MemAlloc *ma) const;
 	unsigned long	count() const;
-	void			release();
 	void			destroy();
 	friend	class	Expr;
 };

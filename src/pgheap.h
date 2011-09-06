@@ -124,8 +124,8 @@ protected:
 		HType			type;
 		uint32_t		getID() const {return (uint32_t)id[0]<<16|id[1];}
 		void			setID(uint32_t ii) {id[0]=ushort(ii>>16); id[1]=ushort(ii);}
-		int				cmp(uint32_t pid) const {return cmp3((uint32_t)id[0]<<16|id[1],pid);}
 		PropertyID		getPropID() const {return PropertyID((uint32_t)id[0]<<16|id[1]);}
+		class HVCmp {public: __forceinline static int cmp(const HeapV& hv,PropertyID pid) {return cmp3((uint32_t)hv.id[0]<<16|hv.id[1],pid);}};
 	};
 	struct HeapKey {
 		uint16_t		key[2];
@@ -137,10 +137,10 @@ protected:
 		uint16_t		fUnord	:1;
 		HeapV			start[1];
 		ushort			length() const {return (ushort)(sizeof(HeapVV)+(cnt-1)*sizeof(HeapV)+sizeof(HeapKey));}
-		const	HeapV	*find(uint32_t id,HeapV **ins=NULL) const {return mv_bsrcmp<HeapV,PropertyID>(id,start,cnt,ins);}
+		const	HeapV	*find(uint32_t id,HeapV **ins=NULL) const {return BIN<HeapV,PropertyID,HeapV::HVCmp>::find(id,start,cnt,ins);}
 		const	HeapV	*findElt(uint32_t id) const {
 			if (id==STORE_FIRST_ELEMENT) return start; else if (id==STORE_LAST_ELEMENT) return &start[cnt-1];
-			if (fUnord==0) return mv_bsrcmp<HeapV,PropertyID>(id,start,cnt);
+			if (fUnord==0) return BIN<HeapV,PropertyID,HeapV::HVCmp>::find(id,start,cnt);
 			for (int i=cnt; --i>=0; ) if (start[i].getID()==id) return &start[i];
 			return NULL;
 		}
@@ -210,7 +210,7 @@ protected:
 		uint8_t			fmtExtra;
 		ushort			headerLength() const {return sizeof(HeapPIN)+nProps*sizeof(HeapV)+lExtra;}
 		HeapV			*getPropTab() const {return (HeapV*)(this+1);}
-		const HeapV		*findProperty(uint32_t propID,HeapV **ins=NULL) const {return mv_bsrcmp<HeapV,PropertyID>(propID,(HeapV*)(this+1),nProps,ins);}
+		const HeapV		*findProperty(uint32_t propID,HeapV **ins=NULL) const {return BIN<HeapV,PropertyID,HeapV::HVCmp>::find(propID,(HeapV*)(this+1),nProps,ins);}
 		RC				serialize(byte *&buf,size_t& lrec,const HeapPage *hp,MemAlloc *ma,size_t len=0,bool fExpand=false) const;
 		PageAddr		*getOrigLoc() const {return (PageAddr*)((byte*)(this+1)+nProps*sizeof(HeapV));}
 		void			setOrigLoc(const PageAddr& addr) {memcpy((byte*)(this+1)+nProps*sizeof(HeapV),&addr,PageAddrSize); fmtExtra|=0x80;}

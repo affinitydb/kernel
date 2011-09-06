@@ -61,18 +61,21 @@ RC FTIndexMgr::index(ChangeInfo& inf,FTList *ftl,ulong flags,ulong mode,MemAlloc
 			}
 			inf.oldV=NULL; break;
 		case VT_COLLECTION:
-			assert((oldV->flags&VF_EXT)==0);
-			for (v=((IntNav*)oldV->nav)->navigateNR(GO_FIRST); v!=NULL; v=((IntNav*)oldV->nav)->navigateNR(GO_NEXT)) {
+			for (v=oldV->nav->navigate(GO_FIRST); rc==RC_OK && v!=NULL; v=oldV->nav->navigate(GO_NEXT)) {
 				inf.oldV=v; inf.eid=v->eid;
 				switch (v->type) {
+				case VT_STRING: rc=index(inf,ftl,mode|FTMODE_SAVE_WORDS,ma); break;
 				case VT_STREAM: 
 					assert((v->flags&VF_SSV)==0);
-					if (v->stream.is->dataType()==VT_STRING && (rc=index(inf,ftl,mode,ma))!=RC_OK) return rc;
+					if (v->stream.is->dataType()==VT_STRING) rc=index(inf,ftl,mode,ma);
 					break;
-				case VT_STRING: if ((rc=index(inf,ftl,mode|FTMODE_SAVE_WORDS,ma))!=RC_OK) return rc; break;
 				}
 			}
-			((IntNav*)oldV->nav)->release(); inf.oldV=NULL; break;
+			oldV->nav->navigate(GO_FINDBYID,STORE_COLLECTION_ID); if (rc!=RC_OK) return rc;
+			inf.oldV=NULL; break;
+		case VT_STRUCT:
+			//???
+			break;
 		}
 		inf.newV=newV; inf.eid=eid;
 	}
@@ -85,21 +88,24 @@ RC FTIndexMgr::index(ChangeInfo& inf,FTList *ftl,ulong flags,ulong mode,MemAlloc
 			for (n=0; n<newV->length; n++) {
 				inf.newV=v=&newV->varray[n]; inf.eid=inf.newV->eid;
 				switch (v->type) {
-				case VT_STREAM: if (v->stream.is->dataType()==VT_STRING && (rc=index(inf,ftl,mode,ma))!=RC_OK) return rc; break;
 				case VT_STRING: if ((rc=index(inf,ftl,mode,ma))!=RC_OK) return rc; break;
+				case VT_STREAM: if (v->stream.is->dataType()==VT_STRING && (rc=index(inf,ftl,mode,ma))!=RC_OK) return rc; break;
 				}
 			}
 			break;
 		case VT_COLLECTION:
-			assert((newV->flags&VF_EXT)==0);
-			for (v=((IntNav*)newV->nav)->navigateNR(GO_FIRST); v!=NULL; v=((IntNav*)newV->nav)->navigateNR(GO_NEXT)) {
+			for (v=newV->nav->navigate(GO_FIRST); rc==RC_OK && v!=NULL; v=newV->nav->navigate(GO_NEXT)) {
 				inf.newV=v; inf.eid=v->eid;
 				switch (v->type) {
-				case VT_STREAM: if (v->stream.is->dataType()==VT_STRING && (rc=index(inf,ftl,mode,ma))!=RC_OK) return rc; break;
-				case VT_STRING: if ((rc=index(inf,ftl,mode|FTMODE_SAVE_WORDS,ma))!=RC_OK) return rc; break;
+				case VT_STRING: rc=index(inf,ftl,mode|FTMODE_SAVE_WORDS,ma); break;
+				case VT_STREAM: if (v->stream.is->dataType()==VT_STRING) rc=index(inf,ftl,mode,ma); break;
 				}
 			}
-			((IntNav*)newV->nav)->release(); break;
+			newV->nav->navigate(GO_FINDBYID,STORE_COLLECTION_ID); 
+			if (rc!=RC_OK) return rc; break;
+		case VT_STRUCT:
+			//???
+			break;
 		}
 		inf.oldV=oldV;
 	}
@@ -219,8 +225,9 @@ RC FTIndexMgr::rebuildIndex(Session *ses)
 {
 	RC rc=RC_OK; MiniTx tx(ses,MTX_FLUSH|MTX_GLOB);
 	if ((rc=indexFT.dropTree())==RC_OK) {
-		PINEx qr(ses); ses->resetAbortQ(); FullScan fs(ses,HOH_DELETED|HOH_HIDDEN); RWLockP lck(&lock,RW_X_LOCK);
-		while ((rc=fs.next(qr))==RC_OK) {
+		PINEx qr(ses); ses->resetAbortQ();
+		FullScan fs(ses,HOH_DELETED|HOH_HIDDEN); fs.connect(&qr); RWLockP lck(&lock,RW_X_LOCK);
+		while ((rc=fs.next())==RC_OK) {
 #if 0
 			assert(!qr.pb.isNull() && qr.hpin!=NULL);
 			if ((qr.hpin->hdr.descr&HOH_NOINDEX)!=0) continue;

@@ -133,7 +133,7 @@ struct ClassRef {
 	PropertyID			indexProps[1];
 	ClassRef(ClassID id,ushort np,ulong nc,ushort nots,ushort flg) : cid(id),nConds(nc),nIndexProps(np),refCnt(0),sub(NULL),notifications(nots),flags(flg) {cond=NULL;}
 	void				*operator new(size_t s,ulong np,MemAlloc *ma) {return ma->malloc(s+int(np-1)*sizeof(PropertyID));}
-	__forceinline int	cmp(ClassID ci) const {return cmp3(cid,ci);}
+	class ClassRefCmp	{public: __forceinline static int cmp(const ClassRef *cr,ClassID ci) {return cmp3(cr->cid,ci);}};
 };
 
 struct ClassResult
