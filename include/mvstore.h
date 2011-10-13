@@ -713,7 +713,7 @@ namespace MVStore
 	{
 	public:
 		virtual	IPIN		*next() = 0;
-		virtual	RC			next(Value&) = 0;
+		virtual	RC			next(const Value *&res,unsigned& nValues) = 0;
 		virtual	RC			next(PID&) = 0;
 		virtual	RC			next(IPIN *pins[],unsigned nPins,unsigned& nRet) = 0;
 		virtual	RC			rewind() = 0;

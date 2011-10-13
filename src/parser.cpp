@@ -2743,9 +2743,9 @@ RC SInCtx::exec(const Value *params,unsigned nParams,char **result,uint64_t *nPr
 		if (lx==LX_EOE) break; if (lx!=LX_LPR && lx!=LX_KEYW) throw SY_SYNTAX;
 		nextLex=lx; cnt=0;
 		if ((stmt=parse())!=NULL) {
-			IPIN *ip; ICursor *ir=NULL;
+			ICursor *ir=NULL;
 			if ((rc=stmt->execute(result!=NULL?&ir:NULL,params,nParams,nProcess,nSkip,0/*mode???*/))==RC_OK && ir!=NULL) {
-				for (((Cursor*)ir)->setNoRel(); rc==RC_OK && (ip=ir->next())!=NULL; ip->destroy()) {
+				for (PIN *ip; rc==RC_OK && (rc=((Cursor*)ir)->advance(NULL,&ip))==RC_OK; ip->destroy()) {
 					size_t l=sprintf(out.cbuf,cnt==0?"[{":",\n{"); bool fPID=false; cnt++;
 					if (ip->getPID().pid!=STORE_INVALID_PID) {l+=sprintf(out.cbuf+l,"\"id\":\""_LX_FM"\"",ip->getPID().pid); fPID=true;}
 					if (!out.append(out.cbuf,l)) rc=RC_NORESOURCES;
@@ -2764,7 +2764,8 @@ RC SInCtx::exec(const Value *params,unsigned nParams,char **result,uint64_t *nPr
 						if (rc==RC_OK && !out.append("}",1)) rc=RC_NORESOURCES;
 					}
 				}
-				ir->destroy(); if (rc==RC_OK && cnt!=0 && !out.append("]\n",2)) rc=RC_NORESOURCES;
+				ir->destroy(); if (rc==RC_EOF) rc=RC_OK;
+				if (rc==RC_OK && cnt!=0 && !out.append("]\n",2)) rc=RC_NORESOURCES;
 			}
 			stmt->destroy();
 		}

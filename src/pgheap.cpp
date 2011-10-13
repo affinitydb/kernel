@@ -475,8 +475,9 @@ RC HeapPageMgr::update(PBlock *pb,size_t len,ulong info,const byte *rec,size_t l
 				if (!fColl) ol+=sizeof(HeapVV)+sizeof(HeapKey);
 			}
 			hpin->nProps--; assert(nl==0);
-			if (hprop->offset+ol!=hp->freeSpace) {hp->scatteredFreeSpace+=ol+sizeof(HeapV); hpin->hdr.descr|=HOH_MULTIPART;}
-			else {
+			if (hprop->offset+ol!=hp->freeSpace || (hpin->hdr.descr&HOH_MULTIPART)!=0 && hprop->type.isCollection()) {
+				hp->scatteredFreeSpace+=ol+sizeof(HeapV); hpin->hdr.descr|=HOH_MULTIPART;
+			} else {
 				hp->freeSpace-=ol;
 				if ((byte*)(hprop+1)-frame==hp->freeSpace) hp->freeSpace-=sizeof(HeapV);
 				else {hp->scatteredFreeSpace+=sizeof(HeapV); hpin->hdr.descr|=HOH_MULTIPART;}
@@ -807,6 +808,7 @@ void HeapPageMgr::HeapPage::moveObject(const HeapPageMgr::HeapObjHeader *hobj,by
 		if (!fModified||propIdx!=ushort(~0u)) {assert(lhdr<=contFree()); freeSpace+=lhdr;}
 		HeapV *hprop=hpin->getPropTab(); ushort size;
 		for (ushort i=0; i<hpin->nProps; ++i,++hprop) if (i!=propIdx && !hprop->type.isCompact()) {
+			assert(hprop->offset<((HeapPage*)frame)->freeSpace);
 			size=hprop->type.isCollection() ?
 				moveCollection(hprop->type,(byte*)this,freeSpace,frame,hprop->offset) :
 				(ushort)ceil(moveData((byte*)this+freeSpace,frame+hprop->offset,hprop->type),HP_ALIGN);

@@ -269,50 +269,6 @@ void PathOp::print(SOutCtx& buf,int level) const
 
 //------------------------------------------------------------------------------------------------
 
-AggOp::~AggOp()
-{
-}
-
-RC AggOp::next(const PINEx*)
-{
-	//???
-	return RC_OK;
-}
-
-RC AggOp::rewind()
-{
-	if (queryOp!=NULL) queryOp->rewind();
-	// reset currect group
-	return RC_OK;
-}
-
-void AggOp::getOpDescr(QODescr& dscr)
-{
-	if (queryOp!=NULL) {
-		queryOp->getOpDescr(dscr);
-		dscr.flags&=~(QO_UNIQUE|QO_ALLPROPS|QO_PIDSORT|QO_REVERSIBLE);
-		//...
-	}
-}
-
-void AggOp::print(SOutCtx& buf,int level) const
-{
-	buf.fill('\t',level); buf.append("group ",5);
-#if 0
-	if (nSegs==0) buf.renderName(PROP_SPEC_PINID);
-	else for (unsigned i=0; i<nSegs; i++) {
-		const OrderSegQ &os=sortSegs[i]; if (i!=0) buf.append(", ",2);
-		if ((os.flags&ORDER_EXPR)!=0) os.expr->render(0,buf);
-		else if (os.pid==PROP_SPEC_ANY) buf.append("#rank",5);
-		else buf.renderName(os.pid);
-		// flags!!!
-	}
-#endif
-	buf.append("\n",1); if (queryOp!=NULL) queryOp->print(buf,level+1);
-}
-
-//------------------------------------------------------------------------------------------------
-
 Filter::Filter(Session *s,QueryOp *qop,ulong nPars,size_t lp,ulong nqs,ulong md)
 	: QueryOp(s,qop,md),params(NULL),nParams(nPars),conds(NULL),nConds(0),condIdx(NULL),nCondIdx(0),queries(NULL),nQueries(nqs),lProps(lp)
 {

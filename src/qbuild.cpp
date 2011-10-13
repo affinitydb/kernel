@@ -615,9 +615,9 @@ RC QueryCtx::group(QueryOp *&qop,const OrderSegQ *gb,unsigned nG,const Value *tr
 		if (trs==NULL || nTrs==0) {
 			// get them from gb/nG
 		}
-		QueryOp *q=new(ses,nG,nTrs) AggOp(ses,qop,nG,trs,nTrs,mode);
-		if (q==NULL) rc=RC_NORESOURCES;
-		else {qop=q; if (having!=NULL && nHaving!=0) rc=filter(qop,having,nHaving,NULL,0);}
+//		QueryOp *q=new(ses,nG,nTrs) AggOp(ses,qop,nG,trs,nTrs,mode);
+//		if (q==NULL) rc=RC_NORESOURCES;
+//		else {qop=q; if (having!=NULL && nHaving!=0) rc=filter(qop,having,nHaving,NULL,0);}
 	}
 	return rc;
 }

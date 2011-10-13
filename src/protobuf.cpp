@@ -635,20 +635,20 @@ class ProtoBufStreamOut : public IStreamOut
 	bool				fRes;
 public:
 	ProtoBufStreamOut(Session *s,Cursor *pr=NULL,ulong md=0) : ses(s),enc(s,md),res(pr),pin(NULL),fRes(false) 
-		{result.rc=RC_OK; result.cnt=0; result.op=MODOP_QUERY; if (pr!=NULL) pr->setNoRel();}
+		{result.rc=RC_OK; result.cnt=0; result.op=MODOP_QUERY;}
 	~ProtoBufStreamOut() {if (res!=NULL) res->destroy(); if (pin!=NULL) ((PIN*)pin)->destroy();}
 	RC next(unsigned char *buf,size_t& lbuf) {
 		if (ses->getStore()->inShutdown()) return RC_SHUTDOWN;
 		size_t left=lbuf; RC rc;
 		while (res!=NULL) {
 			if ((rc=enc.encode(buf+lbuf-left,left))!=RC_TRUE) {res->release(); return rc;}
-			if (pin!=NULL) ((PIN*)pin)->destroy();
-			if ((pin=(PIN*)res->next())==NULL) {res->destroy(); res=NULL; break;}
+			if (pin!=NULL) {((PIN*)pin)->destroy(); pin=NULL;}
+			if ((rc=res->advance(NULL,(PIN**)&pin))!=RC_OK) {res->destroy(); res=NULL; break;}
 			enc.set(pin); result.cnt++;
 		}
 		if (!fRes) {enc.set(&result); fRes=true;} //result.rc=???
 		rc=enc.encode(buf+lbuf-left,left); lbuf-=left;
-		return rc!=RC_TRUE?rc:lbuf!=0?RC_OK:RC_EOF;
+		return rc!=RC_TRUE&&rc!=RC_EOF?rc:lbuf!=0?RC_OK:RC_EOF;
 	}
 	void destroy() {try {this->~ProtoBufStreamOut(); ses->free(this);} catch (...) {}}
 };
@@ -1143,13 +1143,9 @@ private:
 	RC process(Stmt *stmt) {
 		RC rc=RC_OK; ICursor *cursor=NULL; Result res={RC_OK,0,modOp[stmt->getOp()]};
 		if ((rc=stmt->execute(out!=NULL&&is.oi.rtt!=RTT_COUNT?&cursor:(ICursor**)0,is.stmt->params,is.stmt->nParams,is.stmt->limit,is.stmt->offset,is.stmt->mode,&res.cnt))==RC_OK && cursor!=NULL) {
-			PIN pin(ses,PIN::defPID,PageAddr::invAddr),*pp=&pin; PID pid; IPIN *ipin; ((Cursor*)cursor)->setNoRel(); assert(obuf!=NULL && enc!=NULL);
-			for (unsigned nPins; ;res.cnt++) {
-				if (is.oi.rtt==RTT_PINS) {
-					if ((rc=cursor->next(&ipin,1,nPins))==RC_OK) pp=(PIN*)ipin; else break;
-				} else {
-					if ((rc=cursor->next(pid))==RC_OK) const_cast<PID&>(pin.id)=pid; else break;
-				}
+			PIN pin(ses,PIN::defPID,PageAddr::invAddr),*pp=&pin; assert(obuf!=NULL && enc!=NULL);
+			for (; (rc=((Cursor*)cursor)->advance(NULL,is.oi.rtt==RTT_PINS?&pp:(PIN**)0))==RC_OK; res.cnt++) {
+				if (is.oi.rtt!=RTT_PINS) ((Cursor*)cursor)->getPID(const_cast<PID&>(pin.id));
 				if ((rc=pinOut(pp,is.oi))!=RC_OK) break;
 			}
 			cursor->destroy(); if (rc==RC_EOF) rc=RC_OK;
@@ -1229,13 +1225,9 @@ class ServerStreamIn : public ProtoBufStreamIn {
 					break;
 				case SRT_STMT:
 					if ((rc=stmt->execute(str.cb!=NULL&&oi.rtt!=RTT_COUNT?&cursor:(ICursor**)0,info->params,info->nParams,info->limit,info->offset,info->mode,&nProcessed))==RC_OK && cursor!=NULL) {
-						PIN pin(ses,PIN::defPID,PageAddr::invAddr),*pp=&pin; ((Cursor*)cursor)->setNoRel(); PID pid; IPIN *ipin;
-						for (unsigned nPins; ;nProcessed++) {
-							if (oi.rtt==RTT_PINS) {
-								if ((rc=cursor->next(&ipin,1,nPins))==RC_OK) pp=(PIN*)ipin; else break;
-							} else {
-								if ((rc=cursor->next(pid))==RC_OK) const_cast<PID&>(pin.id)=pid; else break;
-							}
+						PIN pin(ses,PIN::defPID,PageAddr::invAddr),*pp=&pin;
+						for (; (rc=((Cursor*)cursor)->advance(NULL,oi.rtt==RTT_PINS?&pp:(PIN**)0))==RC_OK; nProcessed++) {
+							if (oi.rtt!=RTT_PINS) ((Cursor*)cursor)->getPID(const_cast<PID&>(pin.id));
 							if ((rc=pinOut(pp,oi))!=RC_OK) break;
 						}
 						cursor->destroy(); if (rc==RC_EOF) rc=RC_OK;

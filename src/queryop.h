@@ -461,18 +461,6 @@ public:
 	RC			release();
 };
 
-class AggOp : public QueryOp
-{
-public:
-	AggOp(Session *s,QueryOp *q,unsigned nGroup,const Value *trs,unsigned nTrs,ulong mode) : QueryOp(s,q,mode) {}
-	virtual		~AggOp();
-	void*		operator new(size_t s,Session *ses,unsigned nG,unsigned nTrs) throw() {return ses->malloc(s+nG*sizeof(OrderSegQ)+nTrs*sizeof(Value));}
-	RC			next(const PINEx *skip=NULL);
-	RC			rewind();
-	void		getOpDescr(QODescr&);
-	void		print(SOutCtx& buf,int level) const;
-};
-
 class TransOp : public QueryOp
 {
 	const	ValueV		*outs;

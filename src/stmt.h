@@ -321,16 +321,15 @@ class Cursor : public ICursor
 	uint64_t			cnt;
 	TxSP				tx;
 	bool				fSnapshot;
-	bool				fNoRel;
 	void	operator	delete(void *p) {if (p!=NULL) ((Cursor*)p)->ses->free(p);}
 	RC					skip();
 public:
 	Cursor(QueryOp *qop,uint64_t nRet,ulong md,const Value *vals,unsigned nV,Session *s,STMT_OP sop=STMT_QUERY,SelectType ste=SEL_PINSET,bool fSS=false)
 		: queryOp(qop),ses(s),nReturn(nRet),values(vals),nValues(nV),mode(md&~(LOAD_CARDINALITY|LOAD_EXT_ADDR|LOAD_SSV|LOAD_ENAV)),stype(ste),op(sop),
-		results(NULL),nResults(0),qr(s),txid(INVALID_TXID),txcid(NO_TXCID),cnt(0),tx(s),fSnapshot(fSS),fNoRel(false) {}
+		results(NULL),nResults(0),qr(s),txid(INVALID_TXID),txcid(NO_TXCID),cnt(0),tx(s),fSnapshot(fSS) {}
 	virtual				~Cursor();
 	IPIN				*next();
-	RC					next(Value&);
+	RC					next(const Value *&res,unsigned& nValues);
 	RC					next(PID&);
 	RC					next(IPIN *pins[],unsigned nPins,unsigned& nRet);
 	RC					rewind();
@@ -338,16 +337,16 @@ public:
 
 	RC					connect();
 	RC					release() {return queryOp!=NULL?queryOp->release():RC_OK;}
-	void				setNoRel() {fNoRel=true;}
+	RC					advance(bool *fRel=NULL,PIN **ret=NULL);
+	void				getPID(PID &id) {PINEx *pq=results!=NULL?results[0]:&qr; if (pq==NULL) id=PIN::defPID; else {if (pq->id.pid==STORE_INVALID_PID && pq->epr.lref!=0) pq->unpack(); id=pq->id;}}
 };
 
 class CursorNav : public INav
 {
 	Cursor	*const	curs;
-	Value			v;
 public:
-	CursorNav(Cursor *cu) : curs(cu) {v.setError(); if (cu!=NULL) cu->setNoRel();}
-	~CursorNav()	{freeV(v); if (curs!=NULL) curs->destroy();}
+	CursorNav(Cursor *cu) : curs(cu) {}
+	~CursorNav()	{if (curs!=NULL) curs->destroy();}
 	const	Value	*navigate(GO_DIR=GO_NEXT,ElementID=STORE_COLLECTION_ID);
 	ElementID		getCurrentID();
 	const	Value	*getCurrentValue();
