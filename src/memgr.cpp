@@ -76,8 +76,11 @@ void* MVStoreKernel::memalign(size_t a,size_t s,HEAP_TYPE alloc)
 	}
 #ifdef WIN32
 	return ::_aligned_malloc(s,a);
-#else
+#elifndef Darwin
 	return ::memalign(a,s);
+#else
+	void * tmp; 
+	return posix_memalign(&tmp,a,s) ? NULL : tmp ;
 #endif
 }
 

@@ -24,6 +24,10 @@ static DWORD WINAPI callProcessRequests(void *param) {((ThreadGroup*)param)->pro
 #else
 #include <sys/mman.h>
 #include "storeio.h"
+#ifdef Darwin
+#define MAP_ANONYMOUS MAP_ANON
+#endif
+
 void *RQ_Alloc::alloc(size_t s) {
 	size_t pagesize=sysconf(_SC_PAGE_SIZE);
 	return mmap(0, s+(pagesize-1)&~(pagesize-1), PROT_READ|PROT_WRITE, MAP_PRIVATE|MAP_ANONYMOUS, -1, 0);

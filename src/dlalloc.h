@@ -842,9 +842,10 @@ extern Void_t*     sbrk();
   you must #include your system version and #define
   HAVE_USR_INCLUDE_MALLOC_H.
 */
-
+#ifndef Darwin
 #ifndef WIN32
 #define HAVE_USR_INCLUDE_MALLOC_H
+#endif
 #endif
 
 #ifdef HAVE_USR_INCLUDE_MALLOC_H

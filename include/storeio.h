@@ -20,8 +20,13 @@ enum LIOMODE {LIO_WAIT, LIO_NOWAIT};
 #include <unistd.h>
 #include <aio.h>
 #include <signal.h>
+#ifndef Darwin
 #define	SIGPIAIO	(SIGRTMIN+6)
 #define	SIGPISIO	(SIGRTMIN+7)
+#else
+#define	SIGPIAIO	(SIGUSR1)
+#define	SIGPISIO	(SIGUSR2)
+#endif
 #endif
 
 /* Flags to IStoreIO::open */

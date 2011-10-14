@@ -28,7 +28,9 @@ Written by Mark Venguerov 2004 - 2010
 #include <stdio.h>
 #ifndef WIN32
 #include <sys/stat.h>
+#ifndef Darwin
 #include <sys/sysinfo.h>
+#endif
 #endif
 
 using namespace MVStoreKernel;
@@ -73,8 +75,11 @@ static unsigned calcBuffers(unsigned nBuf,unsigned lPage)
 		MEMORYSTATUSEX memStat={sizeof(MEMORYSTATUSEX)};
 		if (GlobalMemoryStatusEx(&memStat)) nBuf=unsigned(min(memStat.ullAvailPhys,memStat.ullAvailVirtual)*7/8/lPage);
 #else
+#ifndef Darwin
 		struct sysinfo sysInfo;
 		if (sysinfo(&sysInfo)==0) nBuf=unsigned(uint64_t(sysInfo.freeram)*7/8/lPage);
+#else
+#endif
 #endif
 	}
 	return nBuf==0||nBuf==~0u?0x1000:nBuf<MIN_BUFFERS?MIN_BUFFERS:nBuf;

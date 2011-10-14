@@ -111,7 +111,18 @@ extern	"C" void	reportError(int);
 inline	HTHREAD		getThread() {return pthread_self();}
 inline	size_t		getPageSize() {return (size_t)sysconf(_SC_PAGESIZE);}
 inline	size_t		getSectorSize() {return 0x200;}		// ????
+#ifndef Darwin
 inline	void		*allocAligned(size_t sz,size_t alignment) {return memalign(alignment,sz);}
+#else
+/*Allocating /deallocating aligned memory...
+  Check OSX man posix_memalign for details...  
+*/
+inline	void		*allocAligned(size_t sz,size_t alignment) {
+void * tmp;
+   return posix_memalign(&tmp, alignment, sz) ? NULL : tmp; 
+}
+#endif
+
 inline	void		freeAligned(void *p) {free(p);}
 inline	RC			createThread(void *(*pRoutine)(void*),void *pParam,pthread_t& thread)
 									{return convCode(pthread_create(&thread,NULL,pRoutine,pParam));}
@@ -119,15 +130,25 @@ inline	int			getNProcessors() {return (int)sysconf(_SC_NPROCESSORS_ONLN);}
 
 typedef	uint64_t	TIMESTAMP;
 #define	TS_DELTA	TIMESTAMP(0x00295e9648864000ULL)
-inline	void		getTimestamp(TIMESTAMP& ts) {timespec tsp; clock_gettime(CLOCK_REALTIME,&tsp); ts=uint64_t(tsp.tv_sec)*1000000+tsp.tv_nsec/1000+TS_DELTA;}
+
+#ifndef Darwin
+inline	void		getTimestamp(TIMESTAMP& ts) {timespec tsp; clock_gettime(CLOCK_REALTIME,&tsp); 
+ts=uint64_t(tsp.tv_sec)*1000000+tsp.tv_nsec/1000+TS_DELTA;}
+#else
+inline	void		getTimestamp(TIMESTAMP& ts) {timeval tv; gettimeofday(&tv,NULL); ts=uint64_t(tv.tv_sec)*1000000+tv.tv_usec+TS_DELTA;}
+#endif
 
 #ifdef Darwin
 #include <mach/mach.h>
 #define wcsncasecmp(x,y,z) wcsncmp(x,y,z)
+typedef unsigned long ulong;
+typedef uint64_t	off64_t;   //??int:
+#endif
+
 #ifdef __arm__
 #define stat64 stat
 #endif
-#endif
+
 
 #ifdef __x86_64__
 #define	DEFAULT_ALIGN	16

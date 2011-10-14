@@ -17,6 +17,16 @@ bool __sync_bool_compare_and_swap_8(volatile void* destination, long long unsign
 }
 #endif
 
+#ifdef Darwin
+/* !!! Warning !!!
+At this point of time, the code for OSX is compiled in 64bit mode only. 
+For 32-bit mode, the  ...swap_8() function may be needed...
+*/
+extern "C" {
+bool __sync_bool_compare_and_swap_16(volatile __uint128_t * destination, __uint128_t comperand, __uint128_t exchange);
+}
+#endif
+
 namespace MVStoreKernel
 {
 
@@ -174,8 +184,8 @@ struct SemData {
     }
 	~SemData()	{semaphore_destroy(mach_task_self(), machsem);}
 	void		detach() {}
-	void		wait() {semaphore_wait(machsem);}
-	void		wakeup() {semaphore_signal(machsem);}
+	void		wait()   {kern_return_t kr;  while( KERN_SUCCESS != (kr = semaphore_wait(machsem)) ){ /*mach_error( "semaphore_wait: ", kr); printf("errno = %d\n",errno);*/}}
+	void		wakeup() {kern_return_t kr;  while( KERN_SUCCESS != (kr = semaphore_signal(machsem)) ){/* mach_error( "semaphore_signal: ", kr); printf("errno = %d\n",errno);*/}}
 #else
 	sem_t		sem;
 	SemData()	{sem_init(&sem,0,0);}

@@ -5,8 +5,9 @@ Copyright © 2004-2010 VMware, Inc. All rights reserved.
 Written by Mark Venguerov, Andrew Skowronski, Michael Andronov 2004 - 2010
 
 **************************************************************************************/
+#ifdef _LINUX
+#ifndef Darwin
 
-#ifndef WIN32
 #include "fiolinux.h"
 #include "session.h"
 #include "startup.h"
@@ -16,26 +17,9 @@ Written by Mark Venguerov, Andrew Skowronski, Michael Andronov 2004 - 2010
 #include <sys/types.h>
 #include <sys/signal.h> 
 
-#ifdef Darwin
-//The functions are called properly ( to 32/64 implementation) internally
-#define open64 open
-#define ftruncate64 ftruncate
-#define pwrite64 pwrite
-#define pread64 pread
-#define aio_write64 aio_write 
-#define aio_read64 aio_write 
-
-#define aiocb64 aiocb
-#define fdatasync(x) fsync(x)
-#endif
-
 using namespace MVStoreKernel;
 	
 FreeQ<> FileIOLinux::freeAio64;
-
-#ifdef Darwin
-SemData FileIOLinux::sigSem;  //use for signaling async. operation completion...
-#endif
 
 #ifndef SYNC_IO
 struct mv_sync_io
@@ -56,13 +40,6 @@ FileIOLinux::FileIOLinux() : slotTab(NULL),xSlotTab(FIO_MAX_OPENFILES),flagsFS(0
 	slotTab = (FileDescLinux*)malloc(sizeof(FileDescLinux)*xSlotTab,STORE_HEAP); 
 	if (slotTab!=NULL){ for (int i=0;i<xSlotTab;i++){ slotTab[i].init();}}
 	sigemptyset(&sigSIO); sigaddset(&sigSIO,SIGPISIO);
-
-#ifdef Darwin	 
-	act.sa_handler = SIGUSR1_handler;
-	sigemptyset(&(act.sa_mask));
-	act.sa_flags = 0;
-	sigaction(SIGUSR1, &act, NULL);
-#endif
 }
 
 
@@ -72,14 +49,6 @@ FileIOLinux::~FileIOLinux()
 		closeAll(0);
 		free(slotTab,STORE_HEAP);
 	}
-#ifdef Darwin
-	report(MSG_DEBUG,"There are (%d) in async. queue at stop!\n", aioStartedQ.getQCnt() );
-	aioStartedQ.shutprocdown(true); sigSem.wakeup(); 
-	if(pthread_cancel(thSigProc) < 0)
-	    report(MSG_DEBUG,"Fail to cancel the tread thread (%d)!\n", errno);
-	if(pthread_join(thSigProc,NULL)<0)
-		report(MSG_DEBUG,"Fail to stop signal thread (%d)!\n", errno);	 
-#endif
 }
 
 void FileIOLinux::init(void (*cb)(iodesc*))
@@ -93,9 +62,6 @@ void FileIOLinux::init(void (*cb)(iodesc*))
 	if (sigaction(SIGPIAIO, &action, NULL)!=0) report(MSG_CRIT,"Cannot install AIO signal handler (%d)\n",errno);
 	action.sa_sigaction = FileIOLinux::_asyncSIOCompletion;
 	if (sigaction(SIGPISIO, &action, NULL)!=0) report(MSG_CRIT,"Cannot install SIO signal handler (%d)\n",errno);
-#endif
-#ifdef Darwin
-	pthread_create(&thSigProc, NULL, FileIOLinux::asyncOSXFinalize, (void *)this);
 #endif
 }
 
@@ -140,16 +106,9 @@ RC FileIOLinux::open(FileID& fid,const char *fname,const char *dir,ulong flags)
 	}
 	
 	char fullbuf[PATH_MAX+1]; 
-#ifndef Darwin
 	const static struct flock flck={F_WRLCK,SEEK_SET,0,0,0};
 	fd = open64(fname,((flagsFS&FS_DIRECT)!=0&&(flags&FIO_TEMP)==0?O_DIRECT:0)|O_RDWR|(flags&(FIO_TEMP|FIO_CREATE)?flags&FIO_NEW?O_CREAT|O_EXCL|O_TRUNC:O_CREAT:0),S_IRUSR|S_IWUSR|S_IRGRP);
-#else
-	static struct flock flck; flck.l_type=F_WRLCK; flck.l_whence=SEEK_SET;
-	int f_flags = (flagsFS&FS_DIRECT)!=0 && (flags&FIO_TEMP)==0?0:0 |O_RDWR |(flags&(FIO_TEMP|FIO_CREATE)?flags&FIO_NEW?O_CREAT|O_EXCL|O_TRUNC:O_CREAT:0); 
-	fd = ::open64(fname, f_flags, S_IRUSR|S_IWUSR|S_IRGRP );
-	//The following line - setting F_NOCACHE - is similar to `O_DIRECT`...
-	if(fd==INVALID_FD || fcntl(fd, F_NOCACHE, 1) != 0)	rc=convCode(errno);
-#endif
+
 
 	if (fd==INVALID_FD || fcntl(fd,F_SETLK,(struct flock*)&flck)!=0) rc=convCode(errno);
 	else {
@@ -227,63 +186,6 @@ RC FileIOLinux::growFile(FileID file, off64_t newSize)
 	return rc;
 }
 
-#ifdef Darwin
-/**
-* The major addition - to handle asynchronous operations on OS X. 
-* There is no notificaiton functions within the OS X. 
-* The signal support is limited ( no way to provide the context to signal). 
-* Plus the amoung of signal-sage operations/system function calls is very 
-* limited. 
-* The following strategy is implemented: 
-*  - `worker` thread is waiting for procesing async operation completion; 
-*  - the signal received as there are completed async. operation(s); 
-*    mach semaphore is signaled within the signal handler; 
-*  - above semaphore wakes up the `worker` thread, which completes the work 
-*    for async operation completion. 
-*
-*  void * FileIOLinux::asyncOSXFinalize(void *pp)
-*  pthread function, representing the `worker` thread for the async. operation
-*   completion.
-**/
-void * FileIOLinux::asyncOSXFinalize(void *pp)
-{
-    void *p; int err;	 
-	FileIOLinux * fioL = (FileIOLinux *)pp;
-	
-	while(true){
-		sigSem.wait();
-		
-		if (fioL->aioStartedQ.shutprocdown()) return NULL;
-				
-		while(NULL != ( p = (void *)fioL->aioStartedQ.checkIt(err)))
-		{	
-			IStoreIO::iodesc *pcbs =(IStoreIO::iodesc *)p; 
-			if (pcbs!=NULL && pcbs->aio_ptrpos>0) {
-				FileIOLinux* pThis=(FileIOLinux*)pcbs->aio_ptr[--(pcbs->aio_ptrpos)];
-				aiocb64 *aio=(aiocb64 *)pcbs->aio_ptr[--(pcbs->aio_ptrpos)];
-				if (pThis!=NULL&&pThis->asyncIOCallback!=NULL)
-					pThis->asyncIOCallback(pcbs);
-				else{
-					report(MSG_ERROR,"aio with asyncIOCallback not set!\n");
-				}
-				freeAio64.dealloc(aio);
-			}else
-			{
-		   		report(MSG_ERROR,"aio unknown condition!\n");
-			}
-		}
-	}
-	return NULL;
-}
-/**
-* The signal handle, invoked if at least one async operation completed.
-**/
-void FileIOLinux::SIGUSR1_handler (int signo __unused)
-{
-	sigSem.wakeup();
-}
-#endif
-
 RC FileIOLinux::listIO(int mode,int nent,iodesc* const* pcbs)
 {
 	lock.lock(RW_S_LOCK); int i; RC rc=RC_OK;
@@ -347,7 +249,6 @@ RC FileIOLinux::listIO(int mode,int nent,iodesc* const* pcbs)
 	for (i=0; i<nent; i++) if (pcbs[i]!=NULL && adescs[i]!=NULL) {
 		if (adescs[i]->aio_lio_opcode==LIO_NOP) {asyncIOCallback(pcbs[i]); freeAio64.dealloc(adescs[i]); adescs[i]=NULL; continue;}
 		aiocb64 &aio=*(adescs[i]);
-#ifndef Darwin
 #ifndef SYNC_IO
 		if (mode==LIO_WAIT) {
 	        aio.aio_sigevent.sigev_notify			 = SIGEV_SIGNAL;
@@ -385,31 +286,6 @@ RC FileIOLinux::listIO(int mode,int nent,iodesc* const* pcbs)
 			{pcbs[i]->aio_ptrpos-=2; asyncIOCallback(pcbs[i]);}
 			freeAio64.dealloc(adescs[i]);
 		}
-#else
-		pcbs[i]->aio_ptr[pcbs[i]->aio_ptrpos++]=adescs[i];
-		pcbs[i]->aio_ptr[pcbs[i]->aio_ptrpos++]=this;
-		assert(pcbs[i]->aio_ptrpos<=FIO_MAX_PLUGIN_CHAIN);  
-
-		//OS X supports only signal notification at this point.
-        aio.aio_sigevent.sigev_notify			 = SIGEV_SIGNAL;
-		aio.aio_sigevent.sigev_signo			 = SIGUSR1;
-			
-		//ignored on Mac OS X
-		aio.aio_reqprio =0;
-		aio.aio_sigevent.sigev_value.sival_int	 = 0;
-		aio.aio_sigevent.sigev_notify_function   = (void(*)(union sigval))0;
-		aio.aio_sigevent.sigev_notify_attributes = NULL;
-
-		aioStartedQ.pushBack(pcbs[i]);
-			
-		if ((aio.aio_lio_opcode==LIO_WRITE?aio_write64(&aio):aio_read64(&aio))!=0) {
-		    report(MSG_DEBUG,"Failed to schedule aio, errno=%d, async. qcnt=%d\n",errno, aioStartedQ.getQCnt());
-			aioStartedQ.remove(pcbs[i]);
-			rc=pcbs[i]->aio_rc=convCode(errno); pcbs[i]->aio_ptrpos-=2; 
-			asyncIOCallback(pcbs[i]); 
-			freeAio64.dealloc(adescs[i]);
-		}
-#endif
 	}
 #ifndef SYNC_IO
 	if (mode==LIO_WAIT) {
@@ -538,4 +414,5 @@ IStoreIO *getStoreIO()
 	catch (...) {report(MSG_ERROR,"Exception in getStoreIO\n"); return NULL;}
 }
 
+#endif
 #endif

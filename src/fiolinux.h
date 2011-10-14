@@ -9,18 +9,14 @@ Written by Mark Venguerov, Andrew Skowronski, Michael Andronov 2004 - 2010
 #ifndef _FIOLINUX_H_
 #define _FIOLINUX_H_
 
-#ifndef WIN32
+#ifdef _LINUX
+#ifndef Darwin
+
 #include "storeio.h"
 #include "sync.h"
 
 #define INVALID_FD (-1)
 #define	FS_DIRECT			0x0001
-
-#ifdef Darwin
-#include <aio.h>
-#include "fioOSXhelper.h"
-typedef union sigval sigval_t;
-#endif
 
 namespace MVStoreKernel
 {
@@ -92,16 +88,9 @@ namespace MVStoreKernel
 	private:
 		void	setFlagsFS();
 		void	deleteLogFiles(const char * mask,ulong maxFile,const char *lDir,bool fArchived);
-#ifdef Darwin
-		struct sigaction act;
-		static void *  FileIOLinux::asyncOSXFinalize(void *);
-		static void SIGUSR1_handler(int signo __unused);
-		pthread_t thSigProc;
-		static SemData sigSem;
-		sigAIOhelper aioStartedQ;
-#endif
 	};
 } ;
 
+#endif
 #endif
 #endif

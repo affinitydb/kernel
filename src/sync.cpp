@@ -162,3 +162,42 @@ int lRes = 0;
   return lRes ? 0 : 1; 
 }
 #endif
+
+#ifdef Darwin
+inline int cas128(volatile __uint128_t* destination,
+                   __uint128_t* comperand,
+                   __uint128_t* exchange)
+{
+  unsigned char retval;
+  __asm__ __volatile__
+   (
+      "mov %1, %%rsi\n"
+      "mov (%%rsi), %%rax\n"
+      "mov 8(%%rsi), %%rdx\n"
+      "mov %2, %%rsi\n"
+      "mov (%%rsi), %%rbx\n"
+      "mov 8(%%rsi), %%rcx\n"
+      "mov %3, %%rsi\n"
+      "lock cmpxchg16b (%%rsi)\n"
+      "sete %0\n"
+      : "=a"(retval)
+      : "m"(comperand),
+        "m"(exchange),
+        "m"(destination)
+      : "memory", "cc", "rbx", "rcx", "rdx", "rsi"
+   );
+   return retval;
+}
+
+bool __sync_bool_compare_and_swap_16(volatile __uint128_t * destination, __uint128_t comperand, __uint128_t exchange)                 
+{
+  unsigned char retval;
+/*  volatile __uint128_t * dest = destination;
+  __uint128_t comp = comperand;
+  __uint128_t exch = exchange;  
+  retval = cas128(dest, &comp, &exch);
+*/  
+  retval = cas128(destination, &comperand, &exchange);
+  return retval ? 1 : 0;
+}
+#endif
