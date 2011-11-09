@@ -41,12 +41,14 @@ void QueryOp::connect(PINEx **results,unsigned nRes)
 
 RC QueryOp::rewind()
 {
-	return queryOp!=NULL?queryOp->rewind():RC_OK;
+	RC rc=queryOp!=NULL?queryOp->rewind():RC_OK;
+	if (rc==RC_OK) state=state&~QST_EOF|QST_BOF;
+	return rc;
 }
 
 RC QueryOp::count(uint64_t& cnt,ulong nAbort)
 {
-	uint64_t c=0; RC rc;
+	uint64_t c=0; RC rc; PINEx qr(ses); if (res==NULL) connect(&qr);
 	while ((rc=next())==RC_OK) if (++c>nAbort) return RC_TIMEOUT;
 	cnt=c; return rc==RC_EOF?RC_OK:rc;
 }
@@ -103,10 +105,11 @@ RC QueryOp::getBody(PINEx& pe)
 
 RC BodyOp::next(const PINEx *skip)
 {
-	RC rc=RC_OK; assert(ses!=NULL && res!=NULL);
+	RC rc=RC_OK; assert(ses!=NULL);
 	if ((state&QST_INIT)!=0) {state&=~QST_INIT; if (nSkip>0 && (rc=initSkip())!=RC_OK) return rc;}
 //	if (op==GO_FIRST || op==GO_LAST) state&=~(QST_BOF|QST_EOF); else if ((state&(op==GO_NEXT?QST_EOF:QST_BOF))!=0) return RC_EOF;
-	for (; (rc=queryOp->next(skip))==RC_OK; skip=NULL) {
+	for (; (rc=queryOp->next(skip))==RC_OK && res!=NULL; skip=NULL) {
+		if (res->props!=NULL) {if ((res->epr.flags&PINEX_DESTROY)!=0) freeV((Value*)res->props,res->nProps,ses); res->props=NULL; res->nProps=0;}
 		if ((rc=getBody(*res))!=RC_OK || (res->hpin->hdr.descr&HOH_HIDDEN)!=0) 
 			{res->cleanup(); if (rc==RC_OK || rc==RC_NOACCESS || rc==RC_REPEAT || rc==RC_DELETED) continue; else return rc;}
 #if 0
@@ -128,6 +131,11 @@ RC BodyOp::next(const PINEx *skip)
 	}
 	if (rc!=RC_OK) state|=QST_EOF;
 	return rc;
+}
+
+RC BodyOp::count(uint64_t& cnt,ulong nAbort)
+{
+	return queryOp->count(cnt,nAbort);
 }
 
 RC BodyOp::rewind()
@@ -184,7 +192,7 @@ RC PathOp::next(const PINEx *)
 			if (pst->idx>=nPathSeg && pst->rcnt>=path[pst->idx-1].rmin && path[pst->idx-1].filter==NULL) {/*printf("->\n");*/ return RC_OK;}
 		case 1:
 			pst->state=2; //printf("%*s(%d,%d):"_LX_FM"\n",(pst->idx-1+pst->rcnt-1)*2,"",pst->idx,pst->rcnt,res->id.pid);
-			if ((rc=getBody(*res))!=RC_OK || (res->hpin->hdr.descr&HOH_HIDDEN)!=0) 
+			if ((rc=getBody(*res))!=RC_OK || (res->hpin->hdr.descr&HOH_HIDDEN)!=0)
 				{res->cleanup(); if (rc==RC_OK || rc==RC_NOACCESS || rc==RC_REPEAT || rc==RC_DELETED) {pop(); continue;} else {state|=QST_EOF; return rc;}}
 			fOK=path[pst->idx-1].filter==NULL || ses->getStore()->queryMgr->condSatisfied((const Expr* const*)&path[pst->idx-1].filter,1,(const PINEx**)&res,1,params,nParams,ses);
 			if (!fOK && !path[pst->idx-1].fLast) {res->cleanup(); pop(); continue;}
@@ -204,7 +212,7 @@ RC PathOp::next(const PINEx *)
 						unsigned s=pst->vidx; pst->vidx=0; if ((rc=push())!=RC_OK) return rc; pst->next->vidx=s;
 					}
 				} else if (path[pst->idx-1].filter!=NULL) {/*printf("->\n");*/ return RC_OK;}
-				}
+			}
 			res->cleanup();
 		case 2:
 			if (pst->vidx>=2) {pop(); continue;}	// rmin==0 && pst->nSucc==0 -> goto next seg
@@ -269,18 +277,15 @@ void PathOp::print(SOutCtx& buf,int level) const
 
 //------------------------------------------------------------------------------------------------
 
-Filter::Filter(Session *s,QueryOp *qop,ulong nPars,size_t lp,ulong nqs,ulong md)
-	: QueryOp(s,qop,md),params(NULL),nParams(nPars),conds(NULL),nConds(0),condIdx(NULL),nCondIdx(0),queries(NULL),nQueries(nqs),lProps(lp)
+Filter::Filter(Session *s,QueryOp *qop,ulong nPars,ulong nqs,ulong md)
+	: QueryOp(s,qop,md),params(NULL),nParams(nPars),conds(NULL),nConds(0),condIdx(NULL),nCondIdx(0),queries(NULL),nQueries(nqs)
 {
 }
 
 Filter::~Filter()
 {
 	if (queries!=NULL) {
-		for (ulong i=0; i<nQueries; i++) {
-			QueryWithParams& cs=queries[i]; cs.qry->destroy();
-			if ((mode&QO_VCOPIED)!=0 && cs.params!=NULL) freeV((Value*)cs.params,cs.nParams,ses);
-		}
+		for (ulong i=0; i<nQueries; i++) {QueryWithParams& cs=queries[i]; cs.qry->destroy(); if (cs.params!=NULL) freeV((Value*)cs.params,cs.nParams,ses);}
 		ses->free(queries);
 	}
 	if ((mode&QO_VCOPIED)!=0) {
@@ -301,27 +306,30 @@ RC Filter::next(const PINEx *skip)
 	if ((state&QST_EOF)!=0) return RC_EOF;
 	for (; (rc=queryOp->next(skip))==RC_OK; skip=NULL) {
 		if ((mode&QO_NODATA)==0 && (rc=queryOp->getData(*res,NULL,0))!=RC_OK) break;
-		if (lProps!=0 && !condProps.test(res,lProps)) continue; bool fOK=true;
-		if ((mode&QO_CLASS)==0) {
-			for (CondIdx *ci=condIdx; ci!=NULL; ci=ci->next) {
-				if (ci->param>=nParams) {fOK=false; break;}
-				Value *pv=&params[ci->param];
-				if (ci->expr!=NULL) {
-					// ???
-				} else {
-					Value vv; if (res->getValue(ci->ks.propID,vv,LOAD_SSV,NULL)!=RC_OK) {fOK=false; break;}
-					RC rc=Expr::calc((ExprOp)ci->ks.op,vv,pv,2,(ci->ks.flags&ORD_NCASE)!=0?CND_NCASE:0,ses);
-					freeV(vv); if (rc!=RC_TRUE) {fOK=false; break;}
-				}
-			}
-			if (!fOK) continue;
-		}
-		if (queries!=NULL && nQueries>0) {
-			for (ulong i=0; i<nQueries; i++) if (!queries[i].qry->checkConditions(res,queries[i].params,queries[i].nParams,ses)) {fOK=false; break;}
-			if (!fOK) continue;
-		}
 		const PINEx *pp=res;
-		if (conds==NULL || ses->getStore()->queryMgr->condSatisfied(nConds>1?conds:&cond,nConds,&pp,1,params,nParams,ses,(mode&QO_CLASS)!=0)) break;
+		if (conds==NULL || ses->getStore()->queryMgr->condSatisfied(nConds>1?conds:&cond,nConds,&pp,1,params,nParams,ses,(mode&QO_CLASS)!=0)) {
+			if ((mode&QO_CLASS)==0) {
+				bool fOK=true;
+				for (CondIdx *ci=condIdx; ci!=NULL; ci=ci->next) {
+					if (ci->param>=nParams) {fOK=false; break;}
+					Value *pv=&params[ci->param];
+					if (ci->expr!=NULL) {
+						// ???
+					} else {
+						Value vv; if (res->getValue(ci->ks.propID,vv,LOAD_SSV,NULL)!=RC_OK) {fOK=false; break;}
+						RC rc=Expr::calc((ExprOp)ci->ks.op,vv,pv,2,(ci->ks.flags&ORD_NCASE)!=0?CND_NCASE:0,ses);
+						freeV(vv); if (rc!=RC_TRUE) {fOK=false; break;}
+					}
+				}
+				if (!fOK) continue;
+			}
+			if (queries!=NULL && nQueries>0) {
+				bool fOK=true;
+				for (ulong i=0; i<nQueries; i++) if (!queries[i].qry->checkConditions(res,queries[i].params,queries[i].nParams,ses)) {fOK=false; break;}
+				if (!fOK) continue;
+			}
+			break;
+		}
 	}
 	if (rc!=RC_OK) state|=QST_EOF;		//op==GO_FIRST||op==GO_LAST?QST_BOF|QST_EOF:op==GO_NEXT?QST_EOF:QST_BOF;
 	return rc;
@@ -346,7 +354,7 @@ ArrayFilter::~ArrayFilter()
 
 RC ArrayFilter::next(const PINEx *skip)
 {
-	RC rc=RC_EOF; assert(res!=NULL);
+	RC rc=RC_EOF; assert(ses!=NULL && res!=NULL);
 	if ((state&QST_INIT)!=0) {state&=~QST_INIT; if (nSkip>0 && (rc=initSkip())!=RC_OK) return rc;}
 	if (nPids!=0) for (; (rc=queryOp->next(skip))==RC_OK; skip=NULL) {
 		if (res->id.pid==STORE_INVALID_PID && res->unpack()!=RC_OK) continue;
@@ -359,145 +367,4 @@ void ArrayFilter::print(SOutCtx& buf,int level) const
 {
 	buf.fill('\t',level); buf.append("array filter\n",13);
 	if (queryOp!=NULL) queryOp->print(buf,level+1);
-}
-
-//-------------------------------------------------------------------------------------------------
-
-bool PropDNF::test(const PINEx *pin,size_t lp) const
-{
-	for (const PropDNF *p=this,*end=(const PropDNF*)((byte*)this+lp); p<end; p=(const PropDNF*)((byte*)(p+1)+int(p->nIncl+p->nExcl-1)*sizeof(PropertyID))) {
-		bool fOK=pin->defined(p->pids,p->nIncl); if (!fOK) continue; if (p->nExcl==0) return true;
-		const PropertyID *pp=p->pids+p->nIncl;
-		for (int i=p->nExcl; --i>=0; ++pp) if (pin->defined(pp,1)) {fOK=false; break;}
-		if (fOK) return true;
-	}
-	return false;
-}
-
-bool PropDNF::hasExcl(size_t lp) const
-{
-	for (const PropDNF *p=this,*end=(const PropDNF*)((byte*)this+lp); p<end; p=(const PropDNF*)((byte*)(p+1)+int(p->nIncl+p->nExcl-1)*sizeof(PropertyID)))
-		if (p->nExcl!=0) return true;
-	return false;
-}
-
-RC PropDNF::andP(PropDNF *&dnf,size_t& ldnf,PropDNF *rhs,size_t lrhs,MemAlloc *ma)
-{
-	RC rc=RC_OK;
-	if (dnf==NULL || ldnf==0) {ma->free(dnf); dnf=rhs; ldnf=lrhs;}
-	else if (rhs!=NULL && lrhs!=0) {
-		if (rhs->isConjunctive(lrhs)) {
-			if (rhs->nIncl!=0) rc=andP(dnf,ldnf,rhs->pids,rhs->nIncl,ma,false);
-			if (rc==RC_OK && rhs->nExcl!=0) rc=andP(dnf,ldnf,rhs->pids+rhs->nIncl,rhs->nExcl,ma,true);
-		} else if (dnf->isConjunctive(ldnf)) {
-			if (dnf->nIncl!=0) rc=andP(rhs,lrhs,dnf->pids,dnf->nIncl,ma,false);
-			if (rc==RC_OK && dnf->nExcl!=0) rc=andP(rhs,lrhs,dnf->pids+dnf->nIncl,dnf->nExcl,ma,true);
-			PropDNF *tmp=dnf; dnf=rhs; ldnf=lrhs; rhs=tmp;
-		} else {
-			PropDNF *res=NULL,*tmp=NULL; size_t lres=0,ltmp=0;
-			for (const PropDNF *p=rhs,*end=(const PropDNF*)((byte*)rhs+lrhs); p<end; p=(const PropDNF*)((byte*)(p+1)+int(p->nIncl+p->nExcl-1)*sizeof(PropertyID))) {
-				if (res==NULL) {
-					if ((res=(PropDNF*)ma->malloc(ldnf))!=NULL) memcpy(res,dnf,lres=ldnf); else {rc=RC_NORESOURCES; break;}
-					if (p->nIncl!=0 && (rc=andP(res,lres,p->pids,p->nIncl,ma,false))!=RC_OK) break;
-					if (p->nExcl!=0 && (rc=andP(res,lres,p->pids+p->nIncl,p->nExcl,ma,true))!=RC_OK) break;
-				} else {
-					if ((tmp=(PropDNF*)ma->malloc(ltmp=ldnf))!=NULL) memcpy(tmp,dnf,ldnf); else {rc=RC_NORESOURCES; break;}
-					if (p->nIncl!=0 && (rc=andP(tmp,ltmp,p->pids,p->nIncl,ma,false))!=RC_OK) break;
-					if (p->nExcl!=0 && (rc=andP(tmp,ltmp,p->pids+p->nIncl,p->nExcl,ma,true))!=RC_OK) break;
-					if ((rc=orP(res,lres,tmp,ltmp,ma))!=RC_OK) break;
-				}
-			}
-			ma->free(dnf); dnf=res; ldnf=lres;
-		}
-		ma->free(rhs); if (rc==RC_OK) normalize(dnf,ldnf,ma);
-	}
-	return rc;
-}
-
-RC PropDNF::orP(PropDNF *&dnf,size_t& ldnf,PropDNF *rhs,size_t lrhs,MemAlloc *ma)
-{
-	if (dnf!=NULL && ldnf!=0) {
-		if (rhs==NULL || lrhs==0) {ma->free(dnf); dnf=NULL; ldnf=0;}
-		else {
-			if ((dnf=(PropDNF*)ma->realloc(dnf,ldnf+lrhs))==NULL) return RC_NORESOURCES;
-			memcpy((byte*)dnf+ldnf,rhs,lrhs); ldnf+=lrhs; ma->free(rhs);
-			normalize(dnf,ldnf,ma);
-		}
-	}
-	return RC_OK;
-}
-
-RC PropDNF::andP(PropDNF *&dnf,size_t& ldnf,const PropertyID *pids,ulong np,MemAlloc *ma,bool fNot)
-{
-	if (pids!=NULL && np!=0) {
-		if (dnf==NULL || ldnf==0) {
-			ma->free(dnf);
-			if ((dnf=(PropDNF*)ma->malloc(sizeof(PropDNF)+int(np-1)*sizeof(PropertyID)))==NULL) return RC_NORESOURCES;
-			if (fNot) {dnf->nExcl=(ushort)np; dnf->nIncl=0;} else {dnf->nIncl=(ushort)np; dnf->nExcl=0;}
-			memcpy(dnf->pids,pids,np*sizeof(PropertyID)); ldnf=sizeof(PropDNF)+int(np-1)*sizeof(PropertyID);
-		} else {
-			bool fAdded=false;
-			for (PropDNF *p=dnf,*end=(PropDNF*)((byte*)p+ldnf); p<end; p=(PropDNF*)((byte*)(p+1)+int(p->nIncl+p->nExcl-1)*sizeof(PropertyID))) {
-				for (ulong i=fNot?p->nIncl:0,j=0,n=fNot?p->nExcl:p->nIncl;;) {
-					if (i>=n) {
-						if (j<np) {
-							ulong l=(np-j)*sizeof(PropertyID); ptrdiff_t sht=(byte*)p-(byte*)dnf;
-							if ((dnf=(PropDNF*)ma->realloc(dnf,ldnf+l))==NULL) return RC_NORESOURCES;
-							p=(PropDNF*)((byte*)dnf+sht); end=(PropDNF*)((byte*)dnf+ldnf);
-							if ((void*)&p->pids[i]!=(void*)end) memmove(&p->pids[i+np-j],&p->pids[i],(byte*)end-(byte*)&p->pids[i]);
-							memcpy(&p->pids[i],&pids[j],l); ldnf+=l; end=(PropDNF*)((byte*)dnf+ldnf); fAdded=true;
-							if (fNot) p->nExcl+=ushort(np-j); else p->nIncl+=ushort(np-j);
-						}
-						break;
-					} else if (j>=np) break;
-					else if (p->pids[i]<pids[j]) ++i;
-					else if (p->pids[i]==pids[j]) ++i,++j;
-					else {
-						ulong k=j; while (++j<np && p->pids[i]>pids[j]); ulong m=j-k;
-						ulong l=m*sizeof(PropertyID); ptrdiff_t sht=(byte*)p-(byte*)dnf;
-						if ((dnf=(PropDNF*)ma->realloc(dnf,ldnf+l))==NULL) return RC_NORESOURCES;
-						p=(PropDNF*)((byte*)dnf+sht); end=(PropDNF*)((byte*)dnf+ldnf);
-						memmove(&p->pids[i+m],&p->pids[i],(byte*)end-(byte*)&p->pids[i]);
-						memcpy(&p->pids[i],&pids[k],l); ldnf+=l; end=(PropDNF*)((byte*)dnf+ldnf);
-						i+=m; n+=m; fAdded=true; if (fNot) p->nExcl+=ushort(m); else p->nIncl+=ushort(m);
-					}
-				}
-			}
-			if (fAdded && !dnf->isSimple(ldnf)) normalize(dnf,ldnf,ma);
-		}
-	}
-	return RC_OK;
-}
-
-RC PropDNF::orP(PropDNF *&dnf,size_t& ldnf,const PropertyID *pids,ulong np,MemAlloc *ma,bool fNot)
-{
-	if (dnf!=NULL && ldnf!=0) {
-		if (pids==NULL || np==0) {ma->free(dnf); dnf=NULL; ldnf=0;}
-		else {
-			if ((dnf=(PropDNF*)ma->realloc(dnf,ldnf+sizeof(PropDNF)+int(np-1)*sizeof(PropertyID)))==NULL) return RC_NORESOURCES;
-			PropDNF *pd=(PropDNF*)((byte*)dnf+ldnf); ldnf+=sizeof(PropDNF)+int(np-1)*sizeof(PropertyID);
-			memcpy(pd->pids,pids,np*sizeof(PropertyID)); if (fNot) pd->nExcl=(ushort)np; else pd->nIncl=(ushort)np;
-			normalize(dnf,ldnf,ma);
-		}
-	}
-	return RC_OK;
-}
-
-RC PropDNF::flatten(size_t ldnf,PropertyID *&ps,unsigned& nPids,MemAlloc *ma) const
-{
-	unsigned cnt=0; RC rc;
-	for (const PropDNF *p=this,*end=(const PropDNF*)((byte*)this+ldnf); p<end; p=(const PropDNF*)((byte*)(p+1)+int(p->nIncl+p->nExcl-1)*sizeof(PropertyID))) {
-		unsigned i=0;
-		if (p==this && nIncl!=0) {
-			if (nPids<nIncl && (ma==NULL || (ps=(PropertyID*)ma->realloc(ps,(nPids=nIncl)*sizeof(PropertyID)))==NULL)) return RC_NORESOURCES;
-			memcpy(ps,pids,(i=cnt=nIncl)*sizeof(PropertyID)); if ((byte*)(p+1)+int(p->nIncl-1)*sizeof(PropertyID)==(byte*)end) break;
-		}
-		for (unsigned all=p->nIncl+p->nExcl; i<all; i++) if ((rc=BIN<PropertyID>::insert(ps,cnt,p->pids[i],p->pids[i],ma,&nPids))!=RC_OK) return rc;
-	}
-	nPids=cnt; return RC_OK;
-}
-
-void PropDNF::normalize(PropDNF *&dnf,size_t& ldnf,MemAlloc *ma)
-{
-	//...
 }

@@ -182,8 +182,8 @@ __forceinline uint32_t mv_rev(uint32_t u) {return mv_rot(u,8)&0x00FF00FF|mv_rot(
 
 #define	mv_enc32zz(a)	((a)<<1^int32_t(a)>>31)
 #define	mv_enc64zz(a)	((a)<<1^int64_t(a)>>63)
-#define	mv_dec32zz(a)	(uint32_t(a)>>1^-int32_t((a)&1));
-#define	mv_dec64zz(a)	(uint64_t(a)>>1^-int64_t((a)&1));
+#define	mv_dec32zz(a)	int32_t(uint32_t(a)>>1^-int32_t((a)&1))
+#define	mv_dec64zz(a)	int64_t(uint64_t(a)>>1^-int64_t((a)&1))
 
 template<typename T> __forceinline int cmp3(T x,T y) {return (x>y)-(x<y);}
 
@@ -639,28 +639,6 @@ public:
 		void unlock() {assert(idx<hashTab.hashSize); hashTab.hashTab[idx].lock.unlock(); fLocked=false;}
 		ulong getIdx() const {return idx;}
 	};
-};
-
-class OutputBuf
-{
-protected:
-	byte				*ptr;
-	size_t				cLen;
-	size_t				xLen;
-	const	size_t		lHdr;
-	const	size_t		lInit;
-	MemAlloc *const		ma;
-	void	operator	=(const OutputBuf&) {}
-public:
-	OutputBuf(MemAlloc *m,size_t lH=0,size_t lI=256) : ptr(NULL),cLen(0),xLen(0),lHdr(lH),lInit(lI),ma(m) {}
-	~OutputBuf() {if (ptr!=NULL) ma->free(ptr);}
-	size_t	getCLen() const {return cLen;}
-	bool	append(const void *p,size_t l) {byte *pp=alloc(l); return pp==NULL?false:(memcpy(pp,p,l),true);}
-	bool	fill(char c,int n) {byte *pp=alloc(n); return pp==NULL?false:(memset(pp,c,n),true);}
-	byte	*result(size_t& len) {byte *p=ptr; ptr=NULL; len=cLen; return cLen<xLen?(byte*)ma->realloc(p,cLen):p;}
-	operator char*() {char *p=(char*)ptr; ptr=NULL; if (cLen+1!=xLen) p=(char*)ma->realloc(p,cLen+1); if (p!=NULL) p[cLen]=0; return p;}
-	bool	insert(const void *p,size_t l,size_t offset);
-	byte	*alloc(size_t l);
 };
 
 enum SListOp {SLO_LT, SLO_GT, SLO_NOOP, SLO_INSERT, SLO_DELETE};

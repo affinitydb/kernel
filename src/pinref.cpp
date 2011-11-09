@@ -92,7 +92,7 @@ RC PINRef::adjustCount(byte *p,size_t& l,uint32_t cnt,byte *buf,bool fDec)
 	byte *const p0=p; assert(l!=0); byte dscr=*(p+=l-1); RC rc=RC_CORRUPTED; uint32_t cnt0=1;
 	if ((dscr&0x80)==0) {
 		if (fDec) rc=cnt==1?RC_FALSE:RC_NOTFOUND;
-		else {memcpy(buf,p0,l); p=buf+l; ++cnt; mv_enc32r(p,cnt); *p=0x90; l=ulong(p-buf+1); rc=RC_TRUE;}
+		else {memcpy(buf,p0,l); p=buf+l; ++cnt; mv_enc32r(p,cnt); *p=0xB0; l=ulong(p-buf+1); rc=RC_TRUE;}
 	} else {
 		const byte *const end=(dscr&0x40)!=0?--p:p;
 		if ((dscr&0x10)!=0) mv_dec32r(p,cnt0);
@@ -101,10 +101,10 @@ RC PINRef::adjustCount(byte *p,size_t& l,uint32_t cnt,byte *buf,bool fDec)
 			if (fDec) cnt0-=cnt; else cnt0+=cnt;
 			byte cntbuf[10],*pp=cntbuf; mv_enc32r(pp,cnt0);
 			size_t lnew=pp-cntbuf,lold=end-p;
-			if (lnew==lold) {memcpy(p,cntbuf,lnew); rc=RC_OK;}
+			if (lnew==lold) {memcpy(p,cntbuf,lnew); p[lnew-1]|=0x20; rc=RC_OK;}
 			else {
 				memcpy(buf,p0,p-p0); p=buf+(p-p0); memcpy(p,cntbuf,lnew); p+=lnew;
-				if ((dscr&0x40)!=0) *p++=*end; *p=dscr|0x10; l=ulong(p-buf+1); rc=RC_TRUE;
+				if ((dscr&0x40)!=0) *p++=*end; *p=dscr|0x30; l=ulong(p-buf+1); rc=RC_TRUE;
 			}
 		}
 	}

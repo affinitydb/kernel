@@ -33,32 +33,7 @@ RC QueryCtx::process(QueryOp *&qop)
 
 	QVar *qv=stmt->top;
 	
-	if ((mode&MODE_COUNT)==0 && qv->stype!=SEL_COUNT) {
-		sortReq=stmt->orderBy; nSortReq=stmt->nOrderBy;
-		if (qv->outs!=NULL) for (unsigned i=0,xPropsReq=0; i<qv->nOuts; i++) {
-			const ValueV &td=qv->outs[i]; RC rc;
-			for (unsigned j=0; j<td.nValues; j++) switch (td.vals[j].type) {
-			case VT_EXPRTREE:
-				//???
-				break;
-			case VT_EXPR:
-				//???
-				break;
-			case VT_STMT:
-				//???
-				break;
-			case VT_VARREF:
-				if (td.vals[j].length!=1) {
-					// 'all_props' necessary for var td.vals[j].refPath.refN
-				} else if (td.vals[j].refPath.refN==0) {
-					if ((rc=BIN<PropertyID>::insert(*(PropertyID**)&propsReq,nPropsReq,td.vals[j].refPath.id,td.vals[j].refPath.id,ses,&xPropsReq))!=RC_OK) return rc;
-				} else {
-					// other vars
-				}
-				break;
-			}
-		}
-	}
+	sortReq=stmt->orderBy; nSortReq=stmt->nOrderBy;
 
 	RC rc=qv->build(*this,qop); if (rc!=RC_OK) return rc; assert(qop!=NULL);
 
@@ -75,7 +50,7 @@ RC QueryCtx::process(QueryOp *&qop)
 		if (propsReq!=NULL && nPropsReq!=0 || (dscr.flags&QO_UNIQUE)==0) {
 			OrderSegQ *os=(OrderSegQ*)alloca(nPropsReq*sizeof(OrderSegQ));
 			if (os==NULL) {delete qop; qop=NULL; return RC_NORESOURCES;}
-			for (unsigned i=0; i<nPropsReq; i++) {os[i].expr=NULL; os[i].flags=0; os[i].lPref=0; os[i].pid=propsReq[i];}
+			for (unsigned i=0; i<nPropsReq; i++) {os[i].expr=NULL; os[i].flags=0; os[i].aggop=OP_ALL; os[i].lPref=0; os[i].pid=propsReq[i];}
 			QueryOp *q=new(ses,0,nPropsReq) Sort(qop,os,nPropsReq,flg|QO_VUNIQUE,0,NULL,0);
 			if (q!=NULL) qop=q; else {delete qop; qop=NULL; return RC_NORESOURCES;}
 		}
@@ -83,18 +58,15 @@ RC QueryCtx::process(QueryOp *&qop)
 	case DT_ALL:
 		qop->unique(false); break;
 	}
-	if ((mode&MODE_COUNT)==0 && qv->stype!=SEL_COUNT) {
-		if (stmt->orderBy!=NULL) rc=sort(qop,dscr,stmt->orderBy,stmt->nOrderBy);
-		else if ((dscr.flags&QO_DEGREE)!=0) {
-			OrderSegQ ks; ks.flags=0; ks.pid=PROP_SPEC_ANY;
-			QueryOp *q=new(ses,1,0) Sort(qop,&ks,1,flg,1,NULL,0);
-			if (q==NULL) delete qop; qop=q;
-		}
+	if (stmt->orderBy!=NULL) rc=sort(qop,dscr,stmt->orderBy,stmt->nOrderBy);
+	else if ((dscr.flags&QO_DEGREE)!=0) {
+		OrderSegQ ks; ks.pid=PROP_SPEC_ANY; ks.flags=0; ks.var=0; ks.aggop=OP_SET; ks.lPref=0;
+		QueryOp *q=new(ses,1,0) Sort(qop,&ks,1,flg,1,NULL,0); if (q==NULL) delete qop; qop=q;
 	}
 	if (qop==NULL) rc=RC_NORESOURCES;
 	else if (rc!=RC_OK) {delete qop; qop=NULL;}
 	else {
-		qop->mode|=QO_TOPMOST; if (nSkip!=0) qop->setSkip(nSkip);
+		if (nSkip!=0) qop->setSkip(nSkip);
 		if ((mode&MODE_VERBOSE)!=0 || (ses->getTraceMode()&TRACE_EXEC_PLAN)!=0)
 			{SOutCtx buf(ses); qop->print(buf,0); size_t l; byte *p=buf.result(l); ses->trace(1,"%.*s\n",l,p);}
 	}
@@ -107,7 +79,8 @@ RC SetOpVar::build(class QueryCtx& qctx,class QueryOp *&q) const
 	if (type==QRY_EXCEPT && nVars!=2) return RC_INTERNAL;
 	RC rc=RC_OK; QueryOp *qq; const ulong nqs0=qctx.nqs;
 	const OrderSegQ *const os=qctx.sortReq; const unsigned nos=qctx.nSortReq;
-	OrderSegQ ids; ids.flags=0; ids.pid=PROP_SPEC_PINID; qctx.sortReq=&ids; qctx.nSortReq=1;
+	OrderSegQ ids; ids.pid=PROP_SPEC_PINID; ids.flags=0; ids.var=0; ids.aggop=OP_SET; ids.lPref=0;
+	qctx.sortReq=&ids; qctx.nSortReq=1;
 	for (unsigned i=0; i<nVars; i++) {
 		if (qctx.nqs>=sizeof(qctx.src)/sizeof(qctx.src[0])) {rc=RC_NORESOURCES; break;}
 		if ((rc=vars[i].var->build(qctx,qq))==RC_OK) qctx.src[qctx.nqs++]=qq; else break;
@@ -127,6 +100,10 @@ RC JoinVar::build(class QueryCtx& qctx,class QueryOp *&q) const
 {
 	q=NULL;	RC rc=RC_OK; const ulong nqs0=qctx.nqs;
 	assert(type==QRY_JOIN||type==QRY_LEFTJOIN||type==QRY_RIGHTJOIN||type==QRY_OUTERJOIN);
+	const bool fTrans=groupBy!=NULL && nGroupBy!=0 || outs!=NULL && nOuts!=0;
+	if (fTrans) {
+		// merge props
+	}
 	if (condEJ!=NULL && (condEJ->propID1!=PROP_SPEC_PINID || condEJ->propID2!=PROP_SPEC_PINID)) {
 		if ((rc=vars[0].var->build(qctx,qctx.src[qctx.nqs]))==RC_OK) qctx.nqs++; else return rc;
 		if ((rc=vars[1].var->build(qctx,qctx.src[qctx.nqs]))==RC_OK) qctx.nqs++; else return rc;
@@ -143,7 +120,8 @@ RC JoinVar::build(class QueryCtx& qctx,class QueryOp *&q) const
 		if ((rc=vars[0].var->build(qctx,qctx.src[qctx.nqs]))==RC_OK) qctx.nqs++; else return rc;
 		if ((rc=vars[1].var->build(qctx,qctx.src[qctx.nqs]))==RC_OK) qctx.nqs++; else return rc;
 		// process vars
-//		rc=LoopJoin::create(ses,q,src[nqs0],src[nqs0+1],qv->conds,qv->condProps,qv->nCondProps,qv->rProps.condProps,qv->rProps.nCondProps,qv->relOp,qctx.flg);
+		// get properties from conditions?
+//		rc=NestedLoop::create(ses,q,src[nqs0],src[nqs0+1],qv->conds,qv->relOp,qctx.flg);
 		 qctx.nqs-=2;
 	} else {
 		if ((rc=vars[0].var->build(qctx,qctx.src[qctx.nqs]))==RC_OK) qctx.nqs++; else return rc;
@@ -160,8 +138,7 @@ RC JoinVar::build(class QueryCtx& qctx,class QueryOp *&q) const
 	}
 	if (rc==RC_OK)  {
 		qctx.nqs-=nVars;
-		if (groupBy!=NULL && nGroupBy!=0)
-			rc=qctx.group(q,groupBy,nGroupBy,outs!=NULL?outs[0].vals:NULL,outs!=NULL?outs[0].nValues:0,nHavingConds==1?&havingCond:havingConds,nHavingConds);
+		if (fTrans) rc=qctx.out(q,groupBy,nGroupBy,outs!=NULL?outs[0].vals:NULL,outs!=NULL?outs[0].nValues:0,nHavingConds==1?&havingCond:havingConds,nHavingConds);
 	}
 	return rc;
 }
@@ -170,15 +147,17 @@ RC SimpleVar::build(class QueryCtx& qctx,class QueryOp *&q) const
 {
 	q=NULL;	assert(type==QRY_SIMPLE);
 	RC rc=RC_OK; QueryOp *qq,*primary=NULL; const ulong nqs0=qctx.nqs,ncqs0=qctx.ncqs;
+	const bool fTrans=groupBy!=NULL && nGroupBy!=0 || outs!=NULL && nOuts!=0;
+	if (fTrans) {
+		// merge props
+	}
 
 	if (subq!=NULL) {
 		if (subq->op!=STMT_QUERY || subq->top==NULL) return RC_INVPARAM;
 		const Stmt *saveQ=qctx.stmt; qctx.stmt=subq;
-//		if (condProps!=NULL && lProps>0 || nConds!=0) {
-			// merge propsReq with condProps
-//		}
+// merge propsReq with getProps
 		rc=subq->top->build(qctx,q); qctx.stmt=saveQ; if (rc!=RC_OK) return rc;
-		return rc!=RC_OK || (condProps==NULL || lProps==0) && nConds==0 ? rc : qctx.filter(q,nConds==1?&cond:conds,nConds,condProps,lProps);
+		return rc!=RC_OK || nConds==0 ? rc : qctx.filter(q,nConds==1?&cond:conds,nConds);
 	} else for (ulong i=0; rc==RC_OK && i<nClasses; i++) {
 		const ClassSpec &cs=classes[i]; ClassID cid=cs.classID; PID *pids; unsigned nPids,j;
 		if ((cid&CLASS_PARAM_REF)!=0) {
@@ -225,18 +204,16 @@ RC SimpleVar::build(class QueryCtx& qctx,class QueryOp *&q) const
 #ifdef _DEBUG
 				if ((qctx.mode&(MODE_CLASS|MODE_DELETED))==0) {char *s=qctx.stmt->toString(); report(MSG_WARNING,"Using non-indexed class: %.512s\n",s); qctx.ses->free(s);}
 #endif
-				QueryWithParams &qs=qctx.condQs[qctx.ncqs++]; qs.params=NULL;
-				if ((qs.qry=cqry->clone(STMT_QUERY,qctx.ses))==NULL) rc=RC_NORESOURCES;
-				else if ((qs.params=(Value*)cs.params)!=NULL && (qs.nParams=cs.nParams)!=0 && (qctx.flg&QO_VCOPIED)!=0) rc=copyV(cs.params,cs.nParams,qs.params,qctx.ses);
+				QueryWithParams &qs=qctx.condQs[qctx.ncqs++]; qs.params=NULL; qs.nParams=0;
+				if ((qs.qry=cqry->clone(STMT_QUERY,qctx.ses))==NULL) rc=RC_NORESOURCES; else {qs.params=(Value*)cs.params; qs.nParams=cs.nParams;}
 			}
 		} else if (cidx==NULL) {
 			if ((qctx.src[qctx.nqs++]=new(qctx.ses) ClassScan(qctx.ses,cls,qctx.flg))==NULL) rc=RC_NORESOURCES;
 			else if (cqry!=NULL && cqry->hasParams() && cs.params!=NULL && cs.nParams!=0) {
 				if (qctx.ncqs>=sizeof(qctx.condQs)/sizeof(qctx.condQs[0])) rc=RC_NORESOURCES;
 				else {
-					QueryWithParams &qs=qctx.condQs[qctx.ncqs++]; qs.params=NULL;
-					if ((qs.qry=cqry->clone(STMT_QUERY,qctx.ses))==NULL) rc=RC_NORESOURCES;
-					else if ((qs.params=(Value*)cs.params)!=NULL && (qs.nParams=cs.nParams)!=0 && (qctx.flg&QO_VCOPIED)!=0) rc=copyV(cs.params,cs.nParams,qs.params,qctx.ses);
+					QueryWithParams &qs=qctx.condQs[qctx.ncqs++]; qs.params=NULL; qs.nParams=0;
+					if ((qs.qry=cqry->clone(STMT_QUERY,qctx.ses))==NULL) rc=RC_NORESOURCES; else {qs.params=(Value*)cs.params; qs.nParams=cs.nParams;}
 				}
 			}
 		} else {
@@ -302,14 +279,7 @@ RC SimpleVar::build(class QueryCtx& qctx,class QueryOp *&q) const
 							if (cqry==NULL) {
 								if (qctx.ncqs>=sizeof(qctx.condQs)/sizeof(qctx.condQs[0]) || (cqry=new(qctx.ses) Stmt(0,qctx.ses))==NULL) {rc=RC_NORESOURCES; break;}
 								if (((Stmt*)cqry)->addVariable()==0xFF) {((Stmt*)cqry)->destroy(); rc=RC_NORESOURCES; break;}
-								QueryWithParams &qs=qctx.condQs[qctx.ncqs++]; qs.qry=(Stmt*)cqry;
-								if ((qctx.flg&QO_VCOPIED)==0) {qs.params=(Value*)cs.params; qs.nParams=cs.nParams;}
-								else if ((rc=copyV(cs.params,qs.nParams=cs.nParams,qs.params,qctx.ses))!=RC_OK) break;
-								if (cqv->condProps!=NULL && cqv->lProps!=0) {
-									assert(cqry->top!=NULL);
-									if ((cqry->top->condProps=(PropDNF*)qctx.ses->malloc(cqry->top->lProps=cqv->lProps))==NULL) return RC_NORESOURCES;
-									memcpy(cqry->top->condProps,cqv->condProps,cqv->lProps);
-								}
+								QueryWithParams &qs=qctx.condQs[qctx.ncqs++]; qs.qry=(Stmt*)cqry; qs.params=(Value*)cs.params; qs.nParams=cs.nParams;
 							}
 							if (i+1==cqv->nConds) {
 								if ((cqry->top->cond=Expr::clone(pc[i],qctx.ses))!=NULL) cqry->top->nConds=1;
@@ -390,15 +360,11 @@ RC SimpleVar::build(class QueryCtx& qctx,class QueryOp *&q) const
 	if (rc!=RC_OK) {
 		if (primary!=NULL) delete primary;
 		while (qctx.nqs>nqs0) delete qctx.src[--qctx.nqs];
-		while (qctx.ncqs>ncqs0) {
-			QueryWithParams &qs=qctx.condQs[--qctx.ncqs]; if (qs.qry!=NULL) qs.qry->destroy();
-			if ((qctx.flg&QO_VCOPIED)!=0 && qs.params!=NULL && qs.nParams!=0) freeV(qs.params,qs.nParams,qctx.ses);
-		}
+		while (qctx.ncqs>ncqs0) {QueryWithParams &qs=qctx.condQs[--qctx.ncqs]; if (qs.qry!=NULL) qs.qry->destroy();}
 	} else {
-		if ((q=qctx.src[nqs0])!=NULL && (condProps!=NULL && lProps>0 || nConds!=0 || condIdx!=NULL || qctx.ncqs>ncqs0))
-			rc=qctx.filter(q,nConds==1?&cond:conds,nConds,condProps,lProps,condIdx,qctx.ncqs-ncqs0);
-		if (rc==RC_OK && groupBy!=NULL && nGroupBy!=0)
-			rc=qctx.group(q,groupBy,nGroupBy,outs!=NULL?outs[0].vals:NULL,outs!=NULL?outs[0].nValues:0,nHavingConds==1?&havingCond:havingConds,nHavingConds);
+		if ((q=qctx.src[nqs0])!=NULL && (nConds!=0 || condIdx!=NULL || qctx.ncqs>ncqs0)) rc=qctx.filter(q,nConds==1?&cond:conds,nConds,condIdx,qctx.ncqs-ncqs0);
+		if (rc==RC_OK && fTrans)
+			rc=qctx.out(q,groupBy,nGroupBy,outs!=NULL?outs[0].vals:NULL,outs!=NULL?outs[0].nValues:0,nHavingConds==1?&havingCond:havingConds,nHavingConds);
 	}
 	qctx.nqs=nqs0; qctx.ncqs=ncqs0; return rc;		//???
 }
@@ -408,42 +374,48 @@ RC QueryCtx::sort(QueryOp *&qop,QODescr& dscr,const OrderSegQ *os,unsigned no)
 	if (os==NULL || no==1 && (os->flags&ORDER_EXPR)==0 && os->pid==PROP_SPEC_PINID) no=0;
 	if (no==0 && (dscr.flags&QO_PIDSORT)!=0) return RC_OK;
 
-	unsigned nP=0; bool fReverse=false;
+	unsigned nP=0; bool fReverse=false; RC rc=RC_OK;
 	if (dscr.sort!=NULL && no!=0) for (unsigned f;;nP++)
 		if (nP>=no) return RC_OK;
 		else if (dscr.sort[nP].pid!=os[nP].pid || (dscr.sort[nP].flags&ORDER_EXPR)!=0) break;
-		else if ((f=dscr.sort[nP].flags^os[nP].flags)==0) {if (fReverse) break;}
+		else if ((f=(dscr.sort[nP].flags^os[nP].flags)&SORT_MASK)==0) {if (fReverse) break;}
 		else if ((dscr.flags&QO_REVERSIBLE)==0 || (f&~ORD_DESC)!=0) break;
 		else /*if (nP==0) fReverse=true; else */ if (!fReverse) break;
 	//if (fReverse) -> mark qop to reverse order!
 
 	try {
-		const PropertyID *pi=(PropertyID*)propsReq; unsigned nps=nPropsReq; bool fAll=false;
-		if (no==1 && (os->flags&ORDER_EXPR)==0 && (pi==NULL || nps==0)) {pi=&os->pid; nps=1;}
+		PropertyID *pi=(PropertyID*)propsReq; unsigned nps=nPropsReq; bool fAll=false,fDel=false;
+		if (no==1 && (os->flags&ORDER_EXPR)==0 && (pi==NULL || nps==0)) {pi=(PropertyID*)&os->pid; nps=1;}
 		else if (no!=0) {
 			if ((pi=(PropertyID*)alloca((no+nps)*sizeof(PropertyID)))==NULL) return RC_NORESOURCES;
-			if (propsReq!=NULL && nps!=0) memcpy(const_cast<PropertyID*>(pi),propsReq,nps*sizeof(PropertyID));
+			if (propsReq!=NULL && nps!=0) memcpy(pi,propsReq,nps*sizeof(PropertyID));
 			for (unsigned i=0; i<no; i++) if ((os[i].flags&ORDER_EXPR)!=0) {
-				//??? extract properties from expr, change pi to malloc
-				fAll=true;
+				const PropertyID *ep; unsigned nep; os[i].expr->getExtRefs(0,ep,nep);
+				if (ep!=NULL && nep!=0) {
+					if (nep!=1) {
+						const PropertyID *pi2=NULL; if (!fDel) {pi2=pi; pi=NULL;}
+						if ((rc=Expr::merge(pi2,nps,ep,nep,pi,nps,ses))!=RC_OK) break;
+						if (pi==NULL) pi=(PropertyID*)pi2;
+					} else if ((rc=BIN<PropertyID>::insert(pi,nps,*ep&STORE_MAX_PROPID,*ep&STORE_MAX_PROPID,fDel?ses:NULL))!=RC_OK) break;
+				}
 			} else if (os[i].pid==PROP_SPEC_PINID) {no=i+1; break;}
-			else {PropertyID *pp=(PropertyID*)pi; BIN<PropertyID>::insert(pp,nps,os[i].pid,os[i].pid,NULL);}
+			else if ((rc=BIN<PropertyID>::insert(pi,nps,os[i].pid,os[i].pid,fDel?ses:NULL))!=RC_OK) break;
 		}
-		if ((dscr.flags&QO_ALLPROPS)==0 && (pi!=NULL && nps!=0 || fAll)) {
+		if (rc==RC_OK && (dscr.flags&QO_ALLPROPS)==0 && (pi!=NULL && nps!=0 || fAll)) {
 			bool fBody=true; const PropertyID *pp=dscr.props,*pp2;
 			if (pp!=NULL && !fAll) for (unsigned i=0,l=dscr.nProps; ;i++)
 				if (i>=nps) {fBody=false; break;} 
-				else if (l==0 || (pp2=BIN<PropertyID>::find(pi[i],pp,l))==NULL) break;
+				else if (l==0 || (pp2=BIN<PropertyID>::find(pi[i]&STORE_MAX_PROPID,pp,l))==NULL) break;
 				else {l-=unsigned(pp2-pp)+1; pp=pp2+1;}
-			if (fBody) {
-				QueryOp *q=new(ses,nps) BodyOp(ses,qop,pi,nps,flg);
-				if (q!=NULL) qop=q; else return RC_NORESOURCES;
-			}
+			if (fBody) {QueryOp *q=new(ses,nps) BodyOp(ses,qop,pi,nps,flg); if (q!=NULL) qop=q; else rc=RC_NORESOURCES;}
 		}
-		Sort *sort=new(ses,no,nps) Sort(qop,os,no,flg,nP,pi,nps);
-		if (sort!=NULL) qop=sort; else return RC_NORESOURCES;
-	} catch (RC rc) {return rc;}
-	return RC_OK;
+		if (rc==RC_OK) {
+			Sort *sort=new(ses,no,nps) Sort(qop,os,no,flg,nP,pi,nps);
+			if (sort!=NULL) qop=sort; else rc=RC_NORESOURCES;
+		}
+		if (fDel) ses->free(pi);
+	} catch (RC rc2) {rc=rc2;}
+	return rc;
 }
 
 RC QueryCtx::mergeN(QueryOp *&res,QueryOp **o,unsigned no,bool fOr)
@@ -467,7 +439,7 @@ RC QueryCtx::mergeN(QueryOp *&res,QueryOp **o,unsigned no,bool fOr)
 RC QueryCtx::merge2(QueryOp *&res,QueryOp *qop1,PropertyID pid1,QueryOp *qop2,PropertyID pid2,QUERY_SETOP qo,const CondEJ *cej,const Expr *const *c,ulong nc)
 {
 	res=NULL; if (qop1==NULL || qop2==NULL) return RC_EOF;
-	ulong fUni=0; MergeOp *mo; RC rc; OrderSegQ os; os.flags=0; assert(qo!=QRY_UNION && qo!=QRY_INTERSECT);
+	ulong fUni=0; MergeOp *mo; RC rc; OrderSegQ os; os.flags=0; os.var=0; os.aggop=OP_ALL; os.lPref=0; assert(qo!=QRY_UNION && qo!=QRY_INTERSECT);
 	QODescr qp1; qop1->getOpDescr(qp1);
 	if ((qp1.sort==NULL || qp1.sort[0].pid!=pid1 || (qp1.sort[0].flags&ORD_DESC)!=0) && (pid1!=PROP_SPEC_PINID||(qp1.flags&QO_PIDSORT)==0)) {
 		os.pid=pid1; if ((rc=sort(qop1,qp1,&os,1))!=RC_OK) {delete qop1; delete qop2; return rc;}
@@ -540,43 +512,62 @@ RC QueryCtx::mergeFT(QueryOp *&res,const CondFT *cft)
 	return rc;
 }
 
-RC QueryCtx::filter(QueryOp *&qop,const Expr *const *conds,unsigned nConds,const PropDNF *condProps, size_t lp,const CondIdx *condIdx,unsigned ncq)
+RC QueryCtx::filter(QueryOp *&qop,const Expr *const *conds,unsigned nConds,const CondIdx *condIdx,unsigned ncq)
 {
 	QODescr dscr; qop->getOpDescr(dscr);
 	if ((dscr.flags&QO_ALLPROPS)==0) {
-		PropertyID *pids=NULL; unsigned nPids=(unsigned)lp/sizeof(PropertyID); RC rc; flg|=QO_NODATA;
-		if (condProps!=NULL && lp!=0) {
-			if ((pids=(PropertyID*)alloca(lp))==NULL) return RC_NORESOURCES;
-			if ((rc=condProps->flatten(lp,pids,nPids))!=RC_OK) return rc;
-			flg&=~QO_NODATA;
+		const PropertyID *pids=NULL; unsigned nPids=0; flg|=QO_NODATA; bool fDel=false; RC rc=RC_OK;
+		if (conds!=NULL && nConds!=0) {
+			conds[0]->getExtRefs(0,pids,nPids);
+			for (unsigned i=1; i<nConds; i++) {
+				const PropertyID *ep; unsigned nep; conds[i]->getExtRefs(0,ep,nep);
+				if (ep!=NULL && nep!=0) {
+					const PropertyID *pi2=NULL; if (!fDel) {pi2=pids; pids=NULL;}
+					if ((rc=Expr::merge(pi2,nPids,ep,nep,*(PropertyID**)&pids,nPids,ses))!=RC_OK) {if (fDel) ses->free((void*)pids); return rc;}
+					if (pids==NULL) pids=(PropertyID*)pi2; else fDel=true;
+				}
+			}
 		}
-		if (ncq!=0) {
-			size_t extra=0;
-			for (unsigned i=0; i<ncq; i++) if (condQs[ncqs-i-1].qry->top!=NULL) extra+=condQs[ncqs-i-1].qry->top->lProps;
-			PropertyID *pi=(PropertyID*)alloca(extra+nPids*sizeof(PropertyID)); if (pi==NULL) return RC_NORESOURCES;
-			if (pids!=NULL) memcpy(pi,pids,nPids*sizeof(PropertyID)); pids=pi; unsigned nP0=nPids+unsigned(extra/sizeof(PropertyID));
-			for (unsigned i=0,nP=nP0; i<ncq; i++) if (condQs[ncqs-i-1].qry->top!=NULL && condQs[ncqs-i-1].qry->top->lProps!=0) {
-				if ((rc=condQs[ncqs-i-1].qry->top->condProps->flatten(condQs[ncqs-i-1].qry->top->lProps,pids,nP))!=RC_OK) return rc;
-				nPids=nP; nP=nP0; flg&=~QO_NODATA;
+		for (const CondIdx *ci=condIdx; ci!=NULL; ci=ci->next) {
+			const PropertyID *ip=NULL; unsigned nip=0;
+			if (ci->expr==NULL) ip=&ci->ks.propID,nip=1;
+			else {
+				//...
+				// if null-> continue;
+			}
+			if (pids==NULL) {pids=ip; nPids=nip;}
+			else {
+				const PropertyID *pi2=NULL; if (!fDel) {pi2=pids; pids=NULL;}
+				if ((rc=Expr::merge(pi2,nPids,ip,nip,*(PropertyID**)&pids,nPids,ses))!=RC_OK) {if (fDel) ses->free((void*)pids); return rc;}
+				if (pids==NULL) pids=(PropertyID*)pi2; else fDel=true;
+			}
+		}
+		for (unsigned i=0; i<ncq; i++) if (condQs[ncqs-i-1].qry->top!=NULL) {
+			PropertyID *qp=NULL; unsigned nqp=0;
+			if ((rc=condQs[ncqs-i-1].qry->top->getProps(qp,nqp,ses))!=RC_OK) return rc;
+			if (qp!=NULL) {
+				if (pids==NULL) {pids=qp; nPids=nqp; fDel=true;}
+				else if ((rc=Expr::merge(NULL,0,pids,nPids,qp,nqp,ses))!=RC_OK) {ses->free(qp); if (fDel) ses->free((void*)pids); return rc;}
+				else {if (fDel) ses->free((void*)pids); else fDel=true; pids=qp; nPids=nqp;}
 			}
 		}
 		if (pids!=NULL && nPids!=0) {
-			bool fProj=true; const PropertyID *pp=dscr.props,*pp2;
+			bool fBody=true; const PropertyID *pp=dscr.props,*pp2; flg&=~QO_NODATA;
 			if (pp!=NULL) for (unsigned i=0,l=dscr.nProps; ;i++)
-				if (i>=nPids) {fProj=false; break;} 
-				else if (l==0 || (pp2=BIN<PropertyID>::find(pids[i],pp,l))==NULL) break;
+				if (i>=nPids) {fBody=false; break;} 
+				else if (l==0 || (pp2=BIN<PropertyID>::find(pids[i]&STORE_MAX_PROPID,pp,l))==NULL) break;
 				else {l-=unsigned(pp2-pp)+1; pp=pp2+1;}
-			if (fProj) {
+			if (fBody) {
 				if (propsReq!=NULL && nPropsReq!=0) {
 					// if (!fDel) copy
 					// merge to pids, nPids
 				}
-				QueryOp *q=new(ses,nPids) BodyOp(ses,qop,pids,nPids,flg);
-				if (q!=NULL) qop=q; else return RC_NORESOURCES;
+				QueryOp *q=new(ses,nPids) BodyOp(ses,qop,pids,nPids,flg); if (q!=NULL) qop=q; else rc=RC_NORESOURCES;
 			}
+			if (fDel) ses->free((void*)pids); if (rc!=RC_OK) return rc;
 		}
 	}
-	Filter *flt=new(ses,lp) Filter(ses,qop,nPars,lp,nqs,flg); if (flt==NULL) return RC_NORESOURCES;
+	Filter *flt=new(ses) Filter(ses,qop,nPars,nqs,flg); if (flt==NULL) return RC_NORESOURCES;
 	bool fOK=true; 
 	if (pars!=NULL && nPars>0) {
 		if ((flg&QO_VCOPIED)!=0) {if (copyV(pars,nPars,flt->params,ses)!=RC_OK) fOK=false;}
@@ -600,19 +591,28 @@ RC QueryCtx::filter(QueryOp *&qop,const Expr *const *conds,unsigned nConds,const
 	if (fOK && ncq>0) {
 		assert(ncq<=ncqs);
 		if ((flt->queries=new(ses) QueryWithParams[ncq])==NULL) fOK=false;
-		else {memcpy(flt->queries,&condQs[ncqs-ncq],ncq*sizeof(QueryWithParams)); ncqs-=ncq;}
+		else {
+			memcpy(flt->queries,&condQs[ncqs-ncq],ncq*sizeof(QueryWithParams)); ncqs-=ncq;
+			for (unsigned i=0; i<ncq; i++) {
+				QueryWithParams& qwp=flt->queries[i]; RC rc;
+				if (qwp.params!=NULL && qwp.nParams!=0) {
+					if ((rc=copyV(qwp.params,qwp.nParams,qwp.params,ses))!=RC_OK) {for (;i<ncq;i++) flt->queries[i].params=NULL; fOK=false; break;}
+					for (unsigned j=0; j<qwp.nParams; j++) if (qwp.params[j].type==VT_PARAM)
+						if (qwp.params[j].refPath.refN<nPars) {qwp.params[j]=pars[qwp.params[j].refPath.refN]; qwp.params[j].flags=NO_HEAP;} else qwp.params[j].setError();
+				}
+			}
+		}
 	}
 	if (!fOK) {delete flt; return RC_NORESOURCES;}
-	if (condProps!=NULL && lp!=0) memcpy((void*)&flt->condProps,condProps,lp);
 	qop=flt; return RC_OK;
 }
 
-RC QueryCtx::group(QueryOp *&qop,const OrderSegQ *gb,unsigned nG,const Value *trs,unsigned nTrs,const Expr *const *having,unsigned nHaving)
+RC QueryCtx::out(QueryOp *&qop,const OrderSegQ *gb,unsigned nG,const Value *outs,unsigned nOuts,const Expr *const *having,unsigned nHaving)
 {
 	QODescr dscr; qop->getOpDescr(dscr);
 	RC rc=sort(qop,dscr,gb,nG);
 	if (rc==RC_OK) {
-		if (trs==NULL || nTrs==0) {
+		if (outs==NULL || nOuts==0) {
 			// get them from gb/nG
 		}
 //		QueryOp *q=new(ses,nG,nTrs) AggOp(ses,qop,nG,trs,nTrs,mode);

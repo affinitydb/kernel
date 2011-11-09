@@ -316,7 +316,7 @@ RC ECB::get(GO_DIR whence,ElementID ei,bool fRead)
 				if (cPage!=INVALID_PAGEID) {
 					// check deletes on heap page!!!
 					pb=ctx->bufMgr->getPage(cPage,ctx->trpgMgr,fRead?0:PGCTL_XLOCK);
-					cPage=INVALID_PAGEID; SearchKey key((uint32_t)eid);
+					cPage=INVALID_PAGEID; SearchKey key((uint64_t)eid);
 					if (!pb.isNull() && (tp=(const TreePageMgr::TreePage*)pb->getPageBuf())->findKey(key,pos)) rc=RC_OK;
 				}
 				if (rc!=RC_OK && (rc=get(GO_FINDBYID,eid,fRead))!=RC_OK) return rc;
@@ -348,7 +348,7 @@ RC ECB::get(GO_DIR whence,ElementID ei,bool fRead)
 				if (cPage!=INVALID_PAGEID) {
 					// check deletes on heap page!!!
 					pb=ctx->bufMgr->getPage(cPage,ctx->trpgMgr,fRead?0:PGCTL_XLOCK);
-					cPage=INVALID_PAGEID; SearchKey key((uint32_t)eid);
+					cPage=INVALID_PAGEID; SearchKey key((uint64_t)eid);
 					if (!pb.isNull() && (tp=(const TreePageMgr::TreePage*)pb->getPageBuf())->findKey(key,pos)) rc=RC_OK;
 				}
 				if (rc!=RC_OK && (rc=get(GO_FINDBYID,eid,fRead))!=RC_OK) return rc;
@@ -382,7 +382,7 @@ RC ECB::get(GO_DIR whence,ElementID ei,bool fRead)
 		if (pb.isNull()) pos=~0ul;
 	}
 	if (pos==~0ul) {
-		SearchKey key((uint32_t)ei);
+		SearchKey key((uint64_t)ei);
 		if (pb.isNull() || !tp->findKey(key,pos)) {
 			pb.release(); parent.release(); depth=0; rc=fRead?findPage(&key):findPageForUpdate(&key);	// parent->findPage!
 			if (rc!=RC_OK) return rc;
@@ -429,7 +429,7 @@ RC ECB::setLinks(ElementID prev,ElementID next,bool fForce)
 			*(uint32_t*)(buf+lNew)=next; ((ElementDataHdr*)buf)->flags|=2;
 			lNew+=sizeof(uint32_t); ((ElementDataHdr*)buf)->shift+=sizeof(uint32_t);
 		}
-		SearchKey key((uint32_t)eid);
+		SearchKey key((uint64_t)eid);
 		if ((rc=ctx->trpgMgr->edit(*this,key,buf,lNew,lOld,0))==RC_OK) {
 			tp=(const TreePageMgr::TreePage*)pb->getPageBuf();
 			if (!tp->findKey(key,pos) || (hdr=(const ElementDataHdr *)tp->findData(pos,lData))==NULL) rc=RC_NOTFOUND;
@@ -460,7 +460,7 @@ RC ECB::unlink(ElementID& first,ElementID& last,bool fDelete)
 
 RC ECB::prepare(ElementID newEid)
 {
-	SearchKey key((uint32_t)newEid);
+	SearchKey key((uint64_t)newEid);
 	if (tp->findKey(key,pos)) return RC_ALREADYEXISTS;
 	if (pos==0 && tp->hdr.pageID!=coll->anchor || tp->checkSibling(key)) {
 		pb.release(); RC rc=findPageForUpdate(&key,true); if (rc!=RC_OK) return rc;
@@ -620,12 +620,12 @@ PageID Navigator::startPage(const SearchKey *key,int& level,bool fRead,bool fBef
 	if (ecb.coll->nPages>0) {
 		if (key==NULL) {
 			if (fBefore) pid=ecb.coll->pages[ecb.coll->nPages-1].page;
-		} else if (key->v.u32>=ecb.coll->pages[0].key) {
+		} else if (key->v.u>=ecb.coll->pages[0].key) {
 			const HeapPageMgr::HeapExtCollPage *cp=ecb.coll->pages,*pp; ulong n=ecb.coll->nPages;
 			do {
 				ulong k=n>>1; pp=&cp[k];
-				if (pp->key==key->v.u32) return !fBefore?pp->page:k>0?cp[k-1].page:ecb.coll->leftmost;
-				if (pp->key>key->v.u32) n=k; else {pid=pp->page; cp=pp+1; n-=k+1;}
+				if (pp->key==key->v.u) return !fBefore?pp->page:k>0?cp[k-1].page:ecb.coll->leftmost;
+				if (pp->key>key->v.u) n=k; else {pid=pp->page; cp=pp+1; n-=k+1;}
 			} while (n>0);
 		}
 	}
@@ -692,7 +692,7 @@ TreeConnect *Navigator::persist(uint32_t& hndl) const
 
 //--------------------------------------------------------------------------------------------------------
 
-const IndexFormat Collection::collFormat(KT_UINT,sizeof(uint32_t),KT_VARDATA); 
+const IndexFormat Collection::collFormat(KT_UINT,sizeof(uint64_t),KT_VARDATA); 
 
 Collection::Collection(StoreCtx *ct,ulong stmp,const HeapPageMgr::HeapExtCollection *c,MemAlloc *ma,ulong xP)
 : Tree(ct),maxPages(xP),allc(ma),coll(ma!=NULL?HeapPageMgr::copyDescr(c,ma):(HeapPageMgr::HeapExtCollection*)c),stamp(stmp),fMod(false)
@@ -750,14 +750,14 @@ RC Collection::modify(ExprOp op,const Value *pv,ElementID epos,ElementID eid,Ses
 	if (first==STORE_COLLECTION_ID) {
 		if (op!=OP_ADD && op!=OP_ADD_BEFORE && op!=OP_SET) return RC_NOTFOUND;
 		if (eid==STORE_COLLECTION_ID || eid==STORE_LAST_ELEMENT || eid==STORE_FIRST_ELEMENT) return RC_INVPARAM;
-		SearchKey key((uint32_t)eid); assert(coll->nElements==0);
+		SearchKey key((uint64_t)eid); assert(coll->nElements==0);
 		if ((rc=persistElement(ses,*pv,lval,buf,lbuf,threshold,STORE_COLLECTION_ID,STORE_COLLECTION_ID))==RC_OK
 			&& (rc=insert(key,buf,lval))==RC_OK) first=last=eid;
 	} else {
 		ECB ecb(ctx,*this,coll);
 		if ((rc=ecb.get(GO_FINDBYID,epos))==RC_NOTFOUND && (op==OP_ADD || op==OP_SET))
 			{rc=ecb.get(GO_LAST); op=OP_ADD;}
-		SearchKey key((uint32_t)ecb.eid),k2; epos=ecb.eid;
+		SearchKey key((uint64_t)ecb.eid),k2; epos=ecb.eid;
 		if (rc==RC_OK) switch (op) {
 		default: return RC_INVPARAM;
 		case OP_SET:
@@ -778,7 +778,7 @@ RC Collection::modify(ExprOp op,const Value *pv,ElementID epos,ElementID eid,Ses
 				if ((rc=ecb.setLinks(ecb.prevID,eid))==RC_OK) rc=ecb.prepare(eid);
 			} else if (next!=STORE_COLLECTION_ID) rc=ecb.setLinks(ecb.prevID,STORE_COLLECTION_ID);
 			if (rc==RC_OK && (rc=persistElement(ses,*pv,lval,buf,lbuf,threshold,prev,next))==RC_OK) {
-				key.v.u32=eid; rc=ctx->trpgMgr->insert(ecb,key,buf,lval); ecb.tp=(const TreePageMgr::TreePage*)ecb.pb->getPageBuf();
+				key.v.u=eid; rc=ctx->trpgMgr->insert(ecb,key,buf,lval); ecb.tp=(const TreePageMgr::TreePage*)ecb.pb->getPageBuf();
 				if (rc==RC_OK && (next==STORE_COLLECTION_ID || (rc=ecb.get(GO_FINDBYID,next))==RC_OK
 					&& (rc=ecb.setLinks(eid,ecb.nextID))==RC_OK) && epos==last) last=eid;
 			}
@@ -796,7 +796,7 @@ RC Collection::modify(ExprOp op,const Value *pv,ElementID epos,ElementID eid,Ses
 				if ((rc=ecb.setLinks(eid,ecb.nextID))==RC_OK) rc=ecb.prepare(eid);
 			} else if (prev!=STORE_COLLECTION_ID) rc=ecb.setLinks(STORE_COLLECTION_ID,ecb.nextID);
 			if (rc==RC_OK && (rc=persistElement(ses,*pv,lval,buf,lbuf,threshold,prev,next))==RC_OK) {
-				key.v.u32=eid; rc=ctx->trpgMgr->insert(ecb,key,buf,lval); ecb.tp=(const TreePageMgr::TreePage*)ecb.pb->getPageBuf();
+				key.v.u=eid; rc=ctx->trpgMgr->insert(ecb,key,buf,lval); ecb.tp=(const TreePageMgr::TreePage*)ecb.pb->getPageBuf();
 				if (rc==RC_OK && (prev==STORE_COLLECTION_ID || (rc=ecb.get(GO_FINDBYID,prev))==RC_OK
 					&& (rc=ecb.setLinks(ecb.prevID,eid))==RC_OK) && epos==first) first=eid;
 			}
@@ -918,12 +918,12 @@ PageID Collection::startPage(const SearchKey *key,int& level,bool fRead,bool fBe
 		}
 	} else if (coll->nPages>0) {
 		if (key==NULL) {if (fBefore) pid=coll->pages[coll->nPages-1].page;}
-		else if (key->v.u32>=coll->pages[0].key) {
+		else if (key->v.u>=coll->pages[0].key) {
 			const HeapPageMgr::HeapExtCollPage *cp=coll->pages,*pp; ulong n=coll->nPages;
 			do {
 				ulong k=n>>1; pp=&cp[k]; 
-				if (pp->key==key->v.u32) return !fBefore?pp->page:k>0?cp[k-1].page:coll->leftmost;
-				if (pp->key>key->v.u32) n=k; else {pid=pp->page; cp=pp+1; n-=k+1;}
+				if (pp->key==key->v.u) return !fBefore?pp->page:k>0?cp[k-1].page:coll->leftmost;
+				if (pp->key>key->v.u) n=k; else {pid=pp->page; cp=pp+1; n-=k+1;}
 			} while (n>0);
 		}
 	}
@@ -956,12 +956,12 @@ RC Collection::addRootPage(const SearchKey& key,PageID& pageID,ulong level)
 			if (n>0) {
 				for (;;) {
 					ulong k=n>>1; const HeapPageMgr::HeapExtCollPage *cp=&coll->pages[idx+k]; 
-					if (cp->key==key.v.u32) {idx+=k; break;}
-					if (cp->key>key.v.u32) {if ((n=k)==0) break;} else {idx+=k+1; if ((n-=k+1)==0) break;}
+					if (cp->key==key.v.u) {idx+=k; break;}
+					if (cp->key>key.v.u) {if ((n=k)==0) break;} else {idx+=k+1; if ((n-=k+1)==0) break;}
 				}
 				if (idx<coll->nPages) memmove(&coll->pages[idx+1],&coll->pages[idx],(coll->nPages-idx)*sizeof(HeapPageMgr::HeapExtCollPage));
 			}
-			coll->pages[idx].key=key.v.u32; coll->pages[idx].page=pageID; coll->nPages++; fMod=true; rc=RC_FALSE;
+			coll->pages[idx].key=(uint32_t)key.v.u; coll->pages[idx].page=pageID; coll->nPages++; fMod=true; rc=RC_FALSE;
 		}
 	} else if (!Session::getSession()->inWriteTx()) rc=RC_INTERNAL;
 	else if ((rc=ctx->fsMgr->allocPages(1,&newRoot))==RC_OK) {
@@ -1035,7 +1035,7 @@ public:
 		assert(pageID!=INVALID_PAGEID && key.type==KT_UINT);
 		RC rc=RC_OK; PageID newRoot;
 		if (coll.nPages<maxPages) {
-			HeapPageMgr::HeapExtCollPage& pg=coll.pages[coll.nPages++]; pg.key=key.v.u32; pg.page=pageID; rc=RC_TRUE;
+			HeapPageMgr::HeapExtCollPage& pg=coll.pages[coll.nPages++]; pg.key=(uint32_t)key.v.u; pg.page=pageID; rc=RC_TRUE;
 		} else if (tctx.depth==TREE_MAX_DEPTH) rc=RC_NORESOURCES;
 		else if ((rc=ctx->fsMgr->allocPages(1,&newRoot))==RC_OK) {
 			PBlockP root(ctx->bufMgr->newPage(newRoot,ctx->trpgMgr));
@@ -1052,7 +1052,7 @@ public:
 	RC persist(const Value& v,ulong idx) {
 		if (!fForce) v.eid=coll.keygen++;
 		else if (ctx->getPrefix()==(v.eid&CPREFIX_MASK) && v.eid>=coll.keygen) coll.keygen=v.eid+1;
-		if (idx==0) coll.firstID=v.eid; coll.lastID=v.eid; SearchKey key((uint32_t)v.eid); ushort lval;
+		if (idx==0) coll.firstID=v.eid; coll.lastID=v.eid; SearchKey key((uint64_t)v.eid); ushort lval;
 		RC rc=Collection::persistElement(ses,v,lval,buf,lbuf,threshold,STORE_COLLECTION_ID,STORE_COLLECTION_ID,fOld);
 		if (rc==RC_OK) {
 			if (tctx.pb.isNull()) {

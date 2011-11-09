@@ -55,7 +55,7 @@ class QVar;
 #define	SOM_STD_PREFIX	0x0010
 #define	SOM_BASE_USED	0x0020
 
-class SOutCtx : public OutputBuf
+class SOutCtx
 {
 	Session	*const		ses;
 	const	unsigned	mode;
@@ -66,18 +66,28 @@ class SOutCtx : public OutputBuf
 	unsigned			nUsedQNames;
 	char				cbuf[100];
 	ulong				flags;
+	byte				*ptr;
+	size_t				cLen;
+	size_t				xLen;
 public:
-	SOutCtx(Session *s,unsigned md=0,const QName *qn=NULL,unsigned nQN=0) : OutputBuf(s),ses(s),mode(md),cvar(NULL),
-												qNames(qn),nQNames(nQN),usedQNames(NULL),nUsedQNames(0),flags(0) {}
-	~SOutCtx() {if (usedQNames!=NULL) ses->free(usedQNames);}
+	SOutCtx(Session *s,unsigned md=0,const QName *qn=NULL,unsigned nQN=0) : ses(s),mode(md),cvar(NULL),
+												qNames(qn),nQNames(nQN),usedQNames(NULL),nUsedQNames(0),flags(0),ptr(NULL),cLen(0),xLen(0) {}
+	~SOutCtx() {if (usedQNames!=NULL) ses->free(usedQNames); if (ptr!=NULL) ses->free(ptr);}
 	Session	*getSession() const {return ses;}
-	RC renderName(uint32_t id,const char *prefix=NULL,const QVar *qv=NULL,bool fQ=false,bool fEsc=true);
-	RC renderPID(const PID& id,bool fJSon=false);
-	RC renderValue(const Value& v,bool fJson=false);
-	RC renderVarName(const QVar *qv);
-	RC renderRep(unsigned rm,unsigned rx);
-	RC renderPath(const struct PathSeg& ps);
-	char* renderAll();
+	RC		renderName(uint32_t id,const char *prefix=NULL,const QVar *qv=NULL,bool fQ=false,bool fEsc=true);
+	RC		renderPID(const PID& id,bool fJSon=false);
+	RC		renderValue(const Value& v,bool fJson=false);
+	RC		renderVarName(const QVar *qv);
+	RC		renderRep(unsigned rm,unsigned rx);
+	RC		renderPath(const struct PathSeg& ps);
+	char	*renderAll();
+	size_t	getCLen() const {return cLen;}
+	bool	append(const void *p,size_t l) {if (l==0) return true;byte *pp=alloc(l); return pp==NULL?false:(memcpy(pp,p,l),true);}
+	bool	fill(char c,int n) {if (n==0) return true; byte *pp=alloc(n); return pp==NULL?false:(memset(pp,c,n),true);}
+	byte	*result(size_t& len) {byte *p=ptr; ptr=NULL; len=cLen; return cLen<xLen?(byte*)ses->realloc(p,cLen):p;}
+	operator char*() {char *p=(char*)ptr; ptr=NULL; if (cLen+1!=xLen) p=(char*)ses->realloc(p,cLen+1); if (p!=NULL) p[cLen]=0; return p;}
+	byte	*alloc(size_t l) {if (cLen+l>xLen && !expand(l)) return NULL; assert(ptr!=NULL); byte *p=ptr+cLen; cLen+=l; return p;}
+	bool	expand(size_t l);
 	friend	class	Stmt;
 	friend	class	QVar;
 	friend	class	JoinVar;
@@ -194,8 +204,9 @@ public:
 	}
 	static	void	getURIFlags(const char *uri,size_t l,struct URIInfo&);
 	static	void	initKW();
-	static	const	OpDscr	opDscr[];
 	static	size_t	kwTabSize;
+	static	const	OpDscr	opDscr[];
+	static	const	TLx		charLex[256];
 private:
 	TLx		lex();
 	bool	parseEID(TLx lx,ElementID& eid);
@@ -227,7 +238,6 @@ private:
 		bool	isEmpty() const {return ptr==stk;}
 	};
 	static	KWNode	*kwt['_'-'A'+1];
-	static	const	TLx		charLex[256];
 	static	const	char	*errorMsgs[SY_ALL];
 	static	void	initKWEntry(const char *str,TLx lx,KW kw,ushort ql);
 };

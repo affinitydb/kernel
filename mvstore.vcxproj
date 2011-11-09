@@ -394,6 +394,7 @@
     <ClCompile Include="src\deletepins.cpp" />
     <ClCompile Include="src\dlalloc.cpp" />
     <ClCompile Include="src\errors.cpp" />
+    <ClCompile Include="src\eval.cpp" />
     <ClCompile Include="src\fio.cpp" />
     <ClCompile Include="src\fiolinux.cpp" />
     <ClCompile Include="src\fiowin.cpp" />

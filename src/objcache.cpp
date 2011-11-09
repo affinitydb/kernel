@@ -62,7 +62,7 @@ void CachedObject::destroy()
 
 RC CachedObject::load(PageID pid,ulong flags)
 {
-	SearchKey key((uint32_t)ID); size_t size=0x4000,s0=size,lName; byte *buf=NULL; bool fFound=false;
+	SearchKey key((uint64_t)ID); size_t size=0x4000,s0=size,lName; byte *buf=NULL; bool fFound=false;
 	if (pid!=INVALID_PAGEID) {
 		StoreCtx *ctx=StoreCtx::get(); PBlock *pb=ctx->bufMgr->getPage(pid,ctx->trpgMgr);
 		if (pb!=NULL) {
@@ -134,7 +134,7 @@ CachedObject *ObjMgr::insert(const void *data,size_t lData)
 
 RC ObjMgr::modify(ulong id,const void *data,size_t lData,size_t sht)
 {
-	SearchKey key((uint32_t)id);
+	SearchKey key((uint64_t)id);
 	return map.edit(key,data,(ushort)lData,(ushort)lData,(ushort)sht);
 }
 
@@ -220,7 +220,7 @@ CachedObject *NamedObjMgr::insert(const char *name,const void *data,size_t lData
 
 RC NamedObjMgr::modify(const CachedObject *obj,const void *data,size_t lData,size_t sht)
 {
-	assert(obj!=NULL); SearchKey key((uint32_t)obj->ID);
+	assert(obj!=NULL); SearchKey key((uint64_t)obj->ID);
 	return map.edit(key,data,(ushort)lData,(ushort)lData,(ushort)(2+strlen(obj->name->name)+sht));
 }
 
@@ -244,7 +244,7 @@ RC NamedObjMgr::rename(ulong id,const char *name)
 		if (!nameMap.find(oldKey,&objPtr,size)||objPtr.ID!=id) rc=RC_NOTFOUND;
 		else if ((buf=(byte*)alloca(lName+2))==NULL) rc=RC_NORESOURCES;
 		else {
-			MiniTx tx(Session::getSession()); SearchKey kid((uint32_t)id);
+			MiniTx tx(Session::getSession()); SearchKey kid((uint64_t)id);
 			buf[0]=byte(lName>>8); buf[1]=byte(lName); memcpy(buf+2,name,lName);
 			if ((rc=map.edit(kid,buf,lName+2,lOldName+2,0))==RC_OK && 		// ulong -> ushort ???
 				(rc=nameMap.insert(key,&objPtr,sizeof(NamedObjPtr)))==RC_OK && (rc=nameMap.remove(oldKey))==RC_OK) {

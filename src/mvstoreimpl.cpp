@@ -1138,7 +1138,7 @@ RC SessionX::createIndexNav(ClassID cid,IndexNav *&nav)
 	} catch (RC rc) {return rc;} catch (...) {report(MSG_ERROR,"Exception in ISession::createIndexNav()\n"); return RC_INTERNAL;}
 }
 
-RC SessionX::listValues(ClassID cid,PropertyID pid,ValueType vt,IndexNav *&ven)
+RC SessionX::listValues(ClassID cid,PropertyID pid,IndexNav *&ven)
 {
 	try {
 		assert(ses==Session::getSession()); ven=NULL; if (!checkAdmin()) return RC_NOACCESS;
@@ -1146,7 +1146,7 @@ RC SessionX::listValues(ClassID cid,PropertyID pid,ValueType vt,IndexNav *&ven)
 		Class *cls=ctx->classMgr->getClass(cid); if (cls==NULL) return RC_NOTFOUND;
 		ClassIndex *cidx=cls->getIndex(); RC rc=RC_OK;
 		if (cidx!=NULL /*&& !qry->vars[0].condIdx->isExpr() && (qry->vars[0].condIdx->pid==pid || pid==STORE_INVALID_PROPID)*/) {
-			if ((ven=new(cidx->getNSegs(),ses) IndexNavImpl(ses,cidx,vt,/*qry->vars[0].condIdx->*/pid))==NULL) rc=RC_NORESOURCES;
+			if ((ven=new(cidx->getNSegs(),ses) IndexNavImpl(ses,cidx,/*qry->vars[0].condIdx->*/pid))==NULL) rc=RC_NORESOURCES;
 		} else {
 		//...
 			rc=RC_INVPARAM;
@@ -1191,8 +1191,7 @@ RC SessionX::convertValue(const Value& src,Value& dest,ValueType vt)
 int SessionX::compareValues(const Value& v1,const Value& v2,bool fNCase)
 {
 	try {
-		assert(ses==Session::getSession()); if (ses->getStore()->inShutdown()) return -1000;
-		Value v=v1; v.flags=v2.flags=NO_HEAP; return Expr::cvcmp(v,v2,fNCase?CND_NCASE:0);
+		assert(ses==Session::getSession()); return ses->getStore()->inShutdown()?-1000:cmp(v1,v2,fNCase?CND_NCASE:0);
 	} catch (RC) {} catch (...) {report(MSG_ERROR,"Exception in ISession::compareValues()\n");}
 	return -100;
 }

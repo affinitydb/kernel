@@ -16,8 +16,8 @@ Written by Mark Venguerov 2004 - 2010
 
 using namespace MVStoreKernel;
 
-static const IndexFormat classIndexFmt(KT_UINT,sizeof(uint32_t),KT_VARMDPINREFS);
-static const IndexFormat classPINsFmt(KT_UINT,sizeof(uint32_t),KT_VARDATA);
+static const IndexFormat classIndexFmt(KT_UINT,sizeof(uint64_t),KT_VARMDPINREFS);
+static const IndexFormat classPINsFmt(KT_UINT,sizeof(uint64_t),KT_VARDATA);
 
 Classifier::Classifier(StoreCtx *ct,ulong timeout,ulong hashSize,ulong cacheSize) 
 	: ClassHash(*new(ct) ClassHash::QueueCtrl<STORE_HEAP>(cacheSize),hashSize),ctx(ct),fInit(false),classIndex(ct),
@@ -95,7 +95,7 @@ RC Classifier::restoreXPropID(Session *ses)
 	if (ses==NULL) return RC_NOSESSION; assert(ctx->theCB!=NULL);
 	if (ctx->theCB->mapRoots[MA_URIID]!=INVALID_PAGEID) {
 		TreeScan *scan=ctx->uriMgr->scan(ses); if (scan==NULL) return RC_NORESOURCES;
-		if (scan->nextKey(GO_LAST)==RC_OK) {const SearchKey &key=scan->getKey(); if (key.type==KT_UINT) xPropID=key.v.u32;}
+		if (scan->nextKey(GO_LAST)==RC_OK) {const SearchKey &key=scan->getKey(); if (key.type==KT_UINT) xPropID=(long)key.v.u;}
 	}
 	return RC_OK;
 }
@@ -122,7 +122,7 @@ RC Classifier::initClasses(Session *ses)
 					URIID cid=v.uid;
 					if ((rc=cb.getValue(PROP_SPEC_PREDICATE,v,LOAD_SSV,ses))!=RC_OK) break;
 					if (v.type!=VT_STMT || v.stmt==NULL || ((Stmt*)v.stmt)->top==NULL) {freeV(v); rc=RC_CORRUPTED; break;}
-					rc=add(cid,(Stmt*)v.stmt,flags); v.stmt->destroy(); if (rc!=RC_OK) break;
+					rc=add(ses,cid,(Stmt*)v.stmt,flags); v.stmt->destroy(); if (rc!=RC_OK) break;
 				}
 			}
 			fInit=true; if (rc==RC_EOF) rc=RC_OK;
@@ -142,25 +142,28 @@ RC Classifier::setFlags(ClassID cid,ulong f,ulong mask)
 	cls->flags=cls->flags&~mask|f; cls->release(); return RC_OK;
 }
 
-RC Classifier::remove(ClassID cid)
+RC Classifier::remove(ClassID cid,Session *ses)
 {
 	RC rc=RC_OK;
 	Class *cls=getClass(cid,RW_X_LOCK); if (cls==NULL) return RC_NOTFOUND;
 	if ((cls->getFlags()&CLASS_VIEW)==0) {
 		if (cls->index!=NULL) rc=cls->index->drop();
 		else {
-			SearchKey key((uint32_t)cid); SearchKey dkey(cid|SDEL_FLAG);
+			SearchKey key((uint64_t)cid); SearchKey dkey((uint64_t)(cid|SDEL_FLAG));
 			if ((rc=classMap.remove(key,NULL,0))==RC_NOTFOUND) rc=RC_OK;
 			if (rc==RC_OK && (cls->getFlags()&CLASS_SDELETE)!=0 && (rc=classMap.remove(dkey,NULL,0))==RC_NOTFOUND) rc=RC_OK;
 		}
 	}
-	SearchKey key((uint32_t)cid); 
+	SearchKey key((uint64_t)cid); 
 	if ((rc=classPINs.remove(key))==RC_OK) {
 		const Stmt *qry=cls->getQuery(); const QVar *qv; ClassPropIndex *cpi;
-		if (qry!=NULL && (qv=qry->top)!=NULL && qv->type==QRY_SIMPLE && (cpi=getClassPropIndex((SimpleVar*)qv,false))!=NULL) {
-			if (qv->condProps==NULL || qv->lProps==0) rc=cpi->remove(cls->getID(),NULL,0);
-			else for (const PropDNF *p=qv->condProps,*end=(const PropDNF*)((byte*)p+qv->lProps); p<end; p=(const PropDNF*)((byte*)(p+1)+int(p->nIncl+p->nExcl-1)*sizeof(PropertyID)))
-				if ((rc=cpi->remove(cls->getID(),p->nIncl!=0?p->pids:(PropertyID*)0,p->nIncl))!=RC_OK) break;
+		if (qry!=NULL && (qv=qry->top)!=NULL && qv->type==QRY_SIMPLE && (cpi=getClassPropIndex((SimpleVar*)qv,ses,false))!=NULL) {
+			PropDNF *dnf=NULL; size_t ldnf=0;
+			if ((rc=((SimpleVar*)qv)->getPropDNF(dnf,ldnf,ses))==RC_OK) {
+				if (dnf==NULL) rc=cpi->remove(cls->getID(),NULL,0);
+				else for (const PropDNF *p=dnf,*end=(const PropDNF*)((byte*)p+ldnf); p<end; p=(const PropDNF*)((byte*)(p+1)+int(p->nIncl+p->nExcl-1)*sizeof(PropertyID)))
+					if ((rc=cpi->remove(cls->getID(),p->nIncl!=0?p->pids:(PropertyID*)0,p->nIncl))!=RC_OK) break;
+			}
 		}
 	}
 	if (rc!=RC_OK) cls->release(); else if (drop(cls)) cls->destroy();
@@ -198,7 +201,7 @@ void Class::setKey(ClassID id,void *)
 
 RC Class::load(int,ulong)
 {
-	SearchKey key((uint32_t)cid); RC rc=RC_NOTFOUND; Value v;
+	SearchKey key((uint64_t)cid); RC rc=RC_NOTFOUND; Value v;
 	PINEx cb(Session::getSession()); size_t l=XPINREFSIZE;
 	if (mgr.classPINs.find(key,cb.epr.buf,l)) try {
 		PINRef pr(mgr.ctx->storeID,cb.epr.buf,cb.epr.lref=byte(l)); id=pr.id;
@@ -209,7 +212,7 @@ RC Class::load(int,ulong)
 			query=(Stmt*)v.stmt; v.setError();
 			flags=cb.getValue(PROP_SPEC_CLASS_INFO,v,0,NULL)==RC_OK&&(v.type==VT_UINT||v.type==VT_INT)?v.ui:CLASS_INDEXED;
 			const static PropertyID propACL=PROP_SPEC_ACL; if (cb.defined(&propACL,1)) flags|=CLASS_ACL;
-			if (!mgr.fInit && (flags&CLASS_INDEXED)!=0) rc=mgr.add(cid,query,flags);
+			if (!mgr.fInit && (flags&CLASS_INDEXED)!=0) rc=mgr.add(cb.ses,cid,query,flags);
 			if (rc==RC_OK && query->top!=NULL && query->top->getType()==QRY_SIMPLE && ((SimpleVar*)query->top)->condIdx!=NULL) {
 				const unsigned nSegs=((SimpleVar*)query->top)->nCondIdx;
 				PageID root=INVALID_PAGEID,anchor=INVALID_PAGEID; IndexFormat fmt=ClassIndex::ifmt; uint32_t height=0;
@@ -228,10 +231,13 @@ RC Class::load(int,ulong)
 RC Class::update(bool fInsert)
 {
 	if (txs!=NULL) return RC_OK;
-	PINRef pr(mgr.ctx->storeID,id,addr); SearchKey key((uint32_t)cid); byte buf[XPINREFSIZE];
-	if (index!=NULL && index->root!=INVALID_PAGEID) {
-		pr.id2.pid=uint64_t(index->root)<<16|uint16_t(index->height); 
-		pr.id2.ident=uint32_t(index->anchor); pr.u1=index->fmt.dscr; pr.def|=PR_PID2|PR_U1;
+	PINRef pr(mgr.ctx->storeID,id,addr); SearchKey key((uint64_t)cid); byte buf[XPINREFSIZE];
+	if (index!=NULL) {
+		pr.u1=index->fmt.dscr; pr.def|=PR_U1;
+		if (index->root!=INVALID_PAGEID) {
+			pr.id2.pid=uint64_t(index->root)<<16|uint16_t(index->height); 
+			pr.id2.ident=uint32_t(index->anchor); pr.def|=PR_PID2;
+		}
 	}
 	return fInsert?mgr.classPINs.insert(key,buf,pr.enc(buf)):mgr.classPINs.update(key,NULL,0,buf,pr.enc(buf));
 }
@@ -330,13 +336,13 @@ void Classifier::findBase(SimpleVar *qv)
 {
 }
 
-ClassPropIndex *Classifier::getClassPropIndex(const SimpleVar *qv,bool fAdd)
+ClassPropIndex *Classifier::getClassPropIndex(const SimpleVar *qv,Session *ses,bool fAdd)
 {
 	ClassPropIndex *cpi=&classIndex; assert(qv->type==QRY_SIMPLE);
 	if (qv->classes!=NULL && qv->nClasses>0) {
 		Class *base=getClass(qv->classes[0].classID);
 		if (base!=NULL) {
-			ClassRef *cr=findBaseRef(base); base->release();
+			ClassRef *cr=findBaseRef(base,ses); base->release();
 			if (cr!=NULL) {
 				assert(cr->cid==qv->classes[0].classID);
 				if (cr->sub!=NULL || fAdd && (cr->sub=new(ctx) ClassPropIndex(ctx))!=NULL) cpi=cr->sub;
@@ -346,29 +352,29 @@ ClassPropIndex *Classifier::getClassPropIndex(const SimpleVar *qv,bool fAdd)
 	return cpi;
 }
 
-RC Classifier::add(ClassID cid,const Stmt *qry,ulong flags,ulong notifications)
+RC Classifier::add(Session *ses,ClassID cid,const Stmt *qry,ulong flags,ulong notifications)
 {
-	const QVar *qv;
+	const QVar *qv; PropDNF *dnf=NULL; size_t ldnf; RC rc;
 	if (cid==STORE_INVALID_CLASSID || qry==NULL || (qv=qry->top)==NULL || qv->type!=QRY_SIMPLE) return RC_INVPARAM;
-	return getClassPropIndex((SimpleVar*)qv)->add(cid,qry,flags,qv->condProps,qv->lProps,notifications,ctx)?RC_OK:RC_NORESOURCES;
+	if ((rc=((SimpleVar*)qv)->getPropDNF(dnf,ldnf,ses))==RC_OK) {
+		rc=getClassPropIndex((SimpleVar*)qv,ses)->add(cid,qry,flags,dnf,ldnf,notifications,ctx)?RC_OK:RC_NORESOURCES;
+		if (dnf!=NULL) ses->free(dnf);
+	}
+	return rc;
 }
 
-ClassRef *Classifier::findBaseRef(const Class *cls)
+ClassRef *Classifier::findBaseRef(const Class *cls,Session *ses)
 {
-	assert(cls!=NULL); Stmt *qry=cls->getQuery(); QVar *qv;
-	if (qry!=NULL && (qv=qry->top)!=NULL) {
-		const PropertyID *pids=NULL; ulong np=0; const ClassPropIndex *cpi=&classIndex;
-		if (qv->condProps!=NULL && qv->lProps!=0 && qv->condProps->nIncl!=0) {pids=qv->condProps->pids; np=qv->condProps->nIncl;}
-		if (qv->type==QRY_SIMPLE && ((SimpleVar*)qv)->classes!=NULL && ((SimpleVar*)qv)->nClasses!=0) {
-            Class *base=getClass(((SimpleVar*)qv)->classes[0].classID);
-			if (base!=NULL) {
-				ClassRef *cr=findBaseRef(base); base->release();
-				if (cr!=NULL && cr->cid==((SimpleVar*)qv)->classes[0].classID && cr->sub!=NULL) cpi=cr->sub;
-			}
+	assert(cls!=NULL); Stmt *qry=cls->getQuery(); QVar *qv; if (qry==NULL || (qv=qry->top)==NULL) return NULL;
+	const ClassPropIndex *cpi=&classIndex; PropertyID *pids=NULL; unsigned np=0; qv->getProps(pids,np,ses);
+	if (qv->type==QRY_SIMPLE && ((SimpleVar*)qv)->classes!=NULL && ((SimpleVar*)qv)->nClasses!=0) {
+		Class *base=getClass(((SimpleVar*)qv)->classes[0].classID);
+		if (base!=NULL) {
+			ClassRef *cr=findBaseRef(base,ses); base->release();
+			if (cr!=NULL && cr->cid==((SimpleVar*)qv)->classes[0].classID && cr->sub!=NULL) cpi=cr->sub;
 		}
-		return (ClassRef*)cpi->find(cls->getID(),pids,np);
 	}
-	return NULL;
+	ClassRef *cr=(ClassRef*)cpi->find(cls->getID(),pids,np); if (pids!=NULL) ses->free(pids); return cr;
 }
 
 RC Classifier::classify(const PINEx *pin,ClassResult& res)
@@ -415,7 +421,7 @@ RC ClassPropIndex::classify(const ClassRef *cr,const PINEx *pin,ClassResult& res
 
 RC Classifier::enable(Session *ses,Class *cls,ulong notifications)
 {
-	initClasses(ses); MutexP lck(&lock); return add(cls->getID(),cls->getQuery(),cls->getFlags(),notifications);
+	initClasses(ses); MutexP lck(&lock); return add(ses,cls->getID(),cls->getQuery(),cls->getFlags(),notifications);
 }
 
 void Classifier::disable(Session *ses,Class *cls,ulong notifications)
@@ -426,25 +432,21 @@ void Classifier::disable(Session *ses,Class *cls,ulong notifications)
 RC Classifier::indexFormat(ulong vt,IndexFormat& fmt) const
 {
 	switch (vt) {
-	default: return RC_TYPE;
-	case VT_STRING: case VT_URL: case VT_BSTR: case VT_STREAM:
-		fmt=IndexFormat(KT_BIN,KT_VARKEY,KT_VARMDPINREFS); break;
-	case VT_INT:
-		fmt=IndexFormat(KT_INT,sizeof(int32_t),KT_VARMDPINREFS); break;
-	case VT_UINT: case VT_BOOL: case VT_URIID: case VT_IDENTITY:
-		fmt=IndexFormat(KT_UINT,sizeof(uint32_t),KT_VARMDPINREFS); break;
-	case VT_INT64: case VT_INTERVAL:
-		fmt=IndexFormat(KT_INT64,sizeof(int64_t),KT_VARMDPINREFS); break;
-	case VT_UINT64: case VT_DATETIME: case VT_CURRENT:
-		fmt=IndexFormat(KT_UINT64,sizeof(uint64_t),KT_VARMDPINREFS); break;
+	case VT_ANY:
+		fmt=IndexFormat(KT_VAR,KT_VARKEY,KT_VARMDPINREFS); break;
+	case VT_UINT: case VT_BOOL: case VT_URIID: case VT_IDENTITY: case VT_UINT64: case VT_DATETIME: case VT_CURRENT:
+		fmt=IndexFormat(KT_UINT,sizeof(uint64_t),KT_VARMDPINREFS); break;
+	case VT_INT: case VT_INT64: case VT_INTERVAL:
+		fmt=IndexFormat(KT_INT,sizeof(int64_t),KT_VARMDPINREFS); break;
 	case VT_FLOAT:
 		fmt=IndexFormat(KT_FLOAT,sizeof(float),KT_VARMDPINREFS); break;
 	case VT_DOUBLE:
 		fmt=IndexFormat(KT_DOUBLE,sizeof(double),KT_VARMDPINREFS); break;
-	case VT_REF: case VT_REFID:
-	case VT_REFPROP: case VT_REFIDPROP:
-	case VT_REFELT: case VT_REFIDELT:
+	case VT_STRING: case VT_URL: case VT_BSTR: case VT_STREAM:
+		fmt=IndexFormat(KT_BIN,KT_VARKEY,KT_VARMDPINREFS); break;
+	case VT_REF: case VT_REFID: case VT_REFPROP: case VT_REFIDPROP: case VT_REFELT: case VT_REFIDELT:
 		fmt=IndexFormat(KT_REF,KT_VARKEY,KT_VARMDPINREFS); break;
+	default: return RC_TYPE;
 	}
 	return RC_OK;
 }
@@ -475,10 +477,10 @@ namespace MVStoreKernel
 	public:
 		IndexInit(Session *s,CondIdx *c,ulong nS) : TreeStdRoot(INVALID_PAGEID,s->getStore()),ses(s),nSegs(nS),fmt(KT_ALL,0,0),anchor(INVALID_PAGEID) {
 			for (ulong i=0; i<nS; i++,c=c->next) {assert(c!=NULL); indexSegs[i]=c->ks;}
-			if (nS==1) s->getStore()->classMgr->indexFormat(indexSegs[0].type,fmt);
+			if (nS==1) s->getStore()->classMgr->indexFormat(indexSegs[0].type==VT_ANY&&(indexSegs[0].lPrefix!=0||(indexSegs[0].flags&ORD_NCASE)!=0)?VT_STRING:indexSegs[0].type,fmt);
 			else {
 				// KT_BIN ?
-				fmt=IndexFormat(KT_MSEG,KT_VARKEY,KT_VARMDPINREFS);
+				fmt=IndexFormat(KT_VAR,KT_VARKEY,KT_VARMDPINREFS);
 			}
 		}
 		void			*operator new(size_t s,ulong nSegs,Session *ses) {return ses->malloc(s+int(nSegs-1)*sizeof(IndexSeg));}
@@ -515,7 +517,6 @@ namespace MVStoreKernel
 	{
 		ClassDscr		*cd;
 		bool			fSkip;
-		bool			fSaveQ;
 		union {
 			struct {
 				size_t	lx,ldx;
@@ -571,12 +572,12 @@ RC Classifier::freeSpace(ClassCtx& cctx,size_t l,unsigned skip)
 			ci.sa->release(); ci.liv=0; if ((ci.il=new(ci.sa) IndexList(*ci.sa,ci.ity))==NULL) return RC_NORESOURCES;
 		} else {
 			if (ci.buf!=NULL) {
-				if (*ci.buf>=L_SHT*2) {SearchKey key((uint32_t)ci.cd->cid); if ((rc=classMap.insert(key,ci.buf,ci.buf[*ci.buf/L_SHT-1],true))!=RC_OK) return rc;}
+				if (*ci.buf>=L_SHT*2) {SearchKey key((uint64_t)ci.cd->cid); if ((rc=classMap.insert(key,ci.buf,ci.buf[*ci.buf/L_SHT-1],true))!=RC_OK) return rc;}
 				if ((ci.buf=(ushort*)cctx.ses->realloc(ci.buf,ci.lx/=2))==NULL) return RC_NORESOURCES;
 				cctx.total-=ci.lx;
 			}
 			if (ci.bufd!=NULL) {
-				if (*ci.bufd>=L_SHT*2) {SearchKey key((uint32_t)ci.cd->cid|SDEL_FLAG); if ((rc=classMap.insert(key,ci.bufd,ci.bufd[*ci.bufd/L_SHT-1],true))!=RC_OK) return rc;}
+				if (*ci.bufd>=L_SHT*2) {SearchKey key((uint64_t)(ci.cd->cid|SDEL_FLAG)); if ((rc=classMap.insert(key,ci.bufd,ci.bufd[*ci.bufd/L_SHT-1],true))!=RC_OK) return rc;}
 				if ((ci.bufd=(ushort*)cctx.ses->realloc(ci.bufd,ci.ldx/=2))==NULL) return RC_NORESOURCES;
 				cctx.total-=ci.ldx;
 			}
@@ -595,7 +596,7 @@ RC Classifier::insertRef(ClassCtx& cctx,ushort **ppb,size_t *ps,const byte *extb
 				SearchKey key(pi->key,(TREE_KT)ci.ity,SearchKey::PLC_EMB); assert(pi!=NULL && pi->buf==pb); 
 				if ((rc=ci.cd->cidx->insert(key,(byte*)pb,(ushort)l,true))!=RC_OK) return rc;
 			} else {
-				SearchKey key((uint32_t)ci.cd->cid|(pb==ci.bufd?SDEL_FLAG:0));
+				SearchKey key((uint64_t)(ci.cd->cid|(pb==ci.bufd?SDEL_FLAG:0)));
 				if ((rc=classMap.insert(key,pb,(ushort)l,true))!=RC_OK) return rc;
 			}
 			*pb=L_SHT; l=L_SHT;
@@ -645,7 +646,7 @@ RC Classifier::classifyAll(PIN *const *pins,unsigned nPINs,Session *ses,bool fDr
 	if ((cid=new(ses) ClassIndexData[nPINs])!=NULL) memset(cid,0,nPINs*sizeof(ClassIndexData)); else return RC_NORESOURCES;
 	Value *indexed=NULL; unsigned nIndexed=0,xIndexed=0,xSegs=0; unsigned first=~0u,last=0,nIndex=0; RC rc=RC_OK;
 	for (unsigned i=0; i<nPINs; i++) {
-		ClassIndexData &ci=cid[i]; ci.fSkip=ci.fSaveQ=true; ClassDscr cdscr={NULL,0,NULL,NULL,0,PIN::defPID,PageAddr::invAddr};
+		ClassIndexData &ci=cid[i]; ci.fSkip=true; ClassDscr cdscr={NULL,0,NULL,NULL,0,PIN::defPID,PageAddr::invAddr};
 		pin=pins[i]; cdscr.id=pin->id; cdscr.addr=pin->addr; assert(pin!=NULL && (pin->mode&PIN_CLASS)!=0);
 		const Value *cv=pin->findProperty(PROP_SPEC_CLASSID); assert(cv!=NULL && cv->type==VT_URIID); cdscr.cid=cv->uid;
 		cv=pin->findProperty(PROP_SPEC_PREDICATE); assert(cv!=NULL && cv->type==VT_STMT); cdscr.query=(Stmt*)cv->stmt;
@@ -662,18 +663,13 @@ RC Classifier::classifyAll(PIN *const *pins,unsigned nPINs,Session *ses,bool fDr
 			// init fmt
 			ci.ity=ci.cd->cidx->fmt.keyType(); ci.sa=NULL; ci.il=0; ci.liv=0;
 		}
-		if ((cdscr.flags&CLASS_VIEW)==0 && (pci!=NULL || Stmt::classOK(cdscr.query->top))) {
-			bool fSkip=false;
-			for (const PropDNF *p=cdscr.query->top->condProps,*end=(const PropDNF*)((byte*)p+cdscr.query->vars->lProps); p<end; p=(const PropDNF*)((byte*)(p+1)+int(p->nIncl+p->nExcl-1)*sizeof(PropertyID)))
-				{fSkip=false; for (ulong j=0; j<p->nIncl; j++) if (p->pids[j]>(PropertyID)xPropID) {fSkip=true; break;} if (!fSkip) break;}
-			if (!fSkip) {
-				ci.fSkip=false; nIndex++; last=i; if (first==~0u) first=i;
-				if (pci!=NULL) {
-					if (ci.cd->cidx->nSegs>xSegs) xSegs=ci.cd->cidx->nSegs;
-					for (ulong i=0; i<ci.cd->cidx->nSegs; i++) {
-						Value v; v.setPropID(ci.cd->cidx->indexSegs[i].propID);
-						if ((rc=BIN<Value,PropertyID,ValCmp>::insert(indexed,nIndexed,v.property,v,ses,&xIndexed))!=RC_OK) break;
-					}
+		if ((cdscr.flags&CLASS_VIEW)==0 && (pci!=NULL || Stmt::classOK(cdscr.query->top)) && cdscr.query->top->type==QRY_SIMPLE && ((SimpleVar*)cdscr.query->top)->checkXPropID((PropertyID)xPropID)) {
+			ci.fSkip=false; nIndex++; last=i; if (first==~0u) first=i;
+			if (pci!=NULL) {
+				if (ci.cd->cidx->nSegs>xSegs) xSegs=ci.cd->cidx->nSegs;
+				for (ulong i=0; i<ci.cd->cidx->nSegs; i++) {
+					Value v; v.setPropID(ci.cd->cidx->indexSegs[i].propID);
+					if ((rc=BIN<Value,PropertyID,ValCmp>::insert(indexed,nIndexed,v.property,v,ses,&xIndexed))!=RC_OK) break;
 				}
 			}
 		}
@@ -683,7 +679,7 @@ RC Classifier::classifyAll(PIN *const *pins,unsigned nPINs,Session *ses,bool fDr
 			//	if ((rc=ci.cd->cidx->drop())==RC_OK) rc=ci.cd->cidx->cls.update();		// ???
 			//} else 
 			if ((cdscr.flags&CLASS_VIEW)==0) {
-				SearchKey key((uint32_t)ci.cd->cid); SearchKey dkey(ci.cd->cid|SDEL_FLAG);
+				SearchKey key((uint64_t)ci.cd->cid); SearchKey dkey((uint64_t)(ci.cd->cid|SDEL_FLAG));
 				if ((rc=classMap.remove(key,NULL,0))==RC_NOTFOUND) rc=RC_OK;
 				if (rc==RC_OK && (cdscr.flags&CLASS_SDELETE)!=0 && (rc=classMap.remove(dkey,NULL,0))==RC_NOTFOUND) rc=RC_OK;
 			}
@@ -748,11 +744,6 @@ RC Classifier::classifyAll(PIN *const *pins,unsigned nPINs,Session *ses,bool fDr
 									vals[k]=cv->type==VT_ARRAY?cv->varray:cv->nav->navigate(GO_FIRST);
 									if (!fExtC) {memcpy(extc,qr.epr.buf,lextc=qr.epr.lref); PINRef::changeFColl(extc,lextc,true); fExtC=true;}
 								}
-								if (ks.type==VT_ANY && vals[k]->type!=VT_ANY) {
-									ks.type=vals[k]->type; ci.fSaveQ=true;
-									if (nSegs==1 && ci.ity>=KT_ALL && (rc=indexFormat((ValueType)ks.type,ci.cd->cidx->fmt))==RC_OK)
-										ci.ity=ci.cd->cidx->fmt.keyType();
-								}
 							}
 							if (nNulls<nSegs) for (;;) {		// || derived!
 								if (ci.il==NULL && (ci.sa==NULL && (ci.sa=new(cctx.ses) SubAlloc(cctx.ses))==NULL ||
@@ -815,11 +806,11 @@ RC Classifier::classifyAll(PIN *const *pins,unsigned nPINs,Session *ses,bool fDr
 				}
 			};
 			if (ci.buf!=NULL) {
-				if (rc==RC_OK && *ci.buf>=L_SHT*2) {SearchKey key((uint32_t)ci.cd->cid); rc=classMap.insert(key,ci.buf,ci.buf[*ci.buf/L_SHT-1],true);}
+				if (rc==RC_OK && *ci.buf>=L_SHT*2) {SearchKey key((uint64_t)ci.cd->cid); rc=classMap.insert(key,ci.buf,ci.buf[*ci.buf/L_SHT-1],true);}
 				ses->free(ci.buf);
 			}
 			if (ci.bufd!=NULL) {
-				if (rc==RC_OK && *ci.bufd>=L_SHT*2) {SearchKey key((uint32_t)ci.cd->cid|SDEL_FLAG); rc=classMap.insert(key,ci.bufd,ci.bufd[*ci.bufd/L_SHT-1],true);}
+				if (rc==RC_OK && *ci.bufd>=L_SHT*2) {SearchKey key((uint64_t)(ci.cd->cid|SDEL_FLAG)); rc=classMap.insert(key,ci.bufd,ci.bufd[*ci.bufd/L_SHT-1],true);}
 				ses->free(ci.bufd);
 			}
 		} else {
@@ -874,7 +865,7 @@ RC Classifier::classTx(Session *ses,ClassDscr *&cds,bool fCommit)
 					ClassIndex *cidx=cls->index=new(cd->cidx->nSegs,ctx) ClassIndex(*cls,cd->cidx->nSegs,cd->cidx->root,cd->cidx->anchor,cd->cidx->fmt,cd->cidx->height,ctx);
 					if (cidx==NULL) rc=RC_NORESOURCES; else memcpy(cidx->indexSegs,cd->cidx->indexSegs,cd->cidx->nSegs*sizeof(IndexSeg));
 				}
-				if (rc==RC_OK) rc=cls->update(true); release(cls); if (rc==RC_OK) rc=add(cd->cid,cd->query,cd->flags);
+				if (rc==RC_OK) rc=cls->update(true); release(cls); if (rc==RC_OK) rc=add(ses,cd->cid,cd->query,cd->flags);
 			}
 		}
 		if (cd->cidx!=NULL) {cd->cidx->~IndexInit(); ses->free(cd->cidx);}
@@ -902,8 +893,8 @@ RC TxIndex::flush()
 #define	PHASE_INSERT	1
 #define	PHASE_DELETE	2
 #define	PHASE_UPDATE	4
-#define	PHASE_DELNULLS	8
-#define	PHASE_UPDCOLL	16
+#define	PHASE_UPDCOLL	8
+#define	PHASE_DELNULLS	16
 
 enum SubSetV {NewV,DelV,AllPrevV,AllCurV,UnchagedV};
 
@@ -913,10 +904,10 @@ RC Classifier::index(Session *ses,const PINEx *pin,const ClassResult& clr,ClassI
 	Class *cls=NULL; ClassIndex *cidx; byte ext[XPINREFSIZE],ext2[XPINREFSIZE];
 	PINRef pr(ctx->storeID,pin->id,pin->addr); byte lext=pr.enc(ext),lext2=0; const Value *psegs[10],**pps=psegs; ulong xSegs=10;
 	struct SegInfo {PropertyID pid; const PropInfo *pi; SubSetV ssv; ModInfo *mi; Value v; const Value *cv; uint32_t flags,idx,prev; bool fLoaded;} keysegs[10],*pks=keysegs;
-	for (ulong i=0; rc==RC_OK && i<clr.nClasses; i++) {
-		const ClassRef *cr=clr.classes[i]; PINRef::changeFColl(ext,lext,false);
+	for (ulong i=0; rc==RC_OK && i<clr.nClasses; PINRef::changeFColl(ext,lext,false),i++) {
+		const ClassRef *cr=clr.classes[i];
 		if (cr->nIndexProps==0) {
-			SearchKey key((uint32_t)cr->cid),dkey((uint32_t)cr->cid|SDEL_FLAG);
+			SearchKey key((uint64_t)cr->cid),dkey((uint64_t)(cr->cid|SDEL_FLAG));
 			switch (op) {
 			default: rc=RC_INVPARAM; break;
 			case CI_UDELETE: if ((cr->flags&CLASS_SDELETE)!=0 && (rc=classMap.remove(dkey,ext,lext))!=RC_OK) break;
@@ -952,7 +943,8 @@ RC Classifier::index(Session *ses,const PINEx *pin,const ClassResult& clr,ClassI
 						if ((si.pi->flags&PM_NEWVALUES)!=0) phaseMask|=PHASE_INSERT;
 						if ((si.pi->flags&PM_OLDVALUES)!=0) phaseMask|=PHASE_DELETE;
 						if ((si.pi->flags&PM_RESET)==0) phaseMask2|=PHASE_DELNULLS;
-						if ((si.pi->flags&(PM_COLLECTION|PM_RESET|PM_NEWCOLL))==PM_NEWCOLL) phaseMask|=PHASE_UPDCOLL;
+						if ((si.pi->flags&(PM_COLLECTION|PM_SCOLL))==PM_COLLECTION) phaseMask2&=~PHASE_UPDCOLL;
+						else if ((si.pi->flags&(PM_RESET|PM_NEWCOLL))==PM_NEWCOLL && si.pi->single!=STORE_COLLECTION_ID) phaseMask|=PHASE_UPDCOLL;
 					}
 					nModSegs++;
 				}
@@ -964,8 +956,8 @@ RC Classifier::index(Session *ses,const PINEx *pin,const ClassResult& clr,ClassI
 				else if ((phaseMask&PHASE_DELETE)!=0) {phaseMask&=~PHASE_DELETE; kop=CI_DELETE;}
 				else if ((phaseMask&PHASE_INSERT)!=0) {phaseMask&=~PHASE_INSERT; kop=CI_INSERT;}
 			}
-			for (;;) {
-				unsigned lastArr=~0u,nNulls=0; bool fNext,fSave=false;
+			for (bool fAlt=false;;) {
+				unsigned lastArr=~0u,nNulls=0; bool fNext;
 				for (unsigned k=0; k<nSegs; k++) {
 					SegInfo& si=pks[k]; bool fIt=false; si.cv=&si.v;
 					if (si.pi==NULL || kop==CI_INSERT && (si.pi->flags&PM_NEWVALUES)==0) {
@@ -982,15 +974,21 @@ RC Classifier::index(Session *ses,const PINEx *pin,const ClassResult& clr,ClassI
 						} else {
 							//...
 						}
+						if ((si.pi->flags&(PM_COLLECTION|PM_NEWCOLL))!=0) PINRef::changeFColl(ext,lext,true);
 					} else if (kop==CI_DELETE) {
-						if ((si.pi->flags&(PM_RESET|PM_NEWVALUES))==PM_RESET || nModSegs==1) {
+						if (fAlt) {
+							// DELNULLS
+						} else if ((si.pi->flags&(PM_RESET|PM_NEWVALUES))==PM_RESET || nModSegs==1) {
 							si.ssv=DelV; for (si.mi=si.pi->first; si.mi!=NULL && si.mi->oldV==NULL; si.mi=si.mi->pnext);
 							if (si.mi==NULL) rc=RC_NOTFOUND; else {fIt=si.mi->pnext!=NULL; si.cv=si.mi->oldV;}
 						} else {
 							//...
 						}
-					} else {
+					} else if (!fAlt) {
 						// UPDATE
+					} else if (si.pi->single!=STORE_COLLECTION_ID) {
+						if (si.fLoaded) freeV(si.v); PINRef::changeFColl(ext,lext,true); if (lext2==0) lext2=pr.enc(ext2);
+						if ((rc=pin->getValue(si.pid,si.v,LOAD_SSV,ses,si.pi->single))!=RC_OK) break;
 					}
 					pps[k]=si.cv;
 					if (si.cv->type==VT_ANY) {
@@ -999,20 +997,8 @@ RC Classifier::index(Session *ses,const PINEx *pin,const ClassResult& clr,ClassI
 						fIt=true; pps[k]=si.cv->type==VT_ARRAY?si.cv->varray:si.cv->nav->navigate(GO_FIRST); PINRef::changeFColl(ext,lext,true);
 					}
 					if (fIt) {si.prev=lastArr; lastArr=k;}
-					if (kop==CI_INSERT && cidx->indexSegs[k].type==VT_ANY && pps[k]->type!=VT_ANY) {
-						cidx->indexSegs[k].type=pps[k]->type; fSave=true;
-						if (cidx->fmt.keyType()==KT_BIN) cidx->indexSegs[k].type=pps[k]->type==VT_BSTR?VT_BSTR:VT_STRING;
-						else if (cidx->fmt.keyType()>=KT_ALL) rc=indexFormat((ValueType)pps[k]->type,cidx->fmt);
-					}
 				}
 				if (nNulls==nSegs) rc=RC_NOTFOUND;
-				else if (fSave && rc==RC_OK) {
-					MiniTx tx(ses,0);
-					// re-acquire cls with RW_X_LOCK, check if cls->index->indexSegs[...].
-					// save cls only if cidx->fmt is updated
-					// need to save pin->PROP_SPEC_PREDICATE here (or later?)
-					if ((rc=cls->update())==RC_OK) tx.ok(); else report(MSG_ERROR,"Cannot set index type, index %d\n",cr->cid);
-				}
 				if (rc!=RC_OK) break;
 				do {
 					SearchKey key;
@@ -1065,7 +1051,9 @@ RC Classifier::index(Session *ses,const PINEx *pin,const ClassResult& clr,ClassI
 				} while (fNext);
 				if (phaseMask==0) break;
 				if ((phaseMask&PHASE_INSERT)!=0) {phaseMask&=~PHASE_INSERT; kop=CI_INSERT;}
-				else {assert(phaseMask==PHASE_UPDATE); phaseMask=0; kop=CI_UPDATE;}
+				else if ((phaseMask&PHASE_UPDATE)!=0) {phaseMask&=~PHASE_UPDATE; kop=CI_UPDATE;}
+				else if ((phaseMask&PHASE_UPDCOLL)!=0) {phaseMask&=~PHASE_UPDCOLL; kop=CI_UPDATE; fAlt=true;}
+				else {assert(phaseMask==PHASE_DELNULLS); phaseMask=0; kop=CI_DELETE; fAlt=true;}
 			}
 			cls->release(); if (rc==RC_NOTFOUND) rc=RC_OK;
 		}
@@ -1103,7 +1091,7 @@ RC Classifier::getClassInfo(ClassID cid,Class *&cls,uint64_t& nPINs,uint64_t& nD
 	nPINs=~0u; nDeletedPINs=0; RC rc=RC_OK;
 	if ((cls=getClass(cid))==NULL) return RC_NOTFOUND;
 	if (cls->index==NULL) {
-		SearchKey key((uint32_t)cid); SearchKey dkey((uint32_t)cid|SDEL_FLAG);
+		SearchKey key((uint64_t)cid); SearchKey dkey((uint64_t)(cid|SDEL_FLAG));
 		if ((rc=classMap.countValues(key,nPINs))==RC_NOTFOUND) {rc=RC_OK; nPINs=0;}
 		if (rc==RC_OK && (rc=classMap.countValues(dkey,nDeletedPINs))==RC_NOTFOUND) {rc=RC_OK; nDeletedPINs=0;}
 	}
@@ -1225,10 +1213,10 @@ RC ClassPropIndex::insert(ClassID cid,const Stmt *qry,ulong flags,ClassRef *&cr,
 
 //-----------------------------------------------------------------------------------------------------------------------------
 
-IndexNavImpl::IndexNavImpl(Session *s,ClassIndex *ci,ValueType vty,PropertyID pi) 
-	: ses(s),nVals(ci->getNSegs()),vt(vty),pid(pi),cidx(ci),scan(NULL),fFree(false)
+IndexNavImpl::IndexNavImpl(Session *s,ClassIndex *ci,PropertyID pi) 
+	: ses(s),nVals(ci->getNSegs()),pid(pi),cidx(ci),scan(NULL),fFree(false)
 {
-	if (cidx!=NULL) scan=cidx->scan(s,NULL,NULL,0,this); for (unsigned i=0; i<nVals; i++) v[i].setError();
+	if (cidx!=NULL) scan=cidx->scan(s,NULL,NULL,0,ci->getIndexSegs(),ci->getNSegs(),this); for (unsigned i=0; i<nVals; i++) v[i].setError();
 }
 
 IndexNavImpl::~IndexNavImpl()
@@ -1287,7 +1275,7 @@ const Value *IndexNavImpl::next()
 			for (;;) {
 				if (fFree) {fFree=false; for (unsigned i=0; i<nVals; i++) {freeV(v[i]); v[i].setError();}}
 				if (ses->getStore()->inShutdown() || scan->nextKey()!=RC_OK) break;
-				if (scan->hasValues() && scan->getKey().getValues(v,nVals,cidx->getIndexSegs(),nVals,ses)==RC_OK)
+				if (scan->hasValues() && scan->getKey().getValues(v,nVals,cidx->getIndexSegs(),nVals,ses,false)==RC_OK && v->type!=VT_ANY)
 					{fFree=true; scan->release(); return v;}
 			}
 			scan->destroy(); scan=NULL; cidx->release(); cidx=NULL;

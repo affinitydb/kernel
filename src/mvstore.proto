@@ -175,26 +175,27 @@ message Value {
 	// Please refer to the documentation for more information on mvStore's data types.
 	enum ValueType {
 		VT_ANY			= 0; // To specify open-ended ranges
-		VT_STRING		= 1; // A standard text string.
-		VT_BSTR			= 2; // A binary string.
-		VT_URL			= 3; // A text string representing a URL.
-		VT_ENUM			= 4; // {Future.] A 32-bit unsigned enumeration value.
 
-		VT_INT			= 5; // A 32-bit signed integer.
-		VT_UINT			= 6; // A 32-bit unsigned integer.
-		VT_INT64		= 7; // A 64-bit signed integer.
-		VT_UINT64		= 8; // A 64-bit unsigned integer.
-		VT_DECIMAL		= 9; // [Future.] A resolution-independent decimal number.
-		VT_FLOAT		= 10; // A single-precision IEEE 754 floating-point number.
-		VT_DOUBLE		= 11; // A double-precision IEEE 754 floating-point number.
+		VT_INT			= 1; // A 32-bit signed integer.
+		VT_UINT			= 2; // A 32-bit unsigned integer.
+		VT_INT64		= 3; // A 64-bit signed integer.
+		VT_UINT64		= 4; // A 64-bit unsigned integer.
+		VT_DECIMAL		= 5; // [Future.] A resolution-independent decimal number.
+		VT_FLOAT		= 6; // A single-precision IEEE 754 floating-point number.
+		VT_DOUBLE		= 7; // A double-precision IEEE 754 floating-point number.
 
-		VT_BOOL			= 12; // A boolean.
+		VT_BOOL			= 8; // A boolean.
 
-		VT_DATETIME		= 13; // A high-precision timestamp, internally stored as a 64-bit unsigned number of microseconds since epoch. Use Value::datetime, not Value::ui64.
-		VT_INTERVAL		= 14; // A high-precision time interval, internally stored as a 64-bit signed number of microseconds. Use Value::interval, not Value::i64.
+		VT_DATETIME		= 9; // A high-precision timestamp, internally stored as a 64-bit unsigned number of microseconds since epoch. Use Value::datetime, not Value::ui64.
+		VT_INTERVAL		= 10; // A high-precision time interval, internally stored as a 64-bit signed number of microseconds. Use Value::interval, not Value::i64.
 
-		VT_URIID		= 15; // A 32-bit unsigned URI ID (via Value::ui).
-		VT_IDENTITY		= 16; // A 32-bit unsigned identity ID (via Value::ui).
+		VT_URIID		= 11; // A 32-bit unsigned URI ID (via Value::ui).
+		VT_IDENTITY		= 12; // A 32-bit unsigned identity ID (via Value::ui).
+
+		VT_STRING		= 13; // A standard text string.
+		VT_BSTR			= 14; // A binary string.
+		VT_URL			= 15; // A text string representing a URL.
+		VT_ENUM			= 16; // {Future.] A 32-bit unsigned enumeration value.
 
 		VT_REFID		= 18; // A reference (Ref) to a PIN.
 		VT_REFIDPROP	= 20; // A reference (Ref) to a property of a PIN.
@@ -207,8 +208,6 @@ message Value {
 		VT_STRUCT		= 27; // A composite value.
 		VT_RANGE		= 28; // A range of values, equivalent to VT_ARRAY with length=2.
 		VT_CURRENT		= 30; // An automatically-computed value, depending on the actual property (e.g. current moment in time, current user etc.).
-
-		VT_REFCID		= 31; // A reference to a PIN using it 'cid' rather than PID (for mutual references of yet uncommitted pins).
 	}
 	// The Value structure can represent a logical update on a value,
 	// in which case Value::op must be specified.

@@ -238,7 +238,7 @@ LogDirtyPages *BufMgr::getDirtyPageInfo(LSN old,LSN& redo,PageID *asyncPages,ulo
 			assert(cnt<dirtyCount);
 			if ((ldp->pages[cnt].redo=pb->redoLSN)<redo) redo=pb->redoLSN;
 			ldp->pages[cnt].pageID=pb->pageID; cnt++;
-			if (pb->redoLSN<=old && (flushLSN!=NULL && nAsyncPages<maxAsyncPages||pb->redoLSN<flushLSN[nAsyncPages-1])) {
+			if (!pb->isDependent() && pb->redoLSN<=old && (flushLSN!=NULL && nAsyncPages<maxAsyncPages||pb->redoLSN<flushLSN[nAsyncPages-1])) {
 				ulong n=nAsyncPages,base=0,k=0;
 				while (n!=0) {
 					LSN lsn=flushLSN[(k=n>>1)+base];

@@ -45,6 +45,8 @@ namespace MVStoreKernel
 #define	VF_REF				0x10
 #define	VF_STRING			0x20
 
+#define	SORT_MASK			(ORD_DESC|ORD_NCASE|ORD_NULLS_BEFORE|ORD_NULLS_AFTER)
+
 struct	OrderSegQ;
 struct	PropDNF;
 struct	CondIdx;
@@ -89,8 +91,8 @@ private:
 	RC	merge2(QueryOp *&res,QueryOp *qop1,PropertyID pid1,QueryOp *qop2,PropertyID pid2,
 				QUERY_SETOP qo,const CondEJ *cej=NULL,const Expr *const *c=NULL,ulong nc=0);
 	RC	mergeFT(QueryOp *&res,const CondFT *cft);
-	RC	filter(QueryOp *&qop,const Expr *const *c,unsigned nConds,const PropDNF *condProps,size_t lProps,const CondIdx *condIdx=NULL,unsigned ncq=0);
-	RC	group(QueryOp *&qop,const OrderSegQ *gb,unsigned nG,const Value *trs,unsigned nTrs,const Expr *const *c,unsigned nConds);
+	RC	filter(QueryOp *&qop,const Expr *const *c,unsigned nConds,const CondIdx *condIdx=NULL,unsigned ncq=0);
+	RC	out(QueryOp *&qop,const OrderSegQ *gb,unsigned nG,const Value *trs,unsigned nTrs,const Expr *const *c,unsigned nConds);
 	friend	class	SimpleVar;
 	friend	class	SetOpVar;
 	friend	class	JoinVar;

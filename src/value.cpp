@@ -15,6 +15,7 @@ Written by Mark Venguerov 2004 - 2010
 #include "blob.h"
 #include <stdio.h>
 #include <string.h>
+#include <math.h>
 
 using namespace MVStoreKernel;
 
@@ -278,7 +279,7 @@ RC MVStoreKernel::deserialize(Value& val,const byte *&buf,const byte *const ebuf
 {
 	if (buf==ebuf) return RC_CORRUPTED; assert(ma!=NULL);
 	uint32_t l,i; uint64_t u64; RefVID *rv; Expr *exp; Stmt *qry; RC rc;
-	val.type=(ValueType)*buf++; val.flags=NO_HEAP; val.meta=0;
+	val.type=(ValueType)*buf++; val.flags=NO_HEAP; val.meta=0; val.op=OP_SET;
 	val.property=STORE_INVALID_PROPID; val.eid=STORE_COLLECTION_ID;
 	switch (val.type) {
 	default: return RC_CORRUPTED;
@@ -375,20 +376,105 @@ RC MVStoreKernel::deserialize(Value& val,const byte *&buf,const byte *const ebuf
 RC MVStoreKernel::streamToValue(IStream *stream,Value& val,MemAlloc *ma)
 {
 	try {
+		val.setError();
 		if (ma==NULL && (ma=Session::getSession())==NULL && (ma=StoreCtx::get())==NULL) return RC_NOSESSION;
 		val.type=stream->dataType(); val.flags=ma->getAType();
-		byte buf[256],*p; size_t l=stream->read(buf,sizeof(buf)),xl=1024,extra=val.type==VT_BSTR?0:1;
+		byte buf[256],*p; size_t l=stream->read(buf,sizeof(buf)),xl=1024,extra=val.type==VT_BSTR?0:1; RC rc;
 		if ((p=(byte*)ma->malloc(l>=sizeof(buf)?xl:l+extra))==NULL) return RC_NORESOURCES;
 		memcpy(p,buf,l);
 		if (l>=sizeof(buf)) {
 			while ((l+=stream->read(p+l,xl-l))>=xl) if ((p=(byte*)ma->realloc(p,xl+=xl/2))==NULL) return RC_NORESOURCES;
 			if (l+extra!=xl && (p=(byte*)ma->realloc(p,l+extra))==NULL) return RC_NORESOURCES;
 		}
-		if (val.type==VT_STRING) p[l]=0; val.length=(uint32_t)l; val.bstr=p; return RC_OK;
+		switch (val.type) {
+		case VT_STRING: p[l]=0;
+		default: val.length=(uint32_t)l; val.bstr=p; break;
+		case VT_EXPR:
+			if (l<sizeof(ExprHdr)) {ma->free(p); return RC_CORRUPTED;}
+			{ExprHdr ehdr(0,0,0,0,0,0); Expr *exp; memcpy(&ehdr,p,sizeof(ExprHdr)); const byte *pp=p;
+			rc=Expr::deserialize(exp,pp,pp+ehdr.lExpr,ma); ma->free(p); if (rc!=RC_OK) return rc;
+			val.set(exp); break;}
+		case VT_STMT:
+			{const byte *pp=p; Stmt *stmt;
+			rc=Stmt::deserialize(stmt,pp,pp+l,ma); ma->free(p); if (rc!=RC_OK) return rc;
+			val.set(stmt); break;}
+		}
+		return RC_OK;
 	} catch (RC rc) {return rc;} catch (...) {return RC_INVPARAM;}
 }
 
-RC MVStoreKernel::convV(const Value& src,Value& dst,ValueType type)
+int MVStoreKernel::cmpNoConv(const Value& arg,const Value& arg2,ulong u)
+{
+	ulong len; int c; Value v1,v2; assert(arg.type==arg2.type);
+	switch (arg.type) {
+	default: return -3;
+	case VT_INT: return cmp3(arg.i,arg2.i);
+	case VT_UINT: return cmp3(arg.ui,arg2.ui);
+	case VT_INTERVAL:
+	case VT_INT64: return cmp3(arg.i64,arg2.i64);
+	case VT_DATETIME:
+	case VT_UINT64: return cmp3(arg.ui64,arg2.ui64);
+	case VT_FLOAT:
+		if (arg.qval.units==arg2.qval.units) return cmp3(arg.f,arg2.f);
+		v1.qval.d=arg.f; v1.qval.units=arg.qval.units; v2.qval.d=arg2.f; v2.qval.units=arg2.qval.units; 
+		return !compatible(v1.qval,v2.qval)?-3:cmp3(v1.qval.d,v2.qval.d);
+	case VT_DOUBLE:
+		if (arg.qval.units==arg2.qval.units) return cmp3(arg.d,arg2.d);
+		v1.qval=arg.qval; v2.qval=arg2.qval; return !compatible(v1.qval,v2.qval)?-3:cmp3(v1.qval.d,v2.qval.d);
+	case VT_BOOL: return arg.b==arg2.b?0:(u&CND_SORT)!=0?arg.b<arg2.b?-1:1:(u&CND_NE)!=0?-1:-2;
+	case VT_URIID: return arg.uid==arg2.uid?0:(u&CND_SORT)!=0?arg.uid<arg2.uid?-1:1:(u&CND_NE)!=0?-1:-2;
+	case VT_IDENTITY: return arg.iid==arg2.iid?0:(u&CND_SORT)!=0?arg.iid<arg2.iid?-1:1:(u&CND_NE)!=0?-1:-2;
+	case VT_STRING:
+		if (testStrNum(arg.str,arg.length,v1) && testStrNum(arg2.str,arg2.length,v2)) return cmp(v1,v2,u);
+	case VT_URL: case VT_BSTR:
+		if (arg.str==NULL||arg.length==0) return arg2.str==NULL||arg2.length==0?0:-1;
+		if (arg2.str==NULL||arg2.length==0) return 1;
+		len=arg.length<=arg2.length?arg.length:arg2.length;
+		c=arg.type==VT_BSTR||(u&(CND_EQ|CND_NE))!=0&&(u&CND_NCASE)==0?memcmp(arg.bstr,arg2.bstr,len):
+					(u&CND_NCASE)!=0?strncasecmp(arg.str,arg2.str,len):strncmp(arg.str,arg2.str,len);
+		return c<0?-1:c>0?1:cmp3(arg.length,arg2.length);
+	case VT_REF: return (u&CND_SORT)!=0?cmpPIDs(arg.pin->getPID(),arg2.pin->getPID()):arg.pin->getPID()==arg2.pin->getPID()?0:(u&CND_NE)!=0?-1:-2;
+	case VT_REFPROP: return arg.ref.pin->getPID()==arg2.ref.pin->getPID()&&arg.ref.pid==arg.ref.pid?0:(u&CND_NE)!=0?-1:-2;								// CND_SORT
+	case VT_REFELT: return arg.ref.pin->getPID()==arg2.ref.pin->getPID()&&arg.ref.pid==arg.ref.pid&&arg.ref.eid==arg2.ref.eid?0:(u&CND_NE)!=0?-1:-2;	// CND_SORT
+	case VT_REFID: return (u&CND_SORT)!=0?cmpPIDs(arg.id,arg2.id):arg.id==arg2.id?0:(u&CND_NE)!=0?-1:-2;
+	case VT_REFIDPROP: return arg.refId->id==arg2.refId->id&&arg.refId->pid==arg2.refId->pid?0:(u&CND_NE)!=0?-1:-2;										// CND_SORT
+	case VT_REFIDELT:return arg.refId->id==arg2.refId->id&&arg.refId->pid==arg2.refId->pid&&arg.refId->eid==arg2.refId->eid?0:(u&CND_NE)!=0?-1:-2;		// CND_SORT
+	}
+}
+
+int MVStoreKernel::cmpConv(const Value& arg,const Value& arg2,ulong u)
+{
+	Value val1,val2; const Value *pv1=&arg,*pv2=&arg2; assert(arg.type!=arg2.type);
+	if ((isNumeric((ValueType)arg.type) || arg.type==VT_STRING && (pv1=&val1,testStrNum(arg.str,arg.length,val1))) && (isNumeric((ValueType)arg2.type) || arg2.type==VT_STRING && (pv2=&val2,testStrNum(arg2.str,arg2.length,val2)))) {
+		const bool fRev=pv1->type>pv2->type; if (fRev) {const Value *pv=pv1; pv1=pv2; pv2=pv;}
+		if (pv1->type!=pv2->type) {
+			if (pv2->type>VT_DOUBLE) return cmp3(pv1->type,pv2->type);
+			if (pv2->type>=VT_FLOAT) {
+				if (pv2->type==VT_FLOAT) {val2.type=VT_DOUBLE; val2.d=pv2->f; val2.qval.units=pv2->qval.units; pv2=&val2;}
+				if (pv1->type==VT_FLOAT) val1.d=pv1->f,val1.qval.units=pv1->qval.units;
+				else {if (pv1->type==VT_INT) val1.d=pv1->i; else if (pv1->type==VT_UINT) val1.d=pv1->ui; else if (pv1->type==VT_INT64) val1.d=(double)pv1->i64; else val1.d=(double)pv1->ui64; val1.qval.units=Un_NDIM;} 
+			} else if (pv2->type==VT_INT64) {
+				if (pv1->type==VT_INT) val1.i64=pv1->i; else if (pv2->i64>=0) val1.i64=pv1->ui; else return fRev?-1:1;
+			} else if (pv1->type==VT_INT64) {
+				if (pv1->i64<0) return fRev?1:-1; val1.ui64=pv1->i64;
+			} else if (pv1->type==VT_INT) {
+				if (pv1->i<0) return fRev?1:-1; if (pv2->type==VT_UINT) val1.ui=pv1->i; else val1.ui64=pv1->i;
+			} else {
+				assert(pv1->type==VT_UINT && pv2->type==VT_UINT64); val1.ui64=pv1->ui;
+			}
+			val1.type=pv2->type; pv1=&val1;
+		}
+		int cmp=cmpNoConv(*pv1,*pv2,u); return fRev?-cmp:cmp;
+	}
+	if (isString((ValueType)arg.type) && isString((ValueType)arg2.type)) {
+		int c=memcmp(arg.bstr,arg2.bstr,min(arg.length,arg2.length)); return c==0?cmp3(arg.length,arg2.length):c;
+	} else {
+		//???
+	}
+	return cmp3(arg.type,arg2.type);
+}
+
+RC MVStoreKernel::convV(const Value& src,Value& dst,ValueType type,unsigned mode)
 {
 	int l; char buf[256],*p; Value w; RC rc; TIMESTAMP ts; int64_t itv; URI *uri; Identity *ident;
 	for (const Value *ps=&src;;) {if (ps->type==type) {
@@ -402,6 +488,10 @@ noconv:
 		ps=&dst; continue;
 	} else {
 		if (ps!=&dst) {dst.eid=ps->eid; dst.flags=NO_HEAP;}
+		if ((mode&CV_NOTRUNC)!=0 && isInteger(type)) switch (src.type) {
+		case VT_FLOAT: if (::floor(src.f)!=src.f) return RC_TYPE; break;
+		case VT_DOUBLE: if (::floor(src.d)!=src.d) return RC_TYPE; break;
+		}
 		switch (type) {
 		default: return RC_TYPE;
 		case VT_STRING:

@@ -591,10 +591,6 @@ ulong HeapPageMgr::getPrefix(const PID& id)
 const HeapPageMgr::HeapTypeInfo HeapPageMgr::typeInfo[VT_ALL] =
 {
 	{0,					0},						//	VT_ERROR
-	{0,					0},						//	VT_STRING
-	{0,					0},						//	VT_BSTR
-	{0,					0}, 					//	VT_URL
-	{sizeof(uint32_t),	sizeof(uint32_t)-1},	//	VT_ENUM
 	{sizeof(int32_t),	sizeof(int32_t)-1},		//	VT_INT
 	{sizeof(uint32_t),	sizeof(uint32_t)-1},	//	VT_UINT
 	{sizeof(int64_t),	sizeof(int64_t)-1},		//	VT_INT64
@@ -607,6 +603,10 @@ const HeapPageMgr::HeapTypeInfo HeapPageMgr::typeInfo[VT_ALL] =
 	{sizeof(int64_t),	sizeof(int64_t)-1},		//	VT_INTERVAL
 	{sizeof(uint32_t),	sizeof(uint32_t)-1},	//	VT_URIID
 	{sizeof(uint32_t),	sizeof(uint32_t)-1},	//	VT_IDENTITY
+	{0,					0},						//	VT_STRING
+	{0,					0},						//	VT_BSTR
+	{0,					0}, 					//	VT_URL
+	{sizeof(uint32_t),	sizeof(uint32_t)-1},	//	VT_ENUM
 	{0,					sizeof(uint64_t)-1},	//	VT_REF
 	{0,					sizeof(uint64_t)-1},	//	VT_REFID
 	{0,					sizeof(uint64_t)-1},	//	VT_REFPROP
@@ -656,7 +656,7 @@ ushort HeapPageMgr::dataLength(HType vt,const byte *pData,const byte *frame,ulon
 		if (fmt==HDF_LONG) {
 			ty=((HRefSSV*)pData)->type.getType();
 			if (idxMask!=NULL && ty==VT_STRING) *idxMask|=IX_OFT;
-			if (ty==VT_STRING||ty==VT_BSTR) return sizeof(HLOB);
+			return sizeof(HLOB);
 		}
 		if (idxMask!=NULL && ((HRefSSV*)pData)->type.isString()) *idxMask|=IX_OFT;
 		return sizeof(HRefSSV);

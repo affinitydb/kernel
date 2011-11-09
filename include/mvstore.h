@@ -267,11 +267,6 @@ namespace MVStore
 	{
 		VT_ERROR,VT_ANY=VT_ERROR,		/**< used to report errors, non-existant properties; VT_ANY designates no conversion in transforms */
 
-		VT_STRING,						/**< zero-ended string UTF-8*/
-		VT_BSTR,						/**< binary string */
-		VT_URL,							/**< URL string with special interpretation, UTF-8 */
-		VT_ENUM,						/**< an enumeration value 'by value' i.e. 32-bit unsigned integer */
-
 		VT_INT,							/**< 32-bit signed integer */
 		VT_UINT,						/**< 32-bit unsigned integer */
 		VT_INT64,						/**< 64-bit signed integer */
@@ -287,6 +282,11 @@ namespace MVStore
 
 		VT_URIID,						/**< URIID */
 		VT_IDENTITY,					/**< IdentityID */
+
+		VT_STRING,						/**< zero-ended string UTF-8*/
+		VT_BSTR,						/**< binary string */
+		VT_URL,							/**< URL string with special interpretation, UTF-8 */
+		VT_ENUM,						/**< an enumeration value 'by value' i.e. 32-bit unsigned integer */
 
 		VT_REF,							/**< a reference to another IPIN */
 		VT_REFID,						/**< a reference to another PIN by its PID */
@@ -312,13 +312,12 @@ namespace MVStore
 		VT_ALL
 	};
 
-	inline	bool	isRef(ValueType vt) {return vt>=VT_REF && vt<=VT_REFIDELT;}
-	inline	bool	isInteger(ValueType vt) {return vt>=VT_INT && vt<=VT_UINT64;}
-	inline	bool	isNumeric(ValueType vt) {return vt>=VT_INT && vt<=VT_DOUBLE;}
-	inline	bool	isString(ValueType vt) {return vt>=VT_STRING && vt<=VT_URL;}
-	inline	bool	isLiteral(ValueType vt) {return vt>=VT_STRING && vt<VT_STREAM;}
-	inline	bool	isCollection(ValueType vt) {return vt==VT_ARRAY || vt==VT_COLLECTION;}
-	inline	bool	isComposite(ValueType vt) {return vt>=VT_ARRAY || vt<=VT_STRUCT;}
+	inline	bool	isRef(ValueType vt) {return uint8_t(vt-VT_REF)<=uint8_t(VT_REFIDELT-VT_REF);}
+	inline	bool	isInteger(ValueType vt) {return uint8_t(vt-VT_INT)<=uint8_t(VT_UINT64-VT_INT);}
+	inline	bool	isNumeric(ValueType vt) {return uint8_t(vt-VT_INT)<=uint8_t(VT_DOUBLE-VT_INT);}
+	inline	bool	isString(ValueType vt) {return uint8_t(vt-VT_STRING)<=uint8_t(VT_URL-VT_STRING);}
+	inline	bool	isCollection(ValueType vt) {return uint8_t(vt-VT_ARRAY)<=uint8_t(VT_COLLECTION-VT_ARRAY);}
+	inline	bool	isComposite(ValueType vt) {return uint8_t(vt-VT_ARRAY)<=uint8_t(VT_STRUCT-VT_ARRAY);}
 
 	/**
 	 * Supported operations for expressions and property modifications
@@ -407,7 +406,7 @@ namespace MVStore
 		OP_ALL
 	};
 
-	inline	bool	isBool(ExprOp op) {return op>=OP_FIRST_BOOLEAN && op<=OP_LAST_BOOLEAN;}
+	inline	bool	isBool(ExprOp op) {return unsigned(op-OP_FIRST_BOOLEAN)<=unsigned(OP_LAST_BOOLEAN-OP_FIRST_BOOLEAN);}
 
 	/**
 	 * operation modifiers (bit flags) passed to IExprTree::expr(...)
@@ -439,7 +438,7 @@ namespace MVStore
 		operator	uint32_t() const {return uint32_t(pid>>32)^uint32_t(pid)^ident;}
 		bool		operator==(const PID& rhs) const {return pid==rhs.pid && ident==rhs.ident;}
 		bool		operator!=(const PID& rhs) const {return pid!=rhs.pid || ident!=rhs.ident;}
-		void		setStoreID(uint16_t sid) {pid=pid&0x0000FFFFFFFFFFFFULL|uint64_t(sid)<<48;}
+		void		setStoreID(uint16_t sid) {pid=(pid&0x0000FFFFFFFFFFFFULL)|(uint64_t(sid)<<48);}
 	};
 
 	struct VPID
@@ -616,7 +615,7 @@ namespace MVStore
 		void		setMeta(uint8_t mt) {meta=mt;}
 		void		setPropID(PropertyID p) {property=p;}
 		PropertyID	getPropID() const {return property;}
-		bool		isFTIndexable() const {return type==VT_STRING||type==VT_STREAM&&stream.is->dataType()==VT_STRING;}
+		bool		isFTIndexable() const {return type==VT_STRING || (type==VT_STREAM && stream.is->dataType()==VT_STRING);}
 	};
 
 	/**
@@ -764,16 +763,17 @@ namespace MVStore
 		bool			fLast;
 	};
 
-	#define	ORD_DESC			0x0001
-	#define	ORD_NCASE			0x0002
-	#define	ORD_NULLS_BEFORE	0x0004
-	#define	ORD_NULLS_AFTER		0x0008
+	#define	ORD_DESC			0x01
+	#define	ORD_NCASE			0x02
+	#define	ORD_NULLS_BEFORE	0x04
+	#define	ORD_NULLS_AFTER		0x08
 
 	struct	OrderSeg
 	{
 		IExprTree	*expr;
 		PropertyID	pid;
-		uint16_t	flags;
+		uint8_t		flags;
+		uint8_t		var;
 		uint16_t	lPrefix;
 	};
 
@@ -948,7 +948,7 @@ namespace MVStore
 		virtual	RC			rebuildIndices(const ClassID *cidx=NULL,unsigned nClasses=0) = 0;
 		virtual	RC			rebuildIndexFT() = 0;
 		virtual	RC			createIndexNav(ClassID,IndexNav *&nav) = 0;
-		virtual	RC			listValues(ClassID cid,PropertyID pid,ValueType,IndexNav *&ven) = 0;
+		virtual	RC			listValues(ClassID cid,PropertyID pid,IndexNav *&ven) = 0;
 		virtual	RC			listWords(const char *query,StringEnum *&sen) = 0;
 		virtual	RC			getClassInfo(ClassID,IPIN*&) = 0;
 

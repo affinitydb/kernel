@@ -19,19 +19,18 @@ namespace MVStoreKernel
 
 class Session;
 
-enum TREE_KT {KT_UINT, KT_UINT64, KT_INT, KT_INT64, KT_FLOAT, KT_DOUBLE, KT_BIN, KT_REF, KT_MSEG, KT_ALL};
+enum TREE_KT {KT_UINT, KT_INT, KT_FLOAT, KT_DOUBLE, KT_BIN, KT_REF, KT_VAR, KT_ALL};
 
 extern	int		cmpMSeg(const byte *s1,ushort l1,const byte *s2,ushort l2);
 extern	bool	isHyperRect(const byte *s1,ushort l1,const byte *s2,ushort l2);
-extern	bool	checkHyperRect(const byte *s1,ushort l1,const byte *s2,ushort l2);
+extern	bool	cmpBound(const byte *p1,ushort l1,const byte *p2,ushort l2,const IndexSeg *sg,unsigned nSegs,bool fStart);
+extern	bool	checkHyperRect(const byte *s1,ushort l1,const byte *s2,ushort l2,const IndexSeg *sg,unsigned nSegs,bool fStart);
 extern	ushort	calcMSegPrefix(const byte *s1,ushort l1,const byte *s2,ushort l2);
 
 union IndexKeyV {
 	struct {const void *p; uint16_t l;}	ptr;
-	int32_t								i32;
-	uint32_t							u32;
-	int64_t								i64;
-	uint64_t							u64;
+	int64_t								i;
+	uint64_t							u;
 	float								f;
 	double								d;
 	int	cmp(const IndexKeyV& rhs,TREE_KT) const;
@@ -45,15 +44,13 @@ struct SearchKey
 	PIT_LOC		loc;
 	SearchKey() {type=KT_ALL; loc=PLC_EMB;}
 	SearchKey(const void *b,ushort l,bool fPR=false) {type=fPR?KT_REF:KT_BIN; loc=PLC_SPTR; v.ptr.p=b; v.ptr.l=l;}
-	SearchKey(int32_t i) {type=KT_INT; loc=PLC_EMB; v.i32=i;}
-	SearchKey(uint32_t u) {type=KT_UINT; loc=PLC_EMB; v.u32=u;}
-	SearchKey(int64_t i) {type=KT_INT64; loc=PLC_EMB; v.i64=i;}
-	SearchKey(uint64_t u) {type=KT_UINT64; loc=PLC_EMB; v.u64=u;}
+	SearchKey(int64_t i) {type=KT_INT; loc=PLC_EMB; v.i=i;}
+	SearchKey(uint64_t u) {type=KT_UINT; loc=PLC_EMB; v.u=u;}
 	SearchKey(float ff) {type=KT_FLOAT; loc=PLC_EMB; v.f=ff;}
 	SearchKey(double dd) {type=KT_DOUBLE; loc=PLC_EMB; v.d=dd;}
 	SearchKey(const IndexKeyV& vv,TREE_KT ty,PIT_LOC lc) : v(vv),type(ty),loc(lc) {}
 	bool	isSet() const {return this!=NULL && type<KT_ALL;}
-	bool	isPrefKey() const {return type<=KT_UINT64;}
+	bool	isPrefNumKey() const {return type<=KT_INT;}
 	bool	isNumKey() const {return type<=KT_DOUBLE;}
 	ushort	extra() const {return type>=KT_BIN&&type<KT_ALL ? v.ptr.l : 0;}
 	void	reset() {if (this!=NULL) {type=KT_ALL; loc=PLC_EMB;}}
@@ -87,7 +84,7 @@ struct IndexFormat
 	bool		isValid(size_t lPage,ushort level) const;
 	TREE_KT		keyType() const {return (TREE_KT)(dscr&0x0F);}
 	bool		isSeq() const {return (dscr&0x0000FFFF)==KT_UINT;}
-	bool		isPrefKey() const {return (dscr&0x0f)<=KT_UINT64;}
+	bool		isPrefNumKey() const {return (dscr&0x0f)<=KT_INT;}
 	bool		isNumKey() const {return (dscr&0x0f)<=KT_DOUBLE;}
 	bool		isFixedLenKey() const {return (dscr&0x0000FF00)<0x0000FF00;}
 	bool		isVarKeyOnly() const {return (dscr&0xFFFFFFE0)==0xFFE0;}
@@ -100,17 +97,16 @@ struct IndexFormat
 	bool		isPinRef() const {return (dscr>>16)==KT_VARMDPINREFS;}
 	ushort		dataLength() const {return ushort(dscr>>16&0x7FFF);}
 	ushort		makeSubKey() const {return ushort(dscr>>16&0x0FFF);}
-	void		makeInternal() {dscr=(isSeq()?sizeof(uint32_t)<<4|KT_UINT:dscr&0x0000FFFF)|sizeof(PageID)<<16;}
+	void		makeInternal() {dscr=(isSeq()?sizeof(uint64_t)<<4|KT_UINT:dscr&0x0000FFFF)|sizeof(PageID)<<16;}
 	bool		operator==(const IndexFormat& rhs) const {return dscr==rhs.dscr;}
 	bool		operator!=(const IndexFormat& rhs) const {return dscr!=rhs.dscr;}
 };
 
-#define	SCAN_EXCLUDE_START	0x8000
-#define	SCAN_EXCLUDE_END	0x4000
-#define	SCAN_EXACT			0x2000
-#define	SCAN_PREFIX			0x1000
-#define	SCAN_BACKWARDS		0x0800
-#define	SCAN_WILDCARD		0x0400	
+#define	SCAN_EXACT			0x8000
+#define	SCAN_BACKWARDS		0x4000
+#define	SCAN_PREFIX			0x2000
+#define	SCAN_EXCLUDE_START	0x1000
+#define	SCAN_EXCLUDE_END	0x0800
 
 class IKeyCallback
 {
@@ -194,7 +190,7 @@ public:
 	RC					update(const SearchKey& key,const void *oldValue,ushort lOldValue,const void *newValue,ushort lNewValue);
 	RC					edit(const SearchKey& key,const void *newValue,ushort lNewValue,ushort lOld,ushort sht);
 	RC					remove(const SearchKey& key,const void *value=NULL,ushort lValue=0,bool fMulti=false);
-	TreeScan			*scan(Session *ses,const SearchKey *start,const SearchKey *finish=NULL,ulong flgs=0,IKeyCallback *kc=NULL);
+	TreeScan			*scan(Session *ses,const SearchKey *start,const SearchKey *finish=NULL,ulong flgs=0,const IndexSeg *sg=NULL,unsigned nSegs=0,IKeyCallback *kc=NULL);
 	static	RC			drop(PageID,StoreCtx*,TreeFreeData* =NULL);
 	static	ulong		checkTree(StoreCtx*,PageID root,CheckTreeReport& res,CheckTreeReport *sec=NULL);
 	StoreCtx			*getStoreCtx() const {return ctx;}

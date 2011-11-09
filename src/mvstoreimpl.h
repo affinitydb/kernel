@@ -17,6 +17,11 @@ using namespace MVStore;
 namespace MVStoreKernel
 {
 
+/*
+ * convV flags
+ */
+#define	CV_NOTRUNC	0x0001
+
 extern	MemAlloc *createMemAlloc(size_t,bool fMulti);
 extern	RC		copyV(const Value& from,Value& to,MemAlloc *ma);
 extern	RC		copyV(const Value *from,ulong nv,Value *&to,MemAlloc *ma);
@@ -29,7 +34,10 @@ extern	byte	*serialize(const PID &id,byte *buf);
 extern	RC		deserialize(Value& val,const byte *&buf,const byte *const ebuf,MemAlloc*,bool,bool full=false);
 extern	RC		deserialize(PID& id,const byte *&buf,const byte *const ebuf);
 extern	RC		streamToValue(IStream *str,Value& val,MemAlloc*);
-extern	RC		convV(const Value& src,Value& dst,ValueType type);
+extern	int		cmpNoConv(const Value&,const Value&,ulong u);
+extern	int		cmpConv(const Value&,const Value&,ulong u);
+extern	bool	testStrNum(const char *s,size_t l,Value& res);
+extern	RC		convV(const Value& src,Value& dst,ValueType type,unsigned mode=0);
 extern	RC		derefValue(const Value& src,Value& dst,Session *ses);
 extern	RC		convURL(const Value& src,Value& dst,HEAP_TYPE alloc);
 extern	bool	compatible(QualifiedValue&,QualifiedValue&);
@@ -38,6 +46,7 @@ extern	Units	getUnits(const char *suffix,size_t l);
 extern	void	freeV(Value *v,ulong nv,MemAlloc*);
 extern	void	freeV0(Value& v);
 __forceinline	void freeV(Value& v) {if ((v.flags&HEAP_TYPE_MASK)!=NO_HEAP) freeV0(v);}
+__forceinline	int	cmp(const Value& arg,const Value& arg2,ulong u) {return arg.type==arg2.type?cmpNoConv(arg,arg2,u):cmpConv(arg,arg2,u);}
 
 #define PIDKeySize		(sizeof(uint64_t)+sizeof(IdentityID))
 
@@ -78,7 +87,10 @@ struct OrderSegQ
 		class Expr	*expr;
 	};
 	uint16_t		flags;
-	uint16_t		lPref;
+	uint8_t			var;
+	uint8_t			aggop;
+	uint32_t		lPref;
+	RC				conv(const OrderSeg& sg,MemAlloc *ma);
 };
 
 class Path
@@ -285,7 +297,7 @@ public:
 	RC			rebuildIndices(const ClassID *cidx=NULL,unsigned nClasses=0);
 	RC			rebuildIndexFT();
 	RC			createIndexNav(ClassID,IndexNav *&nav);
-	RC			listValues(ClassID cid,PropertyID pid,ValueType vt,IndexNav *&ven);
+	RC			listValues(ClassID cid,PropertyID pid,IndexNav *&ven);
 	RC			listWords(const char *query,StringEnum *&sen);
 	RC			getClassInfo(ClassID,IPIN*&);
 	

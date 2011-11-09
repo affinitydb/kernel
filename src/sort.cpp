@@ -100,20 +100,12 @@ int Sort::cmp(const EncPINRef *p1,const EncPINRef *p2) const
 				const Value *pp1=&pv1[index[k]],*pp2=&pv2[index[k]];
 				if (pp1->type==VT_ERROR) {if (pp2->type!=VT_ERROR) return (u&ORD_NULLS_BEFORE)!=0?-1:1;}
 				else if (pp2->type==VT_ERROR) return (u&ORD_NULLS_BEFORE)!=0?1:-1;
-				else {
-					if (pp1->type==pp2->type) ret=Expr::cmp(*pp1,*pp2,(u&ORD_NCASE)!=0?CND_NCASE|CND_SORT:CND_SORT);
-					else {
-						Value v=*pp1; v.flags=NO_HEAP;
-						ret=Expr::cvcmp(v,*pp2,(u&ORD_NCASE)!=0?CND_NCASE|CND_SORT:CND_SORT);
-						freeV(v);
-					}
-					if (ret!=0) return (u&ORD_DESC)!=0?-ret:ret;
-				}
+				else if ((ret=MVStoreKernel::cmp(*pp1,*pp2,(u&ORD_NCASE)!=0?CND_NCASE|CND_SORT:CND_SORT))!=0) return (u&ORD_DESC)!=0?-ret:ret;
 			}
 		}
 		if ((mode&QO_VUNIQUE)!=0) fRepeat=true;
 	}
-	int cmp=cmpSort(p1,p2); if (cmp==0 && (mode&QO_UNIQUE)!=0) fRepeat=true; return cmp;
+	int ret=cmpSort(p1,p2); if (ret==0 && (mode&QO_UNIQUE)!=0) fRepeat=true; return ret;
 }
 
 #define QS_STKSIZ			(8*sizeof(void*)-2)
@@ -156,12 +148,19 @@ void Sort::quickSort(ulong nPins)
 	}
 }
 
+namespace MVStoreKernel
+{
+	struct ArrayVal {ArrayVal *prev; INav *nav; Value *vals; unsigned length,idx,vidx; ushort lPref;};
+};
+
 RC Sort::sort(ulong nAbort)
 {
-	PINEx qr(ses); queryOp->connect(&qr);
-	RC rc=RC_OK,rc2; ulong nRunPins=0; nAllPins=0;
 	assert(queryOp!=NULL && pins==NULL && esRuns==NULL);
-	for (; rc==RC_OK && ((rc=queryOp->next())==RC_OK || rc==RC_EOF); qr.cleanup()) {
+	PINEx qr(ses); RC rc=RC_OK,rc2; ulong nRunPins=0; nAllPins=0; ArrayVal *freeAV=NULL;
+	unsigned nqr=queryOp->getNOuts(); PINEx **pqr=(PINEx**)alloca(nqr*sizeof(PINEx*)); if (pqr==NULL) return RC_NORESOURCES;
+	for (unsigned i=1; i<nqr; i++) if ((pqr[i]=new(ses) PINEx(ses))==NULL) return RC_NORESOURCES;
+	pqr[0]=&qr; queryOp->connect(pqr,nqr);
+	for (; ((rc=queryOp->next())==RC_OK || rc==RC_EOF); qr.cleanup()) {
 		if ((rc2=ses->testAbortQ())!=RC_OK) {rc=rc2; break;}
 		if (rc==RC_OK) {
 			if (qr.epr.lref==0 && (rc2=qr.pack())!=RC_OK) rc=rc2;
@@ -204,56 +203,88 @@ RC Sort::sort(ulong nAbort)
 		EncPINRef *ep=storeSortData(qr,pinMem); if (ep==NULL) {rc=RC_NORESOURCES; break;}
 		pins[nRunPins++]=ep; if (nValues==0) {memUsed+=pinMem.length(mrk); continue;}
 
-		Value *vals=(Value*)getValues(ep); int nArrays=0; ulong iArr=~0u,i; 
+		Value *vals=(Value*)getValues(ep);
 		if (nPropIDs!=0) {
-			for (i=0; i<nPropIDs; i++) vals[i].setError(propIDs[i]);
-			if ((rc=queryOp->getData(qr,vals,nPropIDs,NULL,&pinMem,(mode&QO_TOPMOST)!=0?STORE_FIRST_ELEMENT:STORE_COLLECTION_ID))!=RC_OK) break;
+			for (unsigned i=0; i<nPropIDs; i++) vals[i].setError(propIDs[i]);
+			if ((rc=queryOp->getData(qr,vals,nPropIDs,NULL,&pinMem))!=RC_OK) break;
 		}
-		for (i=0; i<nSegs; i++) if (index[i]!=~0u) {
-			Value *pv=&vals[index[i]];
-			if ((sortSegs[i].flags&ORDER_EXPR)!=0) {const PINEx *pp=&qr; rc=Expr::eval(&sortSegs[i].expr,1,*pv,&pp,1,NULL,0,ses);}
-			else if (sortSegs[i].pid==PROP_SPEC_ANY) {pv->set(qr.degree); continue;}
-			if (rc==RC_NORESOURCES) break; 
-			if (rc!=RC_OK) {pv->setError(); rc=RC_OK;}
-			else if (pv->type==VT_ARRAY || pv->type==VT_COLLECTION) {if (++nArrays==1) iArr=i;}
-			else if (sortSegs[i].lPref!=0 && (pv->type==VT_STRING||pv->type==VT_BSTR||pv->type==VT_URL)) pv->length=min(pv->length,(uint32_t)sortSegs[i].lPref);	// convert to VT_STRING?
-			if (pv->type==VT_ERROR && (sortSegs[i].flags&(ORD_NULLS_BEFORE|ORD_NULLS_AFTER))==0 && i==0)		//???
-				{ep=NULL; pinMem.truncate(mrk); nRunPins--; break;}
-		}
-		if (rc==RC_OK && ep!=NULL) switch (nArrays) {
-		case 0: memUsed+=pinMem.length(mrk); break;
-		case 1:
-			// changeFColl();
-			{const Value &av=vals[index[iArr]],*cv; INav *nav=av.type==VT_COLLECTION?vals[index[iArr]].nav:(INav*)0;
-			if (nav==NULL) cv=&av.varray[0]; else cv=nav->navigate(GO_FIRST);
-			for (uint32_t i=0,nv=av.length; cv!=NULL; ep=NULL) {
-				if (ep==NULL) {
-					if (nRunPins>=lPins) {
-						lPins=lPins==0?256:lPins*2; if (memUsed+(lPins-nRunPins)*sizeof(EncPINRef*)>peakSortMem) lPins=ulong((peakSortMem-memUsed)/sizeof(EncPINRef*))+nRunPins+1;
-						if ((pins=(EncPINRef**)ses->realloc(pins,lPins*sizeof(EncPINRef*)))!=NULL) memUsed+=(lPins-nRunPins)*sizeof(byte*); else {rc=RC_NORESOURCES; break;}
+		bool fSkip=true; ArrayVal *avs=NULL;
+		for (unsigned i=0; i<nSegs; i++) if (index[i]!=~0u) {
+			Value *pv=&vals[index[i]]; ArrayVal *av; const Value *cv; INav *nav;
+			if ((sortSegs[i].flags&ORDER_EXPR)==0) {if (sortSegs[i].pid==PROP_SPEC_ANY) {pv->set(qr.degree); fSkip=false; continue;}}
+			else if ((rc=Expr::eval(&sortSegs[i].expr,1,*pv,(const PINEx **)pqr,nqr,NULL,0,ses))!=RC_OK) {if (rc==RC_NORESOURCES) break; pv->setError(); rc=RC_OK; continue;}
+			switch (pv->type) {
+			case VT_ERROR: if ((sortSegs[i].flags&(ORD_NULLS_BEFORE|ORD_NULLS_AFTER))==0) continue; break;
+			case VT_ARRAY: case VT_COLLECTION:
+				switch (sortSegs[i].aggop) {
+				case OP_ALL:
+					if ((av=freeAV)!=NULL) freeAV=av->prev;
+					else if ((av=pinMem.alloc<ArrayVal>())==NULL) {rc=RC_NORESOURCES; break;} //???
+					av->idx=0; av->vidx=index[i]; av->lPref=sortSegs[i].lPref; av->prev=avs; avs=av;
+					if (pv->type==VT_ARRAY) {
+						av->vals=(Value*)pv->varray; av->length=pv->length; av->nav=NULL; *pv=pv->varray[0];
+					} else {
+						av->nav=pv->nav; av->vals=NULL; av->length=0; cv=pv->nav->navigate(GO_FIRST);
+						if ((rc=copyV(*cv,*pv,&pinMem))!=RC_OK) break;	//???
 					}
-					if ((pins[nRunPins++]=ep=storeSortData(qr,pinMem))==NULL) {rc=RC_NORESOURCES; break;}
-					Value *vv=(Value*)getValues(ep); memcpy(vv,vals,nValues*sizeof(Value)); vals=vv;
+					break;
+				case OP_SET: case OP_ADD:
+					nav=NULL; cv=pv->type==VT_ARRAY?&pv->varray[sortSegs[i].aggop==OP_SET?0:pv->length-1]:(nav=pv->nav)->navigate(sortSegs[i].aggop==OP_SET?GO_FIRST:GO_LAST);
+					rc=cv!=NULL?copyV(*cv,*pv,&pinMem):RC_CORRUPTED; if (nav!=NULL) nav->destroy(); 
+					break;
+				default:
+					{AggAcc ag((ExprOp)sortSegs[i].aggop,0,&pinMem); unsigned j=0;	// prefix? flags?
+					for (const Value *cv=pv->type==VT_ARRAY?pv->varray:pv->nav->navigate(GO_FIRST); cv!=NULL; cv=pv->type==VT_COLLECTION?pv->nav->navigate(GO_NEXT):++j<pv->length?&pv->varray[j]:(const Value *)0) ag.next(*cv);
+					freeV(*pv); if (ag.result(*pv)!=RC_OK) {pv->setError(); continue;}
+					} break;
 				}
-				Value *pv=&vals[index[iArr]];
-				if (nav==NULL) *pv=*cv; else {pinMem.mark(mrk); if ((rc=copyV(*cv,*pv,&pinMem))!=RC_OK) break; memUsed+=pinMem.length(mrk);}
-				if (sortSegs[iArr].lPref!=0 && (pv->type==VT_STRING||pv->type==VT_BSTR||pv->type==VT_URL)) pv->length=min(pv->length,(uint32_t)sortSegs[iArr].lPref);	// convert to VT_STRING?
-				if (memUsed>peakSortMem || (nRunPins+1)*(sizeof(EncPINRef*)+sizeof(EncPINRef)+nValues*sizeof(Value))>maxSortMem) {
+				if (rc!=RC_OK || pv->type!=VT_STRING && pv->type!=VT_BSTR && pv->type!=VT_URL) break;
+			case VT_STRING: case  VT_BSTR: case VT_URL:
+				if (sortSegs[i].lPref!=0) pv->length=min(pv->length,(uint32_t)sortSegs[i].lPref);	// convert to VT_STRING?
+				break;
+			}
+			fSkip=false;
+		}
+		if (rc!=RC_OK) break;
+		if (fSkip) {pinMem.truncate(mrk); nRunPins--;}
+		else if (avs==NULL) memUsed+=pinMem.length(mrk);
+		else {
+			// changeFColl();
+			for (;;) {
+				SubAlloc::SubMark mrk2; pinMem.mark(mrk2);
+				if ((ep=storeSortData(qr,pinMem))==NULL) {rc=RC_NORESOURCES; break;}
+				Value *vv=(Value*)getValues(ep); memcpy(vv,vals,nValues*sizeof(Value)); vals=vv; bool fNext=false; 
+				for (ArrayVal *av=avs; !fNext && av!=NULL; av=av->prev) {
+					Value *pv=&vals[av->vidx];
+					if (av->vals!=NULL) {
+						if (++av->idx>=av->length) av->idx=0; else fNext=true;
+						*pv=av->vals[av->idx];
+					} else {
+						const Value *cv; assert(av->nav!=NULL);
+						if ((cv=av->nav->navigate(GO_NEXT))!=NULL) fNext=true;
+						else if (av->prev!=NULL) {cv=av->nav->navigate(GO_FIRST); assert(cv!=NULL);}
+						if ((rc=copyV(*cv,*pv,&pinMem))!=RC_OK) {fNext=false; break;}
+					}
+					if (av->lPref!=0 && (pv->type==VT_STRING||pv->type==VT_BSTR||pv->type==VT_URL)) pv->length=min(pv->length,(uint32_t)av->lPref);	// convert to VT_STRING?
+				}
+				if (!fNext) {pinMem.truncate(mrk2); break;}
+				if (nRunPins>=lPins) {
+					lPins=lPins==0?256:lPins*2; if (memUsed+(lPins-nRunPins)*sizeof(EncPINRef*)>peakSortMem) lPins=ulong((peakSortMem-memUsed)/sizeof(EncPINRef*))+nRunPins+1;
+					if ((pins=(EncPINRef**)ses->realloc(pins,lPins*sizeof(EncPINRef*)))!=NULL) memUsed+=(lPins-nRunPins)*sizeof(byte*); else {rc=RC_NORESOURCES; break;}
+				}
+				pins[nRunPins++]=ep;
+				if (memUsed>peakSortMem || nRunPins*(sizeof(EncPINRef*)+sizeof(EncPINRef)+nValues*sizeof(Value))>maxSortMem) {
 					if (nRunPins>=2) quickSort(nRunPins); assert((mode&QO_UNIQUE)==0);
 					nAllPins+=nRunPins; fRepeat=false; if ((rc=writeRun(nRunPins,memUsed))!=RC_OK) break;
-					nRunPins=0; pinMem.release();		// better, reset() (without mem deallocation)
+					nRunPins=0; pinMem.release();		// vals ???????????
 				}
-				if (nav!=NULL) cv=nav->navigate(GO_NEXT); else if (++i<nv) ++cv; else break;
 			}
-			if (nav!=NULL) nav->destroy(); else {/*???*/}
-			}
-			break;
-		default:
-			// ???
-			rc=RC_INTERNAL; break;
+			while (avs!=NULL) {ArrayVal *av=avs->prev; if (avs->nav!=NULL) avs->nav->destroy(); avs->prev=freeAV; freeAV=avs; avs=av;}
+			if (rc!=RC_OK) break;
 		}
 	}
 	delete queryOp; const_cast<QueryOp*&>(this->queryOp)=NULL;
+	for (unsigned i=1; i<nqr; i++) {pqr[i]->~PINEx(); ses->free((void*)pqr[i]);}
 	if (rc==RC_EOF && (nAllPins<=nRunPins||(rc=prepMerge())==RC_OK||rc==RC_EOF)) {rc=RC_OK; idx=0;} else {nAllPins=0; pinMem.release();}
 	return rc;
 }
@@ -757,9 +788,39 @@ RC Sort::rewind()
 RC Sort::count(uint64_t& cnt,ulong nAbort)
 {
 	if (queryOp!=NULL) {
-		QODescr qop; queryOp->getOpDescr(qop);
-		if ((qop.flags&QO_UNIQUE)!=0 || (mode&QO_UNIQUE)==0) return queryOp->count(cnt,nAbort);
-		if ((state&QST_INIT)!=0) {state&=~QST_INIT; RC rc=sort(nAbort); if (rc!=RC_OK) return rc;}
+		QODescr qop; RC rc;
+		if ((mode&QO_VUNIQUE)!=0 || (mode&QO_UNIQUE)!=0 && (queryOp->getOpDescr(qop),qop.flags&QO_UNIQUE)==0) {
+			if ((rc=sort(nAbort))!=RC_OK) {cnt=~0ULL; return rc;}
+		} else {
+			bool fCheck=false;
+			for (unsigned i=0; i<nSegs && index[i]!=~0u; i++) if ((sortSegs[i].flags&(ORD_NULLS_BEFORE|ORD_NULLS_AFTER))==0) {fCheck=true; break;}
+			if (!fCheck) return queryOp->count(cnt,nAbort);
+			PINEx qr(ses); queryOp->connect(&qr); RC rc=RC_OK,rc2; nAllPins=0; Value *vals=NULL; SubAlloc::SubMark mrk; pinMem.mark(mrk);
+			for (; rc==RC_OK && (rc=queryOp->next())==RC_OK; qr.cleanup()) {
+				if ((rc2=ses->testAbortQ())!=RC_OK) {rc=rc2; break;}
+				if (nAbort!=~0ul && nAllPins+1>nAbort) {rc=RC_TIMEOUT; break;}
+				if (vals==NULL) {
+					EncPINRef *ep=storeSortData(qr,pinMem); if (ep==NULL) {cnt=~0ULL; return RC_NORESOURCES;}
+					vals=(Value*)getValues(ep); pinMem.mark(mrk);
+				}
+				if (nPropIDs!=0) {
+					for (unsigned i=0; i<nPropIDs; i++) vals[i].setError(propIDs[i]);
+					if ((rc=queryOp->getData(qr,vals,nPropIDs,NULL,&pinMem))!=RC_OK) break;
+				}
+				bool fSkip=true;
+				for (unsigned i=0; fSkip && i<nSegs; i++) {
+					assert(index[i]!=~0u); Value *pv=&vals[index[i]];
+					if ((sortSegs[i].flags&ORDER_EXPR)==0) {if (sortSegs[i].pid==PROP_SPEC_ANY) {pv->set(qr.degree); fSkip=false; break;}}
+					else {
+						const PINEx *pp=&qr; 
+						if ((rc=Expr::eval(&sortSegs[i].expr,1,*pv,&pp,1,NULL,0,ses))!=RC_OK) {if (rc==RC_NORESOURCES) {cnt=~0ULL; return rc;} continue;}
+					}
+					if (pv->type!=VT_ERROR) fSkip=false;
+				}
+				if (!fSkip) nAllPins++; pinMem.truncate(mrk);
+			}
+			delete queryOp; const_cast<QueryOp*&>(this->queryOp)=NULL; pinMem.release();
+		}
 	}
 	cnt=nAllPins; return RC_OK;
 }
@@ -805,6 +866,7 @@ void Sort::print(SOutCtx& buf,int level) const
 		else if (os.pid==PROP_SPEC_ANY) buf.append("#rank",5);
 		else buf.renderName(os.pid);
 		// flags!!!
+		// var
 	}
 	buf.append("\n",1); if (queryOp!=NULL) queryOp->print(buf,level+1);
 }

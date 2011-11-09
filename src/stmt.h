@@ -28,23 +28,15 @@ namespace MVStoreKernel
 class SOutCtx;
 class SInCtx;
 
-struct IndexExpr
-{
-	class	Expr		*expr;
-	ulong				nProps;
-	PropertyID			props[1];
-	void				*operator new(size_t s,unsigned np,MemAlloc *ma) throw() {return ma->malloc(s+(np==0?0:np-1)*sizeof(PropertyID));}
-};
-
 struct CondIdx
 {
 	CondIdx				*next;
 	const	IndexSeg	ks;
 	const	ushort		param;
 	MemAlloc *const		ma;
-	IndexExpr			*expr;
-	CondIdx(const IndexSeg& dscr,ushort parm,MemAlloc *m,IndexExpr *exp=NULL) : next(NULL),ks(dscr),param(parm),ma(m),expr(exp) {}
-	~CondIdx() {if (expr!=NULL) {ma->free(expr->expr); ma->free(expr);}}
+	Expr				*expr;
+	CondIdx(const IndexSeg& dscr,ushort parm,MemAlloc *m,Expr *exp=NULL) : next(NULL),ks(dscr),param(parm),ma(m),expr(exp) {}
+	~CondIdx() {if (expr!=NULL) ma->free(expr);}
 	CondIdx	*clone(MemAlloc *ma) const;
 };
 
@@ -76,7 +68,7 @@ enum SelectType
 
 enum RenderPart
 {
-	RP_SELECT, RP_FROM, RP_WHERE, RP_MATCH
+	RP_FROM, RP_WHERE, RP_MATCH
 };
 
 #define	QRY_SIMPLE	QRY_ALL_SETOP
@@ -93,8 +85,6 @@ protected:
 	char			*name;
 	ValueV			*outs;
 	unsigned		nOuts;
-	PropertyList	*varProps;
-	unsigned		nVarProps;
 	union {
 		Expr		*cond;
 		Expr		**conds;
@@ -107,8 +97,6 @@ protected:
 	unsigned		nHavingConds;
 	OrderSegQ		*groupBy;
 	unsigned		nGroupBy;
-	PropDNF			*condProps;
-	size_t			lProps;
 	bool			fHasParent;
 	QVar(QVarID i,byte ty,MemAlloc *m);
 public:
@@ -120,6 +108,7 @@ public:
 	virtual	RC		render(RenderPart,SOutCtx&) const;
 	virtual	RC		render(SOutCtx&) const;
 	virtual	const	QVar *getRefVar(unsigned refN) const;
+	virtual	RC		getProps(PropertyID *&props,unsigned& nProps,MemAlloc *ma) const;
 	static	RC		deserialize(const byte *&buf,const byte *const ebuf,MemAlloc *ma,QVar*& res);
 	void	operator delete(void *p) {if (p!=NULL) ((QVar*)p)->ma->free(p);}
 	QVarID			getID() const {return id;}
@@ -127,6 +116,7 @@ public:
 	bool			isMulti() const {return type<QRY_ALL_SETOP;}
 	RC				clone(QVar *cloned,bool fClass=false) const;
 	byte			*serQV(byte *buf) const;
+	RC				addPropRefs(const PropertyID *props,unsigned nProps);
 	friend	class	Stmt;
 	friend	class	SimpleVar;
 	friend	class	Classifier;
@@ -148,13 +138,11 @@ class SimpleVar : public QVar
 	unsigned		nPids;
 	Stmt			*subq;
 	CondFT			*condFT;
-	PropertyID		*props;
-	unsigned		nProps;
 	bool			fOrProps;
 	PathSeg			*path;
 	unsigned		nPathSeg;
 	SimpleVar(QVarID i,MemAlloc *m) : QVar(i,QRY_SIMPLE,m),classes(NULL),nClasses(0),condIdx(NULL),lastCondIdx(NULL),nCondIdx(0),
-									pids(NULL),nPids(0),subq(NULL),condFT(NULL),props(NULL),nProps(0),fOrProps(false),path(NULL),nPathSeg(0) {}
+									pids(NULL),nPids(0),subq(NULL),condFT(NULL),fOrProps(false),path(NULL),nPathSeg(0) {}
 	virtual			~SimpleVar();
 	RC				clone(MemAlloc *m,QVar*&,bool fClass) const;
 	RC				build(class QueryCtx& qctx,class QueryOp *&qop) const;
@@ -162,6 +150,9 @@ class SimpleVar : public QVar
 	byte			*serialize(byte *buf) const;
 	static	RC		deserialize(const byte *&buf,const byte *const ebuf,QVarID,MemAlloc *ma,QVar*& res);
 	RC				render(RenderPart,SOutCtx&) const;
+	RC				getProps(PropertyID *&props,unsigned& nProps,MemAlloc *ma) const;
+	RC				getPropDNF(PropDNF *&dnf,size_t& ldnf,MemAlloc *ma) const;
+	bool			checkXPropID(PropertyID xp) const;
 public:
 	friend	class	Stmt;
 	friend	class	Class;
@@ -259,6 +250,7 @@ public:
 	RC		execute(ICursor **result=NULL,const Value *params=NULL,unsigned nParams=0,unsigned nReturn=~0u,unsigned nSkip=0,unsigned long mode=0,uint64_t *nProcessed=NULL,TXI_LEVEL=TXI_DEFAULT) const;
 	RC		asyncexec(IStmtCallback *cb,const Value *params=NULL,unsigned nParams=0,unsigned nProcess=~0u,unsigned nSkip=0,unsigned long mode=0,TXI_LEVEL=TXI_DEFAULT) const;
 	RC		execute(IStreamOut*& result,const Value *params=NULL,unsigned nParams=0,unsigned nReturn=~0u,unsigned nSkip=0,unsigned long mode=0,TXI_LEVEL=TXI_DEFAULT) const;
+	RC		insert(Session *ses,PID& id,unsigned& cnt,const Value *pars=NULL,unsigned nPars=0) const;
 	RC		count(uint64_t& cnt,const Value *params=NULL,unsigned nParams=0,unsigned long nAbort=~0u,unsigned long mode=0,TXI_LEVEL=TXI_DEFAULT) const;
 	RC		exist(const Value *params=NULL,unsigned nParams=0,unsigned long mode=0,TXI_LEVEL=TXI_DEFAULT) const;
 	RC		analyze(char *&plan,const Value *pars=NULL,unsigned nPars=0,unsigned long md=0) const;
@@ -274,24 +266,21 @@ public:
 
 	bool	hasParams() const {return (mode&QRY_PARAMS)!=0;}
 	bool	isClassOK() const {return top!=NULL && classOK(top);}
-	bool	isPropOnly() const {return top!=NULL && top->type==QRY_SIMPLE && top->nConds==0 && ((SimpleVar*)top)->condFT==NULL 
-								&& ((SimpleVar*)top)->nClasses==0 && ((SimpleVar*)top)->nCondIdx==0 && ((SimpleVar*)top)->nPids==0
-								&& ((SimpleVar*)top)->props!=NULL && ((SimpleVar*)top)->nProps!=0;}
 	bool	checkConditions(const PINEx *pin,const Value *pars,ulong nPars,MemAlloc *ma,ulong start=0,bool fIgnore=false) const;
-	RC		normalize();
 	RC		render(SOutCtx&) const;
 	RC		setPath(QVarID var,const PathSeg *segs,unsigned nSegs,bool fCopy);
 	QVar	*getTop() const {return top;}
 
-	size_t		serSize() const;
-	byte		*serialize(byte *buf) const;
+	size_t	serSize() const;
+	byte	*serialize(byte *buf) const;
 	static	RC	deserialize(Stmt*&,const byte *&,const byte *const ebuf,MemAlloc*);
 private:
-	RC				connectVars();
-	RC				processCondition(class ExprTree*,QVar *qv,int level=0);
-	QVar			*findVar(QVarID id) const {QVar *qv=vars; while (qv!=NULL&&qv->id!=id) qv=qv->next; return qv;}
-	RC				render(const QVar *qv,SOutCtx& out) const;
-	RC				getNested(PIN **ppins,PIN *pins,unsigned& cnt,Session *ses,PIN *parent=NULL) const;
+	RC		connectVars();
+	RC		processCondition(class ExprTree*,QVar *qv);
+	RC		processCond(class ExprTree*,QVar *qv,DynArray<const class ExprTree*> *exprs);
+	QVar	*findVar(QVarID id) const {QVar *qv=vars; while (qv!=NULL&&qv->id!=id) qv=qv->next; return qv;}
+	RC		render(const QVar *qv,SOutCtx& out) const;
+	RC		getNested(PIN **ppins,PIN *pins,unsigned& cnt,Session *ses,PIN *parent=NULL) const;
 	static	bool	classOK(const QVar *);
 	friend class	Class;
 	friend class	Classifier;
@@ -338,15 +327,20 @@ public:
 	RC					connect();
 	RC					release() {return queryOp!=NULL?queryOp->release():RC_OK;}
 	RC					advance(bool *fRel=NULL,PIN **ret=NULL);
-	void				getPID(PID &id) {PINEx *pq=results!=NULL?results[0]:&qr; if (pq==NULL) id=PIN::defPID; else {if (pq->id.pid==STORE_INVALID_PID && pq->epr.lref!=0) pq->unpack(); id=pq->id;}}
+	void				getPID(PID &id) {qr.extract(id);}
+	friend	class		CursorNav;
 };
+
+enum CNavRet	{CNR_PID, CNR_VALUE, CNR_PIN};
 
 class CursorNav : public INav
 {
 	Cursor	*const	curs;
+	const	CNavRet	rtype;
+	Value			v;
 public:
-	CursorNav(Cursor *cu) : curs(cu) {}
-	~CursorNav()	{if (curs!=NULL) curs->destroy();}
+	CursorNav(Cursor *cu,CNavRet rt=CNR_PID) : curs(cu),rtype(rt) {v.setError();}
+	~CursorNav()	{freeV(v); if (curs!=NULL) curs->destroy();}
 	const	Value	*navigate(GO_DIR=GO_NEXT,ElementID=STORE_COLLECTION_ID);
 	ElementID		getCurrentID();
 	const	Value	*getCurrentValue();

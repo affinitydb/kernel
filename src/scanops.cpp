@@ -132,7 +132,7 @@ void FullScan::print(SOutCtx& buf,int level) const
 
 ClassScan::ClassScan(Session *s,Class *cls,ulong mode) : QueryOp(s,NULL,mode),scan(NULL)
 {
-	new(&key) SearchKey((uint32_t)cls->getID()|((mode&QO_DELETED)!=0?SDEL_FLAG:0));
+	new(&key) SearchKey((uint64_t)(cls->getID()|((mode&QO_DELETED)!=0?SDEL_FLAG:0)));
 	if (s->getIdentity()!=STORE_OWNER && (cls->getFlags()&CLASS_ACL)!=0) {
 		//
 	}
@@ -193,9 +193,9 @@ void ClassScan::getOpDescr(QODescr& qop)
 void ClassScan::print(SOutCtx& buf,int level) const
 {
 	buf.fill('\t',level); buf.append("class: ",7);
-	URI *uri=(URI*)ses->getStore()->uriMgr->ObjMgr::find(key.v.u32); char cbuf[20]; const char *s;
+	URI *uri=(URI*)ses->getStore()->uriMgr->ObjMgr::find((uint32_t)key.v.u); char cbuf[20]; const char *s;
 	if (uri!=NULL&&(s=uri->getName())!=NULL) buf.append(s,strlen(s));
-	else {sprintf(cbuf,"%08X",key.v.u32); buf.append(cbuf,8);}
+	else {sprintf(cbuf,"%08X",(uint32_t)key.v.u); buf.append(cbuf,8);}
 	if (uri!=NULL) uri->release(); buf.append("\n",1);
 }
 
@@ -223,7 +223,7 @@ RC IndexScan::setScan(ulong idx)
 	if (nRanges==0) scan=index.scan(ses,NULL,NULL,flags);
 	else {
 		rangeIdx=idx; assert(idx<nRanges); const SearchKey *key=&((SearchKey*)(this+1))[idx*2];
-		scan=index.scan(ses,key[0].isSet()?key:(const SearchKey*)0,key[1].isSet()?key+1:(const SearchKey*)0,flags);
+		scan=index.scan(ses,key[0].isSet()?key:(const SearchKey*)0,key[1].isSet()?key+1:(const SearchKey*)0,flags,index.getIndexSegs(),index.getNSegs());
 	}
 	return scan!=NULL?RC_OK:RC_NORESOURCES;
 }
@@ -331,7 +331,7 @@ void IndexScan::getOpDescr(QODescr& qop)
 	if (segs==NULL) {
 		segs=(OrderSegQ*)((byte*)(this+1)+nRanges*2*sizeof(SearchKey)); props=(PropertyID*)(segs+index.nSegs);
 		for (unsigned i=0; i<index.nSegs; i++) {
-			const IndexSeg& is=index.indexSegs[i]; OrderSegQ& os=segs[i]; os.pid=is.propID; os.flags=is.flags&~ORDER_EXPR; os.lPref=is.lPrefix;
+			const IndexSeg& is=index.indexSegs[i]; OrderSegQ& os=segs[i]; os.pid=is.propID; os.flags=uint8_t(is.flags)&~ORDER_EXPR; os.var=0; os.aggop=OP_SET; os.lPref=is.lPrefix;
 			for (unsigned j=0; ;j++) 
 				if (j>=nProps) {props[nProps++]=is.propID; break;} else if (is.propID==props[j]) break;
 				else if (is.propID<props[j]) {memmove(&props[j+1],&props[j],(nProps-j)*sizeof(PropertyID)); props[j]=is.propID; nProps++; break;}
@@ -345,15 +345,15 @@ void IndexScan::getOpDescr(QODescr& qop)
 
 void IndexScan::print(SOutCtx& buf,int level) const
 {
-	buf.fill('\t',level); buf.append("index: ",7);
-	buf.renderName(classID); buf.append("[",1);
+	buf.fill('\t',level); buf.append("index: ",7); buf.renderName(classID); 
+	if ((flags&SCAN_EXCLUDE_START)!=0) buf.append("[<",2); else buf.append("[",1);
 	for (ulong i=0; i<nRanges; i++) {
 		if (i!=0) buf.append("],[",2);
-		printKey(((SearchKey*)(this+1))[i*2],buf,"<<<",3);
+		printKey(((SearchKey*)(this+1))[i*2],buf,"*",1);
 		buf.append(",",1);
-		printKey(((SearchKey*)(this+1))[i*2+1],buf,">>>",3);
+		printKey(((SearchKey*)(this+1))[i*2+1],buf,"*",1);
 	}
-	buf.append("]\n",2);
+	if ((flags&SCAN_EXCLUDE_END)!=0) buf.append(">]\n",3); else buf.append("]\n",2);
 }
 
 void IndexScan::printKey(const SearchKey& key,SOutCtx& buf,const char *def,size_t ldef) const

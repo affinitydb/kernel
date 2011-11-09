@@ -132,7 +132,6 @@ RC QueryPrc::commitPINs(Session *ses,PIN *const *pins,unsigned nPins,unsigned mo
 					pv->property=PROP_SPEC_PREDICATE;
 				} else if (pv->type!=VT_STMT||pv->stmt==NULL) {rc=RC_TYPE; goto finish;}
 				if ((qry=(Stmt*)pv->stmt)->op!=STMT_QUERY || qry->top==NULL || (qry->mode&QRY_CPARAMS)!=0) {rc=RC_INVPARAM; goto finish;}
-				if ((rc=((Stmt*)qry)->normalize())!=RC_OK) goto finish;
 				if ((pin->mode&(PIN_HIDDEN|PIN_DELETED))==0) {
 					if ((cv=pin->findProperty(PROP_SPEC_CLASS_INFO))!=NULL) {
 						if (cv->type!=VT_UINT && cv->type!=VT_INT) {rc=RC_TYPE; goto finish;}
@@ -150,6 +149,13 @@ RC QueryPrc::commitPINs(Session *ses,PIN *const *pins,unsigned nPins,unsigned mo
 				if ((pin->mode&PIN_CLASS)==0) {rc=RC_INVPARAM; goto finish;}
 				break;
 			} else if (pid>STORE_MAX_PROPID) {rc=RC_INVPARAM; goto finish;}
+			switch (pv->type) {
+			default: break;
+			case VT_EXPR: case VT_STMT: if ((pv->meta&META_PROP_EVAL)==0) break;
+			case VT_PARAM: case VT_VARREF:
+				if ((rc=eval(ses,pv,*pv,NULL,0,params,nParams+1,ses,true))!=RC_OK) goto finish; //pin->PINex
+				pv->property=pid; break;
+			}
 			if (pv->type==VT_ARRAY || pv->type==VT_COLLECTION) {
 				len=sizeof(HeapPageMgr::HeapVV)-sizeof(HeapPageMgr::HeapV)+sizeof(HeapPageMgr::HeapKey);
 				INav *nav=pv->type==VT_COLLECTION?pv->nav:NULL; pv->eid=STORE_COLLECTION_ID; unsigned k=0;
@@ -167,11 +173,6 @@ RC QueryPrc::commitPINs(Session *ses,PIN *const *pins,unsigned nPins,unsigned mo
 				}
 				if (len>threshold || (pv->meta&META_PROP_SSTORAGE)!=0) {pv->flags|=VF_SSV|VF_PREFIX; len=sizeof(HeapPageMgr::HeapExtCollection);}
 			} else {
-				switch (pv->type) {
-				default: break;
-				case VT_EXPR: case VT_STMT: if ((pv->meta&META_PROP_EVAL)==0) break;
-				case VT_PARAM: case VT_VARREF: if ((rc=eval(ses,pv,*pv,NULL,0,params,nParams+1,ses,true))!=RC_OK) goto finish; //pin->PINex
-				}
 				if ((rc=estimateLength(*pv,len,0,threshold,ses))!=RC_OK) goto finish;
 				if ((pv->meta&META_PROP_PART)!=0 && (pv->type==VT_REF || pv->type==VT_REFID)) pin->mode|=COMMIT_PARTS;
 				if ((pv->flags&VF_SSV)==0 && (pv->meta&META_PROP_SSTORAGE)!=0 && len>0) switch (pv->type) {
@@ -604,10 +605,14 @@ RC QueryPrc::estimateLength(const Value& v,size_t& res,ulong mode,size_t thresho
 		//????
 	case VT_EXPR:
 		if (v.expr==NULL) return RC_INVPARAM;
-		len=((Expr*)v.expr)->serSize(); res=len<=threshold?len:(v.flags|=VF_SSV,sizeof(HRefSSV)); break;
+		len=((Expr*)v.expr)->serSize(); res=len<=threshold?len:(v.flags|=VF_SSV,
+			len<=HeapPageMgr::contentSize(ctx->bufMgr->getPageSize())-sizeof(PageOff)-sizeof(HeapPageMgr::HeapObjHeader)?sizeof(HRefSSV):sizeof(HLOB));
+		break;
 	case VT_STMT:
 		if (v.stmt==NULL) return RC_INVPARAM;
-		len=((Stmt*)v.stmt)->serSize(); res=len<=threshold?mv_len16(len)+len:(v.flags|=VF_SSV,sizeof(HRefSSV)); break;
+		len=((Stmt*)v.stmt)->serSize(); res=len<=threshold?mv_len16(len)+len:(v.flags|=VF_SSV,
+			len<=HeapPageMgr::contentSize(ctx->bufMgr->getPageSize())-sizeof(PageOff)-sizeof(HeapPageMgr::HeapObjHeader)?sizeof(HRefSSV):sizeof(HLOB));
+		break;
 	}
 	return RC_OK;
 }
@@ -783,9 +788,14 @@ RC QueryPrc::persistValue(const Value& v,ushort& sht,HType& vt,ushort& offs,byte
 			if (hcol->cnt==0) {vt.setType(VT_ERROR,HDF_COMPACT); offs=0; return RC_INTERNAL;} key=ctx->getPrefix();
 			len=sizeof(HeapPageMgr::HeapVV)+(hcol->cnt-1)*sizeof(HeapPageMgr::HeapV)+sizeof(HeapPageMgr::HeapKey); ElementID prevEID=0;
 			for (pv=ty==VT_ARRAY?v.varray:v.nav->navigate(GO_FIRST),i=0; pv!=NULL; ++i,pv=ty==VT_ARRAY?i>=v.length?(Value*)0:&v.varray[i]:v.nav->navigate(GO_NEXT)) {
-				helt=&hcol->start[i]; helt->setID(pv->eid); helt->type.flags=pv->meta; helt->offset=len;
-				assert(pv->eid!=STORE_COLLECTION_ID && pv->eid!=STORE_FIRST_ELEMENT && pv->eid!=STORE_LAST_ELEMENT);
+				helt=&hcol->start[i]; helt->type.flags=pv->meta; helt->offset=len;
+				if (pv->eid==STORE_COLLECTION_ID) {assert(ty!=VT_ARRAY); pv->eid=key++;}
+				
+				else {
+					assert(pv->eid!=STORE_FIRST_ELEMENT && pv->eid!=STORE_LAST_ELEMENT);
 				if (pv->eid>=key&&((key^pv->eid)&CPREFIX_MASK)==0) key=pv->eid+1;
+				}
+				helt->setID(pv->eid);
 				if ((rc=persistValue(*pv,len,helt->type,helt->offset,buf+len,plrec,addr))!=RC_OK) return rc;
 				if (!helt->type.isCompact()) len=(PageOff)ceil(len,HP_ALIGN);
 				if (pv->eid<prevEID) hcol->fUnord=1; prevEID=pv->eid;
@@ -826,8 +836,9 @@ RC QueryPrc::persistValue(const Value& v,ushort& sht,HType& vt,ushort& offs,byte
 			rAddr=addr; rc=persistData(NULL,p,ll,rAddr,len64);
 			free(p,SES_HEAP); if (rc!=RC_OK && rc!=RC_TRUE) return rc;
 			href=(HRefSSV*)buf; href->pageID=rAddr.pageID; href->idx=rAddr.idx; 
-			href->type.setType(ty,HDF_NORMAL); len=sizeof(HRefSSV);
-			vt.setType(VT_STREAM,rc==RC_OK?HDF_SHORT:HDF_LONG);
+			href->type.setType(ty,HDF_NORMAL); href->type.flags=0;
+			if (rc==RC_OK) {v.flags&=~VF_SSV; len=sizeof(HRefSSV); vt.setType(VT_STREAM,HDF_SHORT);}
+			else {((HLOB*)href)->len=len64; len=sizeof(HLOB); vt.setType(VT_STREAM,HDF_LONG);}
 		} else {
 			assert(ll<0xFFFF); len=(PageOff)ll;
 			if (ty==VT_EXPR) ((Expr*)v.expr)->serialize(buf);

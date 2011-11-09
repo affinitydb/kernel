@@ -70,6 +70,7 @@ struct ChangeInfo
 #define	PM_OLDFTINDEX	0x00200000
 #define	PM_NEWVALUES	0x00400000
 #define	PM_OLDVALUES	0x00800000
+#define	PM_CALCULATED	0x01000000
 
 struct PropInfo
 {
@@ -79,7 +80,8 @@ struct PropInfo
 	struct	ModInfo				*last;
 	ulong						nElts;
 	ulong						flags;
-	ulong						maxKey;
+	ElementID					maxKey;
+	ElementID					single;
 	long						delta;
 	long						nDelta;
 	class	Collection			*pcol;
@@ -229,7 +231,7 @@ public:
 	friend	class	ServerStreamIn;
 	friend	class	QueryOp;
 	friend	class	MergeOp;
-	friend	class	LoopJoin;
+	friend	class	NestedLoop;
 	friend	class	Filter;
 	friend	class	BodyOp;
 	friend	class	TransOp;

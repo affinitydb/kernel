@@ -21,9 +21,9 @@ namespace MVStoreKernel
 #define	DEFAULT_QUERY_MEM	0x100000ul
 
 #define	QO_UNIQUE		0x00000001
-#define	QO_JOIN			0x00000002
-#define	QO_STREAM		0x00000004
-#define	QO_TOPMOST		0x00000008
+#define	QO_VUNIQUE		0x00000002
+#define	QO_JOIN			0x00000004
+#define	QO_STREAM		0x00000008
 #define	QO_PIDSORT		0x00000010
 #define	QO_REVERSIBLE	0x00000020
 #define	QO_FORUPDATE	0x00000040
@@ -37,7 +37,6 @@ namespace MVStoreKernel
 #define QO_VCOPIED		0x00004000
 #define	QO_REORDER		0x00008000
 #define	QO_NODATA		0x00010000
-#define	QO_VUNIQUE		0x00020000
 
 #define	QST_INIT		0x8000
 #define	QST_BOF			0x4000
@@ -314,25 +313,28 @@ public:
 	RC		release();
 };
 
-class LoopJoin : public QueryOp
+class NestedLoop : public QueryOp
 {
 	QueryOp	*const		queryOp2;
 	const	QUERY_SETOP	joinType;
 	const	ulong		nPropIDs1;
 	const	ulong		nPropIDs2;
 	ulong				lstate;
+	PINEx				pexR;
+	PINEx				*pR;
 	union {
 		class	Expr	**conds;
 		class	Expr	*cond;
 	};
 	ulong				nConds;
-	PropertyID			condProps[1];
-	LoopJoin(Session *s,QueryOp *qop1,QueryOp *qop2,const PropertyID *p1,ulong np1,const PropertyID *p2,ulong np2,QUERY_SETOP jt,ulong mode)
-		: QueryOp(s,qop1,mode|QO_UNIQUE),queryOp2(qop2),joinType(jt),nPropIDs1(np1),nPropIDs2(np2),lstate(0),nConds(0)
-		{conds=NULL; memcpy(condProps,p1,np1*sizeof(PropertyID)); memcpy(condProps+np1,p2,np2*sizeof(PropertyID));}
+	PropertyID			props[1];
+	NestedLoop(Session *s,QueryOp *qop1,QueryOp *qop2,const PropertyID *p1,ulong np1,const PropertyID *p2,ulong np2,QUERY_SETOP jt,ulong mode)
+		: QueryOp(s,qop1,mode|QO_UNIQUE),queryOp2(qop2),joinType(jt),nPropIDs1(np1),nPropIDs2(np2),lstate(0),pexR(s),pR(&pexR),nConds(0)
+		{conds=NULL; memcpy(props,p1,np1*sizeof(PropertyID)); memcpy(props+np1,p2,np2*sizeof(PropertyID));}
 	void* operator new(size_t s,Session *ses,ulong nCondProps) throw() {return ses->malloc(s+int(nCondProps-1)*sizeof(PropertyID));}
 public:
-	virtual	~LoopJoin();
+	virtual	~NestedLoop();
+	void	connect(PINEx **results,unsigned nRes);
 	RC		next(const PINEx *skip=NULL);
 	RC		rewind();
 	void	getOpDescr(QODescr&);
@@ -351,6 +353,7 @@ public:
 											{if (pps!=NULL && nP!=0) memcpy((PropertyID*)props,pps,nP*sizeof(PropertyID));}
 	void*		operator new(size_t s,Session *ses,unsigned nProps) throw() {return ses->malloc(s+nProps*sizeof(PropertyID));}
 	RC			next(const PINEx *skip=NULL);
+	RC			count(uint64_t& cnt,ulong nAbort=~0ul);
 	RC			rewind();
 	RC			loadData(PINEx& qr,Value *pv,unsigned nv,MemAlloc *ma=NULL,ElementID eid=STORE_COLLECTION_ID);
 	void		reorder(bool);
@@ -370,11 +373,8 @@ class Filter : public QueryOp
 	ulong					nCondIdx;
 	struct	QueryWithParams	*queries;
 	const	ulong			nQueries;
-	const	size_t			lProps;
-	PropDNF					condProps;
 public:
-	Filter(Session *ses,QueryOp *qop,ulong nPars,size_t lp,ulong nqs,ulong md);
-	void*		operator new(size_t s,Session *ses,size_t lp) throw() {return ses->malloc(s+lp);}
+	Filter(Session *ses,QueryOp *qop,ulong nPars,ulong nqs,ulong md);
 	virtual		~Filter();
 	RC			next(const PINEx *skip=NULL);
 	void		print(SOutCtx& buf,int level) const;
@@ -449,7 +449,7 @@ private:
 
 class PathOp : public QueryOp, public Path
 {
-	PINEx					pex;
+	PINEx	pex;
 public:
 	PathOp(Session *s,QueryOp *qop,const PathSeg *ps,unsigned nSegs,const Value *pars,unsigned nP,bool fC) : QueryOp(s,qop,0),Path(s,ps,nSegs,pars,nP,fC),pex(s) {}
 	virtual		~PathOp();
@@ -463,10 +463,19 @@ public:
 
 class TransOp : public QueryOp
 {
-	const	ValueV		*outs;
+	const	ValueV		*dscr;
 	const	bool		fCopied;
+	PINEx				**ins;
+	unsigned			nIns;
+	PINEx				qr;
+	PINEx				**res;
+	unsigned			nRes;
+	struct	AggAcc		*aggs;
+	unsigned			nAggs;
+	Value				*group[2];
+	unsigned			nGroup;
 public:
-	TransOp(Session *s,QueryOp *q,const ValueV *os,unsigned nO,ulong mode,bool fC) : QueryOp(s,q,mode),outs(os),fCopied(fC) {nOuts=nO;}
+	TransOp(Session *s,QueryOp *q,const ValueV *d,unsigned nD,ulong mode,bool fC) : QueryOp(s,q,mode),dscr(d),fCopied(fC),ins(NULL),nIns(0),qr(s),res(NULL),nRes(0),aggs(NULL),nAggs(0),nGroup(0) {group[0]=group[1]=NULL; nOuts=nD;}
 	virtual		~TransOp();
 	void		connect(PINEx **results,unsigned nRes);
 	RC			next(const PINEx *skip=NULL);

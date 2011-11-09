@@ -14,6 +14,7 @@ Written by Mark Venguerov 2004 - 2010
 #include "pinref.h"
 #include "startup.h"
 #include "mvstoreimpl.h"
+#include "expr.h"
 
 using namespace MVStore;
 using namespace MVStoreKernel;
@@ -31,7 +32,7 @@ private:
 	uint64_t				:0;
 	SearchKey				key;
 	void *operator new(size_t s,size_t l,StoreCtx *ctx) throw() {return ctx->malloc(s+l);}
-	TreeRQ(StoreCtx *ct,const TreeCtx& tctx,Tree::TreeOp o,PageID chld) : TreeCtx(tctx),list(this),ctx(ct),child(chld),op(o),key((uint32_t)~0u) {}
+	TreeRQ(StoreCtx *ct,const TreeCtx& tctx,Tree::TreeOp o,PageID chld) : TreeCtx(tctx),list(this),ctx(ct),child(chld),op(o),key(uint64_t(~0ULL)) {}
 public:
 	virtual		~TreeRQ();
 	PageID		getKey() const {return child;}
@@ -387,10 +388,10 @@ RC Tree::insert(IMultiKey& mk)
 
 RC Tree::insert(const void *val,ushort lval,uint32_t& id,PageID& pid)
 {
-	TreeCtx tctx(*this); SearchKey key((uint32_t)~0u); pid=INVALID_PAGEID; id=~0u; assert((tctx.mode&TF_WITHDEL)==0);
+	TreeCtx tctx(*this); SearchKey key(uint64_t(~0ULL)); pid=INVALID_PAGEID; id=~0u; assert((tctx.mode&TF_WITHDEL)==0);
 	RC rc=tctx.findPageForUpdate(&key,true); if (rc!=RC_OK) return rc;
 	const TreePageMgr::TreePage *tp=(const TreePageMgr::TreePage *)tctx.pb->getPageBuf(); assert(tp->info.fmt.isSeq());
-	id=key.v.u32=uint32_t(tp->info.prefix>>32)+tp->info.nEntries; return insert(key,val,lval,false,tctx,pid);
+	key.v.u=id=uint32_t(tp->info.prefix+tp->info.nEntries); return insert(key,val,lval,false,tctx,pid);
 }
 
 RC Tree::insert(const SearchKey& key,const void *val,ushort lval,bool fMulti,TreeCtx& tctx,PageID& insPage)
@@ -634,7 +635,7 @@ RC TreeGlobalRoot::createTree(const byte *,byte,Tree *&tree)
 
 const ushort SearchKey::extKeyLen[KT_ALL] = 
 {
-	sizeof(uint32_t),sizeof(uint64_t),sizeof(int32_t),sizeof(int64_t),sizeof(float),sizeof(double),0,0,0
+	sizeof(uint64_t),sizeof(int64_t),sizeof(float),sizeof(double),0,0,0
 };
 
 RC SearchKey::deserialize(const void *buf,size_t l,size_t *pl)
@@ -658,196 +659,216 @@ int IndexKeyV::cmp(const IndexKeyV& rhs,TREE_KT type) const
 	int cmp;
 	switch (type) {
 	default: break;
-	case KT_UINT: return cmp3(u32,rhs.u32);
-	case KT_UINT64: return cmp3(u64,rhs.u64);
-	case KT_INT: return cmp3(i32,rhs.i32);
-	case KT_INT64: return cmp3(i64,rhs.i64);
+	case KT_UINT: return cmp3(u,rhs.u);
+	case KT_INT: return cmp3(i,rhs.i);
 	case KT_FLOAT: return cmp3(f,rhs.f);
 	case KT_DOUBLE: return cmp3(d,rhs.d);
 	case KT_BIN: return (cmp=memcmp(ptr.p,rhs.ptr.p,min(ptr.l,rhs.ptr.l)))!=0?cmp:cmp3(ptr.l,rhs.ptr.l);
 	case KT_REF: return PINRef::cmpPIDs((byte*)ptr.p,ptr.l,(byte*)rhs.ptr.p,rhs.ptr.l);
-	case KT_MSEG: return cmpMSeg((byte*)ptr.p,ptr.l,(byte*)rhs.ptr.p,rhs.ptr.l);
+	case KT_VAR: return cmpMSeg((byte*)ptr.p,ptr.l,(byte*)rhs.ptr.p,rhs.ptr.l);
 	}
 	return -2;
 }
 
+namespace MVStoreKernel
+{
+enum KVT
+{
+	KVT_NULL,KVT_INT,KVT_UINT,KVT_INT64,KVT_UINT64,KVT_FLOAT,KVT_SUINT,KVT_INTV,KVT_URI,KVT_STR,KVT_BIN,KVT_URL,KVT_REF
+};
+const static ValueType vtFromKVT[] =
+{
+	VT_ANY,VT_INT,VT_UINT,VT_INT64,VT_UINT64,VT_DOUBLE,VT_DATETIME,VT_INTERVAL,VT_URIID,VT_STRING,VT_BSTR,VT_URL,VT_REFID
+};
+const static TREE_KT ktFromKVT[] =
+{
+	KT_ALL,KT_INT,KT_UINT,KT_INT,KT_UINT,KT_DOUBLE,KT_UINT,KT_INT,KT_UINT,KT_BIN,KT_BIN,KT_BIN,KT_REF
+};
+};
+
 RC SearchKey::toKey(const Value **ppv,ulong nv,const IndexSeg *kds,int idx,Session *ses,MemAlloc *ma)
 {
-	RC rc=RC_OK; byte *buf=NULL,*p; bool fDel=false; ulong xbuf=512,lkey=0; if (ma==NULL) ma=ses;
+	RC rc=RC_OK; byte *buf=NULL,*p; const bool fVar=nv>1 || kds[0].type==VT_ANY && kds[0].lPrefix==0 && (kds[0].flags&ORD_NCASE)==0;
+	bool fDel=false; ulong xbuf=512,lkey=0; if (ma==NULL) ma=ses;
 	for (ulong ii=0; ii<nv; ii++) {
-		const IndexSeg& ks=kds[ii]; const Value *pv=ppv[ii]; bool fExcl=false;
-		if (pv!=NULL) {
-			if (pv->type==VT_ERROR) pv=NULL;
-			else if (pv->type==VT_RANGE) {
-				if (idx==-1) {rc=RC_TYPE; break;} assert(idx==0||idx==1); 
-				pv=&pv->varray[idx]; if (pv->type==VT_ANY) pv=NULL;
+		const IndexSeg& ks=kds[ii]; const Value *pv=ppv[ii]; Value w; byte kbuf[XPINREFSIZE];
+		type=KT_ALL; loc=PLC_EMB;
+		if (pv==NULL || pv->type==VT_ERROR) {if (!fVar) return RC_TYPE;}
+		else {
+			if (pv->type==VT_RANGE) {
+				if (idx==-1) {rc=RC_TYPE; break;} assert(idx==0||idx==1); pv=&pv->varray[idx]; 
+				if (pv->type==VT_ANY) {if (!fVar && pv->varray[idx^1].type==VT_ANY) return RC_TYPE; pv=NULL;}
 			} else switch (ks.op) {
 			default: assert(0);
 			case OP_EQ: case OP_BEGINS: case OP_IN: break;
-			case OP_LT: fExcl=true;
-			case OP_LE: if (idx==0) pv=NULL; break;
-			case OP_GT: fExcl=true;
-			case OP_GE: if (idx==1) pv=NULL; break;
+			case OP_LT: case OP_LE: if (idx==0) pv=NULL; break;
+			case OP_GT: case OP_GE: if (idx==1) pv=NULL; break;
+			}
+			if (pv!=NULL) {
+				PID id; PropertyID pid=STORE_INVALID_PROPID; ElementID eid=STORE_COLLECTION_ID;
+				if (pv->type==VT_CURRENT) switch (pv->ui) {
+				default: return RC_TYPE;
+				case CVT_TIMESTAMP: {TIMESTAMP ts; getTimestamp(ts); w.setDateTime(ts); pv=&w;} break;
+				case CVT_USER: w.setIdentity(ses->getIdentity()); pv=&w; break;
+				case CVT_STORE: w.set((unsigned)ses->getStore()->storeID); pv=&w; break;
+				}
+				const ValueType kty=ks.type==VT_ANY&&(ks.lPrefix!=0||(ks.flags&ORD_NCASE)!=0)?VT_STRING:(ValueType)ks.type;
+				if (kty==VT_ANY) {
+					if (pv->type==VT_STRING && testStrNum(pv->str,pv->length,w)) pv=&w;
+				} else if (pv->type!=kty && (!isString((ValueType)pv->type) || !isString(kty))) {
+					if ((rc=convV(*pv,w,kty,CV_NOTRUNC))==RC_OK) pv=&w; else break;
+				}
+				switch (pv->type) {
+				default: rc=RC_TYPE; break;
+				case VT_INT: v.i=pv->i; type=KT_INT; break;
+				case VT_UINT: case VT_URIID: case VT_IDENTITY: v.u=pv->ui; type=KT_UINT; break;
+				case VT_INT64: case VT_INTERVAL: v.i=pv->i64; type=KT_INT; break;
+				case VT_UINT64: case VT_DATETIME: v.u=pv->ui64; type=KT_UINT; break;
+				//case VT_DECIMAL:
+				case VT_FLOAT: v.f=pv->f; type=KT_FLOAT; break;		// units?
+				case VT_DOUBLE: v.d=pv->d; type=KT_DOUBLE; break;	// units?
+				case VT_BOOL: v.u=pv->b?1:0; type=KT_UINT; break;
+				case VT_STREAM:
+					//???
+				//case VT_ENUM:
+				case VT_STRING:
+					if (pv->str!=NULL && (ks.flags&ORD_NCASE)!=0) {
+						uint32_t len=0;
+						if ((v.ptr.p=forceCaseUTF8(pv->str,pv->length,len,ma))==NULL) {rc=RC_NORESOURCES; break;}
+						assert((len&0xFFFF0000)==0); v.ptr.l=ks.lPrefix!=0?min(ks.lPrefix,(ushort)len):(ushort)len;
+						type=KT_BIN; loc=PLC_ALLC; break;
+					}
+				case VT_BSTR: case VT_URL:
+					v.ptr.p=pv->bstr; v.ptr.l=ks.lPrefix!=0?min(ks.lPrefix,(ushort)pv->length):(ushort)pv->length;
+					if (pv==&w) {loc=PLC_ALLC; w.type=VT_ERROR;} type=KT_BIN; break;
+				case VT_REF: id=pv->pin->getPID(); goto encode;
+				case VT_REFID: id=pv->id; goto encode;
+				case VT_REFPROP: id=pv->ref.pin->getPID(); pid=pv->ref.pid; goto encode;
+				case VT_REFIDPROP: id=pv->refId->id; pid=pv->refId->pid; goto encode;
+				case VT_REFELT:	id=pv->ref.pin->getPID(); pid=pv->ref.pid; eid=pv->ref.eid; goto encode;
+				case VT_REFIDELT: id=pv->refId->id; pid=pv->refId->pid; eid=pv->refId->eid;
+				encode:
+					{PINRef pr(ses->getStore()->storeID,id);
+					if (pv->type>=VT_REFPROP) {pr.def|=PR_U1; pr.u1=pid; if (pv->type>=VT_REFELT) {pr.def|=PR_U2; pr.u2=eid;}}
+					v.ptr.p=kbuf; v.ptr.l=pr.enc(kbuf); type=KT_REF;}
+					break;
+				}
+				if (rc!=RC_OK) break;
 			}
 		}
-		if (pv==NULL) {
-			if (nv!=1) {
-				if (buf==NULL && (buf=(byte*)alloca(xbuf))==NULL || lkey+1>=xbuf) {
-					if (buf!=NULL && !fDel) {
-						if ((p=(byte*)ma->malloc(xbuf*=2))==NULL) {rc=RC_NORESOURCES; break;}
-						memcpy(p,buf,lkey); buf=p; fDel=true;
-					} else if ((buf=(byte*)ma->realloc(buf,buf==NULL?xbuf:xbuf*=2))==NULL) {rc=RC_NORESOURCES; break;}
-				}
-				buf[lkey++]=idx==0||idx==-1&&(ks.flags&ORD_NULLS_AFTER)==0?0:byte(~KT_ALL);
-			} else if ((pv=ppv[ii])==NULL || pv->type==VT_ERROR || pv->type==VT_RANGE && pv->varray[0].type==VT_ERROR && pv->varray[1].type==VT_ERROR)
-				{rc=RC_TYPE; break;}		//??? KT_MSEG with 1 seg?
-			else {type=KT_ALL; loc=PLC_EMB;}
-		} else {
-			loc=PLC_EMB;
-			TIMESTAMP ts; Value w; byte kbuf[XPINREFSIZE]; PID id; bool fFree=false;
-			PropertyID pid=STORE_INVALID_PROPID; ElementID eid=STORE_COLLECTION_ID;
-			if (ks.type!=VT_ANY && pv->type!=ks.type) {
-				if ((rc=convV(*pv,w,(ValueType)ks.type))!=RC_OK) break;
-				pv=&w;
-			}
-			switch (pv->type) {
-			default: rc=RC_TYPE; break;		// NULL segment in MSEG?
-			case VT_STREAM:
-				//???
-			case VT_STRING: case VT_BSTR: case VT_URL:
-				v.ptr.l=(ushort)pv->length;
-				if (ks.lPrefix!=0 && v.ptr.l>ks.lPrefix) v.ptr.l=ks.lPrefix;	// convert to VT_STRING?
-				v.ptr.p=pv->bstr; type=KT_BIN; break;
-			//case VT_ENUM:
-			case VT_INT: v.i32=pv->i; type=KT_INT; break;
-			case VT_UINT: case VT_URIID: case VT_IDENTITY: v.u32=pv->ui; type=KT_UINT; break;
-			case VT_INT64: case VT_INTERVAL: v.i64=pv->i64; type=KT_INT64; break;
-			case VT_UINT64: case VT_DATETIME: v.u64=pv->ui64; type=KT_UINT64; break;
-			//case VT_DECIMAL:
-			case VT_FLOAT: v.f=pv->f; type=KT_FLOAT; break;
-			case VT_DOUBLE: v.d=pv->d; type=KT_DOUBLE; break;
-			case VT_BOOL: v.u32=pv->b?1:0; type=KT_UINT; break;
-			case VT_REF: id=pv->pin->getPID(); goto encode;
-			case VT_REFID: id=pv->id; goto encode;
-			case VT_REFPROP:	id=pv->ref.pin->getPID(); pid=pv->ref.pid; goto encode;
-			case VT_REFIDPROP: id=pv->refId->id; pid=pv->refId->pid; goto encode;
-			case VT_REFELT:	id=pv->ref.pin->getPID(); pid=pv->ref.pid; eid=pv->ref.eid; goto encode;
-			case VT_REFIDELT: id=pv->refId->id; pid=pv->refId->pid; eid=pv->refId->eid;
-			encode:
-				{PINRef pr(ses->getStore()->storeID,id);
-				if (pv->type>=VT_REFPROP) {
-					pr.def|=PR_U1; pr.u1=pid;
-					if (pv->type>=VT_REFELT) {pr.def|=PR_U2; pr.u2=eid;}
-				}
-				v.ptr.p=kbuf; v.ptr.l=pr.enc(kbuf); type=KT_REF; break;}
-			case VT_CURRENT:
-				switch (pv->ui) {
-				case CVT_TIMESTAMP: getTimestamp(ts); v.u64=ts; type=KT_UINT64; break;
-				case CVT_USER: v.u32=ses->getIdentity(); type=KT_UINT; break;
-				case CVT_STORE: v.u32=ses->getStore()->storeID; type=KT_UINT; break;
-				}
+		if (fVar) {
+			uint32_t l0=1,l=0,j; const byte *pd=(byte*)&v; byte kt=(ks.flags&ORD_DESC)!=0?0xC0:0x80;
+			switch (type) {
+			default: assert(0);
+			case KT_ALL:
+				assert(pv==NULL||pv->type==VT_ERROR); kt=idx==0||idx==-1&&(ks.flags&ORD_NULLS_AFTER)==0?0x80|KVT_NULL:0x90|KVT_NULL; break;
+			case KT_INT:
+				j=3-((int32_t)v.i==v.i)-((int16_t)v.i==v.i)-((int8_t)v.i==v.i); 
+				kt|=j<<4|(pv->type==VT_INTERVAL?KVT_INTV:pv->type-VT_INT+KVT_INT); l=1<<j;
+#ifdef _MSBF
+				pd+=sizeof(int64_t)-l;
+#endif
 				break;
+			case KT_UINT:
+				if (pv->type<=VT_UINT64) j=3-((uint32_t)v.u==v.u)-((uint16_t)v.u==v.u)-((uint8_t)v.u==v.u),l=1<<j,kt|=j<<4|(pv->type-VT_UINT+KVT_UINT);
+				else if (pv->type==VT_BOOL) kt|=KVT_SUINT; if (pv->type==VT_IDENTITY) j=2-((uint16_t)v.u==v.u),l=1<<j,kt|=j<<4|KVT_SUINT; else l=sizeof(uint64_t),kt|=0x30|KVT_SUINT;
+#ifdef _MSBF
+				pd+=sizeof(uint64_t)-l;
+#endif
+				break;
+			case KT_FLOAT: if (pv->qval.units==Un_NDIM) kt|=KVT_FLOAT,l=sizeof(float); else kt|=0x20|KVT_FLOAT,l=sizeof(float)/*+1*/; break;			// units ???
+			case KT_DOUBLE:  if (pv->qval.units==Un_NDIM) kt|=0x10|KVT_FLOAT,l=sizeof(double); else kt|=0x30|KVT_FLOAT,l=sizeof(double)/*+1*/; break;	// units ???
+			case KT_BIN:
+				if ((l=v.ptr.l)<0x80 && (kt&0x40)==0 && pv->type==VT_STRING) kt=byte(l); else kt|=((l&0xFF00)!=0?(l0+=2,0x10):(l0+=1,0))|(pv->type-VT_STRING+KVT_STR);
+				pd=(byte*)v.ptr.p; break;
+			case KT_REF:
+				pd=kbuf; l=v.ptr.l; l0++; kt|=KVT_REF; break;
 			}
-			if (rc!=RC_OK) break;
-			if (nv>1) {
-				bool fDesc=(ks.flags&ORD_DESC)!=0,fBeg=false; uint32_t l,l0=fDesc?2:1;
-				if (type!=KT_BIN && type!=KT_REF) l=extKeyLen[type];
-				else {
-					l=v.ptr.l; fBeg=ks.op==OP_BEGINS&&idx>=0;
-					if ((ks.flags&ORD_NCASE)!=0 && pv->type==VT_STRING) {
-						if ((v.ptr.p=forceCaseUTF8((const char*)v.ptr.p,l,l,ma))==NULL) {rc=RC_NORESOURCES; break;}
-						assert((l&0xFFFF0000)==0); fFree=true;
-					}
-					if (!fDesc && (fBeg || l>=byte(~KT_ALL) || type==KT_REF)) l0+=l<=0x1F?1:l<=0xFFF?2:3;
-				}
-				if (buf==NULL && (buf=(byte*)alloca(xbuf))==NULL || lkey+l0+l>=xbuf) {
-					if (buf!=NULL && !fDel) {
-						if ((p=(byte*)ma->malloc(xbuf*=2))==NULL) {rc=RC_NORESOURCES; break;}
-						memcpy(p,buf,lkey); buf=p; fDel=true;
-					} else if ((buf=(byte*)ma->realloc(buf,buf==NULL?xbuf:xbuf*=2))==NULL) {rc=RC_NORESOURCES; break;}
-				}
-				if (type==KT_BIN||type==KT_REF) {
-					if (l0==1) buf[lkey++]=byte(l);
-					else {
-						buf[lkey++]=byte(~type); buf[lkey++]=byte((fDesc?0x80:0)|(fBeg?0x40:0)|(l<0x1F?l:l&0x1F|0x20));
-						if (l0>2) {buf[lkey++]=byte(l>>5); if (l0>3) {buf[lkey-1]|=0x80; buf[lkey++]=byte(l>>12);}}
-					}
-					memcpy(buf+lkey,v.ptr.p,l); if (fFree) ma->free((void*)v.ptr.p);
-				} else {
-					assert(type!=KT_MSEG);
-					if (!fDesc) buf[lkey++]=byte(~type);
-					else {buf[lkey]=byte(~KT_MSEG); buf[lkey+1]=type; lkey+=2;}
-					memcpy(buf+lkey,&v,l);
-				}
-				lkey+=l;
-			} else if ((type==KT_BIN||type==KT_REF) && v.ptr.p!=NULL) {
-				const void *p=v.ptr.p;
-				if ((ks.flags&ORD_NCASE)!=0 && pv->type==VT_STRING) {
-					uint32_t len=0;
-					if ((v.ptr.p=forceCaseUTF8((const char*)p,v.ptr.l,len,ma))==NULL) {rc=RC_NORESOURCES; break;}
-					assert((len&0xFFFF0000)==0); v.ptr.l=uint16_t(len);
-				} else if ((v.ptr.p=ma->malloc(v.ptr.l))==NULL) {rc=RC_NORESOURCES; break;}
-				else memcpy((void*)v.ptr.p,p,v.ptr.l);
-				loc=PLC_ALLC;
+			if (buf==NULL && (buf=(byte*)alloca(xbuf))==NULL || lkey+l0+l>=xbuf) {
+				if (buf!=NULL && !fDel) {
+					if ((p=(byte*)ma->malloc(xbuf*=2))==NULL) {rc=RC_NORESOURCES; break;}
+					memcpy(p,buf,lkey); buf=p; fDel=true;
+				} else if ((buf=(byte*)ma->realloc(buf,buf==NULL?xbuf:xbuf*=2))==NULL) {rc=RC_NORESOURCES; break;}
 			}
-			if (pv==&w) freeV(w);
+			buf[lkey]=kt; lkey+=l0; while (l0>1) {--l0; buf[lkey-l0]=byte(l>>8*(l0-1));}
+			if (l!=0) {memcpy(buf+lkey,pd,l); lkey+=l;} if (loc==PLC_ALLC) ma->free((void*)v.ptr.p);
 		}
+		if (pv==&w) freeV(w);
 	}
-	if (rc!=RC_OK) {type=KT_ALL; loc=PLC_EMB; if (fDel) ma->free(buf);}
-	else if (buf!=NULL) {
+	if (rc!=RC_OK) {
+		if (fDel) ma->free(buf); if (type>=KT_BIN && loc==PLC_ALLC) ma->free((void*)v.ptr.p); type=KT_ALL; loc=PLC_EMB;
+	} else if (buf!=NULL) {
 		if (fDel) v.ptr.p=xbuf>=lkey*2?(byte*)ma->realloc(buf,lkey):buf;
 		else if ((p=(byte*)ma->malloc(lkey))==NULL) {type=KT_ALL; loc=PLC_EMB; return RC_NORESOURCES;}
 		else {v.ptr.p=p; memcpy(p,buf,lkey);}
-		type=KT_MSEG; loc=PLC_ALLC; v.ptr.l=uint16_t(lkey);
+		type=KT_VAR; loc=PLC_ALLC; v.ptr.l=uint16_t(lkey);
+	} else if (type>=KT_BIN && type<KT_ALL && loc==PLC_EMB && v.ptr.p!=NULL) {
+		const void *p=v.ptr.p;
+		if ((v.ptr.p=ma->malloc(v.ptr.l))==NULL) rc=RC_NORESOURCES;
+		else {memcpy((void*)v.ptr.p,p,v.ptr.l); loc=PLC_ALLC;}
 	}
 	return rc;
 }
 
-__forceinline int decode(const byte *&s,ushort& l,byte& ty,byte& mod,void *buf,ushort& ls)
+static int cmpSeg(const byte *&s1,ushort& l1,const byte *&s2,ushort& l2,byte mbeg=0)
 {
-	if (l--==0) throw 0; mod=0; ls=0; if ((ty=*s++)==0) return -1;
-	if (ty<byte(~KT_ALL)||ty==byte(~KT_BIN)||ty==byte(~KT_REF)) {
-		if (ty<byte(~KT_ALL)) {ls=ty; ty=KT_BIN;}
-		else if (l--==0) throw 1;
+	assert(l1!=0&&l2!=0);
+	byte mod1=*s1++,ty1=mod1&0x0f,mod2=*s2++,ty2=mod2&0x0F; ushort ls1=0,ls2=0; --l1,--l2;
+	union {uint64_t ui64; int64_t i64; float f; double d; QualifiedValue qv;} v1,v2; int cmp=0;
+
+	if ((mod1&0x80)==0) {ty1=KVT_STR; ls1=mod1; mod1=0;}
+	else if (ty1==KVT_FLOAT) ls1=((mod1&0x10)!=0?sizeof(double):sizeof(float))+((mod1&0x20)!=0?1:0);
+	else if (ty1!=KVT_NULL) {ls1=1<<(mod1>>4&3); if (ty1>=KVT_STR) {if (l1<ls1) throw 1; l1-=ls1; for (unsigned j=ls1,i=ls1=0; i<j; i++) ls1|=*s1++<<i*8;}} 
+	if (l1<ls1 || ty1>KVT_REF) throw 2;
+
+	if ((mod2&0x80)==0) {ty2=KVT_STR; ls2=mod2; mod2=0;}
+	else if (ty2==KVT_FLOAT) ls2=((mod2&0x10)!=0?sizeof(double):sizeof(float))+((mod2&0x20)!=0?1:0);
+	else if (ty2!=KVT_NULL) {ls2=1<<(mod2>>4&3); if (ty2>=KVT_STR) {if (l2<ls2) throw 3; l2-=ls2; for (unsigned j=ls2,i=ls2=0; i<j; i++) ls2|=*s2++<<i*8;}} 
+	if (l2<ls2 || ty2>KVT_REF) throw 4;
+
+	if (ty1==KVT_NULL) cmp=ty2==KVT_NULL?cmp3(mod1&0x10,mod2&0x10):(mod1&0x10)!=0?1:-1; else if (ty2==KVT_NULL) cmp=(mod2&0x10)!=0?-1:1;
+	else {
+		if (ty1==ty2 && ls1==ls2 && ls1<=1) {if (ls1!=0) cmp=ktFromKVT[ty1]==KT_INT?cmp3(*(int8_t*)s1,*(int8_t*)s2):cmp3(*s1,*s2);}
 		else {
-			mod=*s++; ls=mod&0x1F; ty=byte(~ty);
-			if ((mod&0x20)!=0) {
-				if (l--==0) throw 2;
-				if (((ls|=*s++<<5)&0x1000)!=0) {if (l--!=0) ls=(ls&~0x1000)|*s++<<12; else throw 3;}
+			TREE_KT t1=ktFromKVT[ty1],t2=ktFromKVT[ty2];
+			if (t1<KT_BIN) {
+				if (ls1==1) {if (t1==KT_INT) v1.i64=*(int8_t*)s1; else v1.ui64=*(uint8_t*)s1;}
+				else {
+					memcpy(&v1,s1,ls1);
+					if (ty1==KVT_FLOAT) {if ((mod1&0x10)==0) t1=KT_FLOAT;}
+					else if (ls1<sizeof(uint64_t)) {if (t1==KT_INT) v1.i64=ls1==sizeof(int32_t)?*(int32_t*)&v1.i64:*(int16_t*)&v1.i64; else v1.ui64=ls1==sizeof(uint32_t)?*(uint32_t*)&v1.ui64:*(uint16_t*)&v1.ui64;}
+				}
+			}
+			if (t2<KT_BIN) {
+				if (ls2==1) {if (t2==KT_INT) v2.i64=*(int8_t*)s2; else v2.ui64=*(uint8_t*)s2;}
+				else {
+					memcpy(&v2,s2,ls2);
+					if (ty2==KVT_FLOAT) {if ((mod2&0x10)==0) t2=KT_FLOAT;} 
+					else if (ls2<sizeof(uint64_t)) {if (t2==KT_INT) v2.i64=ls2==sizeof(int32_t)?*(int32_t*)&v2.i64:*(int16_t*)&v2.i64; else v2.ui64=ls2==sizeof(uint32_t)?*(uint32_t*)&v2.ui64:*(uint16_t*)&v2.ui64;}
+				}
+			}
+			if (t1!=t2) {
+				if (ty1>=KVT_STR || ty2>=KVT_STR) cmp=cmp3(ty1,ty2);
+				else if (ty1==KVT_FLOAT || ty2==KVT_FLOAT) {
+					if (t1==KT_UINT) v1.d=(double)v1.ui64; else if (t1==KT_INT) v1.d=(double)v1.i64; else if ((mod1&0x10)==0) v1.d=v1.f;
+					if (t2==KT_UINT) v2.d=(double)v2.ui64; else if (t2==KT_INT) v2.d=(double)v2.i64; else if ((mod2&0x10)==0) v2.d=v2.f;
+					cmp=cmp3(v1.d,v2.d);
+				} else if (t1==KT_INT) {
+					if (v1.i64<0) cmp=-1; else cmp=cmp3((uint64_t)v1.i64,v2.ui64);
+				} else {
+					assert(t2==KT_INT); if (v2.i64<0) cmp=1; else cmp=cmp3(v1.ui64,(uint64_t)v2.i64);
+				}
+			} else switch (t1) {
+			default: break;
+			case KT_UINT: cmp=cmp3(v1.ui64,v2.ui64); break;
+			case KT_INT: cmp=cmp3(v1.i64,v2.i64); break;
+			case KT_FLOAT: cmp=cmp3(v1.f,v2.f); break;
+			case KT_DOUBLE: cmp=cmp3(v1.d,v2.d); break;
+			case KT_REF: cmp=PINRef::cmpPIDs(s1,ls1,s2,ls2); break;
+			case KT_BIN: if ((cmp=memcmp(s1,s2,min(ls1,ls2)))==0) cmp=ls1<ls2?(mbeg&1)!=0?0:-1:ls1==ls2?0:(mbeg&2)!=0?0:1; break;
 			}
 		}
-		if (l<ls) throw 4;
-	} else if (ty==byte(~KT_ALL)) return 1;
-	else {
-		if (ty==byte(~KT_MSEG)) {if (l--!=0) {ty=*s++; mod=0x80; assert(ty<KT_ALL);} else throw 5;}
-		else {assert(ty>byte(~KT_BIN)); ty=byte(~ty);}
-		ls=SearchKey::extKeyLen[ty]; if (l<ls) throw 6; memcpy(buf,s,ls);
-	}
-	return 0;
-}
-
-int cmpSeg(const byte *&s1,ushort& l1,const byte *&s2,ushort& l2)
-{
-	byte ty1,mod1,ty2,mod2; ushort ls1,ls2;
-	union {uint32_t ui; uint64_t ui64; int32_t i; int64_t i64; float f; double d;} v1,v2;
-	int r1=decode(s1,l1,ty1,mod1,&v1,ls1),r2=decode(s2,l2,ty2,mod2,&v2,ls2),cmp=cmp3(r1,r2);
-	if (cmp==0 && r1==0) {
-		if (ty1!=ty2) {
-			// convert
-			throw -1000;
-		}
-		switch (ty1) {
-		default: break;
-		case KT_UINT: cmp=cmp3(v1.ui,v2.ui); break;
-		case KT_UINT64: cmp=cmp3(v1.ui64,v2.ui64); break;
-		case KT_INT: cmp=cmp3(v1.i,v2.i); break;
-		case KT_INT64: cmp=cmp3(v1.i64,v2.i64); break;
-		case KT_FLOAT: cmp=cmp3(v1.f,v2.f); break;
-		case KT_DOUBLE: cmp=cmp3(v1.d,v2.d); break;
-		case KT_REF: cmp=PINRef::cmpPIDs(s1,ls1,s2,ls2); break;
-		case KT_BIN: if ((cmp=memcmp(s1,s2,min(ls1,ls2)))==0) cmp=ls1<ls2?(mod1&0x40)!=0?0:-1:ls1==ls2?0:(mod2&0x40)!=0?0:1; break;
-		}
-		if (((mod1|mod2)&0x80)!=0) cmp=-cmp;
+		if (((mod1|mod2)&0x40)!=0) cmp=-cmp;
 	}
 	s1+=ls1; l1-=ls1; s2+=ls2; l2-=ls2; return cmp;
 }
@@ -873,11 +894,31 @@ bool MVStoreKernel::isHyperRect(const byte *s1,ushort l1,const byte *s2,ushort l
 	return false;
 }
 
-bool MVStoreKernel::checkHyperRect(const byte *s1,ushort l1,const byte *s2,ushort l2)
+bool MVStoreKernel::cmpBound(const byte *s1,ushort l1,const byte *s2,ushort l2,const IndexSeg *sg,unsigned nSegs,bool fStart)
 {
 	try {
-		do {int cmp=cmpSeg(s1,l1,s2,l2); if (cmp>0) return false;} while (l1*l2!=0);
-		return l1==0;
+		unsigned i=0;
+		do {
+			int cmp=cmpSeg(s1,l1,s2,l2,sg==0||(sg[i].flags&SCAN_PREFIX)==0?0:1); 
+			if (fStart) {if (cmp<0) break; if (cmp>0 || cmp==0 && sg!=NULL && (sg[i].flags&SCAN_EXCLUDE_START)!=0) return false;} 
+			else if (cmp>0) break; else if (cmp<0 || cmp==0 && sg!=NULL && (sg[i].flags&SCAN_EXCLUDE_END)!=0) return false;
+		} while (l1*l2!=0 && (sg==NULL||++i<nSegs));
+		return true;
+	} catch (int) {
+		// report
+	}
+	return false;
+}
+
+bool MVStoreKernel::checkHyperRect(const byte *s1,ushort l1,const byte *s2,ushort l2,const IndexSeg *sg,unsigned nSegs,bool fStart)
+{
+	try {
+		unsigned i=0;
+		do {
+			int cmp=cmpSeg(s1,l1,s2,l2,sg==0||(sg[i].flags&SCAN_PREFIX)==0?0:fStart?1:2);
+			if (cmp>0 || cmp==0 && sg!=NULL && (sg[i].flags&(fStart?SCAN_EXCLUDE_START:SCAN_EXCLUDE_END))!=0) return false;
+		} while (l1*l2!=0 && (sg==NULL||++i<nSegs));
+		return true;
 	} catch (int) {
 		// report
 	}
@@ -886,132 +927,90 @@ bool MVStoreKernel::checkHyperRect(const byte *s1,ushort l1,const byte *s2,ushor
 
 ushort MVStoreKernel::calcMSegPrefix(const byte *s1,ushort l1,const byte *s2,ushort l2)
 {
-	for (ushort lPrefix=0,l,l0;;) {
-		byte b1=*s1++,b2=*s2++; if (b1!=b2) return lPrefix;
-		--l1,--l2; l0=1;
-		if (b1==0||b1==byte(~KT_ALL)) l=0;
-		else {
-			if (b1<byte(~KT_ALL)||b1==byte(~KT_BIN)) {
-				if (b1<byte(~KT_ALL)) l=b1;
-				else {
-					if (l1--==0||l2--==0) return lPrefix;
-					if ((((b1=*s1++)^*s2++)&~0x40)!=0) return lPrefix;
-					l=b1&0x1F; l0++;
-					if ((b1&0x20)!=0) {
-						if (l1--==0||l2--==0||(b1=*s1++)!=*s2++) return lPrefix;
-						l|=b1<<5; l0++;
-						if ((l&0x1000)!=0) {
-							if (l1--==0||l2--==0||(b1=*s1++)!=*s2++) return lPrefix;
-							l=(l&~0x1000)|b1<<12; l0++;
-						}
-					}
-				}
-			} else {
-				assert(b1==byte(~KT_MSEG)||b1>byte(~KT_BIN));
-				if (b1!=byte(~KT_MSEG)) b1=byte(~b1);
-				else if (l1--==0||l2--==0||(b1=*s1++)!=*s2++) return lPrefix;
-				l=SearchKey::extKeyLen[b1];
-			}
-			if (l1<l||l2<l||memcmp(s1,s2,l)) return lPrefix;
-		}
-		assert(l>=l && l2>=l); 
-		s1+=l; l1-=l; s2+=l; l2-=l; lPrefix+=l+l0;
-		if (l1*l2==0) return lPrefix;
+	for (ushort lPrefix=0;;) {
+		//if (l1*l2==0 || *s1!=*s2) return lPrefix;
+		//...
+		return 0;
 	}
 }
 
 RC SearchKey::getValues(Value *vals,unsigned nv,const IndexSeg *kd,unsigned nFields,Session *ses,bool fFilter,MemAlloc *ma) const
 {
 	RC rc=RC_OK; RefVID r,*pr; void *p; if (ma==NULL) ma=ses;
-	if (type==KT_MSEG) {
-		const byte *s=(byte*)getPtr2(); unsigned l=v.ptr.l; Value *pv;
+	if (type==KT_VAR) {
+		const byte *s=(byte*)getPtr2(); ushort l=v.ptr.l;
 		for (unsigned i=0; i<nFields; i++,kd++) {
-			if (l==0) return RC_CORRUPTED;
-			byte b=*s++; --l; ushort ls=0;
-			if (b!=0 && b!=byte(~KT_ALL)) {
-				if (b<byte(~KT_ALL)||b==byte(~KT_BIN)||b==byte(~KT_REF)) {
-					if (b<byte(~KT_ALL)) {ls=b; b=KT_BIN;}
-					else if (l--==0) return RC_CORRUPTED; 
-					else {
-						byte b2=*s++; ls=b2&0x1F; b=byte(~b);
-						if ((b2&0x20)!=0) {
-							if (l--==0) return RC_CORRUPTED;
-							if (((ls|=*s++<<5)&0x1000)!=0) {if (l--!=0) ls=(ls&~0x1000)|*s++<<12; else return RC_CORRUPTED;}
-						}
-					}
-				} else {
-					assert(b==byte(~KT_MSEG)||b>byte(~KT_BIN));
-					if (b!=byte(~KT_MSEG)) b=byte(~b);
-					else if (l--!=0) b=*s++; else return RC_CORRUPTED;
-					ls=SearchKey::extKeyLen[b];
+			if (l==0) return RC_CORRUPTED; Value *pv;
+			if (fFilter) pv=(Value*)BIN<Value,PropertyID,ValCmp>::find(kd->propID,vals,nv); else if (i>=nv) break; else pv=&vals[i];
+			byte mod=*s++,ty=mod&0x0F; ushort ls=0; --l;
+			if ((mod&0x80)==0) {ty=KVT_STR; ls=mod; mod=0;}
+			else if (ty==KVT_FLOAT) ls=((mod&0x10)!=0?sizeof(double):sizeof(float))+((mod&0x20)!=0?1:0);
+			else if (ty!=KVT_NULL) {ls=1<<(mod>>4&3); if (ty>=KVT_STR) {if (l<ls) return RC_CORRUPTED; for (unsigned j=ls,i=ls=0; i<j; i++) ls|=*s++<<i*8;}} 
+			if (l<ls || ty>KVT_REF) return RC_CORRUPTED;
+			if (pv!=NULL && (pv->property==kd->propID||pv->property==PROP_SPEC_ANY)) {
+				pv->type=vtFromKVT[ty]; pv->flags=NO_HEAP; pv->meta=0; pv->eid=STORE_COLLECTION_ID; pv->op=OP_SET; pv->length=ls; pv->property=kd->propID;
+				if (unsigned(ty-KVT_INT)<=unsigned(KVT_URI-KVT_INT)) memcpy(&pv->i,s,ls);
+				switch (ty) {
+				default: break;
+				case KVT_INT: if (ls!=sizeof(int32_t)) pv->i=ls==sizeof(int8_t)?(int32_t)*(int8_t*)&pv->i:ls==sizeof(int16_t)?(int32_t)*(int16_t*)&pv->i:(int32_t)pv->i64; break;
+				case KVT_UINT: case KVT_URI: if (ls!=sizeof(uint32_t)) pv->ui=ls==sizeof(uint8_t)?(uint32_t)*(uint8_t*)&pv->ui:ls==sizeof(uint16_t)?(uint32_t)*(uint16_t*)&pv->ui:(uint32_t)pv->ui64; break;
+				case KVT_INT64: case KVT_INTV: if (ls!=sizeof(int64_t)) pv->i64=ls==sizeof(int8_t)?(int64_t)*(int8_t*)&pv->i:ls==sizeof(int16_t)?(int64_t)*(int16_t*)&pv->i:(int64_t)pv->i; break;
+				case KVT_UINT64: if (ls!=sizeof(uint64_t)) pv->ui64=ls==sizeof(uint8_t)?(uint64_t)*(uint8_t*)&pv->ui:ls==sizeof(uint16_t)?(uint64_t)*(uint16_t*)&pv->ui:(uint64_t)pv->ui; break;
+				case KVT_FLOAT: if ((mod&0x10)==0) pv->type=VT_FLOAT; /*if ((mod&0x20)!=0) pv->qval.units=...*/ break;
+				case KVT_SUINT: if (ls==1) pv->type=VT_BOOL,pv->b=*(uint8_t*)&pv->ui!=0; else if (ls<sizeof(uint64_t)) {pv->type=VT_IDENTITY; if (ls<sizeof(uint32_t)) pv->iid=(IdentityID)*(uint16_t*)&pv->ui;} break;
+				case KVT_STR: case KVT_BIN: case KVT_URL:
+					if ((p=ma->malloc(ls+(pv->type==VT_BSTR?0:1)))==NULL) return RC_NORESOURCES;
+					memcpy(p,s,ls); if (pv->type!=VT_BSTR) ((char*)p)[ls]='\0'; pv->str=(char*)p; pv->flags=ma->getAType();
+					break;
+				case KVT_REF:
+					r.pid=STORE_INVALID_PROPID; r.eid=STORE_COLLECTION_ID; r.vid=STORE_CURRENT_VERSION;
+					try {
+						PINRef pr((ses!=NULL?ses->getStore():StoreCtx::get())->storeID,s,ls);
+						if ((kd->type==VT_REFIDELT||kd->type==VT_ANY) && (pr.def&PR_U2)!=0) {r.eid=pr.u2; pv->type=VT_REFIDELT;}
+						if ((kd->type==VT_REFIDELT||kd->type==VT_REFIDPROP||kd->type==VT_ANY) && (pr.def&PR_U1)!=0) {r.pid=pr.u1; if (pv->type==VT_REFID) pv->type=VT_REFIDPROP;}
+						r.id=pr.id;
+					} catch (RC& rc2) {rc=rc2;}
+					if (pv->type==VT_REFID) pv->id=r.id; 
+					else if ((pr=(RefVID*)ma->malloc(sizeof(RefVID)))==NULL) return RC_NORESOURCES;
+					else {*pr=r; pv->refId=pr; pv->flags=ma->getAType();}
+					break;
 				}
-				if (l<ls) return RC_CORRUPTED;
-				if (fFilter) pv=(Value*)BIN<Value,PropertyID,ValCmp>::find(kd->propID,vals,nv); else if (i>=nv) break; else pv=&vals[i];
-				if (pv!=NULL && pv->property==kd->propID) {
-					pv->type=kd->type; pv->flags=NO_HEAP; pv->meta=0; pv->eid=STORE_COLLECTION_ID; pv->op=OP_SET; pv->length=ls;
-					if (b<KT_BIN) memcpy(&pv->i,s,ls);
-					else if (b==KT_REF) {
-						if (ls==0) return RC_CORRUPTED;
-						r.pid=STORE_INVALID_PROPID; r.eid=STORE_COLLECTION_ID; r.vid=STORE_CURRENT_VERSION;
-						try {
-							PINRef pr(ses->getStore()->storeID,s,ls);
-							if (kd->type==VT_REFIDELT && (pr.def&PR_U2)!=0) r.eid=pr.u2;
-							if ((kd->type==VT_REFIDELT||kd->type==VT_REFIDPROP) && (pr.def&PR_U1)!=0) r.pid=pr.u1;
-							r.id=pr.id;
-						} catch (RC &rc) {return rc;}
-						if (kd->type==VT_REFID) pv->set(r.id);
-						else if ((pr=(RefVID*)ma->malloc(sizeof(RefVID)))==NULL) return RC_NORESOURCES;
-						else {*pr=r; pv->set(*pr); pv->flags=ma->getAType();}
-						pv->property=kd->propID;
-					} else if (kd->type==VT_STRING || kd->type==VT_URL) {
-						if ((p=ma->malloc(ls+1))==NULL) return RC_NORESOURCES;
-						memcpy(p,s,ls); ((char*)p)[ls]='\0'; pv->str=(char*)p; pv->flags=ma->getAType();
-					} else {
-						if ((p=ma->malloc(ls))==NULL) return RC_NORESOURCES;
-						memcpy(p,s,ls); pv->bstr=(unsigned char*)p; pv->flags=ma->getAType();
-					}
-				}
+				if (kd->type!=VT_ANY && kd->type!=pv->type && pv->type!=VT_ANY) return RC_CORRUPTED; 
 			}
-			assert(l>=ls); s+=ls; l-=ls;
+			s+=ls; l-=ls;
 		}
 	} else {
 		if (fFilter && nv>1) vals=(Value*)BIN<Value,PropertyID,ValCmp>::find(kd->propID,vals,nv);
 		else if (vals->property!=kd->propID) {if (vals->property==PROP_SPEC_ANY) vals->property=kd->propID; else vals=NULL;}
 		if (vals!=NULL) {
-			vals->flags=NO_HEAP;
+			vals->flags=NO_HEAP; vals->meta=0; vals->eid=STORE_COLLECTION_ID; vals->op=OP_SET; vals->length=1; vals->type=kd->type; assert(kd->type!=VT_ANY);
 			switch (type) {
-			case KT_INT: vals->set((int)v.i32); break;
-			case KT_UINT: vals->set((unsigned int)v.u32); break;
-			case KT_UINT64: if (kd->type==VT_DATETIME) vals->setDateTime(v.u64); else vals->setU64(v.u64); break;
-			case KT_INT64: if (kd->type==VT_INTERVAL) vals->setInterval(v.i64); else vals->setI64(v.i64); break;
-			case KT_FLOAT: vals->set(v.f); break; 
-			case KT_DOUBLE: vals->set(v.d); break;
-			case KT_MSEG: return RC_TYPE;
+			default: memcpy(&vals->i,&v,sizeof(v)); break;
+			case KT_VAR: return RC_TYPE;
 			case KT_REF:
 				if (v.ptr.l==0) return RC_CORRUPTED;
+				r.pid=STORE_INVALID_PROPID; r.eid=STORE_COLLECTION_ID; r.vid=STORE_CURRENT_VERSION;
 				try {
 					PINRef pr(ses->getStore()->storeID,(byte*)getPtr2(),v.ptr.l);
-					if (kd->type==VT_REFIDELT) r.eid=(pr.def&PR_U2)!=0?pr.u2:STORE_COLLECTION_ID;
-					if (kd->type==VT_REFIDELT||kd->type==VT_REFIDPROP) r.eid=(pr.def&PR_U1)!=0?pr.u1:STORE_INVALID_PROPID;
+					if (kd->type==VT_REFIDELT && (pr.def&PR_U2)!=0) r.eid=pr.u2;
+					if ((kd->type==VT_REFIDELT||kd->type==VT_REFIDPROP) && (pr.def&PR_U1)!=0) r.pid=pr.u1;
 					r.id=pr.id;
 				} catch (RC &rc) {return rc;}
-				if (kd->type==VT_REFID) vals->set(r.id);
+				if (vals->type==VT_REFID) vals->id=r.id;
 				else if ((pr=(RefVID*)ma->malloc(sizeof(RefVID)))==NULL) return RC_NORESOURCES;
-				else {r.vid=STORE_CURRENT_VERSION; *pr=r; vals->set(*pr); vals->flags=ma->getAType();}
+				else {*pr=r; vals->refId=pr; vals->flags=ma->getAType();}
 				break;
 			case KT_BIN:
 				switch (kd->type) {
 				default: case VT_BSTR:
 					if ((p=ma->malloc(v.ptr.l))==NULL) return RC_NORESOURCES;
-					memcpy(p,getPtr2(),v.ptr.l); vals->set((unsigned char*)p,v.ptr.l); vals->flags=ma->getAType(); break;
+					memcpy(p,getPtr2(),v.ptr.l); vals->bstr=(unsigned char*)p; vals->length=v.ptr.l; vals->flags=ma->getAType(); break;
 				case VT_STRING: case VT_URL:
 					if ((p=ma->malloc(v.ptr.l+1))==NULL) return RC_NORESOURCES;
-					memcpy(p,getPtr2(),v.ptr.l); ((char*)p)[v.ptr.l]='\0'; vals->set((char*)p,v.ptr.l); vals->flags=ma->getAType(); break;	
+					memcpy(p,getPtr2(),v.ptr.l); ((char*)p)[v.ptr.l]='\0'; vals->str=(char*)p; vals->length=v.ptr.l; vals->flags=ma->getAType(); break;	
 				}
 				break;
-			default: return RC_CORRUPTED;
 			}
-			vals->property=kd->propID;
 		}
 	}
 	return rc;

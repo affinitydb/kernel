@@ -211,6 +211,7 @@ public:
 		ushort		calcSplitIdx(bool& fInsR,const SearchKey& key,ulong idx,size_t lInsert,ushort prefixSize,bool fNewKey=false) const;
 		bool		checkSibling(const SearchKey& key) const {return info.sibling!=INVALID_PAGEID && testKey(key,ushort(~0u))>=0;}
 		int			testKey(const SearchKey& key,ushort idx,bool fPrefix=false) const;
+		bool		testBound(const SearchKey& key,ushort idx,const IndexSeg *sg,unsigned nSegs,bool fStart,bool fPrefix=false) const;
 		int			cmpKey(const SearchKey& key) const {return info.nSearchKeys>0&&testKey(key,0)<0?-1:info.sibling!=INVALID_PAGEID&&testKey(key,ushort(~0u))>=0?1:0;}
 		int			cmpKeys(const byte *pv,ulong idx,ulong sidx,ushort lElt,bool fVM) const;
 		void		*findData(ulong idx,ushort& lData,const PagePtr **pPtr=NULL) const;

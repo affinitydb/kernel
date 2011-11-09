@@ -184,9 +184,9 @@ RC MergeOp::next(const PINEx *skip)
 			}
 		}
 		assert((state&(QOS_ADV1|QOS_ADV2|QOS_ADVN))==0);
-		int cmp=Expr::cvcmp(vals[0],vals[1],CND_SORT);
-		if (cmp>0) state|=QOS_ADV2;
-		else if (cmp<0) {
+		int c=cmp(vals[0],vals[1],CND_SORT);
+		if (c>0) state|=QOS_ADV2;
+		else if (c<0) {
 			if ((state&QOS_NEXT)==0) state|=QOS_ADV1;
 			else {freeV(vals[0]); vals[0]=vals[2]; vals[2].setError(); *res=saveR; state&=~QOS_NEXT;}
 			if (op==QRY_EXCEPT) return RC_OK;
@@ -209,7 +209,7 @@ RC MergeOp::next(const PINEx *skip)
 						if (queryOp->getData(*res,&vals[2],1)==RC_OK) break;
 						if (rc==RC_DEADLOCK || rc==RC_SHUTDOWN) return rc;				// RC_NOACCESS || RC_DELETED || RC_NOTFOUND
 					}
-					if (rc==RC_OK) {if (Expr::cvcmp(vals[0],vals[2],CND_SORT)!=0) state|=QOS_NEXT; else state=state&~QOS_ADV2|QOS_ADVN;}
+					if (rc==RC_OK) {if (cmp(vals[0],vals[2],CND_SORT)!=0) state|=QOS_NEXT; else state=state&~QOS_ADV2|QOS_ADVN;}
 					// restore res from saveR
 				}
 				break;
@@ -308,9 +308,12 @@ RC HashOp::next(const PINEx *skip)
 	RC rc=RC_OK;
 	if ((state&QST_INIT)!=0) {
 		state&=~QST_INIT; assert(pids==NULL);
-		if (queryOp2!=NULL) for (PINEx qr2(ses); (rc=queryOp2->next(/*qr2*/))==RC_OK; ) {
-			if (pids==NULL && (pids=new(ses) PIDStore(ses))==NULL) return RC_NORESOURCES;
-			(*pids)+=qr2;
+		if (queryOp2!=NULL) {
+			PINEx qr(ses); queryOp2->connect(&qr);
+			for (PINEx qr2(ses); (rc=queryOp2->next())==RC_OK; ) {
+				if (pids==NULL && (pids=new(ses) PIDStore(ses))==NULL) return RC_NORESOURCES;
+				(*pids)+=qr;
+			}
 		}
 		if (rc!=RC_EOF) {delete pids; pids=NULL; return rc;}
 		if (pids==NULL) return RC_EOF;
@@ -350,7 +353,7 @@ void HashOp::print(SOutCtx& buf,int level) const
 
 //------------------------------------------------------------------------------------------------
 
-LoopJoin::~LoopJoin()
+NestedLoop::~NestedLoop()
 {
 	delete queryOp2;
 	if (conds!=NULL) {
@@ -362,61 +365,72 @@ LoopJoin::~LoopJoin()
 	}
 }
 
-RC LoopJoin::next(const PINEx *skip)
+void NestedLoop::connect(PINEx **results,unsigned nRes)
 {
-	PINEx qr2(ses); RC rc;
+	if (results!=NULL && nRes!=0) {
+		res=results[0]; unsigned nOuts1=queryOp->getNOuts();
+		queryOp->connect(results,nRes>nOuts1?nOuts1:nRes);
+		if (nRes==1) queryOp2->connect(pR);
+		else if (nOuts1+queryOp2->getNOuts()<=nRes) {
+			queryOp2->connect(results+nOuts1,nRes-nOuts1); pR=results[nOuts1];	//???
+		} else {
+			//???
+		}
+	}
+}
+
+RC NestedLoop::next(const PINEx *skip)
+{
+	RC rc;
 	if ((state&QST_INIT)!=0) {
 		state&=~QST_INIT;
 		if (nSkip>0) {
 			// ???
 		}
 	}
-//	case GO_FIRST:
-#if 0
-		rc=queryOp!=NULL?queryOp->rewind():RC_EOF;
-		if (rc==RC_OK) rc=queryOp2!=NULL?queryOp2->rewind():RC_EOF;
-		state=(state&(QOS_UNI1|QOS_UNI2))|(rc==RC_OK?QOS_ADV1|QOS_ADV2:QOS_EOF1|QOS_EOF2);
-#endif
-	for (/*qr1.cleanup()*/;;state|=QOS_ADV1) {
+	for (res->cleanup();;state|=QOS_ADV1) {
 		if ((state&(QOS_EOF1|QOS_EOF2))!=0) return RC_EOF;
 		if ((state&QOS_ADV1)!=0) {
 			queryOp2->release(); state&=~QOS_ADV1;
-#if 0
-			do if ((rc=queryOp->next(/*qr1*/))!=RC_OK || (rc=accessBody(qr1,false))!=RC_OK) {
-				queryOp->release(); queryOp2->release(); state|=QOS_EOF1|QOS_EOF2; return rc;
-			} while (!qr1.defined(condProps,nPropIDs1));
+			do {
+				if ((rc=queryOp->next())==RC_OK) {
+					//...
+					// rc=getData(*res,...);
+				}
+				if (rc!=RC_OK) {queryOp->release(); queryOp2->release(); state|=QOS_EOF1|QOS_EOF2; return rc;}
+			} while (!res->defined(props,nPropIDs1));
 			// locking
 			// get outer pin
 			queryOp->release();
-			if ((rc=queryOp2->rewind())!=RC_OK)
+			if ((rc=queryOp2->rewind())!=RC_OK)		// not first time!
 				{queryOp2->release(); state|=QOS_EOF1|QOS_EOF2; return rc;}
-#endif
 		}
-		while ((rc=queryOp2->next(/*qr2*/))!=RC_EOF) {
-#if 0
-			if (rc!=RC_OK || (rc=accessBody(qr2,false))!=RC_OK) 
-				{state=QOS_EOF1|QOS_EOF2; queryOp2->release(); return rc;}
-#endif
-			bool fOK=qr2.defined(&condProps[nPropIDs1],nPropIDs2);
-			if (fOK && conds!=NULL) {
-//				const PINEx *pp[2]={&qr1,&qr2};
-//				if (!ses->getStore()->queryMgr->condSatisfied(nConds>1?conds:&cond,nConds,pp,2,NULL,0,ses)) fOK=false;
+		while ((rc=queryOp2->next())!=RC_EOF) {
+			if (rc==RC_OK) {
+				//...
+				//rc=getData()
 			}
-			// locking like in Filter -> after cond check
+			if (rc!=RC_OK) {state=QOS_EOF1|QOS_EOF2; queryOp2->release(); return rc;}
+			bool fOK=pR->defined(&props[nPropIDs1],nPropIDs2);
+			if (fOK && conds!=NULL) {
+				const PINEx *pp[2]={res,pR};
+				if (!ses->getStore()->queryMgr->condSatisfied((const Expr* const*)(nConds>1?conds:&cond),nConds,pp,2,NULL,0,ses)) fOK=false;
+			}
 			if (fOK) return RC_OK;
 		}
 	}
 }
 
-RC LoopJoin::rewind()
+RC NestedLoop::rewind()
 {
 	RC rc;
 	if (queryOp!=NULL && (rc=queryOp->rewind())!=RC_OK) return rc;
 	if (queryOp2!=NULL && (rc=queryOp2->rewind())!=RC_OK) return rc;
+	state=(state&(QOS_UNI1|QOS_UNI2))|(rc==RC_OK?QOS_ADV1|QOS_ADV2:QOS_EOF1|QOS_EOF2);		//???
 	return RC_OK;
 }
 
-RC LoopJoin::release()
+RC NestedLoop::release()
 {
 	RC rc;
 	if (queryOp!=NULL && (rc=queryOp->release())!=RC_OK) return rc;
@@ -424,7 +438,7 @@ RC LoopJoin::release()
 	return RC_OK;
 }
 
-void LoopJoin::getOpDescr(QODescr& qop)
+void NestedLoop::getOpDescr(QODescr& qop)
 {
 	QODescr qop1,qop2;
 	if (queryOp!=NULL) queryOp->getOpDescr(qop1);
@@ -433,17 +447,17 @@ void LoopJoin::getOpDescr(QODescr& qop)
 	qop.level=max(qop1.level,qop2.level)+1;
 }
 
-void LoopJoin::print(SOutCtx& buf,int level) const
+void NestedLoop::print(SOutCtx& buf,int level) const
 {
-	buf.fill('\t',level); buf.append("loop join\n",10);
+	buf.fill('\t',level); buf.append("nested loop\n",12);
 	if (queryOp!=NULL) queryOp->print(buf,level+1);
 	if (queryOp2!=NULL) queryOp2->print(buf,level+1);
 }
 
-RC LoopJoin::create(Session *ses,QueryOp *&res,QueryOp *qop1,QueryOp *qop2,const Expr *const *c,ulong nc,
+RC NestedLoop::create(Session *ses,QueryOp *&res,QueryOp *qop1,QueryOp *qop2,const Expr *const *c,ulong nc,
 		const PropertyID *pids1,ulong nPids1,const PropertyID *pids2,ulong nPids2,QUERY_SETOP jt,ulong md)
 {
-	LoopJoin *lj=new(ses,nPids1+nPids2) LoopJoin(ses,qop1,qop2,pids1,nPids1,pids2,nPids2,jt,md);
+	NestedLoop *lj=new(ses,nPids1+nPids2) NestedLoop(ses,qop1,qop2,pids1,nPids1,pids2,nPids2,jt,md);
 	if ((res=lj)==NULL) return RC_NORESOURCES;
 	if (c!=NULL && nc>0) {
 		// QOS_UNI1, QOS_UNI2

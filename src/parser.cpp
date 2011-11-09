@@ -168,7 +168,7 @@ const OpDscr SInCtx::opDscr[] =
 	{_F,	LX_RPR,		S_L("TOINUM"),		{40,  2},	{1,	1}	},		 //OP_TOINUM
 	{_F|_I,	LX_RPR,		S_L("CAST"),		{40,  2},	{2,	2}	},		 //OP_CAST
 	{0,		LX_RBR,		S_L(","),			{40,  2},	{2,	2}	},		 //OP_RANGE
-	{0,		LX_RCBR,	S_L(","),			{40,  2},	{2,	2}	},		 //OP_ARRAY
+	{0,		LX_RCBR,	S_L(","),			{40,  2},	{2,255}	},		 //OP_ARRAY
 	{_F|_A,	LX_RPR,		S_L(COUNT_S),		{40,  2},	{1,	2}	},		 //OP_COUNT
 	{_F,	LX_RPR,		S_L("LENGTH"),		{40,  2},	{1,	1}	},		 //OP_LENGTH
 	{_F,	LX_RPR,		S_L("POSITION"),	{40,  2},	{2,	2}	},		 //OP_POSITION
@@ -231,9 +231,9 @@ const OpDscr SInCtx::opDscr[] =
 
 const static Len_Str typeName[VT_ALL] = 
 {
-	{S_L("")}, {S_L("STRING")}, {S_L("BSTR")}, {S_L("URL")}, {S_L("ENUM")},
-	{S_L("INT")}, {S_L("UINT")}, {S_L("INT64")}, {S_L("UINT64")}, {S_L("DECIMAL")}, {S_L("FLOAT")}, {S_L("DOUBLE")},
+	{S_L("")}, {S_L("INT")}, {S_L("UINT")}, {S_L("INT64")}, {S_L("UINT64")}, {S_L("DECIMAL")}, {S_L("FLOAT")}, {S_L("DOUBLE")},
 	{S_L("BOOL")}, {S_L("DATETIME")}, {S_L("INTERVAL")}, {S_L("URIID")}, {S_L("IDENTITY")},
+	{S_L("STRING")}, {S_L("BSTR")}, {S_L("URL")}, {S_L("ENUM")},
 	{S_L("REF")}, {S_L("REFID")}, {S_L("REFVAL")}, {S_L("REFIDVAL")}, {S_L("REFELT")}, {S_L("REFIDELT")},
 	{S_L("EXPR")}, {S_L("QUERY")}, {S_L("ARRAY")}, {S_L("COLLECTION")}, {S_L("STRUCT")}, {S_L("RANGE")},
 	{S_L("STREAM")}, {S_L("CURRENT")}, {S_L("PARAM")}, {S_L("VARREF")}, {S_L("EXPRTREE")}
@@ -340,11 +340,13 @@ RC Stmt::render(SOutCtx& out) const
 		if (values!=NULL) for (i=0; i<nValues; i++) {
 			const Value& v=values[i];
 			if (v.property!=STORE_INVALID_PROPID && v.op<=OP_CONCAT) {
-				unsigned op=v.op>=(uint8_t)OP_FIRST_EXPR?OP_SET:v.op==(uint8_t)OP_ADD_BEFORE?OP_ADD:v.op==(uint8_t)OP_MOVE_BEFORE?OP_MOVE:v.op;
+				unsigned op=v.op>=(uint8_t)OP_FIRST_EXPR?OP_SET:v.op==(uint8_t)OP_ADD_BEFORE?OP_ADD:v.op==(uint8_t)OP_MOVE_BEFORE?OP_MOVE:(ExprOp)v.op;
 				if (op==prev) {if (!out.append(", ",2)) return RC_NORESOURCES;}
 				else if (out.append(opKWs[op].s,opKWs[op].l)) prev=op; else return RC_NORESOURCES;
 				if ((rc=out.renderName(v.property))!=RC_OK) return rc;
 				if (v.eid!=STORE_COLLECTION_ID && op!=OP_RENAME && (rc=renderElement(v.eid,out,v.op==OP_ADD_BEFORE))!=RC_OK) return rc;
+				if ((v.meta&META_PROP_IFEXIST)!=0) {if (!out.append("?",1)) return RC_NORESOURCES;}
+				else if ((v.meta&META_PROP_IFNOTEXIST)!=0 && !out.append("!",1)) return RC_NORESOURCES;
 				switch (op) {
 				case OP_SET:
 					if (v.op>=OP_FIRST_EXPR && !out.append(SInCtx::opDscr[v.op].str,SInCtx::opDscr[v.op].lstr)) return RC_NORESOURCES;
@@ -352,7 +354,7 @@ RC Stmt::render(SOutCtx& out) const
 					if (!out.append("=",1)) return RC_NORESOURCES;
 					if ((rc=out.renderValue(v))!=RC_OK) return rc;
 				case OP_DELETE: break;
-			case OP_MOVE:
+				case OP_MOVE: case OP_MOVE_BEFORE:
 					if (v.op==OP_MOVE) {
 						if (!out.append(" "AFTER_S" ",sizeof(AFTER_S)+1)) return RC_NORESOURCES;
 					} else {
@@ -372,11 +374,11 @@ RC Stmt::render(SOutCtx& out) const
 		}
 	case STMT_DELETE: case STMT_UNDELETE:
 		if (fFrom) {
-			if (top->type!=QRY_SIMPLE || ((SimpleVar*)top)->classes!=NULL || ((SimpleVar*)top)->pids!=NULL) {
+			if (top->type!=QRY_SIMPLE || ((SimpleVar*)top)->classes!=NULL || ((SimpleVar*)top)->pids!=NULL || ((SimpleVar*)top)->path!=NULL) {
 				if (!out.append("\n"FROM_S" ",sizeof(FROM_S)+1)) return RC_NORESOURCES;
 				if ((rc=top->render(RP_FROM,out))!=RC_OK) break;
 			} else {
-				if (((SimpleVar*)top)->condIdx!=NULL || ((SimpleVar*)top)->props!=NULL) out.flags|=SOM_WHERE;
+				if (((SimpleVar*)top)->condIdx!=NULL) out.flags|=SOM_WHERE;
 				if (((SimpleVar*)top)->condFT!=NULL) out.flags|=SOM_MATCH;
 			}
 		}
@@ -409,15 +411,25 @@ RC QVar::render(SOutCtx& out) const
 				//???
 		}
 		for (unsigned i=0; i<o.nValues; i++) {
-			const Value &v=o.vals[i];
+			const Value &v=o.vals[i]; bool fAgg=false; const QVar *qv;
+			if (v.op<OP_ALL && (SInCtx::opDscr[v.op].flags&_A)!=0) {
+				if (!out.append(SInCtx::opDscr[v.op].str,SInCtx::opDscr[v.op].lstr) || !out.append("(",1)) return RC_NORESOURCES;
+				fAgg=true;
+			}
 			switch (v.type) {
 			default: rc=out.renderValue(v); break;
 			case VT_EXPR: rc=((Expr*)v.expr)->render(SInCtx::opDscr[LX_COMMA].prty[0],out); break;
 			case VT_EXPRTREE: rc=((ExprTree*)v.exprt)->render(SInCtx::opDscr[LX_COMMA].prty[0],out); break;
-			case VT_VARREF:
-				//?????
+			case VT_VARREF: 
+				qv=NULL;
+				if (v.length==0 || type!=QRY_SIMPLE) {
+					if ((qv=getRefVar(v.refPath.refN))==NULL) return RC_CORRUPTED;
+					if (v.length==0) {rc=out.renderVarName(qv); break;}
+				}
+				if (v.length!=0 && (rc=out.renderName(v.refPath.id,NULL,qv))==RC_OK) rc=renderElement(v.eid,out);
 				break;
 			}
+			if (fAgg && !out.append(")",1)) return RC_NORESOURCES;
 			if (rc==RC_OK && v.property!=STORE_INVALID_PROPID) {
 				if (!out.append(" "AS_S" ",sizeof(AS_S)+1)) return RC_NORESOURCES;
 				rc=out.renderName(v.property);
@@ -437,7 +449,7 @@ RC QVar::render(SOutCtx& out) const
 		if (!out.append("\n"FROM_S" ",sizeof(FROM_S)+1)) return RC_NORESOURCES;
 		if ((rc=render(RP_FROM,out))!=RC_OK) return rc;
 	} else {
-		if (((SimpleVar*)this)->condIdx!=NULL || ((SimpleVar*)this)->props!=NULL) out.flags|=SOM_WHERE;
+		if (((SimpleVar*)this)->condIdx!=NULL) out.flags|=SOM_WHERE;
 		if (((SimpleVar*)this)->condFT!=NULL) out.flags|=SOM_MATCH;
 	}
 	if ((out.flags&SOM_WHERE)!=0 || nConds>0) {
@@ -491,9 +503,6 @@ RC QVar::render(RenderPart part,SOutCtx& out) const
 	RC rc;
 	switch (part) {
 	default: break;
-	case RP_SELECT:
-		//...
-		break;
 	case RP_FROM:
 		if (nConds>0) out.flags|=SOM_WHERE;
 		if ((out.flags&SOM_VAR_NAMES)!=0) {
@@ -580,7 +589,7 @@ RC SimpleVar::render(RenderPart part,SOutCtx& out) const
 	switch (part) {
 	default: break;
 	case RP_FROM:
-		if (condIdx!=NULL || props!=NULL) out.flags|=SOM_WHERE;
+		if (condIdx!=NULL) out.flags|=SOM_WHERE;
 		if (condFT!=NULL) out.flags|=SOM_MATCH;
 		if (subq!=NULL) {
 			if (!out.append("(",1)) return RC_NORESOURCES;
@@ -616,17 +625,6 @@ RC SimpleVar::render(RenderPart part,SOutCtx& out) const
 		if (path!=NULL) for (unsigned i=0; i<nPathSeg; i++) if ((rc=out.renderPath(path[i]))!=RC_OK) return rc;
 		break;
 	case RP_WHERE:
-		if (props!=NULL && nProps>0) {
-			if ((out.flags&SOM_AND)!=0 && !out.append("\n\t"AND_S" ",sizeof(AND_S)+2)) return RC_NORESOURCES;
-			const char *exstr=SInCtx::opDscr[OP_EXISTS].str; size_t lExist=strlen(exstr);
-			for	(unsigned i=0; i<nProps; i++) {
-				if (i!=0 && !out.append(" "AND_S" ",sizeof(AND_S)+1)) return RC_NORESOURCES;
-				if (!out.append(exstr,lExist)||!out.append("(",1)) return RC_NORESOURCES;
-				if ((rc=out.renderName(props[i],NULL,this))!=RC_OK) return rc;
-				if (!out.append(")",1)) return RC_NORESOURCES;
-			}
-			out.flags|=SOM_AND;
-		}
 		out.cvar=this;
 		for (CondIdx *ci=condIdx; ci!=NULL; ci=ci->next,out.flags|=SOM_AND) {
 			assert(ci->ks.op>=OP_EQ && ci->ks.op<=OP_BEGINS);
@@ -634,7 +632,7 @@ RC SimpleVar::render(RenderPart part,SOutCtx& out) const
 			if (ci->expr==NULL) {
 				if ((rc=out.renderName(ci->ks.propID))!=RC_OK) return rc;
 			} else {
-				if ((ci->expr->expr->render(SInCtx::opDscr[OP_EQ].prty[0],out))!=RC_OK) return rc;
+				if ((ci->expr->render(SInCtx::opDscr[OP_EQ].prty[0],out))!=RC_OK) return rc;
 			}
 			if (ci->ks.op>=OP_ALL) return RC_CORRUPTED;
 			if (!out.append(" ",1)) return RC_NORESOURCES;
@@ -733,6 +731,7 @@ RC ExprTree::render(int prty,SOutCtx& out) const
 				if (i!=0 && !out.append(",",1)) return RC_NORESOURCES;
 				if ((rc=render(operands[1].varray[i],SInCtx::opDscr[LX_COMMA].prty[0],out))!=RC_OK) return rc;
 			} else if (operands[1].type==VT_EXPRTREE && operands[1].exprt->getOp()==OP_ARRAY) {
+				// linearize, if multiple levels of OP_ARRAY
 				ExprTree *et=(ExprTree*)operands[1].exprt;
 				for (unsigned i=0; i<et->nops; i++) {
 					if (i!=0 && !out.append(",",1)) return RC_NORESOURCES;
@@ -745,7 +744,7 @@ RC ExprTree::render(int prty,SOutCtx& out) const
 		if (prty>od->prty[0] && !out.append(")",1)) return RC_NORESOURCES;
 		break;
 	case OP_CAST:
-		if (operands[1].type!=VT_INT && operands[1].type!=VT_UINT || operands[1].i<=0 || operands[1].i>=VT_ALL) return RC_CORRUPTED;
+		if (operands[1].type!=VT_INT && operands[1].type!=VT_UINT || operands[1].i<=VT_ERROR || operands[1].i>=VT_ALL) return RC_CORRUPTED;
 		if (!out.append("CAST(",5)) return RC_NORESOURCES;
 		if ((rc=render(operands[0],prty,out))!=RC_OK) return rc;
 		if (!out.append(" "AS_S" ",sizeof(AS_S)+1) || 
@@ -802,7 +801,7 @@ RC ExprTree::render(int prty,SOutCtx& out) const
 			if (prty>od->prty[0] && !out.append("(",1)) return RC_NORESOURCES;
 			if ((od->flags&_U)==0) {
 				if (o==OP_RANGE) {if (!out.append("[",1)) return RC_NORESOURCES;}
-				else if (o==OP_ARRAY) {if (!out.append("[",1)) return RC_NORESOURCES;}
+				else if (o==OP_ARRAY) {if (!out.append("{",1)) return RC_NORESOURCES;}
 				if ((rc=render(operands[idx++],od->prty[0],out))!=RC_OK) return rc;
 				if (!out.append(" ",1)) return RC_NORESOURCES;
 			} else if (nops!=1) return RC_CORRUPTED;
@@ -864,9 +863,31 @@ RC ExprTree::toPathSeg(PathSeg& ps,MemAlloc *ma) const
 
 RC Expr::render(int prty,SOutCtx& out) const
 {
-	ExprTree *et=NULL; RC rc=decompile(et,out.getSession());
-	if (rc==RC_OK) {rc=et->render(prty,out); et->destroy();}
+	RC rc=RC_OK;
+	if ((hdr.flags&EXPR_NO_CODE)!=0) {
+		const VarHdr *vh=(VarHdr*)(&hdr+1);
+		if (vh->var==0) {
+			const bool fPar=vh->nProps>1 && prty>SInCtx::opDscr[OP_LAND].prty[0];
+			if (fPar && !out.append("(",1)) return RC_NORESOURCES;
+			const char *exstr=SInCtx::opDscr[OP_EXISTS].str; size_t lExist=strlen(exstr);
+			for	(unsigned i=0; i<vh->nProps; i++) if ((((uint32_t*)(vh+1))[i]&PROP_OPTIONAL)==0) {
+				if (i!=0 && !out.append(" "AND_S" ",sizeof(AND_S)+1)) return RC_NORESOURCES;
+				if (!out.append(exstr,lExist)||!out.append("(",1)) return RC_NORESOURCES;
+				if ((rc=out.renderName(((uint32_t*)(vh+1))[i]&STORE_MAX_PROPID,NULL))!=RC_OK) return rc;	// var?
+				if (!out.append(")",1)) return RC_NORESOURCES;
+			}
+			if (fPar && !out.append(")",1)) return RC_NORESOURCES;
+		}
+	} else {
+		ExprTree *et=NULL; rc=decompile(et,out.getSession());
+		if (rc==RC_OK) {rc=et->render(prty,out); et->destroy();}
+	}
 	return rc;
+}
+
+bool SOutCtx::expand(size_t len)
+{
+	size_t d=xLen==0?256:xLen/2; if (d<len) d=len; return (ptr=(byte*)ses->realloc(ptr,xLen+=d))!=NULL;
 }
 
 char *SOutCtx::renderAll()
@@ -885,7 +906,7 @@ char *SOutCtx::renderAll()
 		if (!append(PREFIX_S" ",sizeof(PREFIX_S)) || !append(qn->qpref,qn->lq) || !append(QNAME_DELIM" '",sizeof(QNAME_DELIM)+1)
 			|| !append(qn->str,qn->lstr) || !append("'\n",2)) {ses->free(p); return NULL;}
 	}
-	if ((p=(char*)ses->realloc(p,cLen+l+1))!=NULL) {	memmove(p+cLen,p,l+1); memcpy(p,(char*)*this,cLen);}
+	if ((p=(char*)ses->realloc(p,cLen+l+1))!=NULL) {memmove(p+cLen,p,l+1); memcpy(p,(char*)*this,cLen);}
 	return p;
 }
 
@@ -964,7 +985,7 @@ RC SOutCtx::renderPID(const PID& id,bool fJ) {
 
 RC SOutCtx::renderValue(const Value& v,bool fJ) {
 	RC rc=RC_OK; unsigned long u; Identity *ident; const char *s; size_t l; const Value *cv; int ll; const QVar *qv; Value vv;
-	if (fJ && v.type>VT_DOUBLE && v.type!=VT_ARRAY && v.type!=VT_COLLECTION && v.type!=VT_REFID) {
+	if (fJ && v.type>VT_DOUBLE && !isString((ValueType)v.type) && v.type!=VT_ARRAY && v.type!=VT_COLLECTION && v.type!=VT_REFID) {
 		if (v.type!=VT_URIID) {if ((rc=convV(v,vv,VT_STRING))==RC_OK) {rc=renderValue(vv,true); freeV(vv);}}
 		else if (!append("\"",1)) return RC_NORESOURCES;
 		else if ((rc=renderName(v.uid,URIID_PREFIX,NULL,false,false))!=RC_OK) return rc;
@@ -1039,6 +1060,7 @@ RC SOutCtx::renderValue(const Value& v,bool fJ) {
 			if (fJ) {l=sprintf(cbuf,"\"%d\": ",cv->eid); if (!append(cbuf,l)) return RC_NORESOURCES;}
 			if ((rc=renderValue(*cv,fJ))!=RC_OK) break;
 		}
+		v.nav->navigate(GO_FINDBYID,STORE_COLLECTION_ID);
 		if (!append("}",1)) return RC_NORESOURCES;
 		break;
 	case VT_STRUCT:
@@ -1074,10 +1096,10 @@ RC SOutCtx::renderValue(const Value& v,bool fJ) {
 		if (!append("$(",2) || (rc=((ExprTree*)v.exprt)->render(0,*this))==RC_OK && !append(")",1)) rc=RC_NORESOURCES;
 		break;
 	case VT_EXPR:
-		if (!append("$(",2) || (rc=((Expr*)v.expr)->render(0,*this))==RC_OK && !append(")",1)) rc=RC_NORESOURCES;
+		if ((v.meta&META_PROP_EVAL)==0 && !append("$(",2) || (rc=((Expr*)v.expr)->render(0,*this))==RC_OK && (v.meta&META_PROP_EVAL)==0 && !append(")",1)) rc=RC_NORESOURCES;
 		break;
 	case VT_STMT:
-		if (!append("${",2) || (rc=((Stmt*)v.stmt)->render(*this))==RC_OK && !append("}",1)) rc=RC_NORESOURCES;
+		if ((v.meta&META_PROP_EVAL)==0 && !append("${",2) || (rc=((Stmt*)v.stmt)->render(*this))==RC_OK && (v.meta&META_PROP_EVAL)==0 && !append("}",1)) rc=RC_NORESOURCES;
 		break;
 	case VT_PARAM:
 		l=sprintf(cbuf,PARAM_PREFIX"%d",v.refPath.refN); if (!append(cbuf,l)) return RC_NORESOURCES;
@@ -1100,7 +1122,7 @@ RC SOutCtx::renderValue(const Value& v,bool fJ) {
 			if ((qv=cvar!=NULL?cvar->getRefVar(v.refPath.refN):(QVar*)0)==NULL) return RC_CORRUPTED;
 			if (v.length==0) {rc=renderVarName(qv); break;}
 		}
-		if (v.length==0 || (rc=renderName(v.refPath.id,NULL,qv))==RC_OK) rc=renderElement(v.eid,*this);
+		if (v.length!=0 && (rc=renderName(v.refPath.id,NULL,qv))==RC_OK) rc=renderElement(v.eid,*this);
 		break;
 	case VT_ENUM:
 	case VT_DECIMAL:
@@ -1171,6 +1193,17 @@ const TLx SInCtx::charLex[256] =
 	LX_UTF8,LX_UTF8,LX_UTF8,LX_UTF8,LX_UTF8,LX_UTF8,LX_UTF8,LX_UTF8,LX_UTF8,LX_UTF8,LX_UTF8,LX_UTF8,LX_UTF8,LX_UTF8,LX_UTF8,LX_UTF8,								// 0xE0 - 0xEF
 	LX_UTF8,LX_UTF8,LX_UTF8,LX_UTF8,LX_UTF8,LX_ERR,LX_ERR,LX_ERR,LX_ERR,LX_ERR,LX_ERR,LX_ERR,LX_ERR,LX_ERR,LX_ERR,LX_ERR,											// 0xF0 - 0xFF
 };
+
+bool MVStoreKernel::testStrNum(const char *s,size_t l,Value& res)
+{
+	while (l!=0 && SInCtx::charLex[(byte)*s]==LX_SPACE) --l,++s;
+	if (l==0) return false;
+	TLx lx=SInCtx::charLex[(byte)*s];
+	if (lx==LX_DIGIT && l>5) {
+		// try date/interval
+	}
+	return (lx==LX_DIGIT || l>1 && (lx==OP_PLUS || lx==OP_MINUS)) && strToNum(s,l,res)==RC_OK;
+}
 
 KWNode *SInCtx::kwt['_'-'A'+1] = {NULL};
 size_t SInCtx::kwTabSize=sizeof(kwt);
@@ -1402,8 +1435,9 @@ TLx SInCtx::lex()
 	case LX_QUOTE:
 		for (cbeg=beg=ptr,ls=0,buf=NULL,ch=ptr[-1]; ptr<end; ) if (*ptr++==ch) {
 			if (ptr>=end || *ptr!=ch) {
-				if (buf!=NULL && cbeg+1<ptr) {memcpy(buf+ls,cbeg,ptr-cbeg-1); buf[ls+(ptr-cbeg)-1]='\0';}
-				v.set(beg,uint32_t(ptr-cbeg-1+ls)); if (buf!=NULL) v.flags=mtype;
+				size_t ll=ptr-cbeg-1; 
+				if (buf!=NULL) {if (ll!=0) memcpy(buf+ls,cbeg,ll); buf[ls+ll]='\0';}
+				v.set(beg,uint32_t(ls+ll)); if (buf!=NULL) v.flags=mtype;
 				if (lx==LX_DQUOTE) return LX_IDENT;
 				if (lx==LX_ULETTER) v.type=VT_URL;
 				return LX_CON;
@@ -1411,7 +1445,7 @@ TLx SInCtx::lex()
 			if (buf==NULL) {
 				if ((buf=(byte*)ma->malloc(end-beg))==NULL) throw RC_NORESOURCES;
 				memcpy(buf,beg,ls=ptr-beg); beg=(const char*)buf;
-			} else if (cbeg+1<ptr) {memcpy(buf+ls,cbeg,ptr-cbeg-1); ls+=ptr-cbeg-1;}
+			} else if (cbeg<ptr) {memcpy(buf+ls,cbeg,ptr-cbeg); ls+=ptr-cbeg;}
 			cbeg=++ptr;
 		}
 		errpos=ptr; throw lx==LX_DQUOTE?SY_MISDQU:SY_MISQUO;
@@ -1433,9 +1467,8 @@ TLx SInCtx::lex()
 			case LX_LPR: return LX_EXPR;
 			case LX_LCBR: ++ptr; return LX_QUERY;
 			case LX_DIGIT:
-				if (ids==NULL || nids==0) throw SY_INVURN;
-				for (u=*ptr-'0'; ++ptr<end && isD(ch=(byte)*ptr);)
-					if (TN_CHECK(u,ch,nids-1)) u=u*10+ch; else throw SY_INVURN;
+				if (ids==NULL || nids==0 || (u=*ptr-'0')>=nids) throw SY_INVURN;
+				while (++ptr<end && isD(ch=(byte)*ptr)) if (TN_CHECK(u,ch,nids-1)) u=u*10+ch-'0'; else throw SY_INVURN;
 				v.setURIID(ids[u]); return LX_IDENT;
 			}
 		}
@@ -1597,7 +1630,7 @@ TLx SInCtx::parsePrologue()
 void SInCtx::mapURI(const char *prefix,size_t lPrefix)
 {
 	if (ses!=NULL && v.type==VT_STRING) {
-		char *str=(char*)v.str; bool fCopy=true;/*v.flags!=mtype;*/ bool fAddDel=false;
+		char *str=(char*)v.str; bool fCopy=v.flags!=mtype; bool fAddDel=false;
 		if (prefix!=NULL && lPrefix!=0) {
 			const QName *pq=NULL; QName qn={prefix,lPrefix,NULL,0,false};
 			if (lastQN>=nQNames || (pq=&qNames[lastQN])->lq!=lPrefix || memcmp(prefix,pq->qpref,lPrefix)!=0)
@@ -1668,7 +1701,7 @@ void SInCtx::parse(Value& res,const QVarRef *vars,unsigned nVars,unsigned pflags
 				mapURI(); assert(v.type==VT_URIID);
 				if (est==0) {oprs.push(v); est=1; v.setError(); continue;}
 			} else if (est==0) throw SY_MISPROP;
-			nextLex=lx; lx=OP_PATH; est=0; break;
+			nextLex=lx; od=&opDscr[lx=OP_PATH]; est=0; break;
 		case LX_EXCL:
 			if (est!=0) goto error_no_op;
 			if (lex()!=LX_IDENT || v.type!=VT_STRING) throw SY_MISIDENT;
@@ -1718,9 +1751,9 @@ void SInCtx::parse(Value& res,const QVarRef *vars,unsigned nVars,unsigned pflags
 			}
 			oprs.push(vv); v.setError(); est=1; continue;
 		case LX_LBR:
-			lx=est==0?(TLx)OP_RANGE:(est=0,(TLx)LX_FILTER); break;
+			od=&opDscr[lx=est==0?(TLx)OP_RANGE:(est=0,(TLx)LX_FILTER)]; break;
 		case LX_LCBR:
-			if (est!=0) {lx=LX_REPEAT; est=0;} break;
+			if (est!=0) {od=&opDscr[lx=LX_REPEAT]; est=0;} break;
 		case LX_QUEST:
 			if (est!=0 || ops.top().lx!=LX_REPEAT) throw SY_SYNTAX;
 			if (lex()!=LX_RCBR) throw SY_MISRCBR;
@@ -1738,7 +1771,7 @@ void SInCtx::parse(Value& res,const QVarRef *vars,unsigned nVars,unsigned pflags
 					if (v.i<0) throw SY_INVNUM; if (v.i>255) throw SY_TOOBIG;
 					vv.setParam((byte)v.i); v=vv; lx2=LX_CON;
 				} else throw SY_MISCLN;
-				lx=OP_IS_A;
+				od=&opDscr[lx=OP_IS_A];
 			}
 			nextLex=lx2; est=0; break;
 		case OP_PLUS:
@@ -1787,7 +1820,7 @@ void SInCtx::parse(Value& res,const QVarRef *vars,unsigned nVars,unsigned pflags
 						if ((lx=lex())!=LX_SEMI) break;
 						if ((nextLex=lex())!=LX_KEYW || v.op!=KW_INSERT) {sy=SY_SYNTAX; break;}
 					}
-					if (sy!=SY_ALL || (sy=sy=SY_MISRPR,lx)!=LX_RPR) {for (unsigned i=stmts; i--!=0;) stmts[i]->destroy(); throw sy;}
+					if (sy!=SY_ALL || (sy=SY_MISRPR,lx)!=LX_RPR) {for (unsigned i=stmts; i--!=0;) stmts[i]->destroy(); throw sy;}
 					if (stmts==1) res.set(stmts[0]);
 					else {
 						Value *pv=new(ma) Value[(unsigned)stmts]; 
@@ -1884,9 +1917,11 @@ void SInCtx::parse(Value& res,const QVarRef *vars,unsigned nVars,unsigned pflags
 				oprs.push(vv); od2=&opDscr[op.lx=OP_IN]; break;
 			case LX_FILTER:
 				if (lx!=LX_RBR) throw SY_MISRBR; vals=oprs.top(2); assert(vals!=NULL);
-				if (vals[0].type!=VT_REFIDPROP || vals[1].type!=VT_INT && vals[1].type!=VT_UINT) ops.push(OpF(LX_PATHQ,0));
-				else {((RefVID*)vals[0].refId)->eid=vals[1].ui; vals[0].type=VT_REFIDELT; oprs.pop();}
-				goto next_lx;
+				if (vals[1].type==VT_INT||vals[1].type==VT_UINT) {
+					if (vals[0].type==VT_REFIDPROP) {((RefVID*)vals[0].refId)->eid=vals[1].ui; vals[0].type=VT_REFIDELT; oprs.pop(); goto next_lx;}
+					if (vals[0].type==VT_VARREF && (lx2=ops.top().lx)!=OP_PATH&&lx2!=LX_PATHQ) {vals[0].eid=vals[1].ui; oprs.pop(); goto next_lx;}
+				}
+				ops.push(OpF(LX_PATHQ,0)); goto next_lx;
 			case LX_REPEAT:
 			lx_repeat:
 				if (lx!=LX_RCBR) throw SY_MISRCBR; if (nvals>3) throw SY_MANYARG;
@@ -2021,8 +2056,8 @@ void SInCtx::parse(Value& res,const QVarRef *vars,unsigned nVars,unsigned pflags
 		case LX_FILTER: case LX_REPEAT:
 			if ((lx2=ops.top().lx)!=OP_PATH) {
 				if (lx2==LX_PATHQ) {
-					// check OP_PATH before and flag
-				} else if (oprs.top().type==VT_VARREF) {
+					if (ops.top(2)->lx!=OP_PATH || ops.top().flag!=(lx==LX_FILTER?1:0)) throw SY_SYNTAX;
+				} else if (lx==LX_FILTER && oprs.top().type==VT_VARREF) {
 					// check unbound
 				} else throw SY_SYNTAX;
 			}
@@ -2100,14 +2135,14 @@ QVarID SInCtx::parseSelect(Stmt* stmt,bool fMod)
 			nextLex=lx; mode|=SIM_SELECT;
 			// multiple pins???
 			do {
-				Value v; parse(v); v.property=STORE_INVALID_PROPID;
+				Value w; parse(w); w.property=STORE_INVALID_PROPID;
 				if ((lx=lex())==LX_KEYW && v.op==KW_AS) {
-					if (lex()!=LX_CON || v.op!=VT_STRING && v.op!=VT_URIID) throw SY_MISPROP;
-					mapURI(); v.property=v.uid;
-				} else if (lx==LX_CON && (v.op==VT_STRING || v.op==VT_URIID)) {
-					mapURI(); v.property=v.uid;
+					if (lex()!=LX_IDENT || v.type!=VT_STRING && v.type!=VT_URIID) throw SY_MISPROP;
+					mapURI(); w.property=v.uid;
+				} else if (lx==LX_IDENT && (v.type==VT_STRING || v.type==VT_URIID)) {
+					mapURI(); v.property=w.uid;
 				} else nextLex=lx;
-				trs+=v;
+				trs+=w;
 			} while ((lx=lex())==LX_COMMA);
 			mode&=~SIM_SELECT;
 		}
@@ -2395,28 +2430,14 @@ RC SInCtx::resolveSelect(QVarRef *qv,Value& vv)
 TLx SInCtx::parseOrderBy(Stmt *stmt,QVarID var)
 {
 	if (lex()!=LX_KEYW || v.op!=KW_BY) throw SY_MISBY; assert(stmt!=NULL);
-	OrderSeg osegs[10],*segs=osegs; unsigned nSegs=0,xSegs=10; TLx lx; RC rc=RC_OK;
+	DynArray<OrderSeg> segs(ses); TLx lx; RC rc=RC_OK;
 	do {
 		Value w; parse(w,NULL,0,PRS_COPYV);		// vars from Transform?
-		if (nSegs>xSegs) {
-			if (segs!=osegs) segs=(OrderSeg*)ses->realloc(segs,(xSegs*=2)*sizeof(OrderSeg));
-			else if ((segs=(OrderSeg*)ses->malloc((xSegs*=2)*sizeof(OrderSeg)))!=NULL) memcpy(segs,osegs,nSegs*sizeof(OrderSeg));
-			if (segs==NULL) throw RC_NORESOURCES;
-		}
-		OrderSeg& sg=segs[nSegs++]; sg.expr=NULL; sg.pid=STORE_INVALID_PROPID; sg.flags=sg.lPrefix=0; long lstr;
-		for (const Value *pv=&w; ;pv=&((ExprTree*)pv->exprt)->operands[0]) {
-			if (pv->type==VT_URIID) {sg.pid=pv->uid; freeV(w); break;}
-			if (pv->type==VT_VARREF && pv->refPath.refN==0 && pv->length==1) {sg.pid=pv->refPath.id; freeV(w); break;}
-			if (pv->type==VT_EXPRTREE) {
-				if (((ExprTree*)pv->exprt)->op==OP_UPPER || ((ExprTree*)pv->exprt)->op==OP_LOWER) {sg.flags|=ORD_NCASE; continue;}
-				if (((ExprTree*)pv->exprt)->op==OP_SUBSTR && Expr::getI(((ExprTree*)pv->exprt)->operands[0],lstr)==RC_OK && lstr>=0) {
-					if ((((ExprTree*)pv->exprt)->nops==2 || ((ExprTree*)pv->exprt)->nops==3 && lstr==0 && 
-						Expr::getI(((ExprTree*)pv->exprt)->operands[1],lstr)==RC_OK) && lstr>0) {if (sg.lPrefix==0 || lstr<sg.lPrefix) sg.lPrefix=(ushort)lstr; continue;}
-				}
-			}
-			if ((rc=ExprTree::forceExpr(w,ses,true))!=RC_OK) throw rc;
-			sg.expr=(ExprTree*)w.exprt; sg.lPrefix=0; sg.flags&=~ORD_NCASE; break;
-		}
+		OrderSeg &sg=segs.add(); sg.expr=NULL; sg.pid=STORE_INVALID_PROPID; sg.flags=0; sg.var=0; sg.lPrefix=0;
+		if (w.type==VT_URIID) sg.pid=w.uid;
+		else if (w.type==VT_VARREF && w.length==1) {sg.pid=w.refPath.id; sg.var=w.refPath.refN;}
+		else if ((rc=ExprTree::forceExpr(w,ses,true))!=RC_OK) throw rc;
+		else sg.expr=(ExprTree*)w.exprt;
 		if ((lx=lex())==LX_KEYW && (v.op==KW_DESC||v.op==KW_ASC)) {if (v.op==KW_DESC) sg.flags|=ORD_DESC; lx=lex();}
 		if (lx==LX_KEYW && v.op==KW_NULLS) {
 			if (lex()!=LX_IDENT || v.type!=VT_STRING) throw SY_SYNTAX;
@@ -2426,9 +2447,9 @@ TLx SInCtx::parseOrderBy(Stmt *stmt,QVarID var)
 			lx=lex();
 		}
 	} while (lx==LX_COMMA);
-	if (nSegs!=0) rc=var==INVALID_QVAR_ID?stmt->setOrder(segs,nSegs):stmt->setGroup(var,segs,nSegs);
-	for (unsigned i=0; i<nSegs; i++) if (segs[i].expr!=NULL) segs[i].expr->destroy();
-	if (segs!=osegs) ses->free(segs); if (rc!=RC_OK) throw rc;
+	if (segs!=0) rc=var==INVALID_QVAR_ID?stmt->setOrder(segs,segs):stmt->setGroup(var,segs,segs);
+	for (unsigned i=0; i<segs; i++) if (segs[i].expr!=NULL) segs[i].expr->destroy();
+	if (rc!=RC_OK) throw rc;
 	return lx;
 }
 
@@ -2508,7 +2529,7 @@ Stmt *SInCtx::parse()
 					if (lex()!=OP_EQ) {sy=SY_MISEQ; break;}
 					if ((lx=lex())!=LX_KEYW || v.op!=KW_NULL) {
 						nextLex=lx; parse(w);
-						if ((w.flags&HEAP_TYPE_MASK)!=SES_HEAP && (rc=copyV(w,w,ma))!=RC_OK) break;
+						if ((w.flags&HEAP_TYPE_MASK)!=ma->getAType() && (rc=copyV(w,w,ma))!=RC_OK) break;
 						if (w.type==VT_PARAM||w.type==VT_VARREF) w.meta|=META_PROP_EVAL;
 						w.property=uid; if ((rc=props+=w)!=RC_OK) break;
 					}
@@ -2556,7 +2577,7 @@ Stmt *SInCtx::parse()
 						if (lex()!=LX_IDENT) {sy=SY_MISPROP; break;}
 						mapURI(); assert(v.type==VT_URIID);
 						URIID uid=v.uid; if (!checkProp(v.uid,false)) {sy=SY_INVPROP; break;}
-						w.setError(); eid=STORE_COLLECTION_ID; byte eop=op;
+						w.setError(); eid=STORE_COLLECTION_ID; byte eop=op; byte meta=0;
 						if ((lx=lex())==LX_LBR) {
 							if (op==OP_RENAME) {sy=SY_SYNTAX; break;}
 							if ((lx=lex())==LX_IDENT && v.type==VT_STRING && v.length==sizeof(BEFORE_S)-1 && cmpncase(v.str,BEFORE_S,sizeof(BEFORE_S)-1))
@@ -2564,6 +2585,7 @@ Stmt *SInCtx::parse()
 							if (!parseEID(lx,eid)) {sy=SY_MISCON; break;}
 							if (lex()!=LX_RBR) {sy=SY_MISRBR; break;} lx=lex();
 						}
+						if (lx==LX_QUEST) {meta|=META_PROP_IFEXIST; lx=lex();} else if (lx==LX_EXCL) {meta|=META_PROP_IFNOTEXIST; lx=lex();}
 						switch (op) {
 						case OP_EDIT: //???
 						case OP_DELETE:
@@ -2585,9 +2607,8 @@ Stmt *SInCtx::parse()
 							if (lx!=OP_EQ && ((eop=lx)<OP_FIRST_EXPR || lx>OP_CONCAT || lex()!=OP_EQ)) {sy=SY_MISEQ; break;}
 							if ((lx=lex())==LX_KEYW && v.op==KW_NULL && op==OP_SET) eop=OP_DELETE;
 							else {
-								nextLex=lx; parse(w); if ((w.flags&HEAP_TYPE_MASK)!=SES_HEAP) rc=copyV(w,w,ma);
-								if (w.type==VT_PARAM||w.type==VT_VARREF) w.meta|=META_PROP_EVAL;
-								else if (w.type==VT_EXPRTREE) {
+								nextLex=lx; parse(w); if ((w.flags&HEAP_TYPE_MASK)!=ma->getAType()) rc=copyV(w,w,ma);
+								if (w.type==VT_EXPRTREE) {
 									ExprTree *et=(ExprTree*)w.exprt;
 									if (eop==OP_SET && et->op>=OP_FIRST_EXPR && et->op<=OP_CONCAT && et->nops==2) {
 										const Value& lhs=et->operands[0];
@@ -2598,7 +2619,7 @@ Stmt *SInCtx::parse()
 							}
 							break;
 						}
-						w.property=uid; w.op=eop; w.eid=eid;
+						w.property=uid; w.op=eop; w.eid=eid; w.meta|=meta;
 					} while (sy==SY_ALL && rc==RC_OK && (rc=props+=w)==RC_OK && (lx=lex())==LX_COMMA);
 				}
 				mode=mode&~SIM_DML_EXPR|msave;
@@ -2674,7 +2695,7 @@ Stmt *SInCtx::parse()
 					if (lex()!=OP_EQ) {sy=SY_MISEQ; break;}
 					if ((lx=lex())!=LX_KEYW || v.op!=KW_NULL) {
 						nextLex=lx; parse(w);
-						if ((w.flags&HEAP_TYPE_MASK)!=SES_HEAP && (rc=copyV(w,w,ma))!=RC_OK) break;
+						if ((w.flags&HEAP_TYPE_MASK)!=ma->getAType() && (rc=copyV(w,w,ma))!=RC_OK) break;
 						w.property=uid; if ((rc=props+=w)!=RC_OK) break;
 					}
 					if ((lx=lex())!=LX_COMMA) {nextLex=lx; break;}

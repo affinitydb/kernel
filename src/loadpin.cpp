@@ -64,20 +64,17 @@ RC QueryPrc::getClassInfo(Session *ses,PIN *pin)
 	const Value *cv; Class *cls=NULL; uint64_t nPINs=0,nDeletedPINs=0; RC rc=RC_OK;
 	if ((pin->mode&PIN_CLASS)==0 || (cv=pin->findProperty(PROP_SPEC_CLASSID))==NULL || cv->type!=VT_URIID) return RC_CORRUPTED;
 	if ((rc=ctx->classMgr->getClassInfo(cv->uid,cls,nPINs,nDeletedPINs))!=RC_OK) return rc;
-	assert(cls!=NULL); Value vv,*pv; ClassIndex *ci; Stmt *qry; QVar *qv;
-	if ((qry=cls->getQuery())!=NULL && (qv=qry->getTop())!=NULL && qv->condProps!=NULL && qv->lProps!=0) {
-		PropertyID *pids=(PropertyID*)alloca(qv->lProps); unsigned nPids=unsigned(qv->lProps/sizeof(PropertyID));
-		if (pids==NULL) rc=RC_NORESOURCES;
-		else if ((rc=qv->condProps->flatten(qv->lProps,pids,nPids))==RC_OK && nPids!=0) {
-			Value *va=new(ses) Value[nPids];
-			if (va==NULL) rc=RC_NORESOURCES;
-			else {
-				ElementID prefix=ctx->getPrefix();
-				for (unsigned i=0; i<nPids; i++) {va[i].setURIID(pids[i]); va[i].eid=prefix+i;}
-				vv.set(va,nPids); vv.setPropID(PROP_SPEC_PROPERTIES);
-				if ((rc=BIN<Value,PropertyID,ValCmp,uint32_t>::insert(pin->properties,pin->nProperties,vv.property,vv,ses))!=RC_OK) ses->free(va);
-			}
+	assert(cls!=NULL); Value vv,*pv; ClassIndex *ci; Stmt *qry; QVar *qv; PropertyID *pids=NULL; unsigned nPids=0;
+	if ((qry=cls->getQuery())!=NULL && (qv=qry->getTop())!=NULL && qv->getProps(pids,nPids,ses)==RC_OK && pids!=NULL && nPids!=0) {
+		Value *va=new(ses) Value[nPids];
+		if (va==NULL) rc=RC_NORESOURCES;
+		else {
+			ElementID prefix=ctx->getPrefix();
+			for (unsigned i=0; i<nPids; i++) {va[i].setURIID(pids[i]&STORE_MAX_PROPID); va[i].eid=prefix+i;}
+			vv.set(va,nPids); vv.setPropID(PROP_SPEC_PROPERTIES);
+			if ((rc=BIN<Value,PropertyID,ValCmp,uint32_t>::insert(pin->properties,pin->nProperties,vv.property,vv,ses))!=RC_OK) ses->free(va);
 		}
+		ses->free(pids);
 	}
 	if (rc==RC_OK && (cls->getFlags()&CLASS_INDEXED)!=0) {
 		if ((cv=pin->findProperty(PROP_SPEC_CLASS_INFO))==NULL) {
@@ -171,7 +168,7 @@ RC QueryPrc::loadSSV(Value& v,ValueType ty,const HeapPageMgr::HeapObjHeader *hob
 		if (ty==VT_STRING||ty==VT_URL) ps[v.length]=0;
 		break;
 	case VT_EXPR:
-		{p=(const byte*)(hobj+1); ExprHdr ehdr(0,0,0); memcpy(&ehdr,p,sizeof(ExprHdr));
+		{p=(const byte*)(hobj+1); ExprHdr ehdr(0,0,0,0,0,0); memcpy(&ehdr,p,sizeof(ExprHdr));
 		if ((rc=Expr::deserialize(exp,p,p+ehdr.lExpr,ma))!=RC_OK) return rc;
 		v.expr=exp; v.type=VT_EXPR; v.length=1; break;}
 	case VT_STMT:
@@ -283,11 +280,11 @@ RC QueryPrc::loadVH(Value& v,const HeapPageMgr::HeapV *hprop,const PINEx& cb,ulo
 				if ((mode&LOAD_CARDINALITY)!=0) v.set(~0u);
 				else if (ma==NULL && (ma=Session::getSession())==NULL) return RC_NOSESSION;
 				else if ((nav=new(ma) Navigator(cb.addr,hprop->getID(),coll,mode,ma))==NULL) v.setError(pid);
-					else {
-						ma->addObj(nav); v.nav=nav; v.flags=ma->getAType(); v.type=VT_COLLECTION; 
-						v.eid=STORE_COLLECTION_ID; v.length=1; v.meta=ty.flags; v.op=OP_SET;
-					}
+				else {
+					ma->addObj(nav); v.nav=nav; v.flags=ma->getAType(); v.type=VT_COLLECTION; 
+					v.eid=STORE_COLLECTION_ID; v.length=1; v.meta=ty.flags; v.op=OP_SET;
 				}
+			}
 			v.property=pid; return RC_OK;
 		}
 		const HeapPageMgr::HeapVV *coll=(const HeapPageMgr::HeapVV*)((byte*)cb.hp+offset);
@@ -303,7 +300,7 @@ RC QueryPrc::loadVH(Value& v,const HeapPageMgr::HeapV *hprop,const PINEx& cb,ulo
 					if ((mode&LOAD_REF)==0 || (vt=elt->type.getType())==VT_REFID || vt==VT_STRUCT /*&& ??? */) {
 						if ((rc=loadV(const_cast<Value&>(v.varray[j]),elt->type,elt->offset,cb.hp,mode,ma,elt->getID()))!=RC_OK) break;
 						flg|=v.varray[j].flags&VF_SSV; const_cast<Value&>(v.varray[j]).property=STORE_INVALID_PROPID; j++;
-				}
+					}
 				}
 				if (rc==RC_OK && (flg&VF_SSV)!=0 && (mode&LOAD_SSV)!=0 && (rc=loadSSVs(const_cast<Value*>(v.varray),j,mode,Session::getSession(),al))==RC_OK) flg=0;
 				if (rc==RC_OK && (mode&LOAD_REF)!=0) {if ((v.length=j)==0) {al->free((void*)v.varray); v.setError();}}
@@ -320,7 +317,7 @@ RC QueryPrc::loadVH(Value& v,const HeapPageMgr::HeapV *hprop,const PINEx& cb,ulo
 		const HeapPageMgr::HeapV *elt=coll->findElt(eid);
 		if ((mode&LOAD_CARDINALITY)!=0) {v.set(elt!=NULL?1u:0u); v.property=pid; return RC_OK;}
 		if (elt==NULL) {v.setError(pid); return RC_NOTFOUND;}
-		offset=elt->offset; 	ty=elt->type; eid=elt->getID();
+		offset=elt->offset; ty=elt->type; eid=elt->getID();
 	} else if (eid!=STORE_COLLECTION_ID && eid!=STORE_FIRST_ELEMENT && eid!=(cb.hpin!=NULL && cb.hpin->hasRemoteID() && 
 		cb.hpin->getAddr(id) && (hprop->type.flags&META_PROP_LOCAL)==0?HeapPageMgr::getPrefix(id):isRemote(cb.id)?
 															HeapPageMgr::getPrefix(cb.id):ctx->getPrefix())) return RC_NOTFOUND;
@@ -459,7 +456,7 @@ RC QueryPrc::loadV(Value& v,HType vt,PageOff offset,const HeapPageMgr::HeapPage 
 		break;
 	case VT_EXPR:
 		if (ma==NULL && (ma=Session::getSession())==NULL && (ma=StoreCtx::get())==NULL) return RC_NOSESSION;
-		{ExprHdr ehdr(0,0,0); memcpy(&ehdr,pData,sizeof(ExprHdr));
+		{ExprHdr ehdr(0,0,0,0,0,0); memcpy(&ehdr,pData,sizeof(ExprHdr));
 		if ((rc=Expr::deserialize(exp,pData,pData+ehdr.lExpr,ma))!=RC_OK) return rc;
 		v.set(exp); v.flags=ma->getAType(); break;}
 	case VT_STMT:

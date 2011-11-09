@@ -39,6 +39,8 @@ class TreeScanImpl : public TreeScan, public TreeCtx
 	ulong					state;
 	const SearchKey	*const	start;
 	const SearchKey	*const	finish;
+	const IndexSeg	*const	segs;
+	const unsigned			nSegs;
 	IKeyCallback	*const	keycb;
 	bool					fHyper;
 
@@ -64,9 +66,7 @@ class TreeScanImpl : public TreeScan, public TreeCtx
 
 private:
 	bool checkBounds(const TreePageMgr::TreePage* tp,bool fNext,bool fSibling=false) {
-		const SearchKey *bound=fNext?finish:start; if (bound==NULL||!bound->isSet()) return true;
-		int cmp=tp->testKey(*bound,ushort(fSibling?~0ul:index),(state&SCAN_PREFIX)!=0);
-		return cmp==0?(state&(fNext?SCAN_EXCLUDE_END:SCAN_EXCLUDE_START))==0:fNext?cmp>0:cmp<0;
+		const SearchKey *bound=fNext?finish:start; return bound!=NULL&&bound->isSet()?tp->testBound(*bound,ushort(fSibling?~0ul:index),segs,nSegs,!fNext,(state&SCAN_PREFIX)!=0):true;
 	}
 	void saveKey() {
 		assert((state&SCAN_EXACT)==0);
@@ -126,17 +126,17 @@ private:
 		return ((const TreePageMgr::TreePage*)pb->getPageBuf())->findKey(*key,index);
 	}
 public:
-	TreeScanImpl(Session *se,Tree& tr,const SearchKey *st,const SearchKey *fi,ulong flgs,IKeyCallback *kcb)
-		: TreeCtx(tr),ses(se),ctx(ses->getStore()),state(flgs|SC_INIT),start(st),finish(fi),keycb(kcb),fHyper(false),kPage(INVALID_PAGEID),
-		lsn(0),stamp(0),savedKey(NULL),lKeyBuf(0),subpg(NULL),sPage(INVALID_PAGEID),stamp2(0),ps(NULL),pe(NULL),ptr(NULL),lElt(0),
-		buf(NULL),lbuf(0),ldata(0),lpref(0),bufsht(0)
+	TreeScanImpl(Session *se,Tree& tr,const SearchKey *st,const SearchKey *fi,ulong flgs,const IndexSeg *sg,unsigned nS,IKeyCallback *kcb)
+		: TreeCtx(tr),ses(se),ctx(ses->getStore()),state(flgs|SC_INIT),start(st),finish(fi),segs(sg),nSegs(nS),keycb(kcb),fHyper(false),
+		kPage(INVALID_PAGEID),lsn(0),stamp(0),savedKey(NULL),lKeyBuf(0),subpg(NULL),sPage(INVALID_PAGEID),stamp2(0),ps(NULL),pe(NULL),ptr(NULL),
+		lElt(0),buf(NULL),lbuf(0),ldata(0),lpref(0),bufsht(0)
 	{
 			IndexFormat ifmt=tr.indexFormat(); if (ifmt.isUnique()) state|=SC_UNIQUE;
 			if (ifmt.isPinRef()) state|=SC_PINREF;
 			else if (ifmt.isFixedLenData()||(state&SC_UNIQUE)==0&&!ifmt.isVarMultiData()) {state|=SC_FIXED; lElt=ifmt.dataLength();}
 			assert(start==NULL || start->type==ifmt.keyType()); assert(start!=NULL || (state&SCAN_EXACT)==0);
-			if ((state&SCAN_EXACT)==0 && (st!=NULL && st->type==KT_MSEG && (fi==NULL || fi->type==KT_MSEG) || fi!=NULL && fi->type==KT_MSEG))
-				fHyper=st==NULL || fi==NULL || isHyperRect(st->getPtr2(),st->v.ptr.l,fi->getPtr2(),fi->v.ptr.l);
+			if ((state&SCAN_EXACT)==0 && sg!=NULL && nS>1 && (st!=NULL || fi!=NULL)) 
+				fHyper=st==NULL || fi==NULL || st->type==KT_VAR && isHyperRect(st->getPtr2(),st->v.ptr.l,fi->getPtr2(),fi->v.ptr.l);
 	}
 	virtual ~TreeScanImpl() {
 		if (subpg!=NULL) subpg->release(); if (savedKey!=NULL) ses->free(savedKey); if (buf!=NULL) ses->free(buf);
@@ -242,11 +242,15 @@ public:
 				if ((state&SCAN_EXACT)==0) state&=~SC_EOF;
 			} else {
 				const SearchKey *key=skip!=NULL?skip:finish;
-				if ((state&SCAN_PREFIX)!=0 && key==finish && finish->isSet() && finish->type==KT_BIN) {
+				if ((state&SCAN_PREFIX)!=0 && key==finish && finish->isSet()) {
+					if (finish->type==KT_BIN) {
 					size_t l=finish->v.ptr.l; SearchKey *pk;
 					if ((pk=(SearchKey*)alloca(sizeof(SearchKey)+l))==NULL) return RC_NORESOURCES;
 					byte *p=(byte*)(pk+1); memcpy(p,finish->getPtr2(),l); while (l>0 && p[l-1]++==0xFF) l--;
 					if (l==0) key=NULL; else {key=pk; pk->type=KT_BIN; pk->loc=SearchKey::PLC_SPTR; pk->v.ptr.p=NULL; pk->v.ptr.l=(ushort)l;}
+					} else if (finish->type==KT_VAR) {
+						//????
+					}
 				}
 				if ((key==NULL?findPrevPage(NULL):findPage(key))!=RC_OK) return RC_EOF;
 				const TreePageMgr::TreePage *tp=(const TreePageMgr::TreePage*)pb->getPageBuf(); assert(key==NULL||tp->cmpKey(*key)<=0);
@@ -276,8 +280,8 @@ retkey:
 			state|=SC_KEYSET;
 			if (fHyper) {
 				skip=NULL; saveKey(); if (savedKey==NULL) return RC_NORESOURCES;
-				if (start!=NULL && !checkHyperRect(start->getPtr2(),start->v.ptr.l,savedKey->getPtr2(),savedKey->v.ptr.l) ||
-					finish!=NULL && !checkHyperRect(savedKey->getPtr2(),savedKey->v.ptr.l,finish->getPtr2(),finish->v.ptr.l))
+				if (start!=NULL && !checkHyperRect(start->getPtr2(),start->v.ptr.l,savedKey->getPtr2(),savedKey->v.ptr.l,segs,nSegs,true) ||
+					finish!=NULL && !checkHyperRect(savedKey->getPtr2(),savedKey->v.ptr.l,finish->getPtr2(),finish->v.ptr.l,segs,nSegs,false))
 						{op=fF?GO_NEXT:GO_PREVIOUS; continue;}
 				// exclude boundaries, skip to next
 			}
@@ -500,7 +504,7 @@ retkey:
 
 };
 
-TreeScan *Tree::scan(Session *ses,const SearchKey *start,const SearchKey *finish,ulong flags,IKeyCallback *kcb)
+TreeScan *Tree::scan(Session *ses,const SearchKey *start,const SearchKey *finish,ulong flags,const IndexSeg *sg,unsigned nSegs,IKeyCallback *kcb)
 {
-	return new(ses) TreeScanImpl(ses,*this,start,finish,flags,kcb);
+	return new(ses) TreeScanImpl(ses,*this,start,finish,flags,sg,nSegs,kcb);
 }

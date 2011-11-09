@@ -54,7 +54,11 @@ public:
 	const		PageAddr&	getAddr() const {return addr;}
 	bool		defined(const PropertyID *pids,unsigned nProps) const;
 	RC			getValue(PropertyID pid,Value& v,ulong mode,MemAlloc *ma,ElementID=STORE_COLLECTION_ID) const;
+	RC			loadV(const PropertyID *props,Value *res,unsigned nProps) const;
 	bool		isCollection(PropertyID pid) const;
+	RC			extract(const Value *&pv,unsigned& nv,const PropertyID *pids=NULL,unsigned nPids=0);
+	RC			extract(PIN *&,const PropertyID *pids=NULL,unsigned nPids=0);
+	RC			extract(PID &ret) {if (id.pid==STORE_INVALID_PID && epr.lref!=0) unpack(); ret=id; return RC_OK;}
 private:
 	void		free();
 	friend	class	LockMgr;

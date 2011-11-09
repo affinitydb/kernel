@@ -119,15 +119,14 @@ using namespace MVStoreKernel;
 #define	RESPG_PAGE_TAG	_V(1)
 
 const static byte tags[VT_ALL] = {
-	0, _L(3), _L(4), _L(3), _V(6), _V(5), _V(6), _V(7), _V(8), _L(4), _S(9), _D(10), _V(16), _D(11), _D(12), _V(6), _V(6),
+	0, _V(5), _V(6), _V(7), _V(8), _L(4), _S(9), _D(10), _V(16), _D(11), _D(12), _V(6), _V(6), _L(3), _L(4), _L(3), _V(6),
 	_L(13), _L(13), _L(15), _L(15), _L(15), _L(15), _L(4), _L(4), _L(14), _L(14), _L(14), _L(14), 0, _V(6), 0, 0, 0
 };
 const static byte types[VT_ALL] = {
-		VT_ERROR, VT_STRING, VT_BSTR, VT_URL, VT_ENUM, VT_INT, VT_UINT, VT_INT64, VT_UINT64, VT_DECIMAL, VT_FLOAT, VT_DOUBLE,
-		VT_BOOL, VT_DATETIME, VT_INTERVAL, VT_URIID, VT_IDENTITY, VT_REFID, VT_REFID, VT_REFIDPROP, VT_REFIDPROP, VT_REFIDELT, VT_REFIDELT,
+		VT_ERROR, VT_INT, VT_UINT, VT_INT64, VT_UINT64, VT_DECIMAL, VT_FLOAT, VT_DOUBLE, VT_BOOL, VT_DATETIME, VT_INTERVAL, VT_URIID, VT_IDENTITY,
+		VT_STRING, VT_BSTR, VT_URL, VT_ENUM, VT_REFID, VT_REFID, VT_REFIDPROP, VT_REFIDPROP, VT_REFIDELT, VT_REFIDELT,
 		VT_EXPR, VT_STMT, VT_ARRAY, VT_ARRAY, VT_STRUCT, VT_RANGE, VT_ERROR, VT_CURRENT, VT_REF, VT_ERROR, VT_ERROR,
 };
-#define	VT_REFCID	VT_PARAM
 
 #define	STACK_DEPTH			20
 #define	MAX_RESIDUAL_SIZE	32
@@ -153,7 +152,7 @@ const static byte types[VT_ALL] = {
 						else {uint32_t l=uint32_t(end-po); if (l!=0) memcpy(po,b,l); lRes=c-l; pRes=(byte*)b+l; return RC_OK;}}	\
 						else {byte *p=rbuf; mv_enc16(p,a); mv_enc32(p,c); lRes=(size_t)(p-rbuf); size_t left=(size_t)(end-po);	\
 						if (lRes>left) {memcpy(po,rbuf,left); lRes-=left; pRes=rbuf+left; lRes2=c; pRes2=b; return RC_OK;}		\
-						else {memcpy(po,rbuf,lRes); po+=lRes; if ((left-=lRes)>=c) {memcpy(po,b,c); po+=c;} else {				\
+						else {memcpy(po,rbuf,lRes); po+=lRes; if ((left-=lRes)>=c) {memcpy(po,b,c); po+=c; lRes=0;} else {		\
 						if (left!=0) memcpy(po,b,left); lRes=c-left; pRes=(byte*)b+left; return RC_OK;}}}}
 
 namespace MVStoreKernel
@@ -180,10 +179,10 @@ class EncodePB
 	Session		*const	ses;
 	ulong		mode;
 	uint64_t	cid;
-	bool		fCid;
 	RTTYPE		rtt;
 	struct	OState {
 		SType		type;
+		bool		fCid;
 		uint16_t	tag;
 		uint32_t	state;
 		uint32_t	idx;
@@ -221,7 +220,7 @@ class EncodePB
 	size_t		lCopied;
 	uint32_t	code;
 private:
-	__forceinline	void	push_state(SType ot,const void *obj,uint16_t tag) {assert(sidx<STACK_DEPTH); stateStack[sidx++]=os; os.type=ot; os.tag=tag; os.state=0; os.idx=0; os.obj=obj;}
+	__forceinline	void	push_state(SType ot,const void *obj,uint16_t tag) {assert(sidx<STACK_DEPTH); stateStack[sidx++]=os; os.type=ot; os.fCid=false; os.tag=tag; os.state=0; os.idx=0; os.obj=obj;}
 	__forceinline	static	uint16_t tag(const Value& v) {return v.type==VT_STREAM?tags[v.stream.is->dataType()]:v.type<VT_ALL?tags[v.type]:0;}
 	__forceinline	static	byte wtype(const Value& v) {return types[v.type==VT_STREAM?(uint8_t)v.stream.is->dataType():v.type];}
 	uint32_t length(const PID& id) {return 1+mv_len64(id.pid)+(id.ident!=STORE_OWNER?length(id.ident,false):0);}
@@ -308,8 +307,8 @@ private:
 		return (uint32_t)stmt->serSize();
 	}
 public:
-	EncodePB(Session *s,ulong md=0) : ses(s),mode(md),cid(0),fCid(false),rtt(RTT_PINS),sidx(0),propCache(s,100,30),identCache(s,10,5),
-		lRes(0),pRes(NULL),lRes2(0),pRes2(0),copied(NULL),lCopied(0),code(0) {os.type=ST_MVSTREAM; os.state=0; os.idx=0; os.obj=NULL;}
+	EncodePB(Session *s,ulong md=0) : ses(s),mode(md),cid(0),rtt(RTT_PINS),sidx(0),propCache(s,100,30),identCache(s,10,5),
+		lRes(0),pRes(NULL),lRes2(0),pRes2(0),copied(NULL),lCopied(0),code(0) {os.type=ST_MVSTREAM; os.fCid=false; os.state=0; os.idx=0; os.obj=NULL;}
 	~EncodePB() {if (copied!=NULL) ses->free(copied);}
 	RC encode(unsigned char *buf,size_t& lbuf) {
 		try {
@@ -371,7 +370,7 @@ public:
 							if (os.pin->properties!=NULL) for (i=0; i<os.pin->nProperties; i++)
 								{sz64=length(os.pin->properties[i],false); pinSize+=1+mv_len64(sz64)+sz64;}		// save ???
 						}
-						//if (fCid && sidx==0) pinSize+=1+mv_len64(cid);
+						if (os.fCid && sidx==0) pinSize+=1+mv_len64(cid);
 						os.state++; os.idx=0;
 					case 1:
 						while (os.idx<propCache.nnids)
@@ -395,10 +394,9 @@ public:
 							{push_state(ST_VALUE,&os.pin->properties[os.idx++],VALUES_TAG); goto again;}
 						os.state++;
 					case 8:
-						os.state++; //if (fCid && sidx==0) VAR_OUT(CID_TAG,mv_enc64,cid);
+						os.state++; if (os.fCid && sidx==0) VAR_OUT(CID_TAG,mv_enc64,cid);
 					case 9:
-						fCid=false; rtt=RTT_PINS;
-						if (sidx==0) {lbuf-=po-buf; return RC_TRUE;}
+						rtt=RTT_PINS; if (sidx==0) {lbuf-=po-buf; return RC_TRUE;}
 						break;
 					}
 				case ST_VALUE:
@@ -406,7 +404,7 @@ public:
 					default: goto error;
 					case 0:
 						sz64=length(*os.pv,os.tag==VARRAY_V_TAG);
-						if (fCid && sidx==0) sz64+=1+mv_len64(cid);
+						if (os.fCid && sidx==0) sz64+=1+mv_len64(cid);
 						os.state++; VAR_OUT(os.tag,mv_enc64,sz64);
 					case 1:
 						os.state++; ty=wtype(*os.pv); VAR_OUT(TYPE_TAG,mv_enc8,ty);
@@ -495,9 +493,9 @@ public:
 							if (os.pv->meta!=0) VAR_OUT(META_TAG,mv_enc8,os.pv->meta);
 						}
 					case 6:
-						os.state++; if (fCid && sidx==0) VAR_OUT(CID_TAG,mv_enc64,cid);
+						os.state++; if (os.fCid && sidx==0) VAR_OUT(CID_TAG,mv_enc64,cid);
 					case 7:
-						fCid=false; if (sidx==0) {lbuf-=po-buf; return RC_TRUE;}
+						if (sidx==0) {lbuf-=po-buf; return RC_TRUE;}
 						break;
 					}
 					break;
@@ -587,11 +585,11 @@ public:
 					default: goto error;
 					case 0:
 						sz=os.res->rc==RC_OK?1+mv_len64(os.res->cnt):1+mv_len32(unsigned(os.res->rc));
-						if (fCid) sz+=1+mv_len64(cid);
+						if (os.fCid) sz+=1+mv_len64(cid);
 						if (os.res->op!=MODOP_QUERY) sz+=1+mv_len32(unsigned(os.res->op));
 						os.state++; VAR_OUT(RESULT_TAG,mv_enc32,sz);
 					case 1:
-						os.state++; if (fCid) VAR_OUT(RES_CID_TAG,mv_enc64,cid);
+						os.state++; if (os.fCid) VAR_OUT(RES_CID_TAG,mv_enc64,cid);
 					case 2:
 						os.state++;
 						if (os.res->rc==RC_OK) {VAR_OUT(RES_COUNT_TAG,mv_enc64,os.res->cnt);}
@@ -618,9 +616,9 @@ error:
 			return RC_INTERNAL;
 		} catch (RC rc) {return rc;} catch(...) {/*...*/return RC_INTERNAL;}
 	}
-	void set(const PIN *p,uint64_t ci=0,bool fC=false,RTTYPE r=RTT_PINS) {assert(sidx==0); os.type=ST_PIN; os.pin=p; os.state=0; cid=ci; fCid=fC; rtt=r;}
-	void set(const Result *r,uint64_t ci=0,bool fC=false) {assert(sidx==0); os.type=ST_RESULT; os.res=r; os.state=0; cid=ci; fCid=fC;}
-	void set(const Value *pv,uint64_t ci=0,bool fC=false) {assert(sidx==0); os.type=ST_VALUE; os.pv=pv; os.state=0; cid=ci; fCid=fC;}
+	void set(const PIN *p,uint64_t ci=0,bool fC=false,RTTYPE r=RTT_PINS) {assert(sidx==0); os.type=ST_PIN; os.pin=p; os.state=0; cid=ci; os.fCid=fC; rtt=r;}
+	void set(const Result *r,uint64_t ci=0,bool fC=false) {assert(sidx==0); os.type=ST_RESULT; os.res=r; os.state=0; cid=ci; os.fCid=fC;}
+	void set(const Value *pv,uint64_t ci=0,bool fC=false) {assert(sidx==0); os.type=ST_VALUE; os.pv=pv; os.state=0; cid=ci; os.fCid=fC;}
 	// compound, status
 	void operator delete(void *p) {if (p!=NULL) ((EncodePB*)p)->ses->free(p);}
 };
@@ -986,7 +984,7 @@ protected:
 					switch (is.tag) {
 					default: set_skip(); continue;
 					case PID_ID_TAG: is.id->pid=val; break;
-					case PID_IDENT_TAG: is.id->ident=map((uint32_t)val,false); break;
+					case PID_IDENT_TAG: is.id->ident=(uint32_t)val==STORE_INVALID_IDENTITY?STORE_INVALID_IDENTITY:map((uint32_t)val,false); break;
 					}
 					break;
 				case ST_REF:
@@ -1059,6 +1057,11 @@ protected:
 							} else if ((rc=processPIN())!=RC_OK) return rc;
 						}
 						break;
+					case ST_PID:
+						if (is.id->ident==STORE_INVALID_IDENTITY) {
+							// convert to ref to VT_REF
+						}
+						break;
 					case ST_VALUE:
 						if (is.pv->type==VT_ANY) is.pv->type=defType;
 						switch (is.pv->type) {
@@ -1067,10 +1070,6 @@ protected:
 						case VT_EXPR:
 						case VT_STMT:
 							// check string, parse
-							break;
-						case VT_REFCID:
-							//...check inside compound
-							// end of compound -> resolve references
 							break;
 						}
 						break;
@@ -1081,7 +1080,7 @@ protected:
 						try {SInCtx qctx(ses,is.stmt->str,is.stmt->lstr,is.stmt->uids,is.stmt->nUids,SQ_SQL,ma); stmt=NULL; stmt=qctx.parse();}
 						catch (SynErr) {if (stmt!=NULL) stmt->destroy(); if (sidx==1) releaseMem(); return RC_SYNTAX;}
 						catch (RC rc) {if (stmt!=NULL) stmt->destroy(); if (sidx==1) releaseMem(); return rc;}
-						// mark and release memeory (save in StmtIn)
+						// mark and release memory (save in StmtIn)
 						if (sidx!=1) {/*???*/}
 						else if ((rc=process(stmt))!=RC_OK) return rc;
 						break;
@@ -1102,14 +1101,18 @@ private:
 	RC resultOut(const Result& res) {
 		assert(out!=NULL && obuf!=NULL && enc!=NULL);
 		RC rc=RC_OK; enc->set(&res,is.oi.cid,is.oi.fCid);
-		while (rc==RC_OK && (rc=enc->encode(obuf+lobuf-obleft,obleft))==RC_OK) {if ((rc=out->next(obuf,lobuf))==RC_TRUE) rc=RC_OK; obleft=lobuf;}
+		do if ((rc=enc->encode(obuf+lobuf-obleft,obleft))==RC_OK || rc==RC_TRUE && obleft==0)
+			{RC rc2=out->next(obuf,lobuf); obleft=lobuf; if (rc2!=RC_TRUE && rc2!=RC_OK) rc=rc2;}
+		while (rc==RC_OK);
 		return rc==RC_TRUE?RC_OK:rc;
 	}
 	RC pinOut(const PIN *pin,const OInfo& oi) {
 		RC rc=RC_OK;
 		if (oi.rtt!=RTT_COUNT) {
 			enc->set(pin,oi.cid,oi.fCid,oi.rtt);
-			while (rc==RC_OK && (rc=enc->encode(obuf+lobuf-obleft,obleft))==RC_OK) {if ((rc=out->next(obuf,lobuf))==RC_TRUE) rc=RC_OK; obleft=lobuf;}
+			do if ((rc=enc->encode(obuf+lobuf-obleft,obleft))==RC_OK || rc==RC_TRUE && obleft==0)
+				{RC rc2=out->next(obuf,lobuf); obleft=lobuf; if (rc2!=RC_TRUE && rc2!=RC_OK) rc=rc2;}
+			while (rc==RC_OK);
 			if (rc==RC_TRUE) rc=RC_OK;
 		}
 		return rc;
@@ -1246,16 +1249,18 @@ class ServerStreamIn : public ProtoBufStreamIn {
 		RC resultOut(const Result& res) {
 			assert(str.cb!=NULL && str.obuf!=NULL && str.enc!=NULL);
 			RC rc=RC_OK; MutexP lck(&str.lock); str.enc->set(&res,oi.cid,oi.fCid);
-			while (rc==RC_OK && (rc=str.enc->encode(str.obuf+str.lobuf-str.obleft,str.obleft))==RC_OK) 
-				{if ((rc=str.cb->send(str.obuf,str.lobuf))==RC_TRUE) rc=RC_OK; str.obleft=str.lobuf;}
+			do if ((rc=str.enc->encode(str.obuf+str.lobuf-str.obleft,str.obleft))==RC_OK || rc==RC_TRUE && str.obleft==0)
+				{RC rc2=str.cb->send(str.obuf,str.lobuf); str.obleft=str.lobuf; if (rc2!=RC_TRUE && rc2!=RC_OK) rc=rc2;}
+			while (rc==RC_OK);
 			return rc==RC_TRUE?RC_OK:rc;
 		}
 		RC pinOut(const PIN *pin,const OInfo& oi) {
 			RC rc=RC_OK;
 			if (oi.rtt!=RTT_COUNT) {
 				MutexP lck(&str.lock); str.enc->set(pin,oi.cid,oi.fCid,oi.rtt);
-				while (rc==RC_OK && (rc=str.enc->encode(str.obuf+str.lobuf-str.obleft,str.obleft))==RC_OK) 
-					{if ((rc=str.cb->send(str.obuf,str.lobuf))==RC_TRUE) rc=RC_OK; str.obleft=str.lobuf;}
+				do if ((rc=str.enc->encode(str.obuf+str.lobuf-str.obleft,str.obleft))==RC_OK || rc==RC_TRUE && str.obleft==0)
+					{RC rc2=str.cb->send(str.obuf,str.lobuf); str.obleft=str.lobuf; if (rc2!=RC_TRUE && rc2!=RC_OK) rc=rc2;}
+				while (rc==RC_OK);
 				if (rc==RC_TRUE) rc=RC_OK;
 			}
 			return rc;

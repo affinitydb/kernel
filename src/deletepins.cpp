@@ -161,7 +161,7 @@ RC QueryPrc::deletePINs(Session *ses,const PIN *const *pins,const PID *pids,unsi
 				}
 			}
 			if ((pinDescr&(HOH_HIDDEN|HOH_NOINDEX|HOH_DELETED))==0) {
-				if (cid!=STORE_INVALID_CLASSID && (rc=ctx->classMgr->remove(cid))!=RC_OK) throw rc;
+				if (cid!=STORE_INVALID_CLASSID && (rc=ctx->classMgr->remove(cid,ses))!=RC_OK) throw rc;
 				if (ftl!=NULL) {
 					if ((rc=ctx->ftMgr->process(*ftl,pid,fti.docID))!=RC_OK) throw rc;
 					sft.release(); ftl=NULL;

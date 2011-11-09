@@ -245,14 +245,13 @@ class IndexNavImpl : public IndexNav, public IKeyCallback
 {
 	Session				*const	ses;
 	unsigned			const	nVals;
-	ValueType			const	vt;
 	PropertyID			const	pid;
 	ClassIndex					*cidx;
 	TreeScan					*scan;
 	bool						fFree;
 	Value						v[1];
 public:
-	IndexNavImpl(Session *ses,ClassIndex *cidx,ValueType vt=VT_ANY,PropertyID pi=STORE_INVALID_PROPID);
+	IndexNavImpl(Session *ses,ClassIndex *cidx,PropertyID pi=STORE_INVALID_PROPID);
 	virtual	~IndexNavImpl();
 	void	newKey();
 	RC		next(PID& id,GO_DIR=GO_NEXT);
@@ -310,7 +309,7 @@ public:
 	TreeGlobalRoot&		getClassPINs() {return classPINs;}
 	Class				*getClass(ClassID cid,RW_LockType lt=RW_S_LOCK);
 	RC					setFlags(ClassID,ulong,ulong);
-	RC					remove(ClassID);
+	RC					remove(ClassID,Session *ses);
 	PropertyID			getXPropID() const {return (PropertyID)xPropID;}
 	RC					classTx(Session *ses,struct ClassDscr*&,bool fCommit=true);
 	static	void		merge(struct ClassDscr *from,struct ClassDscr *&to);
@@ -321,9 +320,9 @@ public:
 	RC					createTree(const byte *params,byte lparams,Tree *&tree);
 	static	const		BuiltinURI	builtinURIs[PROP_SPEC_MAX+1];
 private:
-	RC					add(ClassID cid,const Stmt *qry,ulong flags,ulong notifications=0);
-	ClassRef			*findBaseRef(const Class *base);
-	ClassPropIndex		*getClassPropIndex(const class SimpleVar *qv,bool fAdd=true);
+	RC					add(Session *ses,ClassID cid,const Stmt *qry,ulong flags,ulong notifications=0);
+	ClassRef			*findBaseRef(const Class *base,Session *ses);
+	ClassPropIndex		*getClassPropIndex(const class SimpleVar *qv,Session *ses,bool fAdd=true);
 	RC					indexFormat(ulong vt,IndexFormat& fmt) const;
 	RC					insertRef(struct ClassCtx& cctx,ushort **ppb,size_t *ps,const byte *extb,ushort lext,struct IndexValue *iv=NULL);
 	RC					freeSpace(ClassCtx& cctx,size_t l,unsigned skip=~0u);

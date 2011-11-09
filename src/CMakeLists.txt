@@ -3,6 +3,7 @@ IF(CMAKE_SYSTEM_NAME MATCHES Windows)
 ENDIF(CMAKE_SYSTEM_NAME MATCHES Windows)
 
 message ( "Processing mvstore kernel/src ...")
+message ( "processor: "  ${CMAKE_SYSTEM_PROCESSOR})
 message ( "Project dir: " ${PROJECT_SOURCE_DIR})
 
 #The following is selecting the package build type - Debug | Release:
@@ -90,6 +91,7 @@ ENDIF(${CPUTYPE} MATCHES "x86")
 
 #ADDING command for 'arm' CPU familes...
 IF(${CPUTYPE} MATCHES "arm")
+	ADD_DEFINITIONS(-D_LSBF)
 IF(CMAKE_BUILD_TYPE MATCHES Debug)
 #The DEBUG section for the ARM gcc command line... 
 	ADD_DEFINITIONS(-DDEBUG)
