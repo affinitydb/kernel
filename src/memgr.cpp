@@ -129,28 +129,6 @@ void MVStoreKernel::free(void *p,HEAP_TYPE alloc)
 	}
 }
 
-byte *OutputBuf::alloc(size_t len)
-{
-	if (ptr==NULL) {
-		xLen=lInit; assert(cLen==0);
-		if (xLen<len+lHdr) xLen+=len+lHdr;
-		if ((ptr=(byte*)ma->malloc(xLen))==NULL) return NULL;
-		cLen+=lHdr;
-	} else if (len>xLen-cLen) {
-		if ((xLen+=xLen/2)-cLen<len) xLen=cLen+len+cLen/2;
-		if ((ptr=(byte*)ma->realloc(ptr,xLen))==NULL) return NULL;
-	}
-	assert(ptr!=NULL); byte *p=ptr+cLen; cLen+=len; return p;
-}
-
-bool OutputBuf::insert(const void *p,size_t l,size_t offset)
-{
-	byte *pp;
-	if (offset>cLen || (pp=alloc(l))==NULL) return false;
-	if (offset<cLen) memmove(ptr+offset+l,ptr+offset,cLen-offset);
-	memcpy(ptr+offset,p,l); return true;
-}
-
 void MemAlloc::addObj(ObjDealloc *od)
 {
 }
