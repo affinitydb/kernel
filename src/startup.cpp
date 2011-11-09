@@ -452,9 +452,9 @@ RC shutdownStore(MVStoreCtx ctx)
 					if ((pr.def&PR_PID2)!=0) {
 						const SearchKey& ky=sc->getKey(); assert(ky.type==KT_UINT);
 						URI *uri=NULL; char buf[20]; const char *name=buf;
-						if (ky.v.u32<=PROP_SPEC_LAST) name=Classifier::builtinURIs[ky.v.u32].name;
-						else if ((uri=(URI*)ctx->uriMgr->ObjMgr::find(ky.v.u32))!=NULL) name=uri->getURI();
-						else sprintf(buf,"%u",ky.v.u32);
+						if (ky.v.u<=PROP_SPEC_LAST) name=Classifier::builtinURIs[(uint32_t)ky.v.u].name;
+						else if ((uri=(URI*)ctx->uriMgr->ObjMgr::find((uint32_t)ky.v.u))!=NULL) name=uri->getURI();
+						else sprintf(buf,"%u",(uint32_t)ky.v.u);
 						reportTree(PageID(pr.id2.pid>>16),name,ctx);
 						if (uri!=NULL) uri->release();
 					}
