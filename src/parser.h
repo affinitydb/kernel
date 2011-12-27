@@ -101,6 +101,7 @@ public:
 #define	SIM_INT_NUM			0x0008
 #define	SIM_SELECT		0x0010
 #define	SIM_DML_EXPR		0x0020
+#define	SIM_HAVING			0x0040
 
 enum Lexem {
 	LX_BOE=OP_SET, LX_EOE=OP_ADD, LX_IDENT=OP_ADD_BEFORE, LX_CON=OP_MOVE,
@@ -108,7 +109,7 @@ enum Lexem {
 		
 	LX_COLON=OP_ALL, LX_LBR, LX_RBR, LX_LCBR, LX_RCBR, LX_PERIOD, LX_QUEST, LX_EXCL,
 	LX_EXPR, LX_QUERY, LX_URSHIFT, LX_PREFIX, LX_IS, LX_BETWEEN, LX_BAND, LX_HASH,
-	LX_SEMI, LX_CONCAT, LX_FILTER, LX_REPEAT, LX_PATHQ, LX_SELF,
+	LX_SEMI, LX_CONCAT, LX_FILTER, LX_REPEAT, LX_PATHQ, LX_SELF, LX_SPROP,
 		
 	LX_NL, LX_SPACE, LX_DQUOTE, LX_QUOTE, LX_LT, LX_GT, LX_VL, LX_DOLLAR,
 	LX_ERR, LX_UTF8, LX_DIGIT, LX_LETTER, LX_ULETTER, LX_XLETTER,
@@ -118,7 +119,7 @@ enum KW {
 	KW_SELECT, KW_FROM, KW_WHERE, KW_ORDER, KW_BY, KW_GROUP, KW_HAVING, KW_JOIN, KW_ON,
 	KW_LEFT, KW_OUTER, KW_RIGHT, KW_CROSS, KW_INNER, KW_USING, KW_BASE, KW_PREFIX,
 	KW_UNION, KW_EXCEPT, KW_INTERSECT, KW_DISTINCT, KW_VALUES, KW_AS, KW_OP, KW_NULLS,
-	KW_TRUE, KW_FALSE, KW_NULL, KW_ALL, KW_ANY, KW_ASC, KW_DESC, KW_MATCH,
+	KW_TRUE, KW_FALSE, KW_NULL, KW_ALL, KW_ANY, KW_SOME, KW_ASC, KW_DESC, KW_MATCH,
 	KW_NOW, KW_CUSER, KW_CSTORE, KW_TIMESTAMP, KW_INTERVAL, KW_WITH,
 	KW_INSERT, KW_DELETE, KW_UPDATE, KW_CREATE, KW_PURGE, KW_UNDELETE,
 	KW_SET, KW_ADD, KW_MOVE, KW_RENAME, KW_EDIT, KW_CLASS, KW_START, KW_COMMIT,
@@ -134,7 +135,7 @@ enum SynErr
 	SY_INVCOM, SY_MISCOM, SY_MISBIN, SY_MISSEL, SY_UNKVAR, SY_INVVAR, SY_INVCOND,
 	SY_MISBY, SY_SYNTAX, SY_MISLGC, SY_MISAND, SY_INVTMS, SY_MISQNM, SY_MISQN2, SY_INVEXT,
 	SY_UNBRPR, SY_UNBRBR, SY_UNBRCBR, SY_MISBOOL, SY_MISJOIN, SY_MISNAME, SY_MISAGNS,
-	SY_MISEQ, SY_MISCLN, SY_UNKQPR,
+	SY_MISEQ, SY_MISCLN, SY_UNKQPR, SY_INVGRP, SY_INVHAV,
 
 	SY_ALL
 };
@@ -191,7 +192,7 @@ public:
 		mode(se==NULL?SIM_NO_BASE:(se->fStdOvr?SIM_STD_OVR:0)|(se->lURIBase==0?SIM_NO_BASE:0)),base(NULL),lBase(0),lBaseBuf(0),qNames(NULL),nQNames(0),lastQN(~0u),
 		dnames(ma),nextLex(LX_ERR) {v.setError();}
 	~SInCtx();
-	Stmt	*parse();
+	Stmt	*parseStmt(bool fNested=false);
 	RC		exec(const Value *params,unsigned nParams,char **result=NULL,uint64_t *nProcessed=NULL,unsigned nProcess=~0u,unsigned nSkip=0);
 	QVarID	parseQuery(class Stmt*&,bool fNested=true);
 	void	parseManage(IMapDir *,MVStoreCtx&,const StartupParameters *sp);
@@ -218,10 +219,11 @@ private:
 	QVarID	parseSelect(Stmt *res,bool fMod=false);
 	QVarID	parseFrom(Stmt *stmt);
 	QVarID	parseClasses(Stmt *stmt,bool fColon=false);
-	TLx		parseOrderBy(Stmt *stmt,QVarID var);
+	TLx		parseOrderOrGroup(Stmt *stmt,QVarID var,Value *os=NULL,unsigned nO=0);
 	ExprTree *parseCondition(const union QVarRef *vars,unsigned nVars);
 	RC		splitWhere(Stmt *stmt,QVar *qv,ExprTree *pe);
-	RC		resolveSelect(QVarRef *qv,Value &vv);
+	RC		resolveVars(QVarRef *qv,Value &vv,Value *par=NULL);
+	RC		replaceGroupExprs(Value& v,const OrderSeg *segs,unsigned nSegs);
 	QVarID	findVar(const Value& v,const union QVarRef *vars,unsigned nVars) const;
 	struct	FreeV	{static void free(Value& v) {freeV(v);}};
 	template<typename T> struct	NoFree	{static void free(T) {}};

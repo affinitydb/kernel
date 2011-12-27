@@ -114,6 +114,7 @@ namespace MVStore
 	/**
 	 * PIN create/commit/modify/delete, IStmt execute mode flags
 	 */
+	#define	MODE_FOR_UPDATE				0x00020000	/**< in IStmt::execute(): lock pins for update while reading them */
 	#define	MODE_NEW_COMMIT				0x00040000	/**< used in PIN::clone() to immediately commit a cloned pin */
 	#define	MODE_PURGE					0x00040000	/**< in deletePINs(): purge pins rather than just delete */
 	#define	MODE_PRESERVE_INSERT_ORDER	0x00040000	/**< in commitPINs() - preserve insert order when allocating pins on pages */
@@ -127,10 +128,9 @@ namespace MVStore
 	#define	MODE_HOLD_RESULT			0x00200000	/**< for IStmt::execute(): don't close result set on transaction commit/rollback */
 	#define	MODE_ALL_WORDS				0x00400000	/**< all words must be present in FT condition */
 	#define MODE_NO_EID					0x00800000	/**< in modify() - don't update "eid" field of Value structure */
-	#define	MODE_SSV_AS_STREAM			0x00800000	/**< for getPIN(), IStmt::execute() - return SSVs as streams instead of strings */
-	#define	MODE_DELETED				0x01000000	/**< for query: return only (soft)deleted pins */
+	#define	MODE_DELETED				0x00800000	/**< for query: return only (soft)deleted pins */
+	#define	MODE_SSV_AS_STREAM			0x01000000	/**< for getPIN(), IStmt::execute() - return SSVs as streams instead of strings */
 	#define	MODE_FORCED_SSV_AS_STREAM	0x02000000	/**< for getPIN(), IStmt::execute(): return only META_PROP_SSTORAGE SSVs as streams instead of strings */
-	#define	MODE_FOR_UPDATE				0x02000000	/**< in IStmt::execute(): lock pins for update while reading them */
 	#define	MODE_VERBOSE				0x04000000	/**< in IStmt::execute(): print evaluation plan */
 
 	/**
@@ -305,7 +305,6 @@ namespace MVStore
 		VT_STREAM,						/**< IStream interface */
 		VT_CURRENT,						/**< current moment in time, current user, etc. */
 
-		VT_PARAM,						/**< statement: parameter ref (cannot be persisted as a property value) */
 		VT_VARREF,						/**< statement: var ref  (cannot be persisted as a property value) */
 		VT_EXPRTREE,					/**< sub-expression reference for statement conditions (cannot be persisted as a property value) */
 
@@ -376,6 +375,7 @@ namespace MVStore
 		OP_VAR_SAMP,
 		OP_STDDEV_POP,
 		OP_STDDEV_SAMP,
+		OP_HISTOGRAM,
 		OP_COALESCE,
 		OP_PATH,
 		OP_FIRST_BOOLEAN,
@@ -448,7 +448,7 @@ namespace MVStore
 		VersionID	vid;
 	};
 
-	struct RefV
+	struct RefP
 	{
 		IPIN		*pin;
 		PropertyID	pid;
@@ -480,10 +480,10 @@ namespace MVStore
 		mutable	void	*prefix;
 	};
 
-	#define	RPTH_RESPIN		0x0001
-	#define	RPTH_COLLAPSE	0x0002
+	#define	VAR_TYPE_MASK	0xE000		// mask for RefV::flags field
+	#define	VAR_PARAM		0x2000		// external parameter reference; other bits reserved for internal use
 
-	struct RefPath
+	struct RefV
 	{
 		unsigned	char	refN;
 		unsigned	char	type;
@@ -552,7 +552,7 @@ namespace MVStore
 					VPID		vpid;
 					IPIN		*pin;
 			const	RefVID		*refId;
-					RefV		ref;
+					RefP		ref;
 			const	Value		*varray;
 					INav		*nav;
 					Value		*range;
@@ -563,7 +563,7 @@ namespace MVStore
 			class	IStmt		*stmt;
 			class	IExpr		*expr;
 			class	IExprTree	*exprt;
-					RefPath		refPath;
+					RefV		refV;
 					StrEdit		edit;
 					IndexSeg	iseg;
 			QualifiedValue		qval;
@@ -583,7 +583,7 @@ namespace MVStore
 		void	set(IPIN *ip) {type=VT_REF; property=STORE_INVALID_PROPID; flags=0; op=OP_SET; eid=STORE_COLLECTION_ID; length=sizeof(IPIN*); pin=ip; meta=0;}
 		void	set(const PID& pi) {type=VT_REFID; property=STORE_INVALID_PROPID; flags=0; op=OP_SET; eid=STORE_COLLECTION_ID; length=sizeof(PID); id=pi; meta=0;}
 		void	set(const RefVID& re) {type=uint8_t(re.eid==STORE_COLLECTION_ID?VT_REFIDPROP:VT_REFIDELT); property=STORE_INVALID_PROPID; flags=0; op=OP_SET; eid=STORE_COLLECTION_ID; length=1; refId=&re; meta=0;}
-		void	set(const RefV& re) {type=uint8_t(re.eid==STORE_COLLECTION_ID?VT_REFPROP:VT_REFELT); property=STORE_INVALID_PROPID; flags=0; op=OP_SET; eid=STORE_COLLECTION_ID; length=1; ref=re; meta=0;}
+		void	set(const RefP& re) {type=uint8_t(re.eid==STORE_COLLECTION_ID?VT_REFPROP:VT_REFELT); property=STORE_INVALID_PROPID; flags=0; op=OP_SET; eid=STORE_COLLECTION_ID; length=1; ref=re; meta=0;}
 		void	set(Value *coll,uint32_t nValues) {type=VT_ARRAY; property=STORE_INVALID_PROPID; flags=0; op=OP_SET; eid=STORE_COLLECTION_ID; length=nValues; varray=coll; meta=0;}
 		void	set(INav *nv) {type=VT_COLLECTION; property=STORE_INVALID_PROPID; flags=0; op=OP_SET; eid=STORE_COLLECTION_ID; length=1; nav=nv; meta=0;}
 		void	setStruct(Value *coll,uint32_t nValues) {type=VT_STRUCT; property=STORE_INVALID_PROPID; flags=0; op=OP_SET; eid=STORE_COLLECTION_ID; length=nValues; varray=coll; meta=0;}
@@ -594,8 +594,8 @@ namespace MVStore
 		void	set(IStmt *stm) {type=VT_STMT; property=STORE_INVALID_PROPID; flags=0; op=OP_SET; eid=STORE_COLLECTION_ID; length=1; stmt=stm; meta=0;}
 		void	set(IExprTree *ex) {type=VT_EXPRTREE; property=STORE_INVALID_PROPID; flags=0; op=OP_SET; eid=STORE_COLLECTION_ID; length=1; exprt=ex; meta=0;}
 		void	set(IExpr *ex) {type=VT_EXPR; property=STORE_INVALID_PROPID; flags=0; op=OP_SET; eid=STORE_COLLECTION_ID; length=1; expr=ex; meta=0;}
-		void	setParam(unsigned char pn,ValueType ty=VT_ANY,unsigned short f=0) {type=VT_PARAM; property=STORE_INVALID_PROPID; flags=0; op=OP_SET; eid=STORE_COLLECTION_ID; length=0; refPath.refN=pn; refPath.type=(unsigned char)ty; refPath.flags=f; refPath.id=STORE_INVALID_PROPID; meta=0;}
-		void	setVarRef(unsigned char vn,PropertyID id=STORE_INVALID_PROPID,ValueType ty=VT_ANY,unsigned short f=0) {type=VT_VARREF; property=STORE_INVALID_PROPID; flags=0; op=OP_SET; eid=STORE_COLLECTION_ID; length=id!=STORE_INVALID_PROPID?1:0; refPath.refN=vn; refPath.type=(unsigned char)ty; refPath.flags=f; refPath.id=id; meta=0;}
+		void	setParam(unsigned char pn,ValueType ty=VT_ANY,unsigned short f=0) {type=VT_VARREF; property=STORE_INVALID_PROPID; flags=0; op=OP_SET; eid=STORE_COLLECTION_ID; length=0; refV.refN=pn; refV.type=(unsigned char)ty; refV.flags=f&~VAR_TYPE_MASK|VAR_PARAM; refV.id=STORE_INVALID_PROPID; meta=0;}
+		void	setVarRef(unsigned char vn,PropertyID id=STORE_INVALID_PROPID,ValueType ty=VT_ANY,unsigned short f=0) {type=VT_VARREF; property=STORE_INVALID_PROPID; flags=0; op=OP_SET; eid=STORE_COLLECTION_ID; length=id!=STORE_INVALID_PROPID?1:0; refV.refN=vn; refV.type=(unsigned char)ty; refV.flags=f&~VAR_TYPE_MASK; refV.id=id; meta=0;}
 		void	setRange(Value *rng) {type=VT_RANGE; property=STORE_INVALID_PROPID; flags=0; op=OP_SET; eid=STORE_COLLECTION_ID; length=2; range=rng; meta=0;}
 		void	setURIID(URIID uri) {type=VT_URIID; property=STORE_INVALID_PROPID; flags=0; op=OP_SET; eid=STORE_COLLECTION_ID; length=sizeof(uint32_t); uid=uri; meta=0;}
 		void	setIdentity(IdentityID ii) {type=VT_IDENTITY; property=STORE_INVALID_PROPID; flags=0; op=OP_SET; eid=STORE_COLLECTION_ID; length=sizeof(uint32_t); iid=ii; meta=0;}
@@ -638,7 +638,7 @@ namespace MVStore
 		virtual	bool		isHidden() const = 0;
 		virtual	bool		isDeleted() const = 0;
 		virtual	bool		isClass() const = 0;
-		virtual	bool		isTransformed() const = 0;
+		virtual	bool		isDerived() const = 0;
 		virtual	bool		isProjected() const = 0;
 
 		virtual	uint32_t	getNumberOfProperties() const = 0;
@@ -712,10 +712,10 @@ namespace MVStore
 	{
 	public:
 		virtual	IPIN		*next() = 0;
-		virtual	RC			next(const Value *&res,unsigned& nValues) = 0;
 		virtual	RC			next(PID&) = 0;
 		virtual	RC			next(IPIN *pins[],unsigned nPins,unsigned& nRet) = 0;
 		virtual	RC			rewind() = 0;
+		virtual	uint64_t	getCount() const = 0;
 		virtual	void		destroy() = 0;
 	};
 
@@ -809,13 +809,13 @@ namespace MVStore
 		virtual	RC		setName(QVarID var,const char *name) = 0;
 		virtual	RC		setDistinct(QVarID var,DistinctType) = 0;
 		virtual	RC		addOutput(QVarID var,const Value *dscr,unsigned nDscr) = 0;
-		virtual RC		addCondition(QVarID var,IExprTree *cond,bool fHaving=false) = 0;
+		virtual RC		addCondition(QVarID var,IExprTree *cond) = 0;
 		virtual	RC		addConditionFT(QVarID var,const char *str,unsigned flags=0,const PropertyID *pids=NULL,unsigned nPids=0) = 0;
 		virtual	RC		setPIDs(QVarID var,const PID *pids,unsigned nPids) = 0;
 		virtual	RC		setPath(QVarID var,const PathSeg *segs,unsigned nSegs) = 0;
 		virtual	RC		setPropCondition(QVarID var,const PropertyID *props,unsigned nProps,bool fOr=false) = 0;
 		virtual	RC		setJoinProperties(QVarID var,const PropertyID *props,unsigned nProps) = 0;
-		virtual	RC		setGroup(QVarID,const OrderSeg *order,unsigned nSegs) = 0;
+		virtual	RC		setGroup(QVarID,const OrderSeg *order,unsigned nSegs,IExprTree *having=NULL) = 0;
 		virtual	RC		setOrder(const OrderSeg *order,unsigned nSegs) = 0;
 		virtual	RC		setValues(const Value *values,unsigned nValues) =  0;
 

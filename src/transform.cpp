@@ -14,21 +14,45 @@ Written by Mark Venguerov 2008 - 2010
 
 using namespace MVStoreKernel;
 
+TransOp::TransOp(QueryOp *q,const ValueV *d,unsigned nD,const ValueV& ag,const OrderSegQ *gs,unsigned nG,const Expr *hv,ulong qf) 
+	: QueryOp(q,qf|(q->getQFlags()&(QO_UNIQUE|QO_IDSORT|QO_REVERSIBLE))),dscr(d),ins(NULL),nIns(0),qr(qx->ses),pqr(&qr),res(NULL),nRes(0),aggs(ag),groupSeg(gs),nGroup(nG),having(hv),ac(NULL)
+{
+	nOuts=nD!=0?nD:1; sort=q->getSort(nSegs);
+	if ((qf&QO_VCOPIED)!=0) {
+		if (ag.vals!=NULL) {RC rc=copyV(ag.vals,ag.nValues,*(Value**)&aggs.vals,qx->ses); if (rc!=RC_OK) throw rc; aggs.fFree=true;}
+		if (gs!=NULL) {
+			if ((groupSeg=new(qx->ses) OrderSegQ[nG])==NULL) throw RC_NORESOURCES;
+			memcpy((OrderSegQ*)groupSeg,gs,nG*sizeof(OrderSegQ));
+			for (unsigned i=0; i<nG; i++) if ((gs[i].flags&ORDER_EXPR)!=0)
+				if ((((OrderSegQ*)groupSeg)[i].expr=Expr::clone(gs[i].expr,qx->ses))==NULL) throw RC_NORESOURCES;
+			if (hv!=NULL && (having=Expr::clone(hv,qx->ses))==NULL) throw RC_NORESOURCES;
+		}
+	}
+}
+
+TransOp::TransOp(QCtx *qc,const ValueV *d,unsigned nD,ulong qf) 
+	: QueryOp(qc,qf|QO_UNIQUE),dscr(d),ins(NULL),nIns(0),qr(qc->ses),pqr(&qr),res(NULL),nRes(0),groupSeg(NULL),nGroup(0),having(NULL),ac(NULL)
+{
+	nOuts=nD!=0?nD:1;
+}
+
 TransOp::~TransOp()
 {
-	if (fCopied && dscr!=NULL) {
-		for (ulong i=0; i<nOuts; i++) freeV(dscr[i].vals,dscr[i].nValues,ses);
-		ses->free((void*)dscr);
+	if (ac!=NULL) for (unsigned j=0; j<aggs.nValues; j++) if (ac[j].hist!=NULL) {ac[j].hist->~Histogram(); qx->ses->free(ac[j].hist);}
+	if ((qflags&QO_VCOPIED)!=0) {
+		if (dscr!=NULL) {
+			for (ulong i=0; i<nOuts; i++) if (dscr[i].vals!=NULL && dscr[i].fFree) freeV((Value*)dscr[i].vals,dscr[i].nValues,qx->ses);
+			qx->ses->free((void*)dscr);
+		}
+		if (groupSeg!=NULL) {
+			for (unsigned i=0; i<nGroup; i++) if ((groupSeg[i].flags&ORDER_EXPR)!=0) groupSeg[i].expr->destroy();
+			qx->ses->free((void*)groupSeg); if (having!=NULL) qx->ses->free((Expr*)having);
+		}
+		if (aggs.vals!=NULL && aggs.fFree) freeV((Value*)aggs.vals,aggs.nValues,qx->ses);
 	}
-	if (ins!=NULL) {
-		for (unsigned i=1; i<nIns; i++) if (ins[i]!=NULL) {ins[i]->~PINEx(); ses->free(ins[i]);}
-		ses->free(ins);
-	}
-	if (group[0]!=NULL) {
-		//...
-	}
-	if (aggs!=NULL) {
-		//...
+	if (nIns>1) {
+		for (unsigned i=1; i<nIns; i++) if (ins[i]!=NULL) {ins[i]->~PINEx(); qx->ses->free(ins[i]);}
+		qx->ses->free(ins);
 	}
 }
 
@@ -36,191 +60,191 @@ void TransOp::connect(PINEx **results,unsigned nr)
 {
 	res=results; nRes=nr;
 	if (queryOp!=NULL && (nIns=queryOp->getNOuts())!=0) {
-		if (nIns==1) queryOp->connect(&qr);
-		else if ((ins=new(ses) PINEx*[nIns])==NULL) return;	//???
+		if (nIns==1) queryOp->connect(ins=&pqr);
+		else if ((ins=new(qx->ses) PINEx*[nIns])==NULL) return;	//???
 		else {
-			memset(ins,0,nIns*sizeof(PINEx*)); ins[0]=&qr;
-			for (unsigned i=1; i<nIns; i++) if ((ins[i]=new(ses) PINEx(ses))==NULL) return;		//???
+			memset(ins,0,nIns*sizeof(PINEx*)); ins[0]=pqr;
+			for (unsigned i=1; i<nIns; i++) if ((ins[i]=new(qx->ses) PINEx(qx->ses))==NULL) return;		//???
 			queryOp->connect(ins,nIns);
 		}
 	}
 }
 
-RC TransOp::next(const PINEx *skip)
+RC TransOp::next(const PINEx *)
 {
-	RC rc; if ((state&QST_EOF)!=0||queryOp==NULL) return RC_EOF;
+	if ((state&QST_EOF)!=0) return RC_EOF;
 	if ((state&QST_INIT)!=0) {
 		state&=~QST_INIT;
-		// check aggregates in outs
-		if (nGroup!=0)  {
-			//...
+		if (aggs.nValues!=0) {
+			if ((qx->vals[QV_AGGS].vals=new(qx->ses) Value[qx->vals[QV_AGGS].nValues=aggs.nValues])==NULL) {state|=QST_EOF; return RC_NORESOURCES;}
+			qx->vals[QV_AGGS].fFree=true; memset((Value*)qx->vals[QV_AGGS].vals,0,aggs.nValues*sizeof(Value));
+			if ((ac=new(qx->ses) AggAcc[aggs.nValues])==NULL) {state|=QST_EOF; return RC_NORESOURCES;}
+			for (unsigned i=0; i<aggs.nValues; i++) {
+				*const_cast<MemAlloc**>(&ac[i].ma)=qx->ses; ac[i].op=(ExprOp)aggs.vals[i].op;	// flags???
+				if (aggs.vals[i].op==OP_HISTOGRAM && (ac[i].hist=new(qx->ses) Histogram(*qx->ses,0))==NULL) {state|=QST_EOF; return RC_NORESOURCES;}		// flags ???
+			}
+		}
+		if (nGroup!=NULL) {
+			if ((qx->vals[QV_GROUP].vals=new(qx->ses) Value[qx->vals[QV_GROUP].nValues=nGroup])==NULL) {state|=QST_EOF; return RC_NORESOURCES;}
+			qx->vals[QV_GROUP].fFree=true; memset((Value*)qx->vals[QV_GROUP].vals,0,nGroup*sizeof(Value));
 		}
 		state|=QST_BOF;
 	}
-	for (;(rc=queryOp->next(skip))==RC_OK || rc==RC_EOF && (nGroup!=0 || nAggs!=0); skip=NULL) {
-		if (rc==RC_EOF) state|=QST_EOF; else state&=~QST_BOF;
-		if (nGroup==0 && nAggs==0) {
-#if 0
-			//unsigned nP=0; ulong i,np=nOuts; //min(npins,(unsigned)nOuts);
-		//	for (i=0; i<np; ++nP,++i) if ((pins[i]=new(ses) PIN(ses,PIN::defPID,PageAddr::invAddr))==NULL) {rc=RC_NORESOURCES; break;}
-			for (i=0; rc==RC_OK && i<np; i++) {
-				PIN *pin=NULL/*pins[i]*/; const PIN *in; const ValueV &td=outs[i];
-				for (ulong j=0; rc==RC_OK && j<td.nValues; j++) {
-					const Value& v=td.vals[j],*pv=&v,*cv; Value w; ValueType ty=VT_ANY; ExprOp op=OP_SET;
-					if (v.type==VT_VARREF && v.length==0) {
-						if (v.type!=VT_VARREF || v.length!=0 || v.op!=OP_SET && v.op!=OP_ADD && v.op!=OP_ADD_BEFORE) rc=RC_INVPARAM;
-			//			else if (v.refPath.refN>=nVars) {if ((v.meta&META_PROP_IFEXIST)==0) rc=RC_NOTFOUND;}
-						else if ((in=vars[v.refPath.refN].pin)!=NULL) {
-							const Value *props=in->properties; ulong nprops=in->nProperties;
-							if (props!=NULL) for (ulong k=0; k<nprops; ++props,++k)
-								if ((v.meta&META_PROP_IFNOTEXIST)==0 || pin->findProperty(props->property)==NULL) {
-									w=*props; w.flags=NO_HEAP; w.op=v.op; w.meta|=META_PROP_DERIVED;
-									if ((rc=pin->modify(&w,v.op==OP_ADD_BEFORE?STORE_FIRST_ELEMENT:STORE_COLLECTION_ID,w.eid,0,ses))!=RC_OK) break;
-								}
-						} else {
-							if (vars[v.refPath.refN].pb.isNull() && (rc=ses->getStore()->queryMgr->getBody(vars[v.refPath.refN],TVO_READ))!=RC_OK)
-								{if (rc==RC_NOTFOUND && (v.meta&META_PROP_IFEXIST)!=0) rc=RC_OK; continue;}
-							const HeapPageMgr::HeapPIN *hpin=vars[v.refPath.refN].hpin;
-							if (hpin!=NULL) {
-		// correct version ???
-								const HeapPageMgr::HeapV *hprop=hpin->getPropTab();
-								for (int k=hpin->nProps; --k>=0; hprop++) {
-									PropertyID pid=hprop->getPropID();
-									if ((v.meta&META_PROP_IFNOTEXIST)==0 || pin->findProperty(pid)==NULL) {
-										if ((rc=ses->getStore()->queryMgr->loadVTx(w,hprop,vars[v.refPath.refN],LOAD_SSV,NULL))!=RC_OK) break;
-										w.op=v.op; w.meta|=META_PROP_DERIVED;
-										if ((rc=pin->modify(&w,v.op==OP_ADD_BEFORE?STORE_FIRST_ELEMENT:STORE_COLLECTION_ID,
-																STORE_COLLECTION_ID,MODP_NCPY,ses))!=RC_OK) {freeV(w); break;}
-									}
-								}
-							}
-						}
-						continue;
-					}
-					if ((v.meta&META_PROP_IFNOTEXIST)!=0) switch (v.property) {
-					case PROP_SPEC_STAMP: continue;
-					case PROP_SPEC_PINID: if (pin->id!=PIN::defPID) continue; else break;
-					default: if (pin->findProperty(v.property)!=NULL) continue;
-					}
-					switch (v.type) {
-					case VT_VARREF:
-						if ((v.refPath.flags&RPTH_RESPIN)!=0) {
-							if (v.refPath.refN>=nOuts && (v.meta&META_PROP_IFEXIST)==0) rc=RC_NOTFOUND;
-							if (v.refPath.refN<np) {in=pins[v.refPath.refN]; assert(in!=NULL);} else continue;
-							if (v.length==0) {w.set((IPIN*)in); pv=&w;}
-							else if ((pv=in->findProperty(v.length==1?v.refPath.id:v.refPath.ids[0]))==NULL)
-								{if ((v.meta&META_PROP_IFEXIST)==0) rc=RC_NOTFOUND; continue;}
-						} else if (v.refPath.refN>=nVars) {
-							if ((v.meta&META_PROP_IFEXIST)==0) rc=RC_NOTFOUND; continue;
-						} else if ((in=vars[v.refPath.refN].pin)!=NULL) {
-							if (v.length==0) {
-								if (v.refPath.type!=VT_REF) {w.set(in->getPID()); pv=&w;}
-								else {
-									// copy pin
-								}
-							} else if ((pv=in->findProperty(v.length==1?v.refPath.id:v.refPath.ids[0]))==NULL)
-								{if ((v.meta&META_PROP_IFEXIST)==0) rc=RC_NOTFOUND; continue;}
-						} else {
-							if (vars[v.refPath.refN].pb.isNull() && (rc=ses->getStore()->queryMgr->getPIN(vars[v.refPath.refN],ses))!=RC_OK)
-								{if (rc==RC_NOTFOUND && (v.meta&META_PROP_IFEXIST)!=0) rc=RC_OK; continue;}
-							ElementID eid=v.eid; pv=&w;
-							if (eid!=STORE_FIRST_ELEMENT && eid!=STORE_LAST_ELEMENT) eid=STORE_COLLECTION_ID;
-							rc=ses->getStore()->queryMgr->loadV(w,v.property,vars[v.refPath.refN],LOAD_SSV,NULL,eid);
-							if (rc!=RC_OK) {if (rc==RC_NOTFOUND && (v.meta&META_PROP_IFEXIST)!=0) rc=RC_OK; continue;}
-						}
-						if (v.length>1) {
-							//...
-						}
-						ty=(ValueType)v.refPath.type; break;
-					case VT_PARAM:
-						rc=RC_INTERNAL; continue;
-					case VT_EXPR:
-						if (v.te.fEval) {
-							if ((rc=Expr::eval((Expr**)&v.expr,1,w,vars,nVars,NULL,0,ses))!=RC_OK)
-								{if (rc==RC_NOTFOUND && (v.meta&META_PROP_IFEXIST)!=0) rc=RC_OK; continue;}
-							ty=(ValueType)v.te.type; pv=&w;
-						}
-						break;
-					default: break;
-					}
-					if (pv->type==VT_ARRAY || pv->type==VT_COLLECTION) switch (v.eid) {
-					case STORE_COLLECTION_ID: break;
-					case STORE_FIRST_ELEMENT:
-					case STORE_LAST_ELEMENT:
-						cv=pv->type==VT_ARRAY?&pv->varray[v.eid==STORE_FIRST_ELEMENT?0:pv->length-1]:
-							pv->nav->navigate(v.eid==STORE_FIRST_ELEMENT?GO_FIRST:GO_LAST);
-						if (cv==NULL) {if ((v.meta&META_PROP_IFEXIST)==0) rc=RC_NOTFOUND; continue;}
-						if (pv!=&w) {if ((rc=copyV(*cv,w,ses))!=RC_OK) continue; pv=&w;}
-						else {Value ww; if ((rc=copyV(*cv,ww,ses))!=RC_OK) continue; freeV(w); w=ww;}
-						break;
-					case STORE_SUM_COLLECTION: op=OP_PLUS; goto aggregate;
-					case STORE_AVG_COLLECTION: op=OP_AVG; goto aggregate;
-					case STORE_CONCAT_COLLECTION: op=OP_CONCAT; goto aggregate;
-					case STORE_MIN_ELEMENT: op=OP_MIN; goto aggregate;
-					case STORE_MAX_ELEMENT: op=OP_MAX;
-					aggregate:
-						if (pv!=&w) {w=*pv; w.flags=w.flags&~HEAP_TYPE_MASK|NO_HEAP; pv=&w;}
-						if ((rc=Expr::calc(op,1,w,NULL,ses))!=RC_OK) continue;
-						break;
-					}
-					if (ty!=VT_ANY && ty!=pv->type) {
-						if (pv->type==VT_ARRAY) {
-							for (ulong k=0; k<pv->length; k++) if (pv->varray[k].type!=ty) {
-								if (pv!=&w) {
-									//copy
-								}
-								if ((rc=convV(pv->varray[k],*(Value*)&pv->varray[k],ty))!=RC_OK) break;
-							}
-							if (rc!=RC_OK) continue;
-						} else if (pv->type==VT_COLLECTION) {
-							((Navigator*)pv->nav)->setType(ty);
-						} else {
-							if (pv!=&w) {w=*pv; w.flags=w.flags&~HEAP_TYPE_MASK|NO_HEAP; pv=&w;}
-							if ((rc=convV(w,w,ty))!=RC_OK) continue;
-						}
-					}
-					((Value*)pv)->op=v.op; 
-					rc=pin->modify(pv,op==OP_ADD_BEFORE?STORE_FIRST_ELEMENT:STORE_LAST_ELEMENT,pv->eid,pv==&w?MODP_NCPY:0,ses);
-				}
-				if (rc==RC_OK && pins!=NULL) nOut++;
+	RC rc=RC_OK; Value *newV=NULL;
+	if (queryOp==NULL) state|=QST_EOF;
+	else for (;;) {
+		if ((rc=queryOp->next())!=RC_OK) {
+			state|=QST_EOF; if (rc!=RC_EOF || nGroup+aggs.nValues==0 || (state&QST_BOF)!=0) return rc;
+			for (unsigned i=0; i<aggs.nValues; i++) {
+				if (nGroup!=0) freeV(*(Value*)&qx->vals[QV_AGGS].vals[i]);
+				if ((rc=ac[i].result(*(Value*)&qx->vals[QV_AGGS].vals[i]))!=RC_OK) return rc;
 			}
-			if (rc!=RC_OK) for (i=0; i<nP; i++) {pins[i]->destroy(); pins[i]=NULL;}
-#endif
-			return RC_OK;
+			if (having!=NULL && !Expr::condSatisfied(&having,1,res,nRes,qx->vals,QV_ALL,qx->ses)) return RC_EOF;
+			rc=RC_OK; newV=NULL; break;
 		}
+		bool fRepeat=false;
 		if (nGroup!=0) {
-			bool fOut=false; assert(group[0]!=NULL && group[1]!=NULL);
-			if ((state&QST_BOF)==0) {
-				if (rc!=RC_OK) fOut=true;
-				else {
-		//			get groupping exprs form sort
-		//			compare with previous, if != -> fOut=true
-				}
-			}
-			if (fOut) {
-		//			// save AggAccs
-		//			// reset AggAccs
-		//			// remember new
-		//			// return old
-			} else if (rc!=RC_OK) return rc;
+			fRepeat=true; assert(qx->vals[QV_GROUP].vals!=NULL);
+			if ((state&QST_BOF)!=0) {if ((rc=queryOp->loadData(*ins[0],(Value*)qx->vals[QV_GROUP].vals,nGroup,STORE_COLLECTION_ID,true))!=RC_OK) {state|=QST_EOF; return rc;}}
+			else if (newV==NULL && (newV=(Value*)alloca(nGroup*sizeof(Value)))==NULL) {state|=QST_EOF; return RC_NORESOURCES;}
+			else if ((rc=queryOp->loadData(*ins[0],newV,nGroup,STORE_COLLECTION_ID,true))!=RC_OK) {state|=QST_EOF; return rc;}
+			else for (unsigned i=0; i<nGroup; i++) if (cmp(qx->vals[QV_GROUP].vals[i],newV[i],groupSeg[i].flags)!=0) {fRepeat=false; break;}
 		}
-		if (nAggs!=0) {
-			// calculate them
+		if (dscr!=NULL&&!fRepeat || ac!=NULL) for (unsigned i=0; i<nIns; i++) if ((rc=getData(*ins[i],NULL,0))!=RC_OK) {state|=QST_EOF; return rc;}
+		for (unsigned i=0; i<aggs.nValues; i++) {
+			if (nGroup!=0 && !fRepeat) {
+				freeV(*(Value*)&qx->vals[QV_AGGS].vals[i]);
+				if ((rc=ac[i].result(*(Value*)&qx->vals[QV_AGGS].vals[i]))!=RC_OK) {state|=QST_EOF; return rc;}
+			}
+			const Value &v=aggs.vals[i]; Value w; w.setError();
+			if (v.type==VT_VARREF) {
+				if (v.refV.refN>=nIns) continue; assert((v.refV.flags&VAR_TYPE_MASK)==0 && v.length!=0);
+				rc=ins[v.refV.refN]->getValue(v.refV.id,w,LOAD_SSV,qx->ses,v.eid<STORE_ALL_ELEMENTS||v.eid>=STORE_FIRST_ELEMENT?v.eid:STORE_COLLECTION_ID);
+			} else if (v.type==VT_EXPR && (v.meta&META_PROP_EVAL)!=0) rc=Expr::eval((const Expr**)&v.expr,1,w,ins,nIns,qx->vals,QV_ALL,qx->ses);
+			else if (v.type!=VT_ANY) {w=v; w.flags=NO_HEAP;}
+			if (rc==RC_OK) rc=ac[i].process(w); freeV(w); if (rc!=RC_OK) {state|=QST_EOF; return rc;}
+		}
+		state&=~QST_BOF;
+		if (nGroup!=0) {
+			if (fRepeat) {if (newV!=NULL) for (unsigned i=0; i<nGroup; i++) freeV(newV[i]);}
+			else if (having==NULL || Expr::condSatisfied(&having,1,res,nRes,qx->vals,QV_ALL,qx->ses)) break;
+			else {for (unsigned i=0; i<nGroup; i++) freeV(*(Value*)&qx->vals[QV_GROUP].vals[i]); memcpy((Value*)qx->vals[QV_GROUP].vals,newV,nGroup*sizeof(Value));}
+		} else if (ac==NULL) break;
+	}
+	if (dscr==NULL) {
+		assert(nGroup!=0);
+		if (res!=NULL && res[0]!=NULL) {
+			res[0]->setProps(qx->vals[QV_GROUP].vals,nGroup,0); res[0]->mode|=PIN_DERIVED;
+			if (newV==NULL) {qx->vals[QV_GROUP].vals=NULL; qx->vals[QV_GROUP].fFree=false;}
+			else if ((qx->vals[QV_GROUP].vals=new(qx->ses) Value[nGroup])==NULL) {state|=QST_EOF; return RC_NORESOURCES;}
+		} else if (newV!=NULL) for (unsigned i=0; i<nGroup; i++) freeV(*(Value*)&qx->vals[QV_GROUP].vals[i]);
+		if (newV!=NULL) memcpy((Value*)qx->vals[QV_GROUP].vals,newV,nGroup*sizeof(Value));
+	} else {
+		for (unsigned i=0; i<nOuts; i++) {
+			const ValueV &td=dscr[i]; PINEx *re=i<nRes?res[i]:(PINEx*)0; unsigned md=0; Value w,*to=&w;
+			if (re!=NULL) {
+				if (re->properties==NULL || (re->mode&PIN_NO_FREE)!=0) {
+					if ((re->properties=(Value*)qx->ses->malloc(td.nValues*sizeof(Value)))!=NULL) re->mode&=~PIN_NO_FREE; else {rc=RC_NORESOURCES; break;}
+				} else {
+					for (unsigned k=0; k<re->nProperties; k++) freeV(*(Value*)&re->properties[k]);
+					if (re->nProperties<td.nValues && (re->properties=(Value*)qx->ses->realloc((void*)re->properties,td.nValues*sizeof(Value)))==NULL) {rc=RC_NORESOURCES; break;}
+				}
+				if (nGroup+aggs.nValues!=0 || i>=nIns) re->mode=re->mode&~PIN_PROJECTED|PIN_DERIVED; else {re->mode&=~(PIN_DERIVED|PIN_PROJECTED); ins[i]->getID(re->id);}
+				re->nProperties=td.nValues; to=re->properties;
+			}
+			for (ulong j=0; j<td.nValues; j++) {
+				const Value& v=td.vals[j],*cv; Value w; ValueType ty=VT_ANY; ExprOp op=OP_SET; TIMESTAMP ts;
+//				if ((v.meta&META_PROP_IFNOTEXIST)!=0 && re->defined(&v.property,1)) continue;
+				switch (v.type) {
+				case VT_VARREF:
+					if ((v.refV.flags&VAR_TYPE_MASK)!=0) {
+						const ValueV *vals=&qx->vals[((v.refV.flags&VAR_TYPE_MASK)>>13)-1]; md|=PIN_DERIVED;
+						if (v.refV.refN>=vals->nValues) rc=RC_NOTFOUND; else rc=copyV(vals->vals[v.refV.refN],*to,qx->ses);
+					} else if (v.refV.refN>=nIns) rc=RC_NOTFOUND;
+					else if (v.length==0) {
+						//???
+						md|=PIN_DERIVED;
+					} else {
+						rc=ins[v.refV.refN]->getValue(v.refV.id,*to,LOAD_SSV,qx->ses,v.eid<STORE_ALL_ELEMENTS||v.eid>=STORE_FIRST_ELEMENT?v.eid:STORE_COLLECTION_ID);
+						if (v.refV.id!=v.property||v.refV.refN!=i) md|=PIN_DERIVED;
+					}
+					ty=(ValueType)v.refV.type; break;
+				case VT_CURRENT:
+					md|=PIN_DERIVED;
+					switch (v.i) {
+					default: rc=RC_CORRUPTED; break;
+					case CVT_TIMESTAMP: getTimestamp(ts); to->setDateTime(ts); break;
+					case CVT_USER: to->setIdentity(qx->ses->getIdentity()); break;
+					case CVT_STORE: to->set((unsigned)qx->ses->getStore()->storeID); break;
+					}
+					break;
+				case VT_EXPR:
+					if ((v.meta&META_PROP_EVAL)!=0) {
+						rc=Expr::eval((const Expr**)&v.expr,1,*to,ins,nIns,qx->vals,QV_ALL,qx->ses); md|=PIN_DERIVED; break;
+					}
+				default: *to=v; to->flags=NO_HEAP; md|=PIN_DERIVED; break;
+				}
+				if (rc==RC_OK && (to->type==VT_ARRAY || to->type==VT_COLLECTION)) switch (v.eid) {
+				case STORE_COLLECTION_ID: break;
+				case STORE_FIRST_ELEMENT:
+				case STORE_LAST_ELEMENT:
+					cv=to->type==VT_ARRAY?&to->varray[v.eid==STORE_FIRST_ELEMENT?0:to->length-1]:
+						to->nav->navigate(v.eid==STORE_FIRST_ELEMENT?GO_FIRST:GO_LAST);
+					if (cv==NULL) rc=RC_NOTFOUND; else if ((rc=copyV(*cv,w,qx->ses))==RC_OK) {freeV(*to); *to=w;}
+					md|=PIN_DERIVED; break;
+				case STORE_SUM_COLLECTION: op=OP_PLUS; goto aggregate;
+				case STORE_AVG_COLLECTION: op=OP_AVG; goto aggregate;
+				case STORE_CONCAT_COLLECTION: op=OP_CONCAT; goto aggregate;
+				case STORE_MIN_ELEMENT: op=OP_MIN; goto aggregate;
+				case STORE_MAX_ELEMENT: op=OP_MAX;
+				aggregate: rc=Expr::calcAgg(op,*to,NULL,1,0,qx->ses); md|=PIN_DERIVED; break;
+				}
+				if (rc==RC_OK && ty!=VT_ANY && ty!=to->type) {
+					if (to->type==VT_ARRAY) for (ulong k=0; k<to->length; k++) if (to->varray[k].type!=ty) {
+						//if (to!=&w) {
+							//copy
+						//}
+						if ((rc=convV(to->varray[k],*(Value*)&to->varray[k],ty))!=RC_OK) break;
+					} else if (to->type==VT_COLLECTION) {
+						((Navigator*)to->nav)->setType(ty);
+					} else if ((rc=convV(*to,*to,ty))!=RC_OK) continue;
+					md|=PIN_DERIVED;
+				}
+				to->property=v.property;
+				if (rc!=RC_OK) {
+					if (rc==RC_NOTFOUND) rc=RC_OK; else {state|=QST_EOF; return rc;}
+					if (re!=NULL && --re->nProperties==0 && re->properties!=NULL) {qx->ses->free(re->properties); re->properties=NULL;}
+				} else if (re!=NULL) to++;
+			}
+			if (re!=NULL) {
+				if (((re->mode|=md)&PIN_DERIVED)!=0) {re->id=PIN::defPID; re->epr.lref=0;} //else if (re->nProperties<ins[i]->getNProperties()) re->mode|=PIN_PROJECTED;
+				if (re->nProperties==0) re->mode|=PIN_EMPTY;
+			}
+		}
+		if (newV!=NULL) {
+			for (unsigned i=0; i<nGroup; i++) freeV(*(Value*)&qx->vals[QV_GROUP].vals[i]);
+			memcpy((Value*)qx->vals[QV_GROUP].vals,newV,nGroup*sizeof(Value));
 		}
 	}
-	state|=QST_EOF; return rc;
+	return RC_OK;
 }
 
-void TransOp::getOpDescr(QODescr& qdscr)
+RC TransOp::rewind()
 {
-	queryOp->getOpDescr(qdscr); qdscr.level++;
-	//???
+	RC rc=queryOp!=NULL?queryOp->rewind():RC_OK;
+	if (rc==RC_OK) {
+		state=state&~QST_EOF|QST_BOF;
+		for (unsigned i=0; i<aggs.nValues; i++) ac[i].reset();
+		for (unsigned j=0; j<nGroup; j++) {freeV(*(Value*)&qx->vals[QV_GROUP].vals[j]); ((Value*)&qx->vals[QV_GROUP].vals[j])->setError();}
+	}
+	return rc;
 }
 
 void TransOp::print(SOutCtx& buf,int level) const
 {
-	buf.fill('\t',level); buf.append("access: ",8);
+	buf.fill('\t',level); buf.append("transform: ",11);
 	for (unsigned i=0; i<nOuts; i++) {
+		//?????
 	}
-	buf.append("\n",1);
+	buf.append("\n",1); if (queryOp!=NULL) queryOp->print(buf,level+1);
 }

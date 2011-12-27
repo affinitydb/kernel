@@ -1,6 +1,6 @@
 /**************************************************************************************
 
-Copyright Â© 2004-2010 VMware, Inc. All rights reserved.
+Copyright © 2004-2010 VMware, Inc. All rights reserved.
 
 Written by Mark Venguerov, Andrew Skowronski, Michael Andronov 2004 - 2010
 

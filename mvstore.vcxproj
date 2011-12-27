@@ -349,6 +349,7 @@
     <ClInclude Include="src\dlalloc.h" />
     <ClInclude Include="src\fio.h" />
     <ClInclude Include="src\fiolinux.h" />
+    <ClInclude Include="src\fioosx.h" />
     <ClInclude Include="src\fiowin.h" />
     <ClInclude Include="src\fsmgr.h" />
     <ClInclude Include="src\ftindex.h" />
@@ -397,6 +398,7 @@
     <ClCompile Include="src\eval.cpp" />
     <ClCompile Include="src\fio.cpp" />
     <ClCompile Include="src\fiolinux.cpp" />
+    <ClCompile Include="src\fioosx.cpp" />
     <ClCompile Include="src\fiowin.cpp" />
     <ClCompile Include="src\fsmgr.cpp" />
     <ClCompile Include="src\ftindex.cpp" />

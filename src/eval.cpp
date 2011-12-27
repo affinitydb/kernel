@@ -1,6 +1,6 @@
 /**************************************************************************************
 
-Copyright © 2004-2010 VMware, Inc. All rights reserved.
+Copyright Â© 2004-2010 VMware, Inc. All rights reserved.
 
 Written by Mark Venguerov 2004 - 2010
 
@@ -26,8 +26,8 @@ RC Expr::execute(Value& res,const Value *params,unsigned nParams) const
 	try {
 		Session *ses=Session::getSession(); if (ses==NULL) return RC_NOSESSION;
 		if (ses->getStore()->inShutdown()) return RC_SHUTDOWN;
-		const Expr *exp=this; res.setError();
-		RC rc=eval(&exp,1,res,NULL,0,params,nParams,ses);
+		const Expr *exp=this; res.setError(); ValueV vv(params,nParams);
+		RC rc=eval(&exp,1,res,NULL,0,&vv,1,ses);
 		switch (rc) {
 		default: return rc;
 		case RC_TRUE: res.set(true); return RC_OK;
@@ -36,7 +36,22 @@ RC Expr::execute(Value& res,const Value *params,unsigned nParams) const
 	} catch (RC rc) {return rc;} catch (...) {report(MSG_ERROR,"Exception in IExpr::execute()\n"); return RC_INTERNAL;}
 }
 
-RC Expr::eval(const Expr *const *exprs,ulong nExp,Value& result,const PINEx **vars,ulong nVars,const Value *params,ulong nParams,MemAlloc *ma,bool fIgnore)
+bool Expr::condSatisfied(const Expr *const *exprs,ulong nExp,PINEx **vars,unsigned nVars,const ValueV *pars,unsigned nPars,MemAlloc *ma,bool fIgnore)
+{
+	try {
+		Value res; 
+		if (exprs==NULL || nExp==0 || exprs[0]==NULL) return true;
+		switch (Expr::eval(exprs,nExp,res,vars,nVars,pars,nPars,ma,fIgnore)) {
+		case RC_TRUE: return true;
+		case RC_FALSE: return false;
+		case RC_OK: if (res.type==VT_BOOL) return res.b;
+		default: break;
+		}
+	} catch (...) {}
+	return false;
+}
+
+RC Expr::eval(const Expr *const *exprs,ulong nExp,Value& result,PINEx **vars,ulong nVars,const ValueV *params,ulong nParams,MemAlloc *ma,bool fIgnore)
 {
 	ulong idx=0; const Expr *exp; assert(exprs!=NULL && nExp>0 && exprs[0]!=NULL); Session *ses=NULL;
 	const byte *codePtr=NULL,*codeEnd=NULL; ulong cntCatch=0,lStack=0; Value *stack=NULL,*top=NULL; VarD vds[4],*evds=NULL;
@@ -44,7 +59,7 @@ RC Expr::eval(const Expr *const *exprs,ulong nExp,Value& result,const PINEx **va
 		if (codePtr>=codeEnd) {
 			if (codePtr>codeEnd || top!=stack && top!=stack+1) return RC_INTERNAL;
 			if (idx>=nExp) {if (top==stack) return RC_TRUE; result=top[-1]; return result.type!=VT_ERROR?RC_OK:RC_NOTFOUND;}
-			if ((exp=exprs[idx++])==NULL || (params==NULL||nParams==0) && fIgnore && (exp->hdr.flags&EXPR_PARAMS)!=0) continue;
+			if ((exp=exprs[idx++])==NULL || (params==NULL||nParams==0||params[0].nValues==0) && fIgnore && (exp->hdr.flags&EXPR_PARAMS)!=0) continue;
 			if ((exp->hdr.flags&EXPR_NO_CODE)!=0) {
 				const VarHdr *vh=(VarHdr*)(&exp->hdr+1); assert(exp->hdr.nVars==1); RC rc;
 				if (vh->var>=nVars || (rc=vars[vh->var]->loadV((PropertyID*)(vh+1),NULL,vh->nProps))==RC_NOTFOUND) return RC_FALSE;
@@ -62,13 +77,13 @@ RC Expr::eval(const Expr *const *exprs,ulong nExp,Value& result,const PINEx **va
 			}
 		}
 		assert(top>=stack && top<=stack+exp->hdr.lStack);
-		TIMESTAMP ts; const PINEx *vi; const Value *v; RC rc=RC_OK; VarD *vd; ElementID eid;
+		TIMESTAMP ts; const Value *v; RC rc=RC_OK; VarD *vd; ElementID eid;
 		byte op=*codePtr++; const bool ff=(op&0x80)!=0; int nops; unsigned fop; uint32_t u,vdx;
 		switch (op&=0x7F) {
 		case OP_CON:
 			assert(top<stack+exp->hdr.lStack); top->flags=0;
 			if ((rc=MVStoreKernel::deserialize(*top,codePtr,codeEnd,ma,true))!=RC_OK) break;
-			assert(top->type!=VT_VARREF && top->type!=VT_PARAM && top->type!=VT_CURRENT);
+			assert(top->type!=VT_VARREF && top->type!=VT_CURRENT);
 			top++; break;
 		case OP_CONID:
 			if ((u=*codePtr++)==0xFF) {u=codePtr[0]|codePtr[1]<<8; codePtr+=2;}
@@ -81,20 +96,20 @@ RC Expr::eval(const Expr *const *exprs,ulong nExp,Value& result,const PINEx **va
 			if (ff) top->setIdentity(u); else top->setURIID(u&STORE_MAX_PROPID);
 			top++; break;
 		case OP_PARAM:
-			if ((u=*codePtr++)<nParams) v=&params[u]; else rc=RC_NOTFOUND;
-			//if (v->type==VT_VARREF) {u=v->refPath.refN; if (v->length==0) goto var; propID=v->refPath.id; eid=v->eid; goto prop;}
+			if ((u=*codePtr++)!=0xFF) vdx=u>>6,u&=0x3F; else {vdx=codePtr[0]; u=codePtr[1]; codePtr+=2;}
+			if (vdx>=nParams || u>=params[vdx].nValues) rc=RC_NOTFOUND;
+			else {
+				v=&params[vdx].vals[u];
+				if (v->type==VT_VARREF) {
+					//u=v->refV.refN; if (v->length==0) goto var; propID=v->refV.id; eid=v->eid; goto prop;
+				}
+			}
 			if (ff) top->set(unsigned(rc!=RC_OK?(rc=RC_OK,0u):v->type==VT_ARRAY?v->length:v->type==VT_COLLECTION?v->nav->count():1u)); 
 			else if (rc==RC_OK) {*top=*v; top->flags=NO_HEAP;} else {top->setError(); if (cntCatch!=0) rc=RC_OK;}
 			top++; break;
 		case OP_VAR:
-			if ((u=*codePtr++)>=nVars) {if (ff) top->set(0u); else {top->setError(); if (cntCatch==0) rc=RC_NOTFOUND;}}
-			else if (ff) top->set(1u); else {
-				PIN *pin=NULL; vi=vars[u];
-				if (ses==NULL && (ses=Session::getSession())==NULL) {top->setError(); rc=cntCatch!=0?RC_OK:RC_NOSESSION;}
-				else if ((vi->id.pid!=STORE_INVALID_PID || (rc=vi->unpack())==RC_OK) &&
-					(rc=vi->ses->getStore()->queryMgr->loadPIN(vi->ses,vi->id,pin,0,(PINEx*)vi))==RC_OK)
-						{top->set(pin); top->flags=SES_HEAP;} else {top->setError(); if (cntCatch!=0) rc=RC_OK;}
-			}
+			if ((u=*codePtr++)<nVars && vars[u]->load()==RC_OK) {if (ff) top->set(1u); else top->set((PIN*)vars[u]);}
+			else if (ff) top->set(0u); else {top->setError(); if (cntCatch==0) rc=RC_NOTFOUND;}
 			top++; break;
 		case OP_PROP: case OP_ELT:
 			if ((u=*codePtr++)!=0xff) vd=&vds[vdx=u>>6],u&=0x3f;
@@ -139,7 +154,7 @@ RC Expr::eval(const Expr *const *exprs,ulong nExp,Value& result,const PINEx **va
 			}
 			top++; break;
 		case OP_PATH:
-			if ((rc=exp->path(top,codePtr,params,nParams,ma))!=RC_OK && rc!=RC_CORRUPTED && rc!=RC_NORESOURCES && cntCatch!=0)
+			if ((rc=exp->path(top,codePtr,params[0],ma))!=RC_OK && rc!=RC_CORRUPTED && rc!=RC_NORESOURCES && cntCatch!=0)
 				{(top++)->setError(); rc=RC_OK;}
 			break;
 		case OP_CURRENT:
@@ -159,18 +174,17 @@ RC Expr::eval(const Expr *const *exprs,ulong nExp,Value& result,const PINEx **va
 			break;
 		case OP_IN1:
 			if (((u=*codePtr++)&CND_EXT)!=0) u|=*codePtr++<<8;
-			rc=top[-2].type!=VT_ERROR&&top[-1].type!=VT_ERROR?calc(OP_EQ,top[-2],&top[-1],2,u,ma):RC_FALSE;
-			if (unsigned(rc-RC_TRUE)>unsigned(RC_FALSE-RC_TRUE)) break;
-			freeV(*--top); if (cndAct[u&CND_MASK][rc-RC_TRUE]!=2) freeV(*--top);
-			goto bool_op;
+			rc=top[-2].type!=VT_ERROR&&top[-1].type!=VT_ERROR?calc(OP_EQ,top[-2],&top[-1],2,u,ma):(u&CND_NOT)!=0?RC_TRUE:RC_FALSE;
+			if (unsigned(rc-RC_TRUE)<=unsigned(RC_FALSE-RC_TRUE)) {freeV(*--top); if (cndAct[u&CND_MASK][rc-RC_TRUE]!=2) freeV(*--top); goto bool_op;}
+			break;
 		case OP_IS_A:
 			nops=ff?*codePtr++:2; if (((u=*codePtr++)&CND_EXT)!=0) u|=*codePtr++<<8;
-			rc=top[-nops].type!=VT_ERROR && top[1-nops].type!=VT_ERROR ? calc(OP_IS_A,top[-nops],&top[1-nops],nops,u,ma):RC_FALSE;
+			rc=top[-nops].type!=VT_ERROR && top[1-nops].type!=VT_ERROR ? calc(OP_IS_A,top[-nops],&top[1-nops],nops,u,ma):(u&CND_NOT)!=0?RC_TRUE:RC_FALSE;
 			for (int i=nops; --i>=0;) freeV(*--top); goto bool_op;
 		case OP_ISLOCAL:
 			if (((u=*codePtr++)&CND_EXT)!=0) u|=*codePtr++<<8;
 			switch (top[-1].type) {
-			default: rc=RC_FALSE; freeV(*--top); goto bool_op;
+			default: rc=(u&CND_NOT)!=0?RC_TRUE:RC_FALSE; freeV(*--top); goto bool_op;
 			case VT_REF: rc=top[-1].pin->isLocal()?RC_TRUE:RC_FALSE; freeV(*--top); goto bool_op;
 			case VT_REFID: rc=isRemote(top[-1].id)?RC_FALSE:RC_TRUE; freeV(*--top); goto bool_op;
 			}
@@ -180,7 +194,7 @@ RC Expr::eval(const Expr *const *exprs,ulong nExp,Value& result,const PINEx **va
 		case OP_EQ: case OP_NE: case OP_LT: case OP_LE: case OP_GT: case OP_GE:
 		case OP_CONTAINS: case OP_BEGINS: case OP_ENDS: case OP_REGEX: case OP_IN:
 			if (((u=*codePtr++)&CND_EXT)!=0) u|=*codePtr++<<8;
-			rc=top[-2].type!=VT_ERROR&&top[-1].type!=VT_ERROR?calc((ExprOp)op,top[-2],&top[-1],2,u,ma):op==OP_NE?RC_TRUE:RC_FALSE;
+			rc=top[-2].type!=VT_ERROR&&top[-1].type!=VT_ERROR?calc((ExprOp)op,top[-2],&top[-1],2,u,ma):op==OP_NE||(u&CND_NOT)!=0?RC_TRUE:RC_FALSE;
 			freeV(*--top); freeV(*--top);
 		bool_op:
 			if (unsigned(rc-RC_TRUE)<=unsigned(RC_FALSE-RC_TRUE)) switch (cndAct[u&CND_MASK][rc-RC_TRUE]) {
@@ -207,7 +221,7 @@ RC Expr::eval(const Expr *const *exprs,ulong nExp,Value& result,const PINEx **va
 	}
 }
 
-RC Expr::path(Value *&top,const byte *&codePtr,const Value *params,unsigned nParams,MemAlloc *ma) const
+RC Expr::path(Value *&top,const byte *&codePtr,const ValueV& params,MemAlloc *ma) const
 {
 	const byte *pc=codePtr; const unsigned nPathSeg=*pc++; if (nPathSeg==0) return RC_CORRUPTED;
 	PathSeg *path=new(ma) PathSeg[nPathSeg]; if (path==NULL) return RC_NORESOURCES;
@@ -223,17 +237,17 @@ RC Expr::path(Value *&top,const byte *&codePtr,const Value *params,unsigned nPar
 		case 0x80: mv_dec32(pc,sg.rmin); mv_dec32(pc,sg.rmax); break;
 		case 0xA0:
 			mv_dec32(pc,sg.rmin);
-			if (sg.rmin>=nParams) rc=RC_NOTFOUND;
-			else if (params[sg.rmin].type!=VT_UINT && params[sg.rmin].type!=VT_INT) rc=RC_TYPE;
-			else if (params[sg.rmin].type==VT_INT && params[sg.rmin].i<0) rc=RC_INVPARAM;
-			else sg.rmin=sg.rmax=params[sg.rmin].ui;
+			if (sg.rmin>=params.nValues) rc=RC_NOTFOUND;
+			else if (params.vals[sg.rmin].type!=VT_UINT && params.vals[sg.rmin].type!=VT_INT) rc=RC_TYPE;
+			else if (params.vals[sg.rmin].type==VT_INT && params.vals[sg.rmin].i<0) rc=RC_INVPARAM;
+			else sg.rmin=sg.rmax=params.vals[sg.rmin].ui;
 			break;
 		case 0xC0:
 			mv_dec32(pc,sg.rmin); mv_dec32(pc,sg.rmax);
-			if (sg.rmin>=nParams||sg.rmax>=nParams) rc=RC_NOTFOUND;
-			else if (params[sg.rmin].type!=VT_UINT && params[sg.rmin].type!=VT_INT || params[sg.rmax].type!=VT_UINT && params[sg.rmax].type!=VT_INT) rc=RC_TYPE;
-			else if (params[sg.rmin].type==VT_INT && params[sg.rmin].i<0 || params[sg.rmax].type==VT_INT && params[sg.rmax].i<0 || params[sg.rmin].ui>params[sg.rmax].ui) rc=RC_INVPARAM;
-			else {sg.rmin=params[sg.rmin].ui; sg.rmax=params[sg.rmax].ui;}
+			if (sg.rmin>=params.nValues||sg.rmax>=params.nValues) rc=RC_NOTFOUND;
+			else if (params.vals[sg.rmin].type!=VT_UINT && params.vals[sg.rmin].type!=VT_INT || params.vals[sg.rmax].type!=VT_UINT && params.vals[sg.rmax].type!=VT_INT) rc=RC_TYPE;
+			else if (params.vals[sg.rmin].type==VT_INT && params.vals[sg.rmin].i<0 || params.vals[sg.rmax].type==VT_INT && params.vals[sg.rmax].i<0 || params.vals[sg.rmin].ui>params.vals[sg.rmax].ui) rc=RC_INVPARAM;
+			else {sg.rmin=params.vals[sg.rmin].ui; sg.rmax=params.vals[sg.rmax].ui;}
 			break;
 		}
 		switch (u&0x18) {
@@ -258,7 +272,7 @@ RC Expr::path(Value *&top,const byte *&codePtr,const Value *params,unsigned nPar
 		} else sg.pid=(top--)->uid;
 	}
 	if (rc==RC_OK) {
-		PathIt *pi=new(ma) PathIt(ma,path,nPathSeg,params,nParams,*top,true);		// ff -> fDFS
+		PathIt *pi=new(ma) PathIt(ma,path,nPathSeg,*top,true);		// ff -> fDFS
 		if (pi==NULL) rc=RC_NORESOURCES; else (top++)->set(pi);
 	}
 	if (rc!=RC_OK) {
@@ -392,7 +406,7 @@ void PathIt::destroy()
 	this->~PathIt(); free((void*)this,SES_HEAP);
 }
 
-RC Expr::calc(ExprOp op,Value& arg,const Value *moreArgs,int nargs,unsigned flags,MemAlloc *ma,const PINEx **vars,ulong nVars)
+RC Expr::calc(ExprOp op,Value& arg,const Value *moreArgs,int nargs,unsigned flags,MemAlloc *ma,PINEx **vars,ulong nVars)
 {
 	int c,i; RC rc=RC_OK; long start,lstr; const Value *arg2,*arg3,*pv; unsigned dtPart;
 	Value *rng,*args,val,val2; uint32_t len,sht; byte *p; char *s; RefVID *rv; Session *ses;
@@ -692,20 +706,20 @@ RC Expr::calc(ExprOp op,Value& arg,const Value *moreArgs,int nargs,unsigned flag
 		if (lstr==0 || start==0 && arg.length>=(ulong)lstr) {arg.length=lstr; break;}
 		p=(byte*)arg.bstr;
 		if ((arg.flags&HEAP_TYPE_MASK)==NO_HEAP) {
-			arg.bstr=(uint8_t*)ma->malloc(lstr); if (arg.bstr==NULL) return RC_NORESOURCES;
+			arg.bstr=(uint8_t*)ma->malloc(lstr+(arg.type!=VT_BSTR?1:0)); if (arg.bstr==NULL) return RC_NORESOURCES;
 			arg.flags=arg.flags&~HEAP_TYPE_MASK|SES_HEAP;
 		} else if ((ulong)lstr>arg.length) {
-			arg.bstr=(uint8_t*)ma->realloc(p,lstr); if ((p=(byte*)arg.bstr)==NULL) return RC_NORESOURCES;
+			arg.bstr=(uint8_t*)ma->realloc(p,lstr+(arg.type!=VT_BSTR?1:0)); if ((p=(byte*)arg.bstr)==NULL) return RC_NORESOURCES;
 		}
 		if (start<0 && -start<lstr) memmove((byte*)arg.bstr-start,p,min(uint32_t(lstr+start),arg.length));
 		else if (start>=0 && (ulong)start<arg.length) memmove((byte*)arg.bstr,p+start,min(ulong(lstr),ulong(arg.length-start)));
-		p=(byte*)arg.bstr; i=arg.type==VT_BSTR?0:' '; if (start<0) memset(p,i,-start);
-		if (lstr>(long)arg.length-start) memset(p+arg.length-start,i,lstr-arg.length+start);
-		arg.length=lstr; break;
+		p=(byte*)arg.bstr; i=arg.type==VT_BSTR?0:' ';
+		if (start>=(long)arg.length) memset(p,i,lstr);
+		else {if (start<0) memset(p,i,-start); if (lstr>(long)arg.length-start) memset(p+arg.length-start,i,lstr-arg.length+start);}
+		arg.length=lstr; if (arg.type!=VT_BSTR) ((char*)arg.str)[lstr]='\0'; break;
 	case OP_REPLACE:
 		if (moreArgs[1].type==VT_ERROR) {freeV(arg); arg.setError(); return RC_OK;}
 		if ((arg2=strOpConv(arg,moreArgs,val))==NULL || (arg3=strOpConv(arg,moreArgs+1,val2))==NULL) return RC_TYPE;
-		assert(arg2->type==arg.type && arg3->type==arg.type);
 		if (arg.length>0 && arg2->length>0) for (p=(byte*)arg.bstr,len=arg.length;;) {
 			byte *q=(byte*)memchr(p,*arg2->bstr,len);
 			if (q==NULL || (sht=len-ulong(q-p))<arg2->length) break; 
@@ -830,9 +844,9 @@ RC Expr::calc(ExprOp op,Value& arg,const Value *moreArgs,int nargs,unsigned flag
 		case VT_URIID:
 			if (arg.type==VT_REFID) {
 				if ((ses=Session::getSession())==NULL) return RC_NOSESSION; PINEx cb(ses,arg.id);
-				return (rc=ses->getStore()->queryMgr->getBody(cb))!=RC_OK?rc:ses->getStore()->queryMgr->test(&cb,moreArgs->uid,nargs>2?&moreArgs[1]:NULL,nargs-2,nargs<=2)?RC_TRUE:RC_FALSE;
+				return (rc=ses->getStore()->queryMgr->getBody(cb))!=RC_OK?rc:ses->getStore()->queryMgr->test(&cb,moreArgs->uid,ValueV(nargs>2?&moreArgs[1]:NULL,nargs-2),nargs<=2)?RC_TRUE:RC_FALSE;
 			} else if (arg.type==VT_REF) {
-				PINEx pex((const PIN*)arg.pin); return arg.type==VT_REF&&StoreCtx::get()->queryMgr->test(&pex,moreArgs->uid,nargs>2?&moreArgs[1]:NULL,nargs-2,nargs<=2)?RC_TRUE:RC_FALSE;
+				PINEx pex((const PIN*)arg.pin); return arg.type==VT_REF&&StoreCtx::get()->queryMgr->test(&pex,moreArgs->uid,ValueV(nargs>2?&moreArgs[1]:NULL,nargs-2),nargs<=2)?RC_TRUE:RC_FALSE;
 			} else return RC_FALSE;
 		case VT_ARRAY:
 			for (len=moreArgs->length,rc=RC_FALSE; len!=0;) {
@@ -855,13 +869,13 @@ RC Expr::calc(ExprOp op,Value& arg,const Value *moreArgs,int nargs,unsigned flag
 		case VT_RANGE:
 			if ((c=moreArgs->range[0].type==VT_ANY?1:cmp(arg,moreArgs->range[0],(flags&CND_IN_LBND)!=0?flags|CND_NE:flags|CND_EQ))==-3) return RC_TYPE;
 			if (c==-2 || (compareCodeTab[(flags&CND_IN_LBND)!=0?OP_GT-OP_EQ:OP_GE-OP_EQ]&1<<(c+1))==0) return RC_FALSE;
-			if ((c=moreArgs->range[0].type==VT_ANY?-1:cmp(arg,moreArgs->range[1],(flags&CND_IN_RBND)!=0?flags|CND_NE:flags|CND_EQ))==-3) return RC_TYPE; 
+			if ((c=moreArgs->range[1].type==VT_ANY?-1:cmp(arg,moreArgs->range[1],(flags&CND_IN_RBND)!=0?flags|CND_NE:flags|CND_EQ))==-3) return RC_TYPE; 
 			return c==-2 || (compareCodeTab[(flags&CND_IN_RBND)!=0?OP_LT-OP_EQ:OP_LE-OP_EQ]&1<<(c+1))==0?RC_FALSE:RC_TRUE;
 		case VT_STMT:
 			// VT_VARREF -> no load!!!
 			if (arg.type==VT_REFID) {
 				if ((ses=Session::getSession())==NULL) return RC_NOSESSION; PINEx cb(ses,arg.id);
-				return (rc=ses->getStore()->queryMgr->getBody(cb))!=RC_OK?rc:((Stmt*)moreArgs->stmt)->checkConditions(&cb,NULL,0,ma)?RC_TRUE:RC_FALSE;
+				return (rc=ses->getStore()->queryMgr->getBody(cb))!=RC_OK?rc:((Stmt*)moreArgs->stmt)->checkConditions(&cb,ValueV(NULL,0),ma)?RC_TRUE:RC_FALSE;
 			}
 			return arg.type==VT_REF&&((Stmt*)moreArgs->stmt)->isSatisfied(arg.pin)?RC_TRUE:RC_FALSE;
 		case VT_ARRAY:
@@ -1067,7 +1081,7 @@ RC Expr::calc(ExprOp op,Value& arg,const Value *moreArgs,int nargs,unsigned flag
 		if ((ses=Session::getSession())==NULL) return RC_NOSESSION;
 		if ((rc=ExprTree::normalizeArray(&arg,nargs,val,ses,ses->getStore()))!=RC_OK) return rc;
 		if (val.type==VT_EXPRTREE) {freeV(val); return RC_TYPE;}
-		freeV(arg); arg=val; break;
+		arg=val; break;
 	case OP_EDIT:
 		assert(arg.type!=VT_STREAM);
 		sht=ulong(moreArgs->edit.shift); len=moreArgs->edit.length;		// ???
@@ -1129,7 +1143,7 @@ RC Expr::calc(ExprOp op,Value& arg,const Value *moreArgs,int nargs,unsigned flag
 			// try to compile
 		}
 		if ((ses=Session::getSession())==NULL) return RC_NOSESSION;
-		if ((rc=ses->getStore()->queryMgr->eval(ses,&arg,arg,vars,nVars,moreArgs,nargs-1,ses,false))!=RC_OK) return rc;
+		{ValueV vv(moreArgs,nargs-1); if ((rc=ses->getStore()->queryMgr->eval(ses,&arg,arg,vars,nVars,&vv,1,ses,false))!=RC_OK) return rc;}
 		break;
 	default:
 		return RC_INTERNAL;
@@ -1137,50 +1151,70 @@ RC Expr::calc(ExprOp op,Value& arg,const Value *moreArgs,int nargs,unsigned flag
 	return RC_OK;
 }
 
-void AggAcc::next(const Value& v)
+RC AggAcc::next(const Value& v)
 {
 	assert(v.type!=VT_ERROR);
 	if (op==OP_COUNT) count++;
-	else if (sum.type==VT_ERROR) {
+	else if (op==OP_HISTOGRAM) {
+		assert(hist!=NULL); ValueC vv; memcpy(&vv,&v,sizeof(Value)); vv.count=1; 
+		RC rc=hist->add(vv); if (rc==RC_OK) count++; else return RC_OK;
+	} else if (sum.type==VT_ERROR) {
 		sum=v; sum.flags=NO_HEAP;
 		if (op==OP_SUM) {
 			if (isNumeric((ValueType)sum.type) || sum.type==VT_INTERVAL || Expr::numOpConv(sum,NO_INT|NO_FLT|NO_ITV1)) count=1; else sum.type=VT_ERROR;
 		} else if (op>=OP_AVG) {
-			if (sum.type==VT_DOUBLE || convV(sum,sum,VT_DOUBLE)==RC_OK) count=1; else sum.type=VT_ERROR;
+			if (op==OP_AVG && sum.type==VT_DATETIME || sum.type==VT_DOUBLE || convV(sum,sum,VT_DOUBLE)==RC_OK) count=1; else sum.type=VT_ERROR;
 		} else {
 			if (copyV(v,sum,ma)==RC_OK) count=1; else sum.type=VT_ERROR;
 		}
 	} else if (op==OP_MIN || op==OP_MAX) {
-		int c=cmp(sum,v,flags); if (c==-1 && op==OP_MAX || c==1 && op==OP_MIN) {freeV(sum); copyV(v,sum,ma);}
+		int c=cmp(sum,v,flags); if (c==-1 && op==OP_MAX || c==1 && op==OP_MIN) {freeV(sum); RC rc=copyV(v,sum,ma); if (rc!=RC_OK) return rc;}
 	} else {
 		const Value *pv=&v; Value val;
 		if (op!=OP_COUNT) try {
-			if (pv->type!=sum.type && (pv=Expr::numOpConv(sum,pv,val,NO_INT|NO_FLT|NO_ITV1|NO_DAT1|NO_DAT2|NO_ITV2))==NULL) return;
+			if (pv->type!=sum.type && (pv=Expr::numOpConv(sum,pv,val,NO_INT|NO_FLT|NO_ITV1|NO_DAT1|NO_DAT2|NO_ITV2))==NULL) return RC_TYPE;
 			switch (sum.type) {
-			default: assert(0);
+			default: return RC_TYPE;
 			case VT_INT: sum.i+=pv->i; assert(op==OP_SUM); break;
 			case VT_UINT: sum.ui+=pv->ui; assert(op==OP_SUM); break;
 			case VT_INT64: case VT_INTERVAL: sum.i64+=pv->i64; assert(op==OP_SUM); break;
-			case VT_UINT64: case VT_DATETIME: sum.ui64+=pv->ui64; assert(op==OP_SUM); break;
+			case VT_UINT64: case VT_DATETIME: sum.ui64+=pv->ui64; assert(op==OP_SUM||op==OP_AVG); break;
 			case VT_FLOAT: sum.f+=pv->f; assert(op==OP_SUM); break;
 			case VT_DOUBLE:	sum.d+=pv->d; if (op>=OP_VAR_POP) sum2+=pv->d*pv->d; break;
 			}
-		} catch (...) {return;}
+		} catch (...) {return RC_TOOBIG;}
 		count++;
 	}
+	return RC_OK;
 }
 
 RC AggAcc::result(Value& res)
 {
 	try {
-		switch (op) {
-		case OP_COUNT: res.setU64(count); break;
-		case OP_MIN: case OP_MAX: case OP_SUM: res=sum; sum.flags=NO_HEAP; break;
+		if (op==OP_COUNT) res.setU64(count);
+		else if (count==0) res.setError();
+		else switch (op) {
+		case OP_HISTOGRAM:
+			assert(hist!=NULL);
+			{unsigned cnt=(unsigned)hist->getCount(); hist->start(); RC rc;
+			Value *pv=new(ma) Value[cnt*3]; if (pv==NULL) return RC_NORESOURCES;
+			for (unsigned i=0; i<cnt; i++) {
+				const ValueC *vc=hist->next();
+				if (vc==NULL) {freeV(pv,i,ma); return RC_CORRUPTED;}
+				if ((rc=copyV(*(const Value*)vc,pv[cnt+i*2],ma))!=RC_OK) return rc;	// cleanup?
+				pv[cnt+i*2+1].setU64(vc->count); pv[cnt+i*2+1].setPropID(PROP_SPEC_VALUE);
+				pv[cnt+i*2].setPropID(PROP_SPEC_KEY); pv[i].setStruct(&pv[cnt+i*2],2);
+			}
+			res.set(pv,cnt); res.flags=ma->getAType(); hist->~Histogram(); ma->free(hist); hist=NULL;
+			}
+			break;
+		case OP_MIN: case OP_MAX: case OP_SUM: res=sum; sum.type=VT_ERROR; sum.flags=NO_HEAP; break;
 		case OP_AVG:
-			if (count==0) res.setError(); else {assert(sum.type==VT_DOUBLE); res.set(sum.d/(double)count);}
+			if (sum.type==VT_DATETIME) res.setDateTime(sum.ui64/count);
+			else {assert(sum.type==VT_DOUBLE); res.set(sum.d/(double)count);}
 			break;
 		case OP_VAR_POP: case OP_VAR_SAMP: case OP_STDDEV_POP: case OP_STDDEV_SAMP:
-			if (count==0 || count==1 && (op==OP_VAR_SAMP || op==OP_STDDEV_SAMP)) res.setError();
+			if (count==1 && (op==OP_VAR_SAMP || op==OP_STDDEV_SAMP)) res.setError();
 			else {
 				assert(sum.type==VT_DOUBLE);
 				sum2-=sum.d*sum.d/(double)count;
@@ -1192,47 +1226,63 @@ RC AggAcc::result(Value& res)
 		default:
 			res.setError(); return RC_INTERNAL;
 		}
+		count=0; sum.setError(); sum2=0.;
 	} catch (...) {res.setError(); return RC_TOOBIG;}
 	return RC_OK;
 }
 
-RC Expr::calcAgg(ExprOp op,Value& res,const Value *more,unsigned nargs,unsigned flags,MemAlloc *ma)
+RC AggAcc::process(const Value &v)
 {
-	AggAcc aa(op,flags,ma); const Value *pv=&res,*cv; uint32_t i;
-	if ((flags&CND_DISTINCT)!=0) {
-		//...
-	}
-	for (unsigned idx=0; idx<nargs; pv=&more[idx++]) switch (pv->type) {
-	case VT_ERROR: break;
+	unsigned i; const Value *cv; RC rc;
+	switch (v.type) {
+	case VT_ERROR: if (op==OP_COUNT) count++; break;
 	case VT_ARRAY:
-		if (op==OP_COUNT && (flags&CND_DISTINCT)==0) aa.count+=pv->length;
-		else for (i=0; i<pv->length; i++) if ((flags&CND_DISTINCT)==0) aa.next(pv->varray[i]);
-		else {
+		if (op==OP_COUNT && (flags&CND_DISTINCT)==0) count+=v.length;
+		else for (i=0; i<v.length; i++) if ((flags&CND_DISTINCT)!=0) {
 			//...
-		}
+		} else if ((rc=next(v.varray[i]))!=RC_OK) return rc;
 		break;
 	case VT_COLLECTION:
-		if (op==OP_COUNT && (flags&CND_DISTINCT)==0) aa.count+=pv->nav->count();
-		else {
-			for (cv=pv->nav->navigate(GO_FIRST); cv!=NULL; cv=pv->nav->navigate(GO_NEXT))
-				if ((flags&CND_DISTINCT)==0) aa.next(*cv);
-				else {
-					//...
-				}
-		}
+		if (op==OP_COUNT && (flags&CND_DISTINCT)==0) count+=v.nav->count();
+		else for (cv=v.nav->navigate(GO_FIRST); cv!=NULL; cv=v.nav->navigate(GO_NEXT)) if ((flags&CND_DISTINCT)!=0) {
+			//...
+		} else if ((rc=next(*cv))!=RC_OK) return rc;
 		break;
 	case VT_STMT:
-		if (op==OP_COUNT && (flags&CND_DISTINCT)==0) {uint64_t cnt=0ULL;  if (pv->stmt->count(cnt)==RC_OK) aa.count+=cnt;}
+		if (op==OP_COUNT && (flags&CND_DISTINCT)==0) {uint64_t cnt=0ULL; if (v.stmt->count(cnt)==RC_OK) count+=cnt;}
 		else {
-			// cursor, etc.
+			RC rc; ICursor *ic=NULL; //const Value *vals; unsigned nVals;
+			if ((rc=((Stmt*)v.stmt)->execute(&ic))!=RC_OK) return rc;
+#if 0
+			while ((rc=((Cursor*)ic)->next(vals,nVals))==RC_OK) if (vals!=NULL && nVals!=0) {
+				if ((flags&CND_DISTINCT)!=0) {
+					//...
+				} else if ((rcaa.next(vals[0]))!=RC_OK) return rc;
+			}
+#endif
+			ic->destroy(); if (rc!=RC_EOF) return rc;
 		}
 		break;
 	default:
 		if ((flags&CND_DISTINCT)!=0) {
 			//...
-		} else if (op==OP_COUNT) aa.count++; else aa.next(*pv);
+		} else if (op==OP_COUNT) count++; else if ((rc=next(v))!=RC_OK) return rc;
 		break;
 	}
+	return RC_OK;
+}
+
+RC Expr::calcAgg(ExprOp op,Value& res,const Value *more,unsigned nargs,unsigned flags,MemAlloc *ma)
+{
+	Histogram *h=NULL;
+	if (op==OP_HISTOGRAM) { 
+		if ((h=new(ma) Histogram(*ma,flags))==NULL) return RC_NORESOURCES;
+		flags&=~CND_DISTINCT;
+	} else if ((flags&CND_DISTINCT)!=0) {
+		//...
+	}
+	AggAcc aa(op,flags,ma,h); const Value *pv=&res; RC rc;
+	for (unsigned idx=0; idx<nargs; pv=&more[idx++]) if ((rc=aa.process(*pv))!=RC_OK) return rc;
 	if ((flags&CND_DISTINCT)!=0) {
 		// sort
 		// feed results to aa
@@ -1307,7 +1357,6 @@ const Value *Expr::numOpConv(Value& arg,const Value *arg2,Value& buf,unsigned fl
 		if (strToNum(arg.str,arg.length,buf)!=RC_OK) return NULL;
 		freeV(arg); arg=buf;
 	}
-	if (!isNumeric((ValueType)arg.type) && (arg.type!=VT_DATETIME || (flg&NO_DAT1)==0) && (arg.type!=VT_INTERVAL || (flg&NO_ITV1)==0)) return NULL;
 	for (;isRef((ValueType)arg2->type);arg2=&buf) {
 		if (ses==NULL && (ses=Session::getSession())==NULL) return NULL;
 		if (derefValue(*arg2,buf,ses)!=RC_OK) return NULL;
@@ -1317,7 +1366,22 @@ const Value *Expr::numOpConv(Value& arg,const Value *arg2,Value& buf,unsigned fl
 		if (strToNum(p,arg2->length,buf)!=RC_OK) return NULL;
 		if (arg2==&buf) free((void*)p,SES_HEAP); else arg2=&buf;
 	}
-	if (!isNumeric((ValueType)arg2->type)) return arg2->type==VT_DATETIME && (flg&NO_DAT2)!=0 || arg2->type==VT_INTERVAL && (flg&NO_ITV2)!=0?arg2:(const Value*)0;
+	switch (arg.type) {
+	case VT_DATETIME: 
+		if ((flg&NO_DAT1)!=0) {
+			if (arg2->type==VT_DATETIME && (flg&NO_DAT2)!=0 || arg2->type==VT_INTERVAL && (flg&NO_ITV2)!=0) return arg2;
+			if ((flg&NO_ITV2)!=0 && isInteger((ValueType)arg2->type)) {buf=*arg2; buf.type=VT_INTERVAL; return &buf;}
+		}
+		return NULL;
+	case VT_INTERVAL: 
+		if ((flg&NO_ITV1)!=0 && (flg&NO_ITV2)!=0) {
+			if (arg2->type==VT_INTERVAL) return arg2;
+			if (isInteger((ValueType)arg2->type)) {buf=*arg2; buf.type=VT_INTERVAL; return &buf;}
+		}
+		return NULL;
+	default: if (!isNumeric((ValueType)arg.type)) return NULL; break;
+	}
+	if (!isNumeric((ValueType)arg2->type)) return NULL;
 	if (arg.type!=arg2->type) {
 		const Value *pm,*px; if (arg.type<arg2->type) pm=&arg,px=arg2; else pm=arg2,px=&arg;
 		switch (px->type) {

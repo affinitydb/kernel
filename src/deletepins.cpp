@@ -53,8 +53,10 @@ RC QueryPrc::deletePINs(Session *ses,const PIN *const *pins,const PID *pids,unsi
 				break;
 			}
 			if (pcb->hpin==NULL || pcb->hpin->hdr.getType()!=HO_PIN) break;
+			pinDescr=pcb->hpin->hdr.descr;
+			if ((pinDescr&HOH_CLASS)!=0 && (mode&MODE_CLASS)==0) throw RC_NOACCESS;
+			if (!fPurge && (pinDescr&HOH_DELETED)!=0) break;
 			if ((mode&MODE_CHECK_STAMP)!=0 && pins!=NULL && np<nPins && pcb->hpin->getStamp()!=pins[np]->stamp) throw RC_REPEAT;
-			pinDescr=pcb->hpin->hdr.descr; if (!fPurge && (pinDescr&HOH_DELETED)!=0) break;
 			if ((pinDescr&HOH_CLASS)!=0 && (hprop=pcb->hpin->findProperty(PROP_SPEC_CLASSID))!=NULL &&
 				loadVH(v,hprop,*pcb,0,ses)==RC_OK && v.type==VT_URIID && (cid=v.uid)==STORE_CLASS_OF_CLASSES) throw RC_NOACCESS;
 			if ((pinDescr&HOH_ISPART)!=0 && (mode&MODE_CASCADE)==0) throw RC_INVOP;

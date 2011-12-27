@@ -621,7 +621,6 @@ const HeapPageMgr::HeapTypeInfo HeapPageMgr::typeInfo[VT_ALL] =
 	{0,					0},						//	VT_RANGE
 	{sizeof(HRefSSV),	sizeof(uint32_t)-1},	//	VT_STREAM
 	{0,					0},						//	VT_CURRENT
-	{0,					0},						//	VT_PARAM
 	{0,					0},						//	VT_VARREF
 	{0,					0},						//	VT_EXPRTREE
 };
@@ -665,8 +664,7 @@ ushort HeapPageMgr::dataLength(HType vt,const byte *pData,const byte *frame,ulon
 			len=collDescrSize((HeapExtCollection*)pData);
 			if (idxMask!=NULL) *idxMask|=IX_OFT;
 		} else {
-			assert(frame!=NULL);
-			HeapVV *coll=(HeapVV*)pData; len=0;
+			const HeapVV *coll=(const HeapVV*)pData; len=0; assert(frame!=NULL);
 			for (l=coll->cnt; l!=0; ) {
 				const HeapV *elt=&coll->start[--l];
 				if (!elt->type.isCompact()) 	len+=ushort(ceil(dataLength(elt->type,frame+elt->offset,frame,idxMask),HP_ALIGN)); 
@@ -675,7 +673,16 @@ ushort HeapPageMgr::dataLength(HType vt,const byte *pData,const byte *frame,ulon
 		}
 		return len;
 	case VT_STRUCT:
-		//???
+		if (fmt==HDF_LONG) {
+			// SSV
+		} else {
+			const HeapVV *stru=(const HeapVV*)pData; len=0; assert(frame!=NULL);
+			for (l=stru->cnt; l!=0; ) {
+				const HeapV *elt=&stru->start[--l];
+				if (!elt->type.isCompact()) len+=ushort(ceil(dataLength(elt->type,frame+elt->offset,frame,idxMask),HP_ALIGN)); 
+			}
+			len+=stru->lengthS();
+		}
 		break;
 	}
 	return ty<VT_ALL?typeInfo[ty].length:0;
@@ -907,15 +914,13 @@ size_t HeapPageMgr::HeapPIN::expLength(const byte *frame) const
 	for (ulong i=nProps; i!=0; --i,++hprop) switch (hprop->type.getType()) {
 	default: break;
 	case VT_REFID: if (hprop->type.isCompact()) len+=PageAddrSize; break;
-	case VT_ARRAY:
+	case VT_ARRAY: case VT_STRUCT:
 		if (hprop->type.getFormat()!=HDF_LONG) {
 			const HeapVV *coll=(const HeapVV*)(frame+hprop->offset); const HeapV *elt=coll->start;
 			for (int i=coll->cnt; --i>=0; ++elt)
 				if (elt->type.getFormat()==HDF_COMPACT && elt->type.getType()==VT_REFID) len+=PageAddrSize;
+				//else if (VT_ARRAY in VT_STRUCT || VT_STRUCT in VT_ARRAY) -> ...
 		}
-		break;
-	case VT_STRUCT:
-		//???
 		break;
 	}
 	return len;

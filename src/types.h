@@ -145,11 +145,6 @@ typedef unsigned long ulong;
 typedef uint64_t	off64_t;   //??int:
 #endif
 
-#ifdef __arm__
-#define stat64 stat
-#endif
-
-
 #ifdef __x86_64__
 #define	DEFAULT_ALIGN	16
 #else

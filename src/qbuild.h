@@ -11,6 +11,7 @@ Written by Mark Venguerov 2004 - 2010
 
 #include "mvstore.h"
 #include "types.h"
+#include "mem.h"
 
 using namespace MVStore;
 
@@ -47,14 +48,81 @@ namespace MVStoreKernel
 
 #define	SORT_MASK			(ORD_DESC|ORD_NCASE|ORD_NULLS_BEFORE|ORD_NULLS_AFTER)
 
-struct	OrderSegQ;
-struct	PropDNF;
 struct	CondIdx;
 struct	CondEJ;
 struct	CondFT;
 class	Session;
+class	QVar;
 class	Stmt;
 class	Expr;
+
+#define	ORDER_EXPR	0x8000
+
+struct OrderSegQ
+{
+	union {
+		PropertyID	pid;
+		class Expr	*expr;
+	};
+	uint16_t		flags;
+	uint8_t			var;
+	uint8_t			aggop;
+	uint32_t		lPref;
+	RC				conv(const OrderSeg& sg,MemAlloc *ma);
+};
+
+struct PropList
+{
+	PropertyID		*props;
+	uint16_t		nProps;
+	mutable	bool	fFree;
+};
+
+struct PropListP
+{
+	PropList	*pls;
+	unsigned	nPls;
+	MemAlloc	*const	ma;
+	PropList	pbuf[16];
+	PropListP(MemAlloc *m) : pls(pbuf),nPls(0),ma(m) {}
+	~PropListP() {for (unsigned i=0; i<nPls; i++) if (pls[i].fFree) ma->free(pls[i].props); if (pls!=pbuf) ma->free(pls);}
+	RC			merge(uint16_t var,const PropertyID *pid,unsigned nPids,bool fForce=false,bool fFlags=false);
+	RC			operator+=(const PropListP &rhs);
+	RC			checkVar(uint16_t var);
+};
+
+struct ValueV
+{
+	const Value	*vals;
+	uint16_t	nValues;
+	bool		fFree;
+	ValueV() : vals(NULL),nValues(0),fFree(false) {}
+	ValueV(const ValueV& vv) : vals(vv.vals),nValues(vv.nValues),fFree(false) {}
+	ValueV(const Value *pv,unsigned nv,bool fF=false) : vals(pv),nValues((uint16_t)nv),fFree(fF) {}
+};
+
+enum QCtxVT
+{
+	QV_PARAMS, QV_CORRELATED, QV_AGGS, QV_GROUP, QV_ALL
+};
+
+#define	VAR_CORR	((QV_CORRELATED+1)<<13)
+#define	VAR_AGGS	((QV_AGGS+1)<<13)
+#define	VAR_GROUP	((QV_GROUP+1)<<13)
+
+class	QCtx
+{
+	int		refc;
+	void	operator	delete(void *) {}
+public:
+	QCtx(Session *s) : refc(0),ses(s) {memset(vals,0,sizeof(vals));}
+	Session	*const	ses;
+	ValueV	vals[QV_ALL];
+	void	ref() {refc++;}
+	void	destroy();
+	friend	class	QBuildCtx;
+	friend	class	Stmt;
+};
 
 // Filter, sort, etc. operators
 struct QueryWithParams
@@ -64,17 +132,15 @@ struct QueryWithParams
 	Value		*params;
 };
 
-class QueryCtx
+class QBuildCtx
 {
 	Session			*const	ses;
-	const Value		*const	pars;
-	const unsigned			nPars;
+	QCtx			*const	qx;
 	const Stmt				*stmt;
 	ulong					nSkip;
 	ulong					mode;
 	ulong					flg;
-	const PropertyID		*propsReq;
-	unsigned				nPropsReq;
+	PropListP				propsReq;
 	const OrderSegQ			*sortReq;
 	unsigned				nSortReq;
 	class	QueryOp			*src[256];
@@ -82,17 +148,19 @@ class QueryCtx
 	QueryWithParams			condQs[256];
 	ulong					ncqs;
 public:
-	QueryCtx(Session *s,const Value *prs,unsigned nprs,const Stmt *st,ulong nsk,ulong f);
-	~QueryCtx();
+	QBuildCtx(Session *s,const ValueV& prs,const Stmt *st,ulong nsk,ulong f);
+	~QBuildCtx();
 	RC	process(QueryOp *&qop);
 private:
-	RC	sort(QueryOp *&qop,struct QODescr& dscr,const OrderSegQ *os,unsigned no);
+	RC	sort(QueryOp *&qop,const OrderSegQ *os,unsigned no,PropListP *props=NULL,bool fTmp=false);
 	RC	mergeN(QueryOp *&res,QueryOp **o,unsigned no,bool fOr);
-	RC	merge2(QueryOp *&res,QueryOp *qop1,PropertyID pid1,QueryOp *qop2,PropertyID pid2,
-				QUERY_SETOP qo,const CondEJ *cej=NULL,const Expr *const *c=NULL,ulong nc=0);
+	RC	merge2(QueryOp *&res,QueryOp **qs,const CondEJ *cej,QUERY_SETOP qo);
 	RC	mergeFT(QueryOp *&res,const CondFT *cft);
+	RC	nested(QueryOp *&res,QueryOp **qs,const Expr **conds,unsigned nConds);
 	RC	filter(QueryOp *&qop,const Expr *const *c,unsigned nConds,const CondIdx *condIdx=NULL,unsigned ncq=0);
-	RC	out(QueryOp *&qop,const OrderSegQ *gb,unsigned nG,const Value *trs,unsigned nTrs,const Expr *const *c,unsigned nConds);
+	RC	load(QueryOp *&qop,const PropListP& plp);
+	RC	out(QueryOp *&qop,const QVar *qv);
+	static	bool	checkSort(QueryOp *qop,const OrderSegQ *req,unsigned nReq,unsigned& nP);
 	friend	class	SimpleVar;
 	friend	class	SetOpVar;
 	friend	class	JoinVar;

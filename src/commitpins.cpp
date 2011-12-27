@@ -55,7 +55,7 @@ namespace MVStoreKernel
 	};
 };
 
-RC QueryPrc::commitPINs(Session *ses,PIN *const *pins,unsigned nPins,unsigned mode,const AllocCtrl *actrl,size_t *pSize,const Value *params,unsigned nParams)
+RC QueryPrc::commitPINs(Session *ses,PIN *const *pins,unsigned nPins,unsigned mode,const ValueV& params,const AllocCtrl *actrl,size_t *pSize)
 {
 	if (pins==NULL || nPins==0) return RC_OK; if (ses==NULL) return RC_NOSESSION;
 	if (ctx->isServerLocked() || ses->inReadTx()) return RC_READTX;
@@ -152,8 +152,8 @@ RC QueryPrc::commitPINs(Session *ses,PIN *const *pins,unsigned nPins,unsigned mo
 			switch (pv->type) {
 			default: break;
 			case VT_EXPR: case VT_STMT: if ((pv->meta&META_PROP_EVAL)==0) break;
-			case VT_PARAM: case VT_VARREF:
-				if ((rc=eval(ses,pv,*pv,NULL,0,params,nParams+1,ses,true))!=RC_OK) goto finish; //pin->PINex
+			case VT_VARREF:
+				if ((rc=eval(ses,pv,*pv,NULL,0,&params,1,ses,true))!=RC_OK) goto finish; //pin->PINex
 				pv->property=pid; break;
 			}
 			if (pv->type==VT_ARRAY || pv->type==VT_COLLECTION) {
@@ -163,7 +163,7 @@ RC QueryPrc::commitPINs(Session *ses,PIN *const *pins,unsigned nPins,unsigned mo
 					if (pv->type==VT_ARRAY) switch (cv->type) {
 					default: break;
 					case VT_EXPR: case VT_STMT: if ((cv->meta&META_PROP_EVAL)==0) break;
-					case VT_PARAM: case VT_VARREF: if ((rc=eval(ses,cv,*(Value*)cv,NULL,0,params,nParams+1,ses,true))!=RC_OK) goto finish; //pin->PINex
+					case VT_VARREF: if ((rc=eval(ses,cv,*(Value*)cv,NULL,0,&params,1,ses,true))!=RC_OK) goto finish; //pin->PINex
 					}
 					if ((rc=estimateLength(*cv,l,0,threshold,ses))!=RC_OK) goto finish;
 					if (l>=bigThreshold) {lBig+=l; nBig++;} else lOther+=l;

@@ -14,47 +14,43 @@ Written by Mark Venguerov 2004 - 2010
 
 using namespace MVStoreKernel;
 
-RC QueryPrc::loadPIN(Session *ses,const PID& id,PIN *&pin,unsigned mode,PINEx *pcb,MemAlloc *ma,VersionID vid)
+RC QueryPrc::loadPIN(Session *ses,const PID& id,PIN *&pin,unsigned mode,PINEx *pcb,VersionID vid)
 {
 	PINEx cb(ses,id); RC rc=RC_OK; assert(pin==NULL||pin->ses==ses);
 	if (pcb==NULL) {pcb=&cb; cb.addr=pin!=NULL?pin->addr:PageAddr::invAddr;}
-	if (pcb->props==NULL && pcb->pb.isNull() && (rc=getBody(*pcb,TVO_READ,(mode&MODE_DELETED)!=0?GB_DELETED:0,vid))!=RC_OK)		// tvo?
+	if (pcb->pb.isNull() && (rc=getBody(*(PINEx*)pcb,TVO_READ,(mode&MODE_DELETED)!=0?GB_DELETED:0,vid))!=RC_OK)		// tvo?
 		{if (rc==RC_DELETED && pin!=NULL) pin->mode|=PIN_DELETED; return rc;}
 
-	MemAlloc *mm=ma!=NULL?ma:(MemAlloc*)ses;
-
-	if (pin!=NULL) const_cast<PID&>(pin->id)=id;
-	else if ((pin=new(mm) PIN(ses,id,PageAddr::invAddr,mode))==NULL) return RC_NORESOURCES;
-
-	if (pcb->props!=NULL) {
-		if (ma==NULL) {
-			pin->properties=(Value*)pcb->props; pin->nProperties=pcb->nProps;
-			pin->mode=pcb->mode|PIN_NO_FREE; pin->addr=pcb->addr;
-		} else {
-			//...
-		}
-		return RC_OK;
+	if (pin!=NULL) {pin->id=id; pin->addr=pcb->addr; pin->mode=pcb->mode;}
+	else if ((pin=new(ses) PIN(ses,pcb->id,pcb->addr,pcb->mode))==NULL) return RC_NORESOURCES;
+	pin->stamp=pcb->stamp;
+	if ((rc=loadProps(pcb,mode|LOAD_SSV))==RC_OK) {
+		assert((pcb->mode&PIN_SSV)==0);
+		if ((pcb->mode&PIN_NO_FREE)==0) {pin->properties=pcb->properties; pin->nProperties=pcb->nProperties; pcb->properties=NULL; pcb->nProperties=0;}
+		else if ((rc=copyV(pcb->properties,pcb->nProperties,pin->properties,ses))==RC_OK) pin->nProperties=pcb->nProperties;
 	}
+	return rc;
+}
 
-	pin->stamp=pcb->hpin->getStamp(); pin->mode&=~(MODE_DELETED|PIN_DELETED);
-	const_cast<PID&>(pin->id)=pcb->id; pin->addr=pcb->addr;
-	if (isRemote(pin->id)) {
-		if ((pcb->hpin->hdr.descr&HOH_REPLICATED)==0) pin->mode|=PIN_READONLY;
-		else pin->mode=pin->mode&~PIN_READONLY|PIN_REPLICATED;
-	} else if ((pcb->hpin->hdr.descr&HOH_NOREPLICATION)!=0) pin->mode|=PIN_NO_REPLICATION;
-	else if ((pcb->hpin->hdr.descr&HOH_REPLICATED)!=0) pin->mode|=PIN_REPLICATED;
-	if ((pcb->hpin->hdr.descr&HOH_NOTIFICATION)!=0) pin->mode|=PIN_NOTIFY;
-	if ((pcb->hpin->hdr.descr&HOH_NOINDEX)!=0) pin->mode|=PIN_NO_INDEX;
-	if ((pcb->hpin->hdr.descr&HOH_HIDDEN)!=0) pin->mode|=PIN_HIDDEN;
-	if ((pcb->hpin->hdr.descr&HOH_DELETED)!=0) pin->mode|=PIN_DELETED;
-	if ((pcb->hpin->hdr.descr&HOH_CLASS)!=0) pin->mode|=PIN_CLASS;
-	if ((pin->nProperties=pcb->hpin->nProps)!=0) {
-		if ((pin->properties=(Value*)mm->realloc(pin->properties,pin->nProperties*sizeof(Value)))==NULL) return RC_NORESOURCES;
-		const HeapPageMgr::HeapV *hprop=pcb->hpin->getPropTab(); bool fSSVs=false;
-		for (unsigned i=0; i<pin->nProperties; ++i,++hprop)
-			if (loadVH(pin->properties[i],hprop,*pcb,pin->mode&~LOAD_CARDINALITY,ma)==RC_OK
-									&& (pin->properties[i].flags&VF_SSV)!=0) fSSVs=true;
-		if (fSSVs) rc=loadSSVs(pin->properties,pin->nProperties,pin->mode,ses,mm);
+RC QueryPrc::loadProps(PINEx *pcb,unsigned mode,const PropertyID *pids,unsigned nPids)
+{
+	assert(!pcb->pb.isNull() && pcb->hpin!=NULL); RC rc=RC_OK;
+	if ((pcb->nProperties=pcb->hpin->nProps)!=0) {
+		if (pids!=NULL) {if (nPids==0 || pids[0]==PROP_SPEC_ANY) pids=NULL; else if (nPids!=0 && nPids<pcb->nProperties) pcb->nProperties=nPids;}
+		if ((pcb->properties=(Value*)pcb->ses->realloc(pcb->properties,pcb->nProperties*sizeof(Value)))==NULL) return RC_NORESOURCES;
+		const HeapPageMgr::HeapV *hprop=pcb->hpin->getPropTab(); pcb->mode&=~PIN_SSV; 
+		for (unsigned i=0; i<pcb->nProperties; ++i,++hprop) {
+			if (pids!=NULL && nPids!=0) {
+				if (i>=nPids) {pcb->mode|=PIN_PROJECTED; pcb->nProperties=i; break;}
+				if (hprop->getPropID()!=(pids[i]&STORE_MAX_PROPID)) {
+					pcb->mode|=PIN_PROJECTED;
+					// find ...
+				}
+			}
+			if ((rc=loadVH(pcb->properties[i],hprop,*pcb,mode&~LOAD_CARDINALITY,pcb->ses))!=RC_OK) break;
+			else if ((pcb->properties[i].flags&VF_SSV)!=0) pcb->mode|=PIN_SSV;
+		}
+		if (rc==RC_OK && (mode&LOAD_SSV)!=0 && (pcb->mode&PIN_SSV)!=0 && (rc=loadSSVs(pcb->properties,pcb->nProperties,mode,pcb->ses,pcb->ses))==RC_OK) pcb->mode&=~PIN_SSV;
 	}
 	return rc;
 }
@@ -64,17 +60,16 @@ RC QueryPrc::getClassInfo(Session *ses,PIN *pin)
 	const Value *cv; Class *cls=NULL; uint64_t nPINs=0,nDeletedPINs=0; RC rc=RC_OK;
 	if ((pin->mode&PIN_CLASS)==0 || (cv=pin->findProperty(PROP_SPEC_CLASSID))==NULL || cv->type!=VT_URIID) return RC_CORRUPTED;
 	if ((rc=ctx->classMgr->getClassInfo(cv->uid,cls,nPINs,nDeletedPINs))!=RC_OK) return rc;
-	assert(cls!=NULL); Value vv,*pv; ClassIndex *ci; Stmt *qry; QVar *qv; PropertyID *pids=NULL; unsigned nPids=0;
-	if ((qry=cls->getQuery())!=NULL && (qv=qry->getTop())!=NULL && qv->getProps(pids,nPids,ses)==RC_OK && pids!=NULL && nPids!=0) {
-		Value *va=new(ses) Value[nPids];
+	assert(cls!=NULL); Value vv,*pv; ClassIndex *ci; Stmt *qry; QVar *qv; PropListP plp(ses);
+	if ((qry=cls->getQuery())!=NULL && (qv=qry->getTop())!=NULL && qv->mergeProps(plp)==RC_OK && plp.pls!=NULL && plp.nPls!=0) {
+		Value *va=new(ses) Value[plp.pls[0].nProps];
 		if (va==NULL) rc=RC_NORESOURCES;
 		else {
 			ElementID prefix=ctx->getPrefix();
-			for (unsigned i=0; i<nPids; i++) {va[i].setURIID(pids[i]&STORE_MAX_PROPID); va[i].eid=prefix+i;}
-			vv.set(va,nPids); vv.setPropID(PROP_SPEC_PROPERTIES);
+			for (unsigned i=0; i<plp.pls[0].nProps; i++) {va[i].setURIID(plp.pls[0].props[i]&STORE_MAX_PROPID); va[i].eid=prefix+i;}
+			vv.set(va,plp.pls[0].nProps); vv.setPropID(PROP_SPEC_PROPERTIES);
 			if ((rc=BIN<Value,PropertyID,ValCmp,uint32_t>::insert(pin->properties,pin->nProperties,vv.property,vv,ses))!=RC_OK) ses->free(va);
 		}
-		ses->free(pids);
 	}
 	if (rc==RC_OK && (cls->getFlags()&CLASS_INDEXED)!=0) {
 		if ((cv=pin->findProperty(PROP_SPEC_CLASS_INFO))==NULL) {
@@ -236,9 +231,9 @@ RC QueryPrc::loadV(Value& v,ulong propID,const PINEx& cb,ulong mode,MemAlloc *ma
 		}
 		v.property=propID; return RC_OK;
 	}
-	if (cb.props!=NULL) {
+	if (cb.properties!=NULL) {
 		//?????
-		const Value *pv=BIN<Value,PropertyID,ValCmp>::find(propID,cb.props,cb.nProps);
+		const Value *pv=BIN<Value,PropertyID,ValCmp>::find(propID,cb.properties,cb.nProperties);
 		if ((mode&LOAD_CARDINALITY)!=0) {
 			v.set(unsigned(pv==NULL?0u:pv->type==VT_ARRAY?pv->length:pv->type==VT_COLLECTION?pv->nav->count():1u));
 			v.property=propID; return RC_OK;

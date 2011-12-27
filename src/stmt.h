@@ -20,6 +20,8 @@ using namespace MVStore;
 namespace MVStoreKernel
 {
 
+#define	CALC_PROP_NAME	"calculated"
+
 #define	QRY_PARAMS		0x80000000
 #define	QRY_ORDEXPR		0x40000000
 #define	QRY_IDXEXPR		0x20000000
@@ -63,7 +65,7 @@ struct CondFT
 
 enum SelectType
 {
-	SEL_COUNT, SEL_VALUE, SEL_VALUESET, SEL_DERIVED, SEL_DERIVEDSET, SEL_PROJECTED, SEL_PINSET, SEL_COMPOUND, SEL_COMP_DERIVED
+	SEL_CONST, SEL_COUNT, SEL_VALUE, SEL_VALUESET, SEL_DERIVED, SEL_DERIVEDSET, SEL_PROJECTED, SEL_PINSET, SEL_COMPOUND, SEL_COMP_DERIVED
 };
 
 enum RenderPart
@@ -90,25 +92,22 @@ protected:
 		Expr		**conds;
 	};
 	unsigned		nConds;
-	union {
-		Expr		*havingCond;
-		Expr		**havingConds;
-	};
-	unsigned		nHavingConds;
+	Expr			*having;
 	OrderSegQ		*groupBy;
 	unsigned		nGroupBy;
+	ValueV			aggrs;
 	bool			fHasParent;
 	QVar(QVarID i,byte ty,MemAlloc *m);
 public:
 	virtual			~QVar();
 	virtual	RC		clone(MemAlloc *m,QVar*&,bool fClass) const = 0;
-	virtual	RC		build(class QueryCtx& qctx,class QueryOp *&qop) const = 0;
-	virtual	size_t	serSize() const;
-	virtual	byte	*serialize(byte *buf) const = 0;
+	virtual	RC		build(class QBuildCtx& qctx,class QueryOp *&qop) const = 0;
 	virtual	RC		render(RenderPart,SOutCtx&) const;
 	virtual	RC		render(SOutCtx&) const;
+	virtual	size_t	serSize() const;
+	virtual	byte	*serialize(byte *buf) const = 0;
 	virtual	const	QVar *getRefVar(unsigned refN) const;
-	virtual	RC		getProps(PropertyID *&props,unsigned& nProps,MemAlloc *ma) const;
+	virtual	RC		mergeProps(PropListP& plp,bool fForce=false,bool fFlags=false) const;
 	static	RC		deserialize(const byte *&buf,const byte *const ebuf,MemAlloc *ma,QVar*& res);
 	void	operator delete(void *p) {if (p!=NULL) ((QVar*)p)->ma->free(p);}
 	QVarID			getID() const {return id;}
@@ -122,7 +121,7 @@ public:
 	friend	class	Classifier;
 	friend	class	ClassPropIndex;
 	friend	class	QueryPrc;
-	friend	class	QueryCtx;
+	friend	class	QBuildCtx;
 	friend	class	SInCtx;
 	friend	class	SOutCtx;
 };
@@ -145,12 +144,12 @@ class SimpleVar : public QVar
 									pids(NULL),nPids(0),subq(NULL),condFT(NULL),fOrProps(false),path(NULL),nPathSeg(0) {}
 	virtual			~SimpleVar();
 	RC				clone(MemAlloc *m,QVar*&,bool fClass) const;
-	RC				build(class QueryCtx& qctx,class QueryOp *&qop) const;
+	RC				build(class QBuildCtx& qctx,class QueryOp *&qop) const;
+	RC				render(RenderPart,SOutCtx&) const;
 	size_t			serSize() const;
 	byte			*serialize(byte *buf) const;
 	static	RC		deserialize(const byte *&buf,const byte *const ebuf,QVarID,MemAlloc *ma,QVar*& res);
-	RC				render(RenderPart,SOutCtx&) const;
-	RC				getProps(PropertyID *&props,unsigned& nProps,MemAlloc *ma) const;
+	RC				mergeProps(PropListP& plp,bool fForce=false,bool fFlags=false) const;
 	RC				getPropDNF(PropDNF *&dnf,size_t& ldnf,MemAlloc *ma) const;
 	bool			checkXPropID(PropertyID xp) const;
 public:
@@ -181,12 +180,12 @@ class SetOpVar : public QVar
 	void			*operator new(size_t s,unsigned nv,MemAlloc *m) {return m->malloc(s+int(nv-2)*sizeof(QVarRef));}
 	SetOpVar(unsigned nv,QVarID i,byte ty,MemAlloc *m) : QVar(i,ty,m),nVars(nv) {}
 	RC				clone(MemAlloc *m,QVar*&,bool fClass) const;
-	RC				build(class QueryCtx& qctx,class QueryOp *&qop) const;
+	RC				build(class QBuildCtx& qctx,class QueryOp *&qop) const;
+	RC				render(RenderPart,SOutCtx&) const;
+	RC				render(SOutCtx&) const;
 	size_t			serSize() const;
 	byte			*serialize(byte *buf) const;
 	static	RC		deserialize(const byte *&buf,const byte *const ebuf,QVarID,byte,MemAlloc *ma,QVar*& res);
-	RC				render(RenderPart,SOutCtx&) const;
-	RC				render(SOutCtx&) const;
 };
 
 class JoinVar : public QVar
@@ -201,11 +200,11 @@ class JoinVar : public QVar
 	JoinVar(unsigned nv,QVarID i,byte ty,MemAlloc *m) : QVar(i,ty,m),nVars(nv),condEJ(NULL) {}
 	virtual			~JoinVar();
 	RC				clone(MemAlloc *m,QVar*&,bool fClass) const;
-	RC				build(class QueryCtx& qctx,class QueryOp *&qop) const;
+	RC				build(class QBuildCtx& qctx,class QueryOp *&qop) const;
+	RC				render(RenderPart,SOutCtx&) const;
 	size_t			serSize() const;
 	byte			*serialize(byte *buf) const;
 	static	RC		deserialize(const byte *&buf,const byte *const ebuf,QVarID,byte,MemAlloc *ma,QVar*& res);
-	RC				render(RenderPart,SOutCtx&) const;
 	const	QVar	*getRefVar(unsigned refN) const;
 };
 
@@ -236,16 +235,17 @@ public:
 	RC		setName(QVarID var,const char *name);
 	RC		setDistinct(QVarID var,DistinctType dt);
 	RC		addOutput(QVarID var,const Value *dscr,unsigned nDscr);
-	RC		addCondition(QVarID var,IExprTree *cond,bool fHaving=false);
+	RC		addOutputNoCopy(QVarID var,Value *dscr,unsigned nDscr);
+	RC		addCondition(QVarID var,IExprTree *cond);
 	RC		addConditionFT(QVarID var,const char *str,unsigned flags=0,const PropertyID *pids=NULL,unsigned nPids=0);
 	RC		setPIDs(QVarID var,const PID *pids,unsigned nPids);
 	RC		setPath(QVarID var,const PathSeg *segs,unsigned nSegs);
 	RC		setPropCondition(QVarID var,const PropertyID *props,unsigned nProps,bool fOr=false);
 	RC		setJoinProperties(QVarID var,const PropertyID *props,unsigned nProps);
-	RC		setGroup(QVarID,const OrderSeg *order,unsigned nSegs);
+	RC		setGroup(QVarID,const OrderSeg *order,unsigned nSegs,IExprTree *having=NULL);
 	RC		setOrder(const OrderSeg *order,unsigned nSegs);
 	RC		setValues(const Value *values,unsigned nValues);
-	RC		setValuesNoCopy(const Value *values,unsigned nValues);
+	RC		setValuesNoCopy(Value *values,unsigned nValues);
 	STMT_OP	getOp() const;
 	RC		execute(ICursor **result=NULL,const Value *params=NULL,unsigned nParams=0,unsigned nReturn=~0u,unsigned nSkip=0,unsigned long mode=0,uint64_t *nProcessed=NULL,TXI_LEVEL=TXI_DEFAULT) const;
 	RC		asyncexec(IStmtCallback *cb,const Value *params=NULL,unsigned nParams=0,unsigned nProcess=~0u,unsigned nSkip=0,unsigned long mode=0,TXI_LEVEL=TXI_DEFAULT) const;
@@ -266,7 +266,7 @@ public:
 
 	bool	hasParams() const {return (mode&QRY_PARAMS)!=0;}
 	bool	isClassOK() const {return top!=NULL && classOK(top);}
-	bool	checkConditions(const PINEx *pin,const Value *pars,ulong nPars,MemAlloc *ma,ulong start=0,bool fIgnore=false) const;
+	bool	checkConditions(PINEx *pin,const ValueV& pars,MemAlloc *ma,ulong start=0,bool fIgnore=false) const;
 	RC		render(SOutCtx&) const;
 	RC		setPath(QVarID var,const PathSeg *segs,unsigned nSegs,bool fCopy);
 	QVar	*getTop() const {return top;}
@@ -277,6 +277,7 @@ public:
 private:
 	RC		connectVars();
 	RC		processCondition(class ExprTree*,QVar *qv);
+	RC		processHaving(class ExprTree*,QVar *qv);
 	RC		processCond(class ExprTree*,QVar *qv,DynArray<const class ExprTree*> *exprs);
 	QVar	*findVar(QVarID id) const {QVar *qv=vars; while (qv!=NULL&&qv->id!=id) qv=qv->next; return qv;}
 	RC		render(const QVar *qv,SOutCtx& out) const;
@@ -286,7 +287,7 @@ private:
 	friend class	Classifier;
 	friend class	ClassPropIndex;
 	friend class	QueryPrc;
-	friend class	QueryCtx;
+	friend class	QBuildCtx;
 	friend class	SimpleVar;
 	friend class	SInCtx;
 };
@@ -304,30 +305,34 @@ class Cursor : public ICursor
 	const	STMT_OP		op;
 	PINEx				**results;
 	unsigned			nResults;
-	PINEx				qr;
+	PINEx				qr,*pqr;
 	TXID				txid;
 	TXCID				txcid;
 	uint64_t			cnt;
 	TxSP				tx;
 	bool				fSnapshot;
+	bool				fProc;
 	void	operator	delete(void *p) {if (p!=NULL) ((Cursor*)p)->ses->free(p);}
 	RC					skip();
 public:
 	Cursor(QueryOp *qop,uint64_t nRet,ulong md,const Value *vals,unsigned nV,Session *s,STMT_OP sop=STMT_QUERY,SelectType ste=SEL_PINSET,bool fSS=false)
-		: queryOp(qop),ses(s),nReturn(nRet),values(vals),nValues(nV),mode(md&~(LOAD_CARDINALITY|LOAD_EXT_ADDR|LOAD_SSV|LOAD_ENAV)),stype(ste),op(sop),
-		results(NULL),nResults(0),qr(s),txid(INVALID_TXID),txcid(NO_TXCID),cnt(0),tx(s),fSnapshot(fSS) {}
+		: queryOp(qop),ses(s),nReturn(nRet),values(vals),nValues(nV),mode(md),stype(ste),op(sop),results(NULL),nResults(0),qr(s),pqr(&qr),
+		txid(INVALID_TXID),txcid(NO_TXCID),cnt(0),tx(s),fSnapshot(fSS),fProc(false) {}
 	virtual				~Cursor();
 	IPIN				*next();
-	RC					next(const Value *&res,unsigned& nValues);
 	RC					next(PID&);
 	RC					next(IPIN *pins[],unsigned nPins,unsigned& nRet);
 	RC					rewind();
+	uint64_t			getCount() const;
 	void				destroy();
 
 	RC					connect();
 	RC					release() {return queryOp!=NULL?queryOp->release():RC_OK;}
-	RC					advance(bool *fRel=NULL,PIN **ret=NULL);
-	void				getPID(PID &id) {qr.extract(id);}
+	RC					advance(bool fRet=true,bool *fRel=NULL);
+	void				getPID(PID &id) {qr.getID(id);}
+	RC					extract(PIN *&,unsigned idx=0,bool fCopy=false);
+	PINEx				**getResults(unsigned& nRes) const {nRes=nResults; return results!=NULL?results:(PINEx**)&pqr;}
+	bool				isCount() const {return stype==SEL_COUNT;}
 	friend	class		CursorNav;
 };
 

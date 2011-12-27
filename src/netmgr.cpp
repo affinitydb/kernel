@@ -172,7 +172,7 @@ RC RPIN::load(int,ulong flags)
 			try {
 				if (mgr.net->getPIN(ID.pid,ushort(ID.pid>>48),ID.ident,pin)) {
 					MiniTx tx(ses); pin->mode=pin->mode&(PIN_NOTIFY|PIN_NO_INDEX)|PIN_READONLY; size_t sz;
-					if (mgr.ctx->queryMgr->commitPINs(ses,&pin,1,MODE_NO_RINDEX,NULL,&sz)!=RC_OK) rc=false;
+					if (mgr.ctx->queryMgr->commitPINs(ses,&pin,1,MODE_NO_RINDEX,ValueV(NULL,0),NULL,&sz)!=RC_OK) rc=false;
 					else {
 						addr=pin->addr; *(PageID*)dbuf=addr.pageID; *(PageIdx*)(dbuf+sizeof(PageID))=addr.idx; getTimestamp(expiration);
 						expiration+=ses!=NULL&&ses->getDefaultExpiration()!=0?ses->getDefaultExpiration():mgr.defExpiration;
@@ -202,7 +202,7 @@ RC RPIN::refresh(PIN *pin,Session *ses)
 		if (mgr.net->getPIN(ID.pid,ushort(ID.pid>>48),ID.ident,pin)) {		// && pin->stamp!=oldStamp
 			PINEx cb(ses,ID); cb=addr; MiniTx tx(ses); Value *diffProps=NULL; ulong nDiffProps=0;
 			if ((rc=mgr.ctx->queryMgr->diffPIN(pin,cb,diffProps,nDiffProps,ses))==RC_OK) {
-				if (nDiffProps>0 && (rc=mgr.ctx->queryMgr->modifyPIN(ses,ID,diffProps,nDiffProps,&cb,NULL,MODE_FORCE_EIDS|MODE_REFRESH))==RC_OK) {
+				if (nDiffProps>0 && (rc=mgr.ctx->queryMgr->modifyPIN(ses,ID,diffProps,nDiffProps,&cb,ValueV(NULL,0),NULL,MODE_FORCE_EIDS|MODE_REFRESH))==RC_OK) {
 					byte rbuf[PIDKeySize],dbuf[PageAddrSize+sizeof(TIMESTAMP)],dold[PageAddrSize+sizeof(TIMESTAMP)];
 					*(PageID*)dold=addr.pageID; *(PageIdx*)(dold+sizeof(PageID))=addr.idx; 
 					*(PageID*)dbuf=cb.getAddr().pageID; *(PageIdx*)(dbuf+sizeof(PageID))=cb.getAddr().idx; 

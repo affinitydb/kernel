@@ -55,8 +55,7 @@ bool PIDStore::operator[](PINEx& cb) const
 	if (extFile!=NULL) {
 		// check ext memory
 	}
-	if (cb.id.pid==STORE_INVALID_PID && cb.epr.lref!=0) cb.unpack();
-	return cache[cb.id];
+	PID id; return cb.getID(id)==RC_OK && cache[id];
 }
 
 RC PIDStore::operator+=(PINEx& cb)
@@ -70,9 +69,8 @@ RC PIDStore::operator+=(PINEx& cb)
 	if (extFile!=NULL) {
 		// add to ext mem
 	}
-	if (cb.id.pid==STORE_INVALID_PID && cb.epr.lref!=0) cb.unpack();
-	RC rc=cache.add(cb.id);
-	if (rc==RC_OK) count++;
+	PID id; RC rc=cb.getID(id); 
+	if (rc==RC_OK && (rc=cache.add(id))==RC_OK) count++;
 	return rc;
 }
 

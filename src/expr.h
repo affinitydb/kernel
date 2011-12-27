@@ -96,6 +96,8 @@ public:
 
 class	ExprTree;
 class	SOutCtx;
+struct	PropListP;
+struct	ValueV;
 
 class Expr : public IExpr
 {
@@ -105,28 +107,28 @@ public:
 	char			*toString(unsigned mode=0,const QName *qNames=NULL,unsigned nQNames=0) const;
 	IExpr			*clone() const;
 	void			destroy();
-	static	RC		eval(const Expr *const *exprs,ulong nExp,Value& result,const PINEx **vars,ulong nVars,
-											const Value *params,ulong nParams,MemAlloc *ma,bool fIgnore=false);
-	static	RC		compile(const ExprTree *,Expr *&,MemAlloc *ma);
+	static	RC		eval(const Expr *const *exprs,ulong nExp,Value& result,PINEx **vars,ulong nVars,const ValueV *params,ulong nParams,MemAlloc *ma,bool fIgnore=false);
+	static	RC		compile(const ExprTree *,Expr *&,MemAlloc *ma,ValueV *aggs=NULL);
 	static	RC		compile(const ExprTree *const *,unsigned nExp,Expr *&,MemAlloc*);
-	static	RC		merge(const uint32_t *p1,unsigned np1,const uint32_t *p2,unsigned np2,uint32_t *&res,unsigned& nRes,MemAlloc *ma);
 	RC				decompile(ExprTree*&,Session *ses) const;
-	static	RC		calc(ExprOp op,Value& arg,const Value *moreArgs,int nargs,unsigned flags,MemAlloc *ma,const PINEx **vars=NULL,ulong nVars=0);
+	static	RC		calc(ExprOp op,Value& arg,const Value *moreArgs,int nargs,unsigned flags,MemAlloc *ma,PINEx **vars=NULL,ulong nVars=0);
 	static	RC		calcAgg(ExprOp op,Value& res,const Value *more,unsigned nargs,unsigned flags,MemAlloc *ma);
 	ushort			getFlags() const {return hdr.flags;}
 	size_t			serSize() const {return hdr.lExpr;}
 	byte			*serialize(byte *buf) const {memcpy(buf,&hdr,hdr.lExpr); return buf+hdr.lExpr;}
 	RC				render(int prty,SOutCtx&) const;
 	void			getExtRefs(ushort var,const PropertyID *&pids,unsigned& nPids) const;
+	RC				mergeProps(PropListP& plp,bool fForce=false,bool fFlags=false) const;
 	RC				getPropDNF(ushort var,struct PropDNF *&dnf,size_t& ldnf,MemAlloc *ma) const;
 	static	RC		addPropRefs(Expr **pex,const PropertyID *props,unsigned nProps,MemAlloc *ma);
 	static	RC		deserialize(Expr*&,const byte *&buf,const byte *const ebuf,MemAlloc*);
 	static	Expr	*clone(const Expr *exp,MemAlloc *ma);
 	static	RC		getI(const Value& v,long& num);
+	static	bool	condSatisfied(const class Expr *const *exprs,ulong nExp,PINEx **vars,unsigned nVars,const ValueV *pars,unsigned nPars,MemAlloc *ma,bool fIgnore=false);
 private:
 	Expr(const ExprHdr& h) : hdr(h) {}
 	void			*operator new(size_t,byte *p) throw() {return p;}
-	RC				path(Value *&top,const byte *&codePtr,const Value *params,unsigned nParams,MemAlloc *ma) const;
+	RC				path(Value *&top,const byte *&codePtr,const ValueV& params,MemAlloc *ma) const;
 	static	const	Value *strOpConv(Value&,const Value*,Value&);
 	static	const	Value *numOpConv(Value&,const Value*,Value&,unsigned flg);
 	static	bool	numOpConv(Value&,unsigned flg);
@@ -174,7 +176,7 @@ public:
 	static	RC		node(Value&,Session*,ExprOp,unsigned,const Value *,ulong);
 	static	RC		forceExpr(Value&,Session *ses,bool fCopy=false);
 	static	RC		normalizeArray(Value *vals,unsigned nvals,Value& res,MemAlloc *ma,StoreCtx *ctx);
-	static	ushort	vRefs(const Value& v) {return v.type==VT_VARREF?v.refPath.refN<<8|v.refPath.refN:v.type==VT_EXPRTREE?((ExprTree*)v.exprt)->vrefs:NO_VREFS;}
+	static	ushort	vRefs(const Value& v) {return v.type==VT_VARREF&&(v.refV.flags&VAR_TYPE_MASK)==0?v.refV.refN<<8|v.refV.refN:v.type==VT_EXPRTREE?((ExprTree*)v.exprt)->vrefs:NO_VREFS;}
 	static	void	vRefs(ushort& vr1,ushort vr2) {if (vr1==NO_VREFS||vr2==MANY_VREFS) vr1=vr2; else if (vr1!=vr2&&vr1!=MANY_VREFS&&vr2!=NO_VREFS) mergeVRefs(vr1,vr2);}
 	static	void	mergeVRefs(ushort& vr1,ushort vr2);
 	void			mapVRefs(byte from,byte to);
@@ -191,7 +193,8 @@ public:
 #define	CV_OPT		0x0004
 
 class ExprCompileCtx {
-	MemAlloc	*const ma;
+	MemAlloc	*const	ma;
+	ValueV		*const	aggs;
 	uint32_t	labelCount;
 	uint16_t	lStack;
 	byte		buf[256];
@@ -206,7 +209,7 @@ class ExprCompileCtx {
 		uint32_t	addr;
 		ExprLbl(ExprLbl *nxt,int l,uint32_t ad) : next(nxt),label(l),addr(ad) {}
 	}		*labels;
-	ExprCompileCtx(MemAlloc *);
+	ExprCompileCtx(MemAlloc *,ValueV *);
 	~ExprCompileCtx();
 	RC		compileNode(const ExprTree *expr,ulong flg=0);
 	RC		compileValue(const Value& v,ulong flg=0);
@@ -218,22 +221,35 @@ class ExprCompileCtx {
 	bool	expand(uint32_t l);
 	RC		result(Expr *&);
 	byte	*alloc(uint32_t l) {return lCode+l>xlCode && !expand(l)?NULL:(lCode+=l,pCode+lCode-l);}
-	friend	RC	Expr::compile(const ExprTree *,Expr *&,MemAlloc*);
+	friend	RC	Expr::compile(const ExprTree *,Expr *&,MemAlloc*,ValueV*);
 	friend	RC	Expr::compile(const ExprTree *const *,unsigned nExp,Expr *&,MemAlloc*);
 };
+
+class CmpValueC
+{
+public:
+	static SListOp compare(const ValueC& v1,ValueC& v2,ulong u) {
+		int c=cmp(v1,v2,u); if (c<0) return SLO_LT; if (c>0) return SLO_GT; v2.count++; return SLO_NOOP;
+	}
+};
+
+typedef SList<ValueC,CmpValueC>	Histogram;
 
 struct AggAcc
 {
 	uint64_t	count;
 	Value		sum;
 	double		sum2;
+	Histogram	*hist;
 	ExprOp		op;
 	uint16_t	flags;
 	MemAlloc	*const	ma;
-	AggAcc() : count(0),sum2(0.),op(OP_COUNT),flags(0),ma(NULL) {sum.setError();}
-	AggAcc(ExprOp o,uint16_t f,MemAlloc *m) : count(0),sum2(0.),op(o),flags(f),ma(m) {sum.setError();}
-	void		next(const Value& v);
+	AggAcc() : count(0),sum2(0.),hist(NULL),op(OP_COUNT),flags(0),ma(NULL) {sum.setError();}
+	AggAcc(ExprOp o,uint16_t f,MemAlloc *m,Histogram *h) : count(0),sum2(0.),hist(h),op(o),flags(f),ma(m) {sum.setError();}
+	RC			next(const Value& v);
+	RC			process(const Value& v);
 	RC			result(Value& res);
+	void		reset() {count=0; sum.setError(); sum2=0.; if (hist!=NULL) hist->clear();}
 };
 
 class PathIt : public INav, public Path
@@ -243,9 +259,8 @@ class PathIt : public INav, public Path
 	Value			res;
 	unsigned		sidx;
 public:
-	PathIt(MemAlloc *m,const PathSeg *ps,unsigned nP,const Value *pars,unsigned nPars,const Value& v,bool fD) : Path(ma,ps,nP,pars,nPars,false),fDFS(fD),sidx(0) {src=v; res.setError();}
+	PathIt(MemAlloc *m,const PathSeg *ps,unsigned nP,const Value& v,bool fD) : Path(ma,ps,nP,false),fDFS(fD),sidx(0) {src=v; res.setError();}
 	virtual	~PathIt();
-
 	const	Value	*navigate(GO_DIR=GO_NEXT,ElementID=STORE_COLLECTION_ID);
 	ElementID		getCurrentID();
 	const	Value	*getCurrentValue();

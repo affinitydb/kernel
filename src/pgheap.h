@@ -137,6 +137,7 @@ protected:
 		uint16_t		fUnord	:1;
 		HeapV			start[1];
 		ushort			length() const {return (ushort)(sizeof(HeapVV)+(cnt-1)*sizeof(HeapV)+sizeof(HeapKey));}
+		ushort			lengthS() const {return (ushort)(sizeof(HeapVV)+(cnt-1)*sizeof(HeapV));}
 		const	HeapV	*find(uint32_t id,HeapV **ins=NULL) const {return BIN<HeapV,PropertyID,HeapV::HVCmp>::find(id,start,cnt,ins);}
 		const	HeapV	*findElt(uint32_t id) const {
 			if (id==STORE_FIRST_ELEMENT) return start; else if (id==STORE_LAST_ELEMENT) return &start[cnt-1];

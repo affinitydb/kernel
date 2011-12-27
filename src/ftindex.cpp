@@ -225,8 +225,8 @@ RC FTIndexMgr::rebuildIndex(Session *ses)
 {
 	RC rc=RC_OK; MiniTx tx(ses,MTX_FLUSH|MTX_GLOB);
 	if ((rc=indexFT.dropTree())==RC_OK) {
-		PINEx qr(ses); ses->resetAbortQ();
-		FullScan fs(ses,HOH_DELETED|HOH_HIDDEN); fs.connect(&qr); RWLockP lck(&lock,RW_X_LOCK);
+		PINEx qr(ses),*pqr=&qr; ses->resetAbortQ(); QCtx qc(ses); qc.ref();
+		FullScan fs(&qc,HOH_DELETED|HOH_HIDDEN); fs.connect(&pqr); RWLockP lck(&lock,RW_X_LOCK);
 		while ((rc=fs.next())==RC_OK) {
 #if 0
 			assert(!qr.pb.isNull() && qr.hpin!=NULL);

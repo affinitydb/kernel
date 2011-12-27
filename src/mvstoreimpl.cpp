@@ -39,7 +39,7 @@ RC PIN::refresh(bool fNet)
 			rc=ctx->netMgr->refresh(this,ses);
 		else {
 			Value *val=properties; ulong nProps=nProperties; properties=NULL; nProperties=0; PIN *p=this;
-			if ((rc=ctx->queryMgr->loadPIN(ses,id,p,mode|LOAD_ENAV,NULL,ses))!=RC_OK) {properties=val; nProperties=nProps;}
+			if ((rc=ctx->queryMgr->loadPIN(ses,id,p,mode|LOAD_ENAV))!=RC_OK) {properties=val; nProperties=nProps;}
 			else if (val!=NULL) {for (ulong i=0; i<nProps; i++) freeV(val[i]); free(val,SES_HEAP);}
 		}
 		return rc;
@@ -107,9 +107,9 @@ bool PIN::isClass() const
 	return (mode&PIN_CLASS)!=0;
 }
 
-bool PIN::isTransformed() const
+bool PIN::isDerived() const
 {
-	return (mode&PIN_TRANSFORMED)!=0;
+	return (mode&PIN_DERIVED)!=0;
 }
 
 bool PIN::isProjected() const
@@ -189,7 +189,7 @@ RC PIN::deletePIN()
 	try {
 		if (ses==NULL) return RC_NOSESSION; if (ses->inReadTx()) return RC_READTX; assert(ses==Session::getSession());
 		StoreCtx *ctx=ses->getStore(); if (ctx->inShutdown()) return RC_SHUTDOWN; if (ctx->isServerLocked()) return RC_READONLY;
-		TxGuard txg(ses); if (addr.defined()) {PIN *p=this; RC rc=ctx->queryMgr->deletePINs(ses,&p,&id,1,0); if (rc!=RC_OK) return rc;}
+		TxGuard txg(ses); if (addr.defined()) {PIN *p=this; RC rc=ctx->queryMgr->deletePINs(ses,&p,&id,1,MODE_CLASS); if (rc!=RC_OK) return rc;}
 		destroy(); return RC_OK;
 	} catch (RC rc) {return rc;} catch (...) {report(MSG_ERROR,"Exception in IPIN::deletePIN()\n"); return RC_INTERNAL;}
 }
@@ -220,7 +220,7 @@ RC PIN::getPINValue(Value& res,Session *ses) const
 		default: return pv!=&res?copyV(*pv,res,ses):RC_OK;
 		case VT_EXPR:
 			{exp=(Expr*)pv->expr; save=(HEAP_TYPE)(pv->flags&HEAP_TYPE_MASK);
-			res.type=VT_ERROR; const PINEx pex(this),*pp=&pex;
+			res.type=VT_ERROR; PINEx pex(this),*pp=&pex;
 			rc=Expr::eval(&exp,1,res,&pp,1,NULL,0,ses);
 			if (pv==&res && save!=NO_HEAP) if (save==SES_HEAP) ses->free(exp); else free(exp,save);}
 // leaking???
@@ -267,7 +267,7 @@ IPIN *PIN::clone(const Value *overwriteValues,unsigned nOverwriteValues,unsigned
 		if ((mode&MODE_NEW_COMMIT)!=0 && ses!=NULL) {
 			if (ses->getStore()->isServerLocked()) {delete newp; return NULL;}
 			TxGuard txg(ses); assert(newp->id.pid==STORE_INVALID_PID && ses==Session::getSession());
-			if (ses->getStore()->queryMgr->commitPINs(ses,&newp,1,mode)!=RC_OK) {delete newp; newp=NULL;}
+			if (ses->getStore()->queryMgr->commitPINs(ses,&newp,1,mode,ValueV(NULL,0))!=RC_OK) {delete newp; newp=NULL;}
 		}
 		return newp;
 	} catch (RC) {} catch (...) {report(MSG_ERROR,"Exception in IPIN::clone(...)\n");}
@@ -303,7 +303,7 @@ IPIN *PIN::project(const PropertyID *props,unsigned nProps,const PropertyID *new
 		if ((mode&MODE_NEW_COMMIT)!=0 && ses!=NULL) {
 			if (ses->getStore()->isServerLocked()) {delete newp; return NULL;}
 			TxGuard txg(ses); assert(newp->id.pid==STORE_INVALID_PID && ses==Session::getSession());
-			if (ses->getStore()->queryMgr->commitPINs(ses,&newp,1,mode)!=RC_OK) {delete newp; newp=NULL;}
+			if (ses->getStore()->queryMgr->commitPINs(ses,&newp,1,mode,ValueV(NULL,0))!=RC_OK) {delete newp; newp=NULL;}
 		}
 		return newp;
 	} catch (RC) {} catch (...) {report(MSG_ERROR,"Exception in IPIN::project(...)\n");}
@@ -316,7 +316,7 @@ RC PIN::modify(const Value *values,unsigned nValues,unsigned md,const ElementID 
 		if (ses==NULL) return RC_NOSESSION; if (ses->inReadTx()) return RC_READTX; assert(ses==Session::getSession());
 		StoreCtx *ctx=ses->getStore(); if (ctx->inShutdown()) return RC_SHUTDOWN; if (ctx->isServerLocked()) return RC_READONLY;
 		if (!ses->isReplication() && (md&MODE_FORCE_EIDS)!=0 && eids!=NULL) return RC_INVPARAM;
-		if (addr.defined()) {TxGuard txg(ses); return ctx->queryMgr->modifyPIN(ses,id,values,nValues,NULL,this,md,eids,pNFailed);}
+		if (addr.defined()) {TxGuard txg(ses); return ctx->queryMgr->modifyPIN(ses,id,values,nValues,NULL,ValueV(NULL,0),this,md,eids,pNFailed);}
 		ulong flags=((md&MODE_FORCE_EIDS)!=0&&eids!=NULL?MODP_EIDS:0)|((md&MODE_NO_EID)!=0?MODP_NEID:0);
 		ElementID prefix=getPrefix(ses->getStore()); assert((mode&PIN_CLASS)==0);
 		for (unsigned i=0; i<nValues; i++) {
@@ -489,7 +489,7 @@ bool PIN::testClassMembership(ClassID classID,const Value *params,unsigned nPara
 		if (ses==NULL) return false; assert(ses==Session::getSession());
 		if (ses->getStore()->inShutdown()) return false;
 		TxGuard txg(ses); PINEx pex(this);
-		return ses->getStore()->queryMgr->test(&pex,classID,params,nParams,true);
+		return ses->getStore()->queryMgr->test(&pex,classID,ValueV(params,nParams),true);
 	} catch (RC) {} catch (...) {report(MSG_ERROR,"Exception in IPIN::testClassMembership(ClassID=%08X)\n",classID);}
 	return false;
 }
@@ -509,7 +509,7 @@ PIN *PIN::getPIN(const PID& id,VersionID vid,Session *ses,ulong mode)
 		if (ses==NULL||ses->getStore()->inShutdown()) return NULL; assert(ses==Session::getSession());
 		TxGuard txg(ses); bool fRemote=isRemote(id); PageAddr addr=PageAddr::invAddr; PIN *pin=NULL;
 		if (!fRemote && (mode&LOAD_EXT_ADDR)!=0 && addr.convert(OID(id.pid))) ses->setExtAddr(addr);
-		if (ses->getStore()->queryMgr->loadPIN(ses,id,pin,mode|LOAD_ENAV,NULL,ses,vid)!=RC_OK) {delete pin; pin=NULL;}
+		if (ses->getStore()->queryMgr->loadPIN(ses,id,pin,mode|LOAD_ENAV,NULL,vid)!=RC_OK) {delete pin; pin=NULL;}
 		ses->setExtAddr(PageAddr::invAddr); return pin;
 	} catch (RC) {} catch (...) {report(MSG_ERROR,"Exception in IPIN::getPIN(PID="_LX_FM",IdentityID=%08X)\n",id.pid,id.ident);}
 	return NULL;
@@ -735,10 +735,9 @@ RC SessionX::changeStoreIdentity(const char *newIdentity)
 
 static int __cdecl cmpValues(const void *v1, const void *v2)
 {
-	const Value *pv1=*(const Value**)v1,*pv2=*(const Value**)v2;
-	return pv1->property<pv2->property?-1:pv1->property>pv2->property?1:
-		pv1->eid==STORE_FIRST_ELEMENT&&pv1<pv2?-1:pv2->eid==STORE_FIRST_ELEMENT?1:
-		pv2->eid==STORE_LAST_ELEMENT&&pv2>pv1?-1:pv1->eid==STORE_LAST_ELEMENT?1:pv1<pv2?-1:1;
+	const Value *pv1=*(const Value**)v1,*pv2=*(const Value**)v2; int c=cmp3(pv1->property,pv2->property);
+	return c!=0?c:pv1->eid==STORE_FIRST_ELEMENT&&pv1<pv2?-1:pv2->eid==STORE_FIRST_ELEMENT?1:
+				pv2->eid==STORE_LAST_ELEMENT&&pv2>pv1?-1:pv1->eid==STORE_LAST_ELEMENT?1:pv1<pv2?-1:1;
 }
 
 Value *PIN::normalize(const Value *pv,uint32_t& nv,ulong f,ElementID prefix,MemAlloc *ma)
@@ -823,7 +822,7 @@ RC SessionX::createPIN(PID& res,const Value values[],unsigned nValues,unsigned m
 		ulong pm=md&(PIN_NO_REPLICATION|PIN_REPLICATED|PIN_NO_INDEX|PIN_HIDDEN|PIN_NOTIFY);
 		if ((ses->itf&ITF_DEFAULT_REPLICATION)!=0 && (md&PIN_NO_REPLICATION)==0) pm|=PIN_REPLICATED;
 		PIN pn(ses,PIN::defPID,PageAddr::invAddr,pm,pv,nv),*ppn=&pn; TxGuard txg(ses);
-		RC rc=ctx->queryMgr->commitPINs(ses,&ppn,1,md,actrl); 
+		RC rc=ctx->queryMgr->commitPINs(ses,&ppn,1,md,ValueV(NULL,0),actrl);
 		if (rc==RC_OK) {
 			res=pn.id;
 			if ((md&MODE_NO_EID)==0 && pv!=NULL) for (unsigned i=0; i<nv; i++) if (pv[i].type==VT_ARRAY) {
@@ -878,7 +877,7 @@ RC SessionX::commitPINs(IPIN *const *pins,unsigned nPins,unsigned md,const Alloc
 	try {
 		assert(ses==Session::getSession()); 
 		StoreCtx *ctx=ses->getStore(); if (ctx->inShutdown()) return RC_SHUTDOWN; if (ctx->isServerLocked()) return RC_READONLY;
-		TxGuard txg(ses); return ctx->queryMgr->commitPINs(ses,(PIN*const*)pins,nPins,md,actrl,NULL,params,nParams);	// MODE_ENAV???
+		TxGuard txg(ses); return ctx->queryMgr->commitPINs(ses,(PIN*const*)pins,nPins,md,ValueV(params,nParams),actrl);	// MODE_ENAV???
 	} catch (RC rc) {return rc;} catch (...) {report(MSG_ERROR,"Exception in ISession::commitPINs(...)\n"); return RC_INTERNAL;}
 }
 
@@ -888,7 +887,7 @@ RC SessionX::modifyPIN(const PID& id,const Value *values,unsigned nValues,unsign
 		PageAddr addr; assert(ses==Session::getSession());
 		StoreCtx *ctx=ses->getStore(); if (ctx->inShutdown()) return RC_SHUTDOWN; if (ctx->isServerLocked()) return RC_READONLY;
 		if (!isRemote(id) && addr.convert(id.pid)) ses->setExtAddr(addr); TxGuard txg(ses);
-		RC rc=ctx->queryMgr->modifyPIN(ses,id,values,nValues,NULL,NULL,md,eids,pNFailed,params,nParams);
+		RC rc=ctx->queryMgr->modifyPIN(ses,id,values,nValues,NULL,ValueV(params,nParams),NULL,md,eids,pNFailed);
 		ses->setExtAddr(PageAddr::invAddr); return rc;
 	} catch (RC rc) {return rc;} catch (...) {report(MSG_ERROR,"Exception in ISession::modifyPIN(...)\n"); return RC_INTERNAL;}
 }
@@ -900,7 +899,7 @@ RC SessionX::deletePINs(IPIN **pins,unsigned nPins,unsigned md)
 		StoreCtx *ctx=ses->getStore(); if (ctx->inShutdown()) return RC_SHUTDOWN; if (ctx->isServerLocked()) return RC_READONLY;
 		PID *pids=(PID*)alloca(nPins*sizeof(PID)); if (pids==NULL) return RC_NORESOURCES;
 		for (unsigned j=0; j<nPins; j++) pids[j]=pins[j]->getPID();
-		TxGuard txg(ses); RC rc=ctx->queryMgr->deletePINs(ses,(PIN**)pins,pids,nPins,md);
+		TxGuard txg(ses); RC rc=ctx->queryMgr->deletePINs(ses,(PIN**)pins,pids,nPins,md|MODE_CLASS);
 		if (rc==RC_OK) for (unsigned i=0; i<nPins; i++) {pins[i]->destroy(); pins[i]=NULL;}
 		return rc;
 	} catch (RC rc) {return rc;} catch (...) {report(MSG_ERROR,"Exception in ISession::deletePINs(...)\n"); return RC_INTERNAL;}
@@ -911,7 +910,7 @@ RC SessionX::deletePINs(const PID *pids,unsigned nPids,unsigned md)
 	try {
 		assert(ses==Session::getSession());
 		StoreCtx *ctx=ses->getStore(); if (ctx->inShutdown()) return RC_SHUTDOWN; if (ctx->isServerLocked()) return RC_READONLY;
-		TxGuard txg(ses); return ctx->queryMgr->deletePINs(ses,NULL,pids,nPids,md);
+		TxGuard txg(ses); return ctx->queryMgr->deletePINs(ses,NULL,pids,nPids,md|MODE_CLASS);
 	} catch (RC rc) {return rc;} catch (...) {report(MSG_ERROR,"Exception in ISession::deletePINs(...)\n"); return RC_INTERNAL;}
 }
 
@@ -965,18 +964,24 @@ RC SessionX::getURI(uint32_t id,char buf[],size_t& lbuf)
 		if (id==STORE_INVALID_PROPID || buf==NULL || lbuf==0) return RC_INVPARAM;
 		StoreCtx *ctx=ses->getStore(); if (ctx->inShutdown()) return RC_SHUTDOWN;
 		if (id<=PROP_SPEC_MAX) {
-			size_t l=min(lbuf,sizeof(STORE_STD_QPREFIX))-1; memcpy(buf,STORE_STD_QPREFIX,l);
+			size_t l=min(lbuf,ses->fStdOvr?sizeof(STORE_STD_URI_PREFIX):sizeof(STORE_STD_QPREFIX))-1;
+			memcpy(buf,ses->fStdOvr?STORE_STD_URI_PREFIX:STORE_STD_QPREFIX,l);
 			if (lbuf>l) {
 				size_t ll=min(lbuf-l-1,Classifier::builtinURIs[id].lname);
 				memcpy(buf+l,Classifier::builtinURIs[id].name,ll); l+=ll;
 			}
-			buf[l]=0; lbuf=l;
+			buf[lbuf=l]=0;
 		} else {
 			URI *uri=(URI*)ctx->uriMgr->ObjMgr::find(id); if (uri==NULL) {lbuf=0; return RC_NOTFOUND;}
-			if (uri->getURI()==NULL) lbuf=0;
-			else {
-				if (buf!=NULL && lbuf>0) strncpy(buf,uri->getURI(),lbuf-1)[lbuf-1]=0;
-				lbuf = strlen(uri->getURI());
+			const char *s=uri->getURI();
+			if (s==NULL) lbuf=0;
+			else if (buf!=NULL && lbuf>0) {
+				size_t l=strlen(s);
+				if (!ses->fStdOvr && l>sizeof(STORE_STD_URI_PREFIX)-1 && memcmp(s,STORE_STD_URI_PREFIX,sizeof(STORE_STD_URI_PREFIX)-1)==0) {
+					size_t ll=min(lbuf,sizeof(STORE_STD_QPREFIX))-1; memcpy(buf,STORE_STD_QPREFIX,ll);
+					if (lbuf>ll) {size_t l2=min(lbuf-l-1,l-sizeof(STORE_STD_URI_PREFIX)+1); memcpy(buf+ll,s+sizeof(STORE_STD_URI_PREFIX)-1,l2); ll+=l2;}
+					buf[lbuf=ll]=0;
+				} else {memcpy(buf,s,min(l+1,lbuf)); if (lbuf>l) lbuf=l; else buf[--lbuf]=0;}
 			}
 			uri->release();
 		}
@@ -1171,7 +1176,7 @@ RC SessionX::getClassInfo(ClassID cid,IPIN *&ret)
 		ret=NULL; StoreCtx *ctx=ses->getStore(); assert(ses==Session::getSession()); if (ctx->inShutdown()) return RC_SHUTDOWN;
 		Class *cls=ctx->classMgr->getClass(cid); if (cls==NULL) return RC_NOTFOUND;
 		PID id=cls->getPID(); PINEx cb(ses,id); cb=cls->getAddr(); cls->release(); PIN *pin=NULL;
-		RC rc=ctx->queryMgr->loadPIN(ses,id,pin,LOAD_ENAV,&cb,ses); if (rc==RC_OK) rc=ctx->queryMgr->getClassInfo(ses,pin);
+		RC rc=ctx->queryMgr->loadPIN(ses,id,pin,LOAD_ENAV,&cb); if (rc==RC_OK) rc=ctx->queryMgr->getClassInfo(ses,pin);
 		ret=pin; return rc;
 	} catch (RC rc) {return rc;} catch (...) {report(MSG_ERROR,"Exception in ISession::getClassInfo()\n"); return RC_INTERNAL;}
 }

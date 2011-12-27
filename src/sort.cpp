@@ -16,28 +16,43 @@ Written by Mark Venguerov and Andrew Skowronski 2004 - 2010
 
 using namespace MVStoreKernel;
 
-Sort::Sort(QueryOp *qop,const OrderSegQ *os,unsigned nsgs,ulong md,unsigned nP,const PropertyID *pids,unsigned nPids)
-: QueryOp(qop->getSession(),qop,md),nPreSorted(nP),fRepeat(false),pinMem(ses),nAllPins(0),idx(0),pins(NULL),lPins(0),esFile(NULL),esRuns(NULL),esOutRun(NULL),nIns(0),curRun(~0u),
-	peakSortMem(DEFAULT_QUERY_MEM),maxSortMem(DEFAULT_QUERY_MEM),memUsed(0),nValues(nPids),index((unsigned*)((byte*)(this+1)+int(nsgs-1)*sizeof(OrderSegQ)+nPids*sizeof(PropertyID))),
-	nPropIDs(nPids),propIDs((PropertyID*)((byte*)(this+1)+int(nsgs-1)*sizeof(OrderSegQ))),nSegs(nsgs)
+Sort::Sort(QueryOp *qop,const OrderSegQ *os,unsigned nsgs,ulong qf,unsigned nP,const PropList *pids,unsigned nPids)
+: QueryOp(qop,qf),nPreSorted(nP),fRepeat(false),pinMem(qx->ses),nAllPins(0),idx(0),pins(NULL),lPins(0),esFile(NULL),esRuns(NULL),esOutRun(NULL),nIns(0),curRun(~0u),
+	peakSortMem(DEFAULT_QUERY_MEM),maxSortMem(DEFAULT_QUERY_MEM),memUsed(0),nValues(0),index((unsigned*)((byte*)(this+1)+int(nsgs-1)*sizeof(OrderSegQ)+nPids*sizeof(PropList))),
+	nPls(nPids),pls((PropList*)((byte*)(this+1)+int(nsgs-1)*sizeof(OrderSegQ)))
 {
-	assert(nSegs!=1 || os==NULL || (os->flags&ORDER_EXPR)!=0 || os->pid!=PROP_SPEC_PINID);
+	QueryOp::sort=sortSegs; nSegs=nsgs;
+	assert(nsgs!=1 || os==NULL || (os->flags&ORDER_EXPR)!=0 || os->pid!=PROP_SPEC_PINID);
 	if (os!=NULL) memcpy((OrderSegQ*)sortSegs,os,nsgs*sizeof(OrderSegQ));
-	if (pids!=NULL && nPids>0) memcpy((PropertyID*)propIDs,pids,nPids*sizeof(PropertyID));
-	if (nSegs==0) {qop->unique(false); mode|=QO_UNIQUE;}	// descendant?
-	else for (unsigned i=0; i<nSegs; i++) if ((sortSegs[i].flags&ORDER_EXPR)!=0) {
-		if ((md&QO_VCOPIED)!=0 && (sortSegs[i].expr=Expr::clone(sortSegs[i].expr,ses))==NULL) throw RC_NORESOURCES;
+	if (pids!=NULL && nPids>0) {
+		memcpy((PropList*)pls,pids,nPids*sizeof(PropList));
+		for (unsigned i=0; i<nPids; i++) {
+			nValues+=pls[i].nProps;
+			if ((qflags&QO_VCOPIED)!=0 && pls[i].props!=NULL && !pls[i].fFree) {
+				PropList& pl=*(PropList*)&pls[i];
+				PropertyID *pp=new(qx->ses) PropertyID[pl.nProps]; if (pp==NULL) throw RC_NORESOURCES;
+				memcpy(pp,pl.props,pl.nProps*sizeof(PropertyID)); pl.props=pp; pl.fFree=true;
+			}
+		}
+		props=pls; nProps=nPids;
+	}
+	if (nsgs==0) {qop->unique(false); qflags|=QO_UNIQUE|QO_IDSORT;}
+	else for (unsigned i=0; i<nsgs; i++) if ((sortSegs[i].flags&ORDER_EXPR)!=0) {
+		if ((qf&QO_VCOPIED)!=0 && (sortSegs[i].expr=Expr::clone(sortSegs[i].expr,qx->ses))==NULL) throw RC_NORESOURCES;
 		index[i]=nValues++;
-	} else if (sortSegs[i].pid==PROP_SPEC_ANY) index[i]=nValues++;
-	else index[i]=unsigned(BIN<PropertyID>::find(sortSegs[i].pid,pids,nPids)-pids);
+	} else {
+		if (sortSegs[i].var>nPids) throw RC_INVPARAM; const PropertyID *pi=pls[sortSegs[i].var].props;
+		index[i]=unsigned(BIN<PropertyID>::find(sortSegs[i].pid,pi,pls[sortSegs[i].var].nProps)-pi);		// + shift for this var
+	}
 }
 
 Sort::~Sort()
 {
 	esCleanup();
-	if (nValues>nPropIDs && (mode&QO_VCOPIED)!=0) for (unsigned i=0; i<nSegs; i++)
+	if (/*nValues>nPropIDs && */(qflags&QO_VCOPIED)!=0) for (unsigned i=0; i<nSegs; i++)
 		if ((sortSegs[i].flags&ORDER_EXPR)!=0) sortSegs[i].expr->destroy();
-	if (pins!=NULL) ses->free(pins);
+	if (pls!=NULL) for (unsigned i=0; i<nPls; i++) if (pls[i].props!=NULL && pls[i].fFree) qx->ses->free(pls[i].props);
+	if (pins!=NULL) qx->ses->free(pins);
 }
 
 void Sort::connect(PINEx **results,unsigned nRes)
@@ -67,15 +82,15 @@ __forceinline EncPINRef *Sort::storeSortData(const PINEx& qr,SubAlloc& pinMem)
 
 __forceinline int cmpSort(const EncPINRef *ep1,const EncPINRef *ep2)
 {
-	byte l1,l2; const byte *p1=getSortID(&ep1,l1),*p2=getSortID(&ep2,l2); return PINRef::cmpPIDs(p1,l1,p2,l2);
+	byte l1,l2; const byte *p1=getSortID(&ep1,l1),*p2=getSortID(&ep2,l2); return l1*l2!=0?PINRef::cmpPIDs(p1,l1,p2,l2):0;
 }
 
 int Sort::cmp(const EncPINRef *p1,const EncPINRef *p2) const
 {
 #if 0
 	// compare two pins
-	PIN pin1(ses,p1->id,PageAddr::invAddr,PIN_NO_FREE,p1->id.ptr,nPropIDs),pin2(ses,p2->id,PageAddr::invAddr,PIN_NO_FREE,p2->id.ptr,nPropIDs);
-	const PIN *pp[2] = {&pin1,&pin2}; Value res; RC rc=Expr::eval(&sortExpr,1,res,pp,2,NULL,0,ses);
+	PIN pin1(qx->ses,p1->id,PageAddr::invAddr,PIN_NO_FREE,p1->id.ptr,nValues),pin2(qx->ses,p2->id,PageAddr::invAddr,PIN_NO_FREE,p2->id.ptr,nValues);
+	const PIN *pp[2] = {&pin1,&pin2}; Value res; RC rc=Expr::eval(&sortExpr,1,res,pp,2,NULL,0,qx->ses);
 	switch (rc) {
 	default: break;		// ???
 	case RC_TRUE: return -1;
@@ -91,10 +106,12 @@ int Sort::cmp(const EncPINRef *p1,const EncPINRef *p2) const
 		break;
 	}
 #endif
-	if (nPreSorted<nSegs) {
+	int ret=0;
+	if (nSegs!=0) {
+		if (nPreSorted>=nSegs) return 0;
 		const Value *pv1=getValues(p1),*pv2=getValues(p2);
 		for (ulong k=nPreSorted; k<nSegs; ++k) {
-			const uint32_t u=sortSegs[k].flags; int ret=0;
+			const uint32_t u=sortSegs[k].flags;
 			if (index[k]==~0u) ret=cmpSort(p1,p2);
 			else {
 				const Value *pp1=&pv1[index[k]],*pp2=&pv2[index[k]];
@@ -103,9 +120,10 @@ int Sort::cmp(const EncPINRef *p1,const EncPINRef *p2) const
 				else if ((ret=MVStoreKernel::cmp(*pp1,*pp2,(u&ORD_NCASE)!=0?CND_NCASE|CND_SORT:CND_SORT))!=0) return (u&ORD_DESC)!=0?-ret:ret;
 			}
 		}
-		if ((mode&QO_VUNIQUE)!=0) fRepeat=true;
+		if ((qflags&QO_VUNIQUE)!=0) fRepeat=true;
 	}
-	int ret=cmpSort(p1,p2); if (ret==0 && (mode&QO_UNIQUE)!=0) fRepeat=true; return ret;
+	if ((ret=cmpSort(p1,p2))==0 && (qflags&QO_UNIQUE)!=0) fRepeat=true; 
+	return ret;
 }
 
 #define QS_STKSIZ			(8*sizeof(void*)-2)
@@ -156,27 +174,25 @@ namespace MVStoreKernel
 RC Sort::sort(ulong nAbort)
 {
 	assert(queryOp!=NULL && pins==NULL && esRuns==NULL);
-	PINEx qr(ses); RC rc=RC_OK,rc2; ulong nRunPins=0; nAllPins=0; ArrayVal *freeAV=NULL;
+	PINEx qr(qx->ses); RC rc=RC_OK,rc2; ulong nRunPins=0; nAllPins=0; ArrayVal *freeAV=NULL;
 	unsigned nqr=queryOp->getNOuts(); PINEx **pqr=(PINEx**)alloca(nqr*sizeof(PINEx*)); if (pqr==NULL) return RC_NORESOURCES;
-	for (unsigned i=1; i<nqr; i++) if ((pqr[i]=new(ses) PINEx(ses))==NULL) return RC_NORESOURCES;
+	for (unsigned i=1; i<nqr; i++) if ((pqr[i]=new(qx->ses) PINEx(qx->ses))==NULL) return RC_NORESOURCES;
 	pqr[0]=&qr; queryOp->connect(pqr,nqr);
 	for (; ((rc=queryOp->next())==RC_OK || rc==RC_EOF); qr.cleanup()) {
-		if ((rc2=ses->testAbortQ())!=RC_OK) {rc=rc2; break;}
+		if ((rc2=qx->ses->testAbortQ())!=RC_OK) {rc=rc2; break;}
 		if (rc==RC_OK) {
-			if (qr.epr.lref==0 && (rc2=qr.pack())!=RC_OK) rc=rc2;
-			else {
-				if ((mode&QO_UNIQUE)!=0 && nRunPins!=0) {
-					// check previous id continue;
-				}
-				if (nAllPins+nRunPins+1>nAbort) {rc=RC_TIMEOUT; break;}				// after repeating are deleted?
+			if (qr.epr.lref==0 && qr.getPID().pid!=STORE_INVALID_PID && (rc2=qr.pack())!=RC_OK) {rc=rc2; break;}
+			if ((qflags&QO_UNIQUE)!=0 && nRunPins!=0) {
+				// check previous id continue;
 			}
+			if (nAllPins+nRunPins+1>nAbort) {rc=RC_TIMEOUT; break;}				// after repeating are deleted?
 		}
 		if (rc==RC_EOF || memUsed>peakSortMem || (nRunPins+1)*(sizeof(EncPINRef*)+sizeof(EncPINRef)+nValues*sizeof(Value))>maxSortMem) {	//?????
 			if (nRunPins>=2) {
 				fRepeat=false; quickSort(nRunPins);
 				if (fRepeat) {
 					for (ulong i=0,j=1,cnt=nRunPins; j<cnt; j++) {
-						if (cmpSort(pins[i],pins[j])==0 || (mode&QO_VUNIQUE)!=0 && (fRepeat=false,cmp(pins[i],pins[j]),fRepeat)) nRunPins--;
+						if (cmpSort(pins[i],pins[j])==0 || (qflags&QO_VUNIQUE)!=0 && (fRepeat=false,cmp(pins[i],pins[j]),fRepeat)) nRunPins--;
 						else if (++i!=j) pins[i]=pins[j];
 					}
 					if (rc!=RC_EOF && memUsed<peakSortMem) continue;
@@ -192,7 +208,7 @@ RC Sort::sort(ulong nAbort)
 		}
 		if (nRunPins>=lPins) {
 			lPins=lPins==0?256:lPins*2; if (memUsed+(lPins-nRunPins)*sizeof(EncPINRef*)>peakSortMem) lPins=ulong((peakSortMem-memUsed)/sizeof(EncPINRef*))+nRunPins+1;
-			if ((pins=(EncPINRef**)ses->realloc(pins,lPins*sizeof(EncPINRef*)))!=NULL) memUsed+=(lPins-nRunPins)*sizeof(byte*); else {rc=RC_NORESOURCES; break;}
+			if ((pins=(EncPINRef**)qx->ses->realloc(pins,lPins*sizeof(EncPINRef*)))!=NULL) memUsed+=(lPins-nRunPins)*sizeof(byte*); else {rc=RC_NORESOURCES; break;}
 		}
 #if defined(__x86_64__) || defined(IA64) || defined(_M_X64) || defined(_M_IA64)
 		if (nValues==0 && qr.epr.lref<sizeof(EncPINRef*) && qr.epr.flags==0)
@@ -204,20 +220,17 @@ RC Sort::sort(ulong nAbort)
 		pins[nRunPins++]=ep; if (nValues==0) {memUsed+=pinMem.length(mrk); continue;}
 
 		Value *vals=(Value*)getValues(ep);
-		if (nPropIDs!=0) {
-			for (unsigned i=0; i<nPropIDs; i++) vals[i].setError(propIDs[i]);
-			if ((rc=queryOp->getData(qr,vals,nPropIDs,NULL,&pinMem))!=RC_OK) break;
-		}
+		if (nPls!=0 && (rc=getData(pqr,nqr,pls,nPls,vals,&pinMem))!=RC_OK) break;
 		bool fSkip=true; ArrayVal *avs=NULL;
 		for (unsigned i=0; i<nSegs; i++) if (index[i]!=~0u) {
 			Value *pv=&vals[index[i]]; ArrayVal *av; const Value *cv; INav *nav;
-			if ((sortSegs[i].flags&ORDER_EXPR)==0) {if (sortSegs[i].pid==PROP_SPEC_ANY) {pv->set(qr.degree); fSkip=false; continue;}}
-			else if ((rc=Expr::eval(&sortSegs[i].expr,1,*pv,(const PINEx **)pqr,nqr,NULL,0,ses))!=RC_OK) {if (rc==RC_NORESOURCES) break; pv->setError(); rc=RC_OK; continue;}
+			if ((sortSegs[i].flags&ORDER_EXPR)!=0 && (rc=Expr::eval(&sortSegs[i].expr,1,*pv,pqr,nqr,NULL,0,qx->ses))!=RC_OK) 
+				{if (rc==RC_NORESOURCES) break; pv->setError(); rc=RC_OK; continue;}
 			switch (pv->type) {
 			case VT_ERROR: if ((sortSegs[i].flags&(ORD_NULLS_BEFORE|ORD_NULLS_AFTER))==0) continue; break;
 			case VT_ARRAY: case VT_COLLECTION:
 				switch (sortSegs[i].aggop) {
-				case OP_ALL:
+				case OP_ALL: case OP_HISTOGRAM:
 					if ((av=freeAV)!=NULL) freeAV=av->prev;
 					else if ((av=pinMem.alloc<ArrayVal>())==NULL) {rc=RC_NORESOURCES; break;} //???
 					av->idx=0; av->vidx=index[i]; av->lPref=sortSegs[i].lPref; av->prev=avs; avs=av;
@@ -233,7 +246,7 @@ RC Sort::sort(ulong nAbort)
 					rc=cv!=NULL?copyV(*cv,*pv,&pinMem):RC_CORRUPTED; if (nav!=NULL) nav->destroy(); 
 					break;
 				default:
-					{AggAcc ag((ExprOp)sortSegs[i].aggop,0,&pinMem); unsigned j=0;	// prefix? flags?
+					{AggAcc ag((ExprOp)sortSegs[i].aggop,0,&pinMem,NULL); unsigned j=0;	// prefix? flags?
 					for (const Value *cv=pv->type==VT_ARRAY?pv->varray:pv->nav->navigate(GO_FIRST); cv!=NULL; cv=pv->type==VT_COLLECTION?pv->nav->navigate(GO_NEXT):++j<pv->length?&pv->varray[j]:(const Value *)0) ag.next(*cv);
 					freeV(*pv); if (ag.result(*pv)!=RC_OK) {pv->setError(); continue;}
 					} break;
@@ -270,11 +283,11 @@ RC Sort::sort(ulong nAbort)
 				if (!fNext) {pinMem.truncate(mrk2); break;}
 				if (nRunPins>=lPins) {
 					lPins=lPins==0?256:lPins*2; if (memUsed+(lPins-nRunPins)*sizeof(EncPINRef*)>peakSortMem) lPins=ulong((peakSortMem-memUsed)/sizeof(EncPINRef*))+nRunPins+1;
-					if ((pins=(EncPINRef**)ses->realloc(pins,lPins*sizeof(EncPINRef*)))!=NULL) memUsed+=(lPins-nRunPins)*sizeof(byte*); else {rc=RC_NORESOURCES; break;}
+					if ((pins=(EncPINRef**)qx->ses->realloc(pins,lPins*sizeof(EncPINRef*)))!=NULL) memUsed+=(lPins-nRunPins)*sizeof(byte*); else {rc=RC_NORESOURCES; break;}
 				}
 				pins[nRunPins++]=ep;
 				if (memUsed>peakSortMem || nRunPins*(sizeof(EncPINRef*)+sizeof(EncPINRef)+nValues*sizeof(Value))>maxSortMem) {
-					if (nRunPins>=2) quickSort(nRunPins); assert((mode&QO_UNIQUE)==0);
+					if (nRunPins>=2) quickSort(nRunPins); assert((qflags&QO_UNIQUE)==0);
 					nAllPins+=nRunPins; fRepeat=false; if ((rc=writeRun(nRunPins,memUsed))!=RC_OK) break;
 					nRunPins=0; pinMem.release();		// vals ???????????
 				}
@@ -283,8 +296,8 @@ RC Sort::sort(ulong nAbort)
 			if (rc!=RC_OK) break;
 		}
 	}
-	delete queryOp; const_cast<QueryOp*&>(this->queryOp)=NULL;
-	for (unsigned i=1; i<nqr; i++) {pqr[i]->~PINEx(); ses->free((void*)pqr[i]);}
+	queryOp->release(); //delete queryOp; const_cast<QueryOp*&>(this->queryOp)=NULL;
+	for (unsigned i=1; i<nqr; i++) {pqr[i]->~PINEx(); qx->ses->free((void*)pqr[i]);}
 	if (rc==RC_EOF && (nAllPins<=nRunPins||(rc=prepMerge())==RC_OK||rc==RC_EOF)) {rc=RC_OK; idx=0;} else {nAllPins=0; pinMem.release();}
 	return rc;
 }
@@ -547,15 +560,15 @@ public:
 	// if new,delete created
 	InRun() : esFile(NULL),runid(INVALID_RUN),sort(NULL),remItems(0),page(NULL),pos(NULL),bTemp(false),ep(NULL),buf(NULL) {}
 
-	~InRun() {term(); if (buf!=NULL) sort->ses->free(buf);}
+	~InRun() {term(); if (buf!=NULL) sort->qx->ses->free(buf);}
 
 	RC init(ExtSortFile *es,Sort *s) {
 		esFile=es; sort=s;
-		buf=(byte*)s->ses->memalign(sizeof(EncPINRef*),sizeof(EncPINRef)+s->nValues*sizeof(Value));
+		buf=(byte*)s->qx->ses->memalign(sizeof(EncPINRef*),sizeof(EncPINRef)+s->nValues*sizeof(Value));
 #if defined(__x86_64__) || defined(IA64) || defined(_M_X64) || defined(_M_IA64)
 		assert((((ptrdiff_t)buf)&1)==0);
 #endif
-		return buf!=NULL&&(page=(byte*)s->ses->malloc(esFile->pageLen()))!=NULL?RC_OK:RC_NORESOURCES;
+		return buf!=NULL&&(page=(byte*)s->qx->ses->malloc(esFile->pageLen()))!=NULL?RC_OK:RC_NORESOURCES;
 	}
 	void setRun(RunID r, bool bTempRun) {
 		// Can change run
@@ -581,7 +594,7 @@ public:
 			}
 			ep=NULL;
 		}
-		if (page!=NULL) sort->ses->free((byte*)page);
+		if (page!=NULL) sort->qx->ses->free((byte*)page);
 	}
 
 	bool next() {
@@ -624,7 +637,7 @@ public:
 			ep=(EncPINRef*)buf; memcpy(ep,hdr,sizeof(uint16_t)+1+hdr->lref);
 			Value *pv=(Value*)getValues(ep);
 			for (unsigned i=0; i<sort->nValues; i++,pv++)
-				if ((rc=MVStoreKernel::deserialize(*pv,pos,end,sort->ses,false))!=RC_OK) break;
+				if ((rc=MVStoreKernel::deserialize(*pv,pos,end,sort->qx->ses,false))!=RC_OK) break;
 		}
 		pos=end; remItems--;
 		return rc==RC_OK;
@@ -641,13 +654,13 @@ RC Sort::prepMerge() {
 	assert(esFile!=NULL && esRuns==NULL && esOutRun!=NULL);
 	
 	idx=0; curRun=~0u;
-	ses->free(pins); pins=NULL; pinMem.release(); //Not needed for ext sort
+	qx->ses->free(pins); pins=NULL; pinMem.release(); //Not needed for ext sort
 	assert(maxSortMem%esFile->pageLen()==0);
 
 	ulong maxMerge = (ulong)(maxSortMem/esFile->pageLen())-1;  assert(maxMerge>1);
 
 	nIns=nTtlRuns>maxMerge?maxMerge:nTtlRuns;	
-	if ((esRuns=new(ses) InRun[nIns])==NULL) return RC_NORESOURCES;
+	if ((esRuns=new(qx->ses) InRun[nIns])==NULL) return RC_NORESOURCES;
 	for (r=0;r<nIns;r++) {rc=esRuns[r].init(esFile,this); if (rc!=RC_OK) return rc;}
 
 	ulong firstLiveRun=0; ulong nActiveRuns=nTtlRuns;
@@ -710,8 +723,8 @@ RC Sort::esnext(PINEx& qr)
 
 RC Sort::writeRun(ulong nRunPins,size_t& mUsed)
 {
-	if (esFile==NULL) esFile=new(ses) ExtSortFile(ses);
-	if (esOutRun==NULL) esOutRun=new(ses) OutRun(esFile,nValues);
+	if (esFile==NULL) esFile=new(qx->ses) ExtSortFile(qx->ses);
+	if (esOutRun==NULL) esOutRun=new(qx->ses) OutRun(esFile,nValues);
 
 	// dump sorted pins into run
 	esOutRun->beginRun(); RC rc;
@@ -729,20 +742,20 @@ void Sort::esCleanup()
 
 RC Sort::next(const PINEx *skip)
 {
-	res->cleanup(); *res=PIN::defPID; RC rc=RC_OK;
+	if (res!=NULL) {res->cleanup(); *res=PIN::defPID;} RC rc=RC_OK;
 	if ((state&QST_INIT)!=0) {
 		state&=~QST_INIT; assert(memUsed==0 && nAllPins==0 && pins==NULL && esRuns==NULL);
-//		size_t minMem=ses->getStore()->fileMgr->getPageSize()*4;
+//		size_t minMem=qx->ses->getStore()->fileMgr->getPageSize()*4;
 //		peakSortMem=max(peak,minMem); maxSortMem=max(avg,minMem);
-		if ((rc=sort())!=RC_OK||(rc=ses->testAbortQ())!=RC_OK) {state|=QST_EOF|QST_BOF; return rc;}
+		if ((rc=sort())!=RC_OK||(rc=qx->ses->testAbortQ())!=RC_OK) {state|=QST_EOF|QST_BOF; return rc;}
 		state|=nAllPins<=1?QST_EOF|QST_BOF:QST_BOF; idx=0; if (nAllPins==0) return RC_EOF;
 		if (nSkip!=0) {
 			if (nSkip>=nAllPins) {nSkip-=(ulong)nAllPins; idx=nAllPins-1; state|=QST_EOF; return RC_EOF;}
 			if (pins!=NULL) idx=nSkip;
 			else {
-				PINEx dm(ses); assert(esFile!=NULL);
+				PINEx dm(qx->ses); assert(esFile!=NULL);
 				for(ulong i=0; i<nSkip; i++) {
-					if ((rc=esnext(dm))!=RC_OK||(rc=ses->testAbortQ())!=RC_OK) return rc;
+					if ((rc=esnext(dm))!=RC_OK||(rc=qx->ses->testAbortQ())!=RC_OK) return rc;
 					dm.cleanup();
 				}
 			}
@@ -775,85 +788,81 @@ RC Sort::next(const PINEx *skip)
 	} else if (esRuns!=NULL) {
 		if ((rc=esnext(*res))!=RC_OK) return rc;
 	} else return RC_EOF;
-	return ses->testAbortQ();
+	return qx->ses->testAbortQ();
 }
 
 RC Sort::rewind()
 {
-	RC rc; idx=0; state|=QST_BOF; if (nAllPins>1) state&=~QST_EOF;
+	RC rc; idx=0;
 	if (esRuns!=NULL) for (ulong i=0; i<nIns; i++) if ((rc=esRuns[i].rewind())!=RC_OK) return rc;
-	return RC_OK;
+	state|=QST_BOF; if (nAllPins>1) state&=~QST_EOF; return RC_OK;
 }
 
 RC Sort::count(uint64_t& cnt,ulong nAbort)
 {
 	if (queryOp!=NULL) {
-		QODescr qop; RC rc;
-		if ((mode&QO_VUNIQUE)!=0 || (mode&QO_UNIQUE)!=0 && (queryOp->getOpDescr(qop),qop.flags&QO_UNIQUE)==0) {
+		RC rc;
+		if ((qflags&QO_VUNIQUE)!=0 || (qflags&QO_UNIQUE)!=0 && (queryOp->getQFlags()&QO_UNIQUE)==0) {
 			if ((rc=sort(nAbort))!=RC_OK) {cnt=~0ULL; return rc;}
 		} else {
 			bool fCheck=false;
 			for (unsigned i=0; i<nSegs && index[i]!=~0u; i++) if ((sortSegs[i].flags&(ORD_NULLS_BEFORE|ORD_NULLS_AFTER))==0) {fCheck=true; break;}
 			if (!fCheck) return queryOp->count(cnt,nAbort);
-			PINEx qr(ses); queryOp->connect(&qr); RC rc=RC_OK,rc2; nAllPins=0; Value *vals=NULL; SubAlloc::SubMark mrk; pinMem.mark(mrk);
+
+			PINEx qr(qx->ses); RC rc=RC_OK,rc2; nAllPins=0; Value *vals=NULL; SubAlloc::SubMark mrk; pinMem.mark(mrk);
+			unsigned nqr=queryOp->getNOuts(); PINEx **pqr=(PINEx**)alloca(nqr*sizeof(PINEx*)); if (pqr==NULL) return RC_NORESOURCES;
+			for (unsigned i=1; i<nqr; i++) if ((pqr[i]=new(qx->ses) PINEx(qx->ses))==NULL) return RC_NORESOURCES;
+			pqr[0]=&qr; queryOp->connect(pqr,nqr);
 			for (; rc==RC_OK && (rc=queryOp->next())==RC_OK; qr.cleanup()) {
-				if ((rc2=ses->testAbortQ())!=RC_OK) {rc=rc2; break;}
+				if ((rc2=qx->ses->testAbortQ())!=RC_OK) {rc=rc2; break;}
 				if (nAbort!=~0ul && nAllPins+1>nAbort) {rc=RC_TIMEOUT; break;}
 				if (vals==NULL) {
 					EncPINRef *ep=storeSortData(qr,pinMem); if (ep==NULL) {cnt=~0ULL; return RC_NORESOURCES;}
 					vals=(Value*)getValues(ep); pinMem.mark(mrk);
 				}
-				if (nPropIDs!=0) {
-					for (unsigned i=0; i<nPropIDs; i++) vals[i].setError(propIDs[i]);
-					if ((rc=queryOp->getData(qr,vals,nPropIDs,NULL,&pinMem))!=RC_OK) break;
-				}
-				bool fSkip=true;
+				if (nPls!=0 && (rc=getData(pqr,nqr,pls,nPls,vals,&pinMem))!=RC_OK) break;
+				bool fSkip=true; PINEx *pp=&qr;
 				for (unsigned i=0; fSkip && i<nSegs; i++) {
 					assert(index[i]!=~0u); Value *pv=&vals[index[i]];
-					if ((sortSegs[i].flags&ORDER_EXPR)==0) {if (sortSegs[i].pid==PROP_SPEC_ANY) {pv->set(qr.degree); fSkip=false; break;}}
-					else {
-						const PINEx *pp=&qr; 
-						if ((rc=Expr::eval(&sortSegs[i].expr,1,*pv,&pp,1,NULL,0,ses))!=RC_OK) {if (rc==RC_NORESOURCES) {cnt=~0ULL; return rc;} continue;}
-					}
+					if ((sortSegs[i].flags&ORDER_EXPR)!=0 && (rc=Expr::eval(&sortSegs[i].expr,1,*pv,&pp,1,NULL,0,qx->ses))!=RC_OK) 
+						{if (rc==RC_NORESOURCES) {cnt=~0ULL; return rc;} else continue;}
 					if (pv->type!=VT_ERROR) fSkip=false;
 				}
 				if (!fSkip) nAllPins++; pinMem.truncate(mrk);
 			}
-			delete queryOp; const_cast<QueryOp*&>(this->queryOp)=NULL; pinMem.release();
+			for (unsigned i=1; i<nqr; i++) {pqr[i]->~PINEx(); qx->ses->free((void*)pqr[i]);}
+			pinMem.release(); queryOp->release();
 		}
 	}
 	cnt=nAllPins; return RC_OK;
 }
 
-RC Sort::loadData(PINEx& qr,Value *pv,unsigned nv,MemAlloc *ma,ElementID eid)
+RC Sort::loadData(PINEx& qr,Value *pv,unsigned nv,ElementID,bool fSort,MemAlloc *ma)
 {
-	if (nPropIDs==0) return RC_NOTFOUND;
+	if (nValues==0) return RC_NOTFOUND;
 	RC rc=RC_OK; assert(pins!=NULL || curRun<nIns);
 	const Value *vals=getValues(pins!=NULL?pins[idx]:esRuns[curRun].top());
 	if (vals==NULL) rc=RC_NOTFOUND;
-	else if (pv==NULL || nv==0) {qr.props=vals; qr.nProps=nPropIDs; qr.mode&=~PINEX_DESTROY;}
+	else if (pv==NULL || nv==0) qr.setProps(vals,nValues);
+	else if (fSort) for (unsigned i=0,j=min((ulong)nv,nSegs); i<j; i++) {if ((rc=copyV(vals[index[i]],pv[i],qx->ses))!=RC_OK) break;}
+	else if (nPls==0) rc=RC_NOTFOUND;
 	else for (ulong i=0; rc==RC_OK && i<nv; i++) for (unsigned j=0; ;j++)	// BS::find???
-		if (j>=nPropIDs) {pv[i].setError(pv[i].property); break;}
-		else if (propIDs[j]==pv[i].property) {
+		if (j>=pls[0].nProps) {pv[i].setError(pv[i].property); break;}
+		else if (pls[0].props[j]==pv[i].property) {
 			if (ma==NULL) {pv[i]=vals[j]; pv[i].flags=NO_HEAP;} else rc=copyV(vals[j],pv[i],ma);
 			break;
 		}
 	return rc;
 }
 
+const Value *Sort::getvalues() const
+{
+	return getValues(pins!=NULL?pins[idx]:esRuns[curRun].top());
+}
+
 void Sort::unique(bool f)
 {
-	if (f) mode|=QO_UNIQUE; else {mode&=~QO_UNIQUE; if (queryOp!=NULL && nPropIDs!=0) queryOp->unique(f);}
-}
-
-void Sort::reorder(bool)
-{
-}
-
-void Sort::getOpDescr(QODescr& qop)
-{
-	if (queryOp!=NULL) {queryOp->getOpDescr(qop); qop.flags&=~(QO_STREAM|QO_ALLPROPS); qop.level++;}
-	qop.sort=sortSegs; qop.nSegs=nSegs; if (nPropIDs==0) qop.flags|=QO_PIDSORT|(mode&QO_UNIQUE);
+	if (f) qflags|=QO_UNIQUE; else {qflags&=~QO_UNIQUE; if (queryOp!=NULL && nValues!=0) queryOp->unique(f);}
 }
 
 void Sort::print(SOutCtx& buf,int level) const
@@ -863,10 +872,14 @@ void Sort::print(SOutCtx& buf,int level) const
 	else for (unsigned i=0; i<nSegs; i++) {
 		const OrderSegQ &os=sortSegs[i]; if (i!=0) buf.append(", ",2);
 		if ((os.flags&ORDER_EXPR)!=0) os.expr->render(0,buf);
-		else if (os.pid==PROP_SPEC_ANY) buf.append("#rank",5);
 		else buf.renderName(os.pid);
 		// flags!!!
 		// var
 	}
 	buf.append("\n",1); if (queryOp!=NULL) queryOp->print(buf,level+1);
+}
+
+RC Sort::release()
+{
+	return RC_OK;
 }

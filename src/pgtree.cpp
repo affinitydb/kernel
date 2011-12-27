@@ -529,10 +529,13 @@ RC TreePageMgr::update(PBlock *pb,size_t len,ulong info,const byte *rec,size_t l
 						report(MSG_ERROR,"TreePageMgr::update MERGE: not enough space, page %08X\n",tp->hdr.pageID);
 						return RC_PAGEFULL;
 					}
-					if (tp->info.nEntries==0 && tp2->info.lPrefix!=0) {
-						tp->info.lPrefix=tp2->info.lPrefix;
-						if (tp->info.fmt.isFixedLenKey()) tp->info.prefix=tp2->info.prefix;
-						else tp->store((byte*)tp2+((PagePtr*)&tp2->info.prefix)->offset,((PagePtr*)&tp2->info.prefix)->len,*(PagePtr*)&tp->info.prefix);
+					if (tp->info.nEntries==0) {
+						if (fVarKey && tp->info.lPrefix!=0) {tp->info.freeSpaceLength+=tp->info.lPrefix; tp->info.lPrefix=0;}
+						if (tp2->info.lPrefix!=0) {
+							tp->info.lPrefix=tp2->info.lPrefix;
+							if (tp->info.fmt.isFixedLenKey()) tp->info.prefix=tp2->info.prefix;
+							else tp->store((byte*)tp2+((PagePtr*)&tp2->info.prefix)->offset,((PagePtr*)&tp2->info.prefix)->len,*(PagePtr*)&tp->info.prefix);
+						}
 					}
 					if (fVarSub) {
 						if (tp->info.nEntries==0) {

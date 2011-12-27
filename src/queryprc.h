@@ -146,6 +146,7 @@ class Cursor;
 
 class QueryPrc
 {
+	RC		loadProps(PINEx *pcb,unsigned mode,const PropertyID *pids=NULL,unsigned nPids=0);
 	RC		loadV(Value& v,ulong pid,const PINEx& cb,ulong mode,MemAlloc *ma,ulong eid=STORE_COLLECTION_ID);
 	RC		loadVH(Value& v,const HeapPageMgr::HeapV *hprop,const PINEx& cb,ulong mode,MemAlloc *ma,ulong eid=STORE_COLLECTION_ID);
 	RC		loadVTx(Value& v,const HeapPageMgr::HeapV *hprop,const PINEx& cb,ulong mode,MemAlloc *ma,ulong eid=STORE_COLLECTION_ID);
@@ -157,15 +158,14 @@ class QueryPrc
 	bool	checkRef(const Value& val,PIN *const *pins,unsigned nPins);
 	RC		makeRoom(PIN *pin,ushort lxtab,PBlock *pb,Session *ses,size_t reserve);
 	RC		rename(ChangeInfo& inf,PropertyID pid,ulong flags,bool fSync);
-	bool	condSatisfied(const class Expr *const *exprs,ulong nExp,const PINEx **vars,unsigned nVars,const Value *pars,unsigned nPars,MemAlloc *ma,bool fIgnore=false);
 	RC		checkLockAndACL(PINEx& qr,TVOp tvo,QueryOp *qop=NULL);
 	RC		checkACLs(PINEx& cb,IdentityID iid,TVOp tvo,ulong flags=0,bool fProp=true);
 	RC		checkACLs(const PINEx *pin,PINEx& cb,IdentityID iid,TVOp tvo,ulong flags=0,bool fProp=true);
 	RC		checkACL(const Value&,PINEx&,IdentityID,uint8_t,const RefTrace*,bool=true);
 	RC		getRefValues(const PID& id,Value *&vals,ulong& nValues,ulong mode,PINEx& cb);
-	RC		apply(Session *ses,STMT_OP op,PINEx& qr,const Value *values,unsigned nValues,unsigned mode,PIN *pin=NULL,const Value *params=NULL,unsigned nParams=0);
+	RC		apply(Session *ses,STMT_OP op,PINEx& qr,const Value *values,unsigned nValues,unsigned mode,const ValueV& params,PIN *pin=NULL);
 	RC		count(QueryOp *qop,uint64_t& cnt,unsigned long nAbort,const OrderSegQ *os=NULL,unsigned nos=0);
-	RC		eval(Session *ses,const Value *pv,Value& res,const PINEx **vars,ulong nVars,const Value *params,unsigned nParams,MemAlloc *ma,bool fInsert);
+	RC		eval(Session *ses,const Value *pv,Value& res,PINEx **vars,ulong nVars,const ValueV *params,unsigned nParams,MemAlloc *ma,bool fInsert);
 
 	size_t	splitLength(const Value *pv);
 	RC		estimateLength(const Value& v,size_t& res,ulong mode,size_t threshold,MemAlloc *ma,PageID pageID=INVALID_PAGEID,size_t *rlen=NULL);
@@ -178,16 +178,19 @@ private:
 	IStoreNotification	*const	notification;
 	StoreCtx			*const	ctx;
 	size_t				bigThreshold;
+	PropertyID			*calcProps;
+	unsigned			nCalcProps;
+	RWLock				cPropLock;
 public:
 	QueryPrc(StoreCtx *,IStoreNotification *notItf);
 
-	RC		loadPIN(Session *ses,const PID& id,PIN *&pin,unsigned mode=0,PINEx *pcb=NULL,MemAlloc *ma=NULL,VersionID=STORE_CURRENT_VERSION);
+	RC		loadPIN(Session *ses,const PID& id,PIN *&pin,unsigned mode=0,PINEx *pcb=NULL,VersionID=STORE_CURRENT_VERSION);
 	RC		loadValue(Session *ses,const PID& id,PropertyID pid,ElementID eid,Value& res,ulong mode=0);
 	RC		loadValues(Value *pv,unsigned nv,const PID& id,Session *ses,ulong mode=0);
 	RC		getPINValue(const PID& id,Value& res,ulong mode,Session *ses);
 	RC		diffPIN(const PIN *pin,PINEx& cb,Value *&diffProps,ulong& nDiffProps,Session *ses);
-	RC		modifyPIN(Session *ses,const PID& id,const Value *v,unsigned nv,PINEx *pcb,PIN *pin=NULL,unsigned mode=0,const ElementID *eids=NULL,unsigned* =NULL,const Value *params=NULL,unsigned nParams=0);
-	RC		commitPINs(Session *ses,PIN *const *pins,unsigned nPins,unsigned mode,const AllocCtrl *actrl=NULL,size_t *pSize=NULL,const Value *params=NULL,unsigned nParams=0);
+	RC		commitPINs(Session *ses,PIN *const *pins,unsigned nPins,unsigned mode,const ValueV& params,const AllocCtrl *actrl=NULL,size_t *pSize=NULL);
+	RC		modifyPIN(Session *ses,const PID& id,const Value *v,unsigned nv,PINEx *pcb,const ValueV& params,PIN *pin=NULL,unsigned mode=0,const ElementID *eids=NULL,unsigned* =NULL);
 	RC		deletePINs(Session *ses,const PIN *const *pins,const PID *pids,unsigned nPins,unsigned mode,PINEx *pcb=NULL);
 	RC		undeletePINs(Session *ses,const PID *pids,unsigned nPins);
 	RC		setFlag(Session *ses,const PID& id,PageAddr *addr,ushort flag,bool fReset);
@@ -195,26 +198,11 @@ public:
 	RC		persistData(IStream *stream,const byte *str,size_t lstr,PageAddr& addr,uint64_t&,const PageAddr* =NULL,PBlockP* =NULL);
 	RC		editData(Session *ses,PageAddr &addr,uint64_t& length,const Value&,PBlockP *pbp=NULL,byte *pOld=NULL);
 	RC		deleteData(const PageAddr& addr,PBlockP *pbp=NULL);
-	bool	test(const PINEx *,ClassID,const Value *params=NULL,unsigned nParams=0,bool fIgnore=false);
+	bool	test(PINEx *,ClassID,const ValueV& pars,bool fIgnore=false);
 	RC		transform(const PINEx **vars,ulong nVars,PIN **pins,unsigned nPins,unsigned &nOut,Session*) const;
 	RC		getClassInfo(Session *ses,PIN *pin);
-
-	static	ulong	findPropID(PropertyID *pids,ulong nPids,PropertyID pid) {
-					if (pids==NULL||nPids==0) return 0;
-					for (ulong n=nPids,idx=0;;) {
-						ulong k=n>>1; PropertyID q=pids[idx+k]; if (q==pid) return idx+k;
-						if (q<pid) {idx+=k+1; if ((n-=k+1)==0) return idx;} else if ((n=k)==0) return idx;
-					}}
-	static	bool	merge(PropertyID *&pids,unsigned& nPids,PropertyID *&p2,unsigned np2,MemAlloc *ma) {
-					bool rc=true; PropertyID pid=STORE_INVALID_PROPID;
-					if (pids==NULL) {pids=p2; nPids=np2;} else if (p2!=NULL) {for (unsigned i=0,j=0; j<np2;) {
-						if (i>=nPids || (pid=pids[i])>p2[j]) {
-							unsigned l=j; if (i>=nPids) j=np2; else do j++; while (j<np2 && p2[j]<pid); l=j-l;
-							if ((pids=(PropertyID*)ma->realloc(pids,(nPids+l)*sizeof(PropertyID)))==NULL) {rc=false; break;}
-							if (i<nPids) memmove(&pids[i+l],&pids[i],(nPids-i)*sizeof(PropertyID));
-							memcpy(&pids[i],&p2[j-l],l*sizeof(PropertyID)); i+=l; nPids+=l;
-						} else {++i; if (p2[j]==pid) ++j;}
-					} ma->free(p2);} p2=NULL; return rc;}
+	RC		getCalcPropID(unsigned n,PropertyID& pid);
+	bool	checkCalcPropID(PropertyID pid);
 
 	friend	class	Expr;
 	friend	class	Stmt;
@@ -233,7 +221,7 @@ public:
 	friend	class	MergeOp;
 	friend	class	NestedLoop;
 	friend	class	Filter;
-	friend	class	BodyOp;
+	friend	class	LoadOp;
 	friend	class	TransOp;
 	friend	class	PathOp;
 	friend	class	Sort;

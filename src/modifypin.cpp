@@ -119,7 +119,7 @@ struct ModData : public SubAlloc
 
 };
 
-RC QueryPrc::modifyPIN(Session *ses,const PID& id,const Value *v,unsigned nv,PINEx *pcb,PIN *pin,unsigned mode,const ElementID *eids,unsigned *pNFailed,const Value *params,unsigned nParams)
+RC QueryPrc::modifyPIN(Session *ses,const PID& id,const Value *v,unsigned nv,PINEx *pcb,const ValueV& params,PIN *pin,unsigned mode,const ElementID *eids,unsigned *pNFailed)
 {
 	if (pNFailed!=NULL) *pNFailed=~0u; if (v==NULL || nv==0) return RC_OK;
 	if (id.pid==STORE_INVALID_PID || id.ident==STORE_INVALID_IDENTITY) return RC_NOTFOUND;
@@ -279,11 +279,11 @@ RC QueryPrc::modifyPIN(Session *ses,const PID& id,const Value *v,unsigned nv,PIN
 		switch (pv->type) {
 		default: break;
 		case VT_EXPR: case VT_STMT: if ((pv->meta&META_PROP_EVAL)==0) break;
-		case VT_VARREF: case VT_PARAM: case VT_EXPRTREE:
+		case VT_VARREF: case VT_EXPRTREE:
 			if (op!=OP_SET && !fAdd && op<OP_FIRST_EXPR) return RC_INVPARAM;
 			if (mi==NULL && (mi=md.addMod(pv,n,pi,op))==NULL) return RC_NORESOURCES;
 			if (mi->newV!=NULL) {/*???*/freeV(*mi->newV);} else if ((mi->newV=md.alloc<Value>())==NULL) return RC_NORESOURCES; 	// ????????????????????????????
-			{const PINEx *pp=pcb; rc=eval(ses,pv,*mi->newV,&pp,1,params,nParams,&md,true);}
+			rc=eval(ses,pv,*mi->newV,&pcb,1,&params,1,&md,true);
 			if (rc!=RC_OK) {if (rc!=RC_NOTFOUND || (pv->meta&META_PROP_IFEXIST)==0) return rc; mi->flags|=PM_INVALID; continue;}
 			mi->newV->op=op; mi->newV->property=propID; mi->newV->meta=pv->meta; mi->eltKey=mi->eid=STORE_COLLECTION_ID;
 			flags|=PM_CALCULATED; mi->pv=pv=mi->newV; break;
@@ -966,7 +966,7 @@ RC QueryPrc::modifyPIN(Session *ses,const PID& id,const Value *v,unsigned nv,PIN
 			if (pcb==&cb) cb.pb.release(); else pcb=&cb;
 			cb.pb=newPB; newPB=NULL; cb.hp=(const HeapPageMgr::HeapPage*)cb.pb->getPageBuf();
 			cb.hpin=(const HeapPageMgr::HeapPIN *)cb.hp->getObject(cb.hp->getOffset(newAddr.idx));
-			cb=newAddr; cb.props=NULL; cb.nProps=0; if (pin!=NULL) pin->addr=newAddr;
+			cb=newAddr; cb.properties=NULL; cb.nProperties=0; if (pin!=NULL) pin->addr=newAddr;
 			for (mi=md.list; mi!=NULL; mi=mi->next) if ((mi->pInfo->flags&PM_PROCESSED)==0 && mi->pInfo->hprop!=NULL) {
 				mi->pInfo->hprop=cb.hpin->findProperty(mi->pv->property);
 				mi->pInfo->flags|=PM_PROCESSED; assert(mi->pInfo->hprop!=NULL);

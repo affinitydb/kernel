@@ -120,12 +120,12 @@ using namespace MVStoreKernel;
 
 const static byte tags[VT_ALL] = {
 	0, _V(5), _V(6), _V(7), _V(8), _L(4), _S(9), _D(10), _V(16), _D(11), _D(12), _V(6), _V(6), _L(3), _L(4), _L(3), _V(6),
-	_L(13), _L(13), _L(15), _L(15), _L(15), _L(15), _L(4), _L(4), _L(14), _L(14), _L(14), _L(14), 0, _V(6), 0, 0, 0
+	_L(13), _L(13), _L(15), _L(15), _L(15), _L(15), _L(4), _L(4), _L(14), _L(14), _L(14), _L(14), 0, _V(6), 0, 0
 };
 const static byte types[VT_ALL] = {
 		VT_ERROR, VT_INT, VT_UINT, VT_INT64, VT_UINT64, VT_DECIMAL, VT_FLOAT, VT_DOUBLE, VT_BOOL, VT_DATETIME, VT_INTERVAL, VT_URIID, VT_IDENTITY,
 		VT_STRING, VT_BSTR, VT_URL, VT_ENUM, VT_REFID, VT_REFID, VT_REFIDPROP, VT_REFIDPROP, VT_REFIDELT, VT_REFIDELT,
-		VT_EXPR, VT_STMT, VT_ARRAY, VT_ARRAY, VT_STRUCT, VT_RANGE, VT_ERROR, VT_CURRENT, VT_REF, VT_ERROR, VT_ERROR,
+		VT_EXPR, VT_STMT, VT_ARRAY, VT_ARRAY, VT_STRUCT, VT_RANGE, VT_ERROR, VT_CURRENT, VT_REF, VT_ERROR,
 };
 
 #define	STACK_DEPTH			20
@@ -628,21 +628,20 @@ class ProtoBufStreamOut : public IStreamOut
 	Session		*const	ses;
 	EncodePB			enc;
 	Cursor				*res;
-	const		PIN		*pin;
+	PIN					*pin;
 	Result				result;
 	bool				fRes;
 public:
 	ProtoBufStreamOut(Session *s,Cursor *pr=NULL,ulong md=0) : ses(s),enc(s,md),res(pr),pin(NULL),fRes(false) 
 		{result.rc=RC_OK; result.cnt=0; result.op=MODOP_QUERY;}
-	~ProtoBufStreamOut() {if (res!=NULL) res->destroy(); if (pin!=NULL) ((PIN*)pin)->destroy();}
+	~ProtoBufStreamOut() {if (res!=NULL) res->destroy();}
 	RC next(unsigned char *buf,size_t& lbuf) {
 		if (ses->getStore()->inShutdown()) return RC_SHUTDOWN;
 		size_t left=lbuf; RC rc;
 		while (res!=NULL) {
 			if ((rc=enc.encode(buf+lbuf-left,left))!=RC_TRUE) {res->release(); return rc;}
-			if (pin!=NULL) {((PIN*)pin)->destroy(); pin=NULL;}
-			if ((rc=res->advance(NULL,(PIN**)&pin))!=RC_OK) {res->destroy(); res=NULL; break;}
-			enc.set(pin); result.cnt++;
+			if ((rc=res->advance())!=RC_OK||(rc=res->extract(pin))!=RC_OK) {res->destroy(); res=NULL;}
+			else if (pin!=NULL) {enc.set(pin); result.cnt++;} else {result.cnt=res->getCount(); res->destroy(); res=NULL;}
 		}
 		if (!fRes) {enc.set(&result); fRes=true;} //result.rc=???
 		rc=enc.encode(buf+lbuf-left,left); lbuf-=left;
@@ -1077,7 +1076,7 @@ protected:
 						if (is.idx!=is.pv->length) return RC_CORRUPTED;
 						break;
 					case ST_STMT:
-						try {SInCtx qctx(ses,is.stmt->str,is.stmt->lstr,is.stmt->uids,is.stmt->nUids,SQ_SQL,ma); stmt=NULL; stmt=qctx.parse();}
+						try {SInCtx qctx(ses,is.stmt->str,is.stmt->lstr,is.stmt->uids,is.stmt->nUids,SQ_SQL,ma); stmt=NULL; stmt=qctx.parseStmt();}
 						catch (SynErr) {if (stmt!=NULL) stmt->destroy(); if (sidx==1) releaseMem(); return RC_SYNTAX;}
 						catch (RC rc) {if (stmt!=NULL) stmt->destroy(); if (sidx==1) releaseMem(); return rc;}
 						// mark and release memory (save in StmtIn)
@@ -1124,7 +1123,7 @@ private:
 	}
 	RC commitPINs() {
 		assert(pins!=NULL && nPins!=0);
-		RC rc=ses->getStore()->queryMgr->commitPINs(ses,pins,nPins,0);		// mode? allocCtrl? params? (pass in stream, special message)
+		RC rc=ses->getStore()->queryMgr->commitPINs(ses,pins,nPins,0,ValueV(NULL,0));		// mode? allocCtrl? params? (pass in stream, special message)
 		if (out!=NULL) {
 			if (rc!=RC_OK) {Result res={rc,nPins,MODOP_INSERT}; rc=resultOut(res);}
 			else for (uint32_t i=0; i<nPins; i++) if ((rc=pinOut(pins[i],pinoi[i]))!=RC_OK) break;
@@ -1134,7 +1133,7 @@ private:
 	RC processPIN() {
 		RC rc=RC_OK; assert(is.op!=MODOP_INSERT);
 		if (is.pin->id.pid==STORE_INVALID_PID || is.pin->id.ident==STORE_INVALID_IDENTITY) rc=RC_INVPARAM;
-		else {PINEx pex(ses,is.pin->id); rc=ses->getStore()->queryMgr->apply(ses,stmtOp[is.op],pex,is.pin->properties,is.pin->nProperties,0);}
+		else {PINEx pex(ses,is.pin->id); rc=ses->getStore()->queryMgr->apply(ses,stmtOp[is.op],pex,is.pin->properties,is.pin->nProperties,MODE_CLASS,ValueV(NULL,0));}
 		if (out!=NULL) {
 			RC rc2=rc==RC_OK?pinOut(is.pin,is.oi):RC_OK;
 			Result res={rc,1,(MODOP)is.op}; rc=resultOut(res);
@@ -1146,9 +1145,11 @@ private:
 	RC process(Stmt *stmt) {
 		RC rc=RC_OK; ICursor *cursor=NULL; Result res={RC_OK,0,modOp[stmt->getOp()]};
 		if ((rc=stmt->execute(out!=NULL&&is.oi.rtt!=RTT_COUNT?&cursor:(ICursor**)0,is.stmt->params,is.stmt->nParams,is.stmt->limit,is.stmt->offset,is.stmt->mode,&res.cnt))==RC_OK && cursor!=NULL) {
-			PIN pin(ses,PIN::defPID,PageAddr::invAddr),*pp=&pin; assert(obuf!=NULL && enc!=NULL);
-			for (; (rc=((Cursor*)cursor)->advance(NULL,is.oi.rtt==RTT_PINS?&pp:(PIN**)0))==RC_OK; res.cnt++) {
-				if (is.oi.rtt!=RTT_PINS) ((Cursor*)cursor)->getPID(const_cast<PID&>(pin.id));
+			assert(obuf!=NULL && enc!=NULL); PIN pin(ses,PIN::defPID,PageAddr::invAddr),*pp=&pin;
+			for (; (rc=((Cursor*)cursor)->advance(is.oi.rtt==RTT_PINS))==RC_OK; res.cnt++) {
+				if (is.oi.rtt!=RTT_PINS) ((Cursor*)cursor)->getPID(pin.id);
+				else if ((rc=((Cursor*)cursor)->extract(pp))!=RC_OK) break;
+				else if (pp==NULL) {res.cnt=cursor->getCount(); break;}
 				if ((rc=pinOut(pp,is.oi))!=RC_OK) break;
 			}
 			cursor->destroy(); if (rc==RC_EOF) rc=RC_OK;
@@ -1216,21 +1217,23 @@ class ServerStreamIn : public ProtoBufStreamIn {
 				switch (type) {
 				default: break;
 				case SRT_INSERT:
-					rc=ses->getStore()->queryMgr->commitPINs(ses,pins,nPins,0);		// mode? allocCtrl? (pass in stream, special message)
+					rc=ses->getStore()->queryMgr->commitPINs(ses,pins,nPins,0,ValueV(NULL,0));		// mode? allocCtrl? (pass in stream, special message)
 					if (str.cb!=NULL) {
 						if (rc!=RC_OK) {Result res={rc,nPins,MODOP_INSERT}; rc=resultOut(res);}
 						else for (uint32_t i=0; i<nPins; i++) if ((rc=pinOut(pins[i],pinoi[i]))!=RC_OK) break;
 					}
 					break;
 				case SRT_PIN:
-					{PINEx pex(ses,pin->id); rc=ses->getStore()->queryMgr->apply(ses,stmtOp[op],pex,pin->properties,pin->nProperties,0);}
+					{PINEx pex(ses,pin->id); rc=ses->getStore()->queryMgr->apply(ses,stmtOp[op],pex,pin->properties,pin->nProperties,MODE_CLASS,ValueV(NULL,0));}
 					if (str.cb!=NULL) {if (rc==RC_OK) pinOut(pin,oi); Result res={rc,1,(MODOP)op}; resultOut(res);}
 					break;
 				case SRT_STMT:
 					if ((rc=stmt->execute(str.cb!=NULL&&oi.rtt!=RTT_COUNT?&cursor:(ICursor**)0,info->params,info->nParams,info->limit,info->offset,info->mode,&nProcessed))==RC_OK && cursor!=NULL) {
 						PIN pin(ses,PIN::defPID,PageAddr::invAddr),*pp=&pin;
-						for (; (rc=((Cursor*)cursor)->advance(NULL,oi.rtt==RTT_PINS?&pp:(PIN**)0))==RC_OK; nProcessed++) {
-							if (oi.rtt!=RTT_PINS) ((Cursor*)cursor)->getPID(const_cast<PID&>(pin.id));
+						for (; (rc=((Cursor*)cursor)->advance(oi.rtt==RTT_PINS))==RC_OK; nProcessed++) {
+							if (oi.rtt!=RTT_PINS) ((Cursor*)cursor)->getPID(pin.id);
+							else if ((rc=((Cursor*)cursor)->extract(pp))!=RC_OK) break;
+							else if (pp==NULL) {nProcessed=cursor->getCount(); break;}
 							if ((rc=pinOut(pp,oi))!=RC_OK) break;
 						}
 						cursor->destroy(); if (rc==RC_EOF) rc=RC_OK;

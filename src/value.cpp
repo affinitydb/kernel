@@ -37,9 +37,7 @@ RC MVStoreKernel::copyV(const Value &from,Value &to,MemAlloc *ma)
 			if (from.nav!=NULL && (ma->getAType()!=SES_HEAP || (v.nav=from.nav->clone())==NULL))
 				{to.setError(from.property); return RC_NORESOURCES;}
 			to.nav=v.nav; to.flags=ma->getAType(); break;
-		case VT_STRUCT:
-			//???
-		case VT_ARRAY:
+		case VT_ARRAY: case VT_STRUCT:
 			assert(from.varray!=NULL && from.length>0);
 			if ((v.varray=(Value*)ma->malloc(from.length*sizeof(Value)))==NULL) {to.setError(from.property); return RC_NORESOURCES;}
 			for (i=0; i<from.length; i++) {
@@ -124,20 +122,17 @@ bool MVStoreKernel::operator==(const Value& lhs, const Value& rhs)
 	case VT_STREAM: return lhs.stream.is==rhs.stream.is;
 	case VT_EXPR: return false;		// ???
 	case VT_STMT: return false;		// ???
-	case VT_ARRAY:
+	case VT_ARRAY: case VT_STRUCT:
 		for (i=0; i<lhs.length; i++) if (lhs.varray[i]!=rhs.varray[i]) return false;
 		break;
 	case VT_COLLECTION:
 		if (lhs.nav->count()!=rhs.nav->count()) return false;
 		// ???
 		return false;
-	case VT_STRUCT:
-		//???
-		break;
 	case VT_EXPRTREE: return *(ExprTree*)lhs.exprt==*(ExprTree*)rhs.exprt;
-	case VT_PARAM: case VT_VARREF:
-		return lhs.refPath.refN==rhs.refPath.refN && lhs.refPath.type==rhs.refPath.type && 
-			(lhs.type==VT_PARAM || lhs.length==rhs.length && lhs.eid==rhs.eid && (lhs.length==0 || lhs.refPath.id==rhs.refPath.id));
+	case VT_VARREF:
+		return lhs.refV.refN==rhs.refV.refN && lhs.refV.type==rhs.refV.type && ((lhs.flags^rhs.flags)&VAR_TYPE_MASK)==0 &&
+			((lhs.flags&VAR_TYPE_MASK)!=0 || lhs.length==rhs.length && lhs.eid==rhs.eid && (lhs.length==0 || lhs.refV.id==rhs.refV.id));
 		break;
 	case VT_RANGE: return lhs.range[0]==rhs.range[0] && lhs.range[1]==rhs.range[1];
 	}
@@ -173,8 +168,8 @@ size_t MVStoreKernel::serSize(const Value& v,bool full)
 	case VT_REFELT: l+=serSize(v.ref.pin->getPID())+mv_len32(v.ref.pid)+mv_len32(v.ref.eid); break;
 	case VT_REFIDELT: l+=serSize(v.refId->id)+mv_len32(v.refId->pid)+mv_len32(v.refId->eid); break;
 	case VT_RANGE: l+=serSize(v.range[0])+serSize(v.range[1]); break;
-	case VT_PARAM: case VT_VARREF:
-		l=5; if (v.length!=0) {l+=mv_len32(v.refPath.id); if (v.eid!=STORE_COLLECTION_ID) l+=mv_len32(v.eid);}
+	case VT_VARREF:
+		l=6; if (v.length!=0) {l+=mv_len32(v.refV.id); if (v.eid!=STORE_COLLECTION_ID) l+=mv_len32(v.eid);}
 		break;
 	case VT_ARRAY:
 		l+=mv_len32(v.length);
@@ -185,7 +180,8 @@ size_t MVStoreKernel::serSize(const Value& v,bool full)
 		for (pv=v.nav->navigate(GO_FIRST); pv!=NULL; pv=v.nav->navigate(GO_NEXT)) l+=mv_len32(pv->eid)+serSize(*pv);
 		break;
 	case VT_STRUCT:
-		//???
+		l+=mv_len32(v.length);
+		for (i=0; i<v.length; i++) l+=mv_len32(v.varray[i].property)+serSize(v.varray[i]);
 		break;
 	case VT_EXPR: l+=((Expr*)v.expr)->serSize(); break;
 	case VT_STMT: l=((Stmt*)v.stmt)->serSize(); l+=1+mv_len32(l); break;
@@ -236,10 +232,10 @@ byte *MVStoreKernel::serialize(const Value& v,byte *buf,bool full)
 	case VT_REFID: buf=serialize(v.id,buf); break;
 	case VT_REFIDPROP: buf=serialize(v.refId->id,buf); mv_enc32(buf,v.refId->pid); break;
 	case VT_REFIDELT:  buf=serialize(v.refId->id,buf); mv_enc32(buf,v.refId->pid); mv_enc32(buf,v.refId->eid); break;
-	case VT_PARAM: case VT_VARREF:
-		*buf++=v.refPath.refN; *buf++=v.length; *buf++=v.refPath.type; 
-		*buf++=byte(v.refPath.flags)|(v.eid!=STORE_COLLECTION_ID?0x80:0);
-		if (v.length!=0) {mv_enc32(buf,v.refPath.id); if (v.eid!=STORE_COLLECTION_ID) mv_enc32(buf,v.eid);}
+	case VT_VARREF:
+		*buf++=v.refV.refN; *buf++=v.length; *buf++=v.refV.type|(v.length!=0&&v.eid!=STORE_COLLECTION_ID?0x80:0); 
+		*buf++=byte(v.refV.flags>>8); *buf++=byte(v.refV.flags);
+		if (v.length!=0) {mv_enc32(buf,v.refV.id); if (v.eid!=STORE_COLLECTION_ID) mv_enc32(buf,v.eid);}
 		break;
 	case VT_ARRAY:
 		mv_enc32(buf,v.length);
@@ -250,7 +246,8 @@ byte *MVStoreKernel::serialize(const Value& v,byte *buf,bool full)
 		for (pv=v.nav->navigate(GO_FIRST); pv!=NULL; pv=v.nav->navigate(GO_NEXT)) {mv_enc32(buf,pv->eid); buf=serialize(*pv,buf);}
 		break;
 	case VT_STRUCT:
-		//???
+		mv_enc32(buf,v.length);
+		for (i=0; i<v.length; i++) {mv_enc32(buf,v.varray[i].property); buf=serialize(v.varray[i],buf);}
 		break;
 	case VT_EXPR:
 		if (v.expr!=NULL) buf=((Expr*)v.expr)->serialize(buf);
@@ -325,13 +322,14 @@ RC MVStoreKernel::deserialize(Value& val,const byte *&buf,const byte *const ebuf
 		CHECK_dec32(buf,rv->pid,ebuf);
 		if (val.type==VT_REFIDELT) CHECK_dec32(buf,rv->eid,ebuf);
 		val.length=1; break;
-	case VT_PARAM: case VT_VARREF:
-		if (ebuf-buf<4) return RC_CORRUPTED;
-		val.refPath.refN=buf[0]; val.length=buf[1]; val.refPath.type=buf[2]; val.refPath.flags=buf[3]; buf+=4;
+	case VT_VARREF:
+		if (ebuf-buf<5) return RC_CORRUPTED;
+		val.refV.refN=buf[0]; val.length=buf[1]; val.refV.type=buf[2];
+		val.refV.flags=buf[3]<<8|buf[4]; buf+=5;
 		if (val.length!=0) {
 			if (val.length>1) return RC_CORRUPTED;
-			CHECK_dec32(buf,val.refPath.id,ebuf);
-			if ((val.refPath.flags&0x80)!=0) {val.refPath.flags&=0x7f; CHECK_dec32(buf,val.eid,ebuf);}
+			CHECK_dec32(buf,val.refV.id,ebuf);
+			if ((val.refV.type&0x80)!=0) {val.refV.type&=0x7f; CHECK_dec32(buf,val.eid,ebuf);}
 		}
 		break;
 	case VT_CURRENT:
@@ -343,9 +341,8 @@ RC MVStoreKernel::deserialize(Value& val,const byte *&buf,const byte *const ebuf
 			(rc=deserialize(*(Value*)&val.range[1],buf,ebuf,ma,fInPlace))!=RC_OK) return rc;
 		break;
 	case VT_ARRAY:
-		CHECK_dec32(buf,val.length,ebuf);
-		if (val.length==0) val.varray=NULL;
-		else if ((val.varray=(Value*)ma->malloc(sizeof(Value)*val.length))==NULL) return RC_NORESOURCES;
+		CHECK_dec32(buf,val.length,ebuf); if (val.length==0) return RC_CORRUPTED;
+		if ((val.varray=(Value*)ma->malloc(sizeof(Value)*val.length))==NULL) return RC_NORESOURCES;
 		else for (i=0; i<val.length; i++) {
 			uint32_t eid; CHECK_dec32(buf,eid,ebuf);
 			if ((rc=deserialize(*(Value*)&val.varray[i],buf,ebuf,ma,fInPlace))!=RC_OK) return rc;
@@ -353,8 +350,14 @@ RC MVStoreKernel::deserialize(Value& val,const byte *&buf,const byte *const ebuf
 		}
 		val.flags=ma->getAType(); break;
 	case VT_STRUCT:
-		//???
-		break;
+		CHECK_dec32(buf,val.length,ebuf); if (val.length==0) return RC_CORRUPTED;
+		if ((val.varray=(Value*)ma->malloc(sizeof(Value)*val.length))==NULL) return RC_NORESOURCES;
+		else for (i=0; i<val.length; i++) {
+			uint32_t propID; CHECK_dec32(buf,propID,ebuf);
+			if ((rc=deserialize(*(Value*)&val.varray[i],buf,ebuf,ma,fInPlace))!=RC_OK) return rc;
+			((Value*)&val.varray[i])->property=propID;
+		}
+		val.flags=ma->getAType(); break;
 	case VT_EXPR:
 		if ((rc=Expr::deserialize(exp,buf,ebuf,ma))!=RC_OK) return rc;
 		val.expr=exp; val.flags=ma->getAType(); val.length=1; break;
@@ -476,7 +479,7 @@ int MVStoreKernel::cmpConv(const Value& arg,const Value& arg2,ulong u)
 
 RC MVStoreKernel::convV(const Value& src,Value& dst,ValueType type,unsigned mode)
 {
-	int l; char buf[256],*p; Value w; RC rc; TIMESTAMP ts; int64_t itv; URI *uri; Identity *ident;
+	int l; char buf[256],*p; Value w; RC rc; TIMESTAMP ts; int64_t itv; URI *uri; Identity *ident; IdentityID iid; uint32_t ui;
 	for (const Value *ps=&src;;) {if (ps->type==type) {
 noconv:
 		if (ps!=&dst) {
@@ -503,7 +506,9 @@ noconv:
 				if ((p=(char*)malloc(l+1,SES_HEAP))==NULL) return RC_NORESOURCES;
 				memcpy(p,buf,l+1); dst.set(p,(unsigned long)l); dst.flags=SES_HEAP; break;
 			case VT_UINT:
-				if ((l=sprintf(buf,"%u",ps->ui))<0) return RC_INTERNAL;
+				ui=ps->ui;
+			ui_to_str:
+				if ((l=sprintf(buf,"%u",ui))<0) return RC_INTERNAL;
 				if ((p=(char*)malloc(l+1,SES_HEAP))==NULL) return RC_NORESOURCES;
 				memcpy(p,buf,l+1); dst.set(p,(unsigned long)l); dst.flags=SES_HEAP; break;
 			case VT_INT64:
@@ -531,7 +536,12 @@ noconv:
 				if (dst.type!=type) {ps=&dst; continue;}
 				break;
 			case VT_CURRENT:
-				getTimestamp(ts); goto dt_to_str;	//???
+				switch (ps->i) {
+				default: return RC_CORRUPTED;
+				case CVT_TIMESTAMP: getTimestamp(ts); goto dt_to_str;
+				case CVT_USER: iid=Session::getSession()->getIdentity(); goto ident_to_str;
+				case CVT_STORE: ui=StoreCtx::get()->storeID; goto ui_to_str;
+				}
 			case VT_DATETIME:
 				ts=ps->ui64;
 			dt_to_str:
@@ -549,8 +559,10 @@ noconv:
 				else {dst.set(strdup(uri->getName(),Session::getSession())); dst.flags=SES_HEAP; uri->release();}
 				break;
 			case VT_IDENTITY:
-				if (ps->iid==STORE_INVALID_IDENTITY) dst.set("",0);
-				else if ((ident=(Identity*)StoreCtx::get()->identMgr->ObjMgr::find(ps->iid))==NULL) return RC_NOTFOUND;
+				iid=ps->iid;
+			ident_to_str:
+				if (iid==STORE_INVALID_IDENTITY) dst.set("",0);
+				else if ((ident=(Identity*)StoreCtx::get()->identMgr->ObjMgr::find(iid))==NULL) return RC_NOTFOUND;
 				else {dst.set(strdup(ident->getName(),Session::getSession())); dst.flags=SES_HEAP; ident->release();}
 				break;
 			case VT_STMT:
@@ -815,7 +827,7 @@ noconv:
 			if (ps->type==VT_STRING) {
 				Session *ses=Session::getSession(); RC rc=RC_OK;
 				SInCtx in(ses,ps->str,ps->length,NULL,0,(Session::getSession()->getItf()&ITF_SPARQL)!=0?SQ_SPARQL:SQ_SQL);
-				try {Stmt *st=in.parse(); if (&src==&dst) freeV(dst); dst.set(st); dst.flags=SES_HEAP; return RC_OK;}
+				try {Stmt *st=in.parseStmt(); if (&src==&dst) freeV(dst); dst.set(st); dst.flags=SES_HEAP; return RC_OK;}
 				catch (SynErr) {rc=RC_SYNTAX;} catch (RC rc2) {rc=rc2;}
 				return rc;
 			}
@@ -839,7 +851,7 @@ noconv:
 
 RC MVStoreKernel::derefValue(const Value &src,Value &dst,Session *ses)
 {
-	PIN *pin; const RefVID *refId; 
+	PIN *pin; const RefVID *refId; const Value *cv;
 	RC rc=RC_OK; HEAP_TYPE save=(HEAP_TYPE)(src.flags&HEAP_TYPE_MASK);
 	switch (src.type) {
 	default: return RC_TYPE;
@@ -848,7 +860,7 @@ RC MVStoreKernel::derefValue(const Value &src,Value &dst,Session *ses)
 		if ((rc=pin->getPINValue(dst,ses))==RC_OK && &src==&dst && save!=NO_HEAP) pin->destroy();
 		break;
 	case VT_REFID:
-		rc=ses!=NULL?ses->getStore()->queryMgr->getPINValue(src.id,dst,0,ses):RC_NOSESSION; 	break;
+		rc=ses!=NULL?ses->getStore()->queryMgr->getPINValue(src.id,dst,0,ses):RC_NOSESSION; break;
 	case VT_REFPROP:
 	case VT_REFELT:
 		pin=(PIN*)src.ref.pin;
@@ -860,6 +872,10 @@ RC MVStoreKernel::derefValue(const Value &src,Value &dst,Session *ses)
 		refId=src.refId;
 		rc=ses!=NULL?ses->getStore()->queryMgr->loadValue(ses,refId->id,refId->pid,src.type==VT_REFIDELT?refId->eid:STORE_COLLECTION_ID,dst,0):RC_NOSESSION;
 		if (rc==RC_OK && &src==&dst && save!=NO_HEAP) if (save==SES_HEAP) ses->free((void*)refId); else free((void*)refId,save);
+		break;
+	case VT_STRUCT:
+		rc=(cv=BIN<Value,PropertyID,ValCmp,uint32_t>::find(PROP_SPEC_REFID,src.varray,src.length))==NULL?RC_TYPE:
+								ses!=NULL?ses->getStore()->queryMgr->getPINValue(cv->id,dst,0,ses):RC_NOSESSION;
 		break;
 	}
 	return rc;
@@ -909,7 +925,7 @@ void MVStoreKernel::freeV0(Value& v)
 		case VT_STRING: case VT_BSTR: case VT_URL:
 			if (v.length!=0 || (void*)v.str!=(void*)&v.length) free((char*)v.str,allc); break;
 		case VT_REFIDPROP: case VT_REFIDELT: free((RefVID*)v.refId,allc); break;
-		case VT_ARRAY:
+		case VT_ARRAY: case VT_STRUCT:
 			if (v.varray!=NULL) {
 				for (ulong i=0; i<v.length; i++) freeV(const_cast<Value&>(v.varray[i]));
 				free(const_cast<Value*>(v.varray),allc);
@@ -925,9 +941,6 @@ void MVStoreKernel::freeV0(Value& v)
 		case VT_STREAM: if (v.stream.is!=NULL) v.stream.is->destroy(); break;
 		case VT_STMT: if (v.stmt!=NULL) v.stmt->destroy(); break;
 		case VT_COLLECTION: if (v.nav!=NULL) v.nav->destroy(); break;
-		case VT_STRUCT:
-			//????
-			break;
 		case VT_EXPR: free(v.expr,allc); break;
 		}
 	}  catch (RC) {} catch (...) {report(MSG_ERROR,"Exception in freeV(...)\n");}

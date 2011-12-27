@@ -117,6 +117,7 @@ public:
 };
 
 class ClassPropIndex;
+class Expr;
 
 struct ClassRef {
 	const	ClassID		cid;
@@ -174,8 +175,8 @@ private:
 	const ClassRef	*find(ClassID cid,const PropertyID *pids,ulong npids) const;
 	RC				remove(ClassID cid,const PropertyID *pids,ulong npids);
 	RC				insert(ClassID cid,const Stmt *qry,ulong flags,ClassRef *&cr,ulong notifications,const ClassRef **&pc,ulong& n);
-	RC				classify(const PINEx *pe,ClassResult& res);
-	RC				classify(const ClassRef *cp,const PINEx *pin,ClassResult& res);
+	RC				classify(PINEx *pe,ClassResult& res);
+	RC				classify(const ClassRef *cp,PINEx *pin,ClassResult& res);
 	template<typename T> class it {
 		const	ClassPropIndex&	pidx;
 		const	T				*pt;
@@ -293,13 +294,13 @@ public:
 	Classifier(StoreCtx *ct,ulong timeout,ulong hashSize=DEFAULT_CLASS_HASH_SIZE,ulong cacheSize=DEFAULT_CLASS_CACHE_SIZE);
 	RC					initStoreMaps(Session *ses);
 	RC					restoreXPropID(Session *ses);
-	RC					classify(const PINEx *pin,ClassResult& res);
+	RC					classify(PINEx *pin,ClassResult& res);
 	RC					enable(Session *ses,class Class *cls,ulong notifications);
 	void				disable(Session *ses,class Class *cls,ulong notifications);
 	RWLock				*getLock() {return &rwlock;}
 	void				setMaxPropID(PropertyID id);
 	RC					getClassInfo(ClassID cid,Class *&cls,uint64_t& nPINs,uint64_t& nDeletedPINs);
-	RC					index(Session *ses,const PINEx *pin,const ClassResult& clr,ClassIdxOp op,const struct PropInfo **ppi=NULL,unsigned npi=0,const PageAddr *old=NULL);
+	RC					index(Session *ses,PINEx *pin,const ClassResult& clr,ClassIdxOp op,const struct PropInfo **ppi=NULL,unsigned npi=0,const PageAddr *old=NULL);
 	RC					initClasses(Session *ses);
 	RC					rebuildAll(Session *ses);
 	RC					classifyAll(PIN *const *pins,unsigned nPins,Session *ses,bool fDrop=false);

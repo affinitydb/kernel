@@ -14,6 +14,7 @@ using namespace MVStoreKernel;
 
 PINRef::PINRef(ushort si,const byte *p,size_t l) : stID(si),count(1),def(0)
 {
+	if (l==0) throw RC_NOTFOUND;
 	const byte *end=p+l; PageAddr ad; id.ident=STORE_OWNER;
 	mv_dec32(p,ad.pageID); if (p>=end) throw RC_CORRUPTED;
 	mv_dec16(p,ad.idx);
@@ -122,13 +123,13 @@ int PINRef::cmpPIDs(const byte *p1,unsigned l1,const byte *p2,unsigned l2)
 	if ((c=cmp3(x1,x2))!=0) return c; assert(p1<=e1 && p2<=e2);
 	if ((e1[-1]&0x83)>0x80 || (e2[-1]&0x83)>0x80) {
 		if (((e1[-1]|e2[-1])&0x01)!=0) {
-			if ((e1[-1]&0x01)==0) x1=StoreCtx::get()->storeID; else mv_dec16(p1,x1);
-			if ((e2[-1]&0x01)==0) x2=StoreCtx::get()->storeID; else mv_dec16(p2,x2);
+			if ((e1[-1]&0x81)!=0x81) x1=StoreCtx::get()->storeID; else mv_dec16(p1,x1);
+			if ((e2[-1]&0x81)!=0x81) x2=StoreCtx::get()->storeID; else mv_dec16(p2,x2);
 			if ((c=cmp3(x1,x2))!=0) return c; assert(p1<e1 && p2<e2);
 		}
 		if (((e1[-1]|e2[-1])&0x02)!=0) {
-			if ((e1[-1]&0x02)==0) u1=STORE_OWNER; else mv_dec32(p1,u1);
-			if ((e2[-1]&0x02)==0) u2=STORE_OWNER; else mv_dec32(p2,u2);
+			if ((e1[-1]&0x82)!=0x82) u1=STORE_OWNER; else mv_dec32(p1,u1);
+			if ((e2[-1]&0x82)!=0x82) u2=STORE_OWNER; else mv_dec32(p2,u2);
 			return cmp3(u1,u2);
 		}
 	}

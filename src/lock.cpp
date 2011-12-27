@@ -65,9 +65,9 @@ template<class T> inline T* LockMgr::alloc(SLIST_HEADER& sHdr)
 RC LockMgr::lock(LockType lt,PINEx& pe,ulong flags)
 {
 	RC rc=RC_OK; assert(lt<LOCK_ALL);
-	if (pe.ses==NULL) return RC_NOSESSION;
-	if ((pe.ses->getStore()->mode&STARTUP_SINGLE_SESSION)!=0) return RC_OK;
-	if (!pe.ses->inWriteTx()) {
+	Session *ses=pe.getSes(); if (ses==NULL) return RC_NOSESSION;
+	if ((ses->getStore()->mode&STARTUP_SINGLE_SESSION)!=0) return RC_OK;
+	if (!ses->inWriteTx()) {
 		report(MSG_ERROR,"LockMgr: an attempt to lock a resource outside of a transaction\n");
 		return RC_READTX;
 	}
@@ -78,42 +78,42 @@ RC LockMgr::lock(LockType lt,PINEx& pe,ulong flags)
 		} else if ((rc=getTVers(pe,lt==LOCK_SHARED?TVO_READ:TVO_UPD))!=RC_OK) return rc;
 		assert(pe.tv!=NULL);
 	}
-	bool fLocked=false; GrantedLock *gl=NULL,*og=NULL; if (lt>=LOCK_UPDATE) pe.ses->lockClass();
+	bool fLocked=false; GrantedLock *gl=NULL,*og=NULL; if (lt>=LOCK_UPDATE) ses->lockClass();
 	LockHdr *lh=pe.tv->hdr;
 	if (lh==NULL) {
 		RWLockP tlck(&pe.tv->lock,RW_X_LOCK);
 		if ((lh=pe.tv->hdr)!=NULL) ++lh->fixCount;
 		else if ((pe.tv->hdr=lh=new(alloc<LockHdr>(freeHeaders)) LockHdr(pe.tv))==NULL) return RC_NORESOURCES;
 	} else {
-		++lh->fixCount; lh->sem.lock(pe.ses->lockReq.sem);
+		++lh->fixCount; lh->sem.lock(ses->lockReq.sem);
 		fLocked=true; ulong mask=lockConflictMatrix[lt];
 		for (og=(GrantedLock*)lh->grantedLocks.next; ;og=(GrantedLock*)og->next)
-			if (og==&lh->grantedLocks) {og=NULL; break;} else if (og->ses==pe.ses) break;
+			if (og==&lh->grantedLocks) {og=NULL; break;} else if (og->ses==ses) break;
 		ulong grantedCnts[LOCK_ALL]; memset(grantedCnts,0,sizeof(grantedCnts));
 		if ((gl=og)!=NULL) do {
 			ulong ty=gl->lt;
 			if (ty==(ulong)lt) {
-				if (pe.ses->tx.subTxID>gl->subTxID) {mask=0; break;}
+				if (ses->tx.subTxID>gl->subTxID) {mask=0; break;}
 				gl->count++; lh->grantedCnts[lt]++; --lh->fixCount;
-				lh->sem.unlock(pe.ses->lockReq.sem); return RC_OK;
+				lh->sem.unlock(ses->lockReq.sem); return RC_OK;
 			}
 			if ((grantedCnts[ty]+=gl->count)==lh->grantedCnts[ty]) mask&=~(1<<ty);
 		} while ((gl=gl->other)!=NULL);
 		while ((lh->grantedMask&mask)!=0) {
-			//if (lockNotification!=NULL && (rc=lockNotification->beforeWait(pe.ses,pe.id,ILockNotification::LT_SHARED))!=RC_OK) ...
-			bool fDL=pe.ses->releaseLatches()!=RC_OK; if (!fDL && !pe.pb.isNull()) pe.pb.release();
-			if (fDL || pe.ses->nLatched>0) {lh->release(this,pe.ses->lockReq.sem); return RC_DEADLOCK;}	//  rollback???
-			lh->conflictMask|=lockConflictMatrix[lt]; pe.ses->lockReq.lt=lt; pe.ses->lockReq.rc=RC_REPEAT;
-			pe.ses->lockReq.next=lh->waiting; lh->waiting=pe.ses;
-			waitQLock.lock(); pe.ses->lockReq.lh=lh; getTimestamp(pe.ses->lockReq.stamp);
-			if (waitQ.getFirst()==NULL) {oldSes=pe.ses; oldTimestamp=pe.ses->lockReq.stamp;}
-			waitQ.insertFirst(&pe.ses->lockReq.wait); waitQLock.unlock(); lh->sem.unlock(pe.ses->lockReq.sem);
+			//if (lockNotification!=NULL && (rc=lockNotification->beforeWait(ses,pe.id,ILockNotification::LT_SHARED))!=RC_OK) ...
+			bool fDL=ses->releaseLatches()!=RC_OK; if (!fDL && !pe.pb.isNull()) pe.pb.release();
+			if (fDL || ses->nLatched>0) {lh->release(this,ses->lockReq.sem); return RC_DEADLOCK;}	//  rollback???
+			lh->conflictMask|=lockConflictMatrix[lt]; ses->lockReq.lt=lt; ses->lockReq.rc=RC_REPEAT;
+			ses->lockReq.next=lh->waiting; lh->waiting=ses;
+			waitQLock.lock(); ses->lockReq.lh=lh; getTimestamp(ses->lockReq.stamp);
+			if (waitQ.getFirst()==NULL) {oldSes=ses; oldTimestamp=ses->lockReq.stamp;}
+			waitQ.insertFirst(&ses->lockReq.wait); waitQLock.unlock(); lh->sem.unlock(ses->lockReq.sem);
 			if (lockStoreHdr.lockDaemonThread==(HTHREAD)0) {HTHREAD h; while (createThread(_lockDaemon,&lockStoreHdr,h)==RC_REPEAT);}
-			do pe.ses->lockReq.sem.wait(); while ((rc=pe.ses->lockReq.rc)==RC_REPEAT);
-			assert(!pe.ses->lockReq.wait.isInList() && pe.ses->lockReq.lh==NULL);
-			//if (lockNotification!=NULL && (rc=lockNotification->afterWait(pe.ses,pe.id,ILockNotification::LT_SHARED,rc))!=RC_OK) ...
-			if (rc!=RC_OK) {--lh->fixCount; if (rc==RC_DEADLOCK) pe.ses->abortTx(); return rc;}
-			lh->sem.lock(pe.ses->lockReq.sem);
+			do ses->lockReq.sem.wait(); while ((rc=ses->lockReq.rc)==RC_REPEAT);
+			assert(!ses->lockReq.wait.isInList() && ses->lockReq.lh==NULL);
+			//if (lockNotification!=NULL && (rc=lockNotification->afterWait(ses,pe.id,ILockNotification::LT_SHARED,rc))!=RC_OK) ...
+			if (rc!=RC_OK) {--lh->fixCount; if (rc==RC_DEADLOCK) ses->abortTx(); return rc;}
+			lh->sem.lock(ses->lockReq.sem);
 			if ((lh->grantedMask&mask)!=0 && (gl=og)!=NULL) {
 				memset(grantedCnts,0,sizeof(grantedCnts));
 				do {ulong ty=gl->lt; if ((grantedCnts[ty]+=gl->count)==lh->grantedCnts[ty]) mask&=~(1<<ty);}
@@ -123,11 +123,11 @@ RC LockMgr::lock(LockType lt,PINEx& pe,ulong flags)
 	}
 	if ((gl=alloc<GrantedLock>(freeGranted))==NULL) {rc=RC_NORESOURCES; --lh->fixCount;}
 	else {
-		gl->header=(LockHdr*)lh; gl->ses=pe.ses; gl->other=og; gl->lt=lt; gl->count=1; // gl->fDel=???
-		gl->txNext=pe.ses->heldLocks; pe.ses->heldLocks=gl; gl->subTxID=pe.ses->tx.subTxID;
+		gl->header=(LockHdr*)lh; gl->ses=ses; gl->other=og; gl->lt=lt; gl->count=1; // gl->fDel=???
+		gl->txNext=ses->heldLocks; ses->heldLocks=gl; gl->subTxID=ses->tx.subTxID;
 		lh->grantedCnts[lt]++; lh->grantedMask|=1<<lt; lh->grantedLocks.insertFirst(gl); 
 	}
-	if (fLocked) lh->sem.unlock(pe.ses->lockReq.sem);
+	if (fLocked) lh->sem.unlock(ses->lockReq.sem);
 	return rc;
 }
 
@@ -209,21 +209,22 @@ RC LockMgr::getTVers(PINEx& pe,TVOp tvo)
 {
 	assert(!pe.pb.isNull() && (tvo==TVO_READ || pe.pb->isXLocked() || pe.pb->isULocked()));
 	if (pe.tv==NULL) {
+		Session *ses=pe.getSes(); if (ses==NULL) return RC_NOSESSION;
 		PageV *pv=(PageV*)pe.pb->getVBlock();
 		if (pv==NULL) {
-			if (tvo==TVO_READ && !pe.ses->inWriteTx()) return RC_OK;
+			if (tvo==TVO_READ && !ses->inWriteTx()) return RC_OK;
 			PageVTab::Find findPV(pageVTab,pe.pb->getPageID());
 			if ((pv=findPV.findLock(RW_X_LOCK))!=NULL) ++pv->fixCnt;
 			else if ((pv=new(ctx) PageV(pe.pb->getPageID(),*this))==NULL) return RC_NORESOURCES;
 			else {++pv->fixCnt; pageVTab.insertNoLock(pv); pe.pb->setVBlock(pv);}
 		}
 		RWLockP lck(&pv->lock,RW_S_LOCK);
-		pe.tv=(TVers*)BIN<TVers,PageIdx,TVers::TVersCmp>::find(pe.addr.idx,(const TVers**)pv->vArray,pv->nTV);
-		if (pe.tv==NULL && (tvo!=TVO_READ || pe.ses->inWriteTx())) {
+		pe.tv=(TVers*)BIN<TVers,PageIdx,TVers::TVersCmp>::find(pe.getAddr().idx,(const TVers**)pv->vArray,pv->nTV);
+		if (pe.tv==NULL && (tvo!=TVO_READ || ses->inWriteTx())) {
 			lck.set(NULL); lck.set(&pv->lock,RW_X_LOCK); const TVers **ins=NULL;
-			if ((pe.tv=(TVers*)BIN<TVers,PageIdx,TVers::TVersCmp>::find(pe.addr.idx,(const TVers**)pv->vArray,pv->nTV,&ins))==NULL) {
+			if ((pe.tv=(TVers*)BIN<TVers,PageIdx,TVers::TVersCmp>::find(pe.getAddr().idx,(const TVers**)pv->vArray,pv->nTV,&ins))==NULL) {
 				LockHdr *lh=tvo!=TVO_INS?new(alloc<LockHdr>(freeHeaders)) LockHdr(pe.tv):(LockHdr*)0;
-				if ((pe.tv=new(ctx) TVers(pe.addr.idx,lh,NULL))==NULL) return RC_NORESOURCES;
+				if ((pe.tv=new(ctx) TVers(pe.getAddr().idx,lh,NULL))==NULL) return RC_NORESOURCES;
 				if (pv->vArray==NULL || pv->nTV>=pv->xTV) {
 					ptrdiff_t sht=ins-(const TVers**)pv->vArray;
 					if ((pv->vArray=(TVers**)ctx->realloc(pv->vArray,(pv->xTV+=(pv->xTV==0?10:pv->xTV/2))*sizeof(TVers*)))==NULL) 

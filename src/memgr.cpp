@@ -76,7 +76,7 @@ void* MVStoreKernel::memalign(size_t a,size_t s,HEAP_TYPE alloc)
 	}
 #ifdef WIN32
 	return ::_aligned_malloc(s,a);
-#elifndef Darwin
+#elif !defined(Darwin)
 	return ::memalign(a,s);
 #else
 	void * tmp; 

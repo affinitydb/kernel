@@ -50,16 +50,9 @@ __forceinline	int	cmp(const Value& arg,const Value& arg2,ulong u) {return arg.ty
 
 #define PIDKeySize		(sizeof(uint64_t)+sizeof(IdentityID))
 
-struct PropertyList
+struct ValueC : public Value
 {
-	PropertyID	*props;
-	unsigned	nProps;
-};
-
-struct ValueV
-{
-	Value		*vals;
-	unsigned	nValues;
+	uint64_t	count;
 };
 
 class ValCmp
@@ -78,21 +71,6 @@ public:
 #define	MODP_NEID	0x0002
 #define MODP_NCPY	0x0004
 
-#define	ORDER_EXPR	0x8000
-
-struct OrderSegQ
-{
-	union {
-		PropertyID	pid;
-		class Expr	*expr;
-	};
-	uint16_t		flags;
-	uint8_t			var;
-	uint8_t			aggop;
-	uint32_t		lPref;
-	RC				conv(const OrderSeg& sg,MemAlloc *ma);
-};
-
 class Path
 {
 protected:
@@ -108,15 +86,13 @@ protected:
 	MemAlloc		*const	ma;
 	const	PathSeg	*const	path;
 	const	unsigned		nPathSeg;
-	const	Value	*const	params;
-	const	unsigned		nParams;
 	const	bool			fCopied;
 	bool					fThrough;
 	PathState				*pst;
 	PathState				*freePst;
 protected:
-	Path(MemAlloc *m,const PathSeg *ps,unsigned nP,const Value *pars,unsigned nPars,bool fC) 
-		: ma(m),path(ps),nPathSeg(nP),params(pars),nParams(nPars),fCopied(fC),fThrough(true),pst(NULL),freePst(NULL)
+	Path(MemAlloc *m,const PathSeg *ps,unsigned nP,bool fC) 
+		: ma(m),path(ps),nPathSeg(nP),fCopied(fC),fThrough(true),pst(NULL),freePst(NULL)
 			{for (unsigned i=0; i<nP; i++) if (ps[i].rmin!=0) {fThrough=false; break;}}
 	~Path() {
 		PathState *ps,*ps2;
@@ -124,7 +100,7 @@ protected:
 		for (ps=freePst; ps!=NULL; ps=ps2) {ps2=ps->next; ma->free(ps);}
 		if (fCopied) {
 			for (unsigned i=0; i<nPathSeg; i++) if (path[i].filter!=NULL) path[i].filter->destroy();
-			ma->free((void*)path); if (params!=NULL) freeV((Value*)params,nParams,ma);
+			ma->free((void*)path);
 		}
 	}
 	RC push() {
@@ -144,13 +120,15 @@ protected:
 #define	PIN_READONLY				0x02000000	/**< readonly pin - from remote pin cache */
 #define	PIN_DELETED					0x01000000	/**< soft-deleted pin (only with MODE_DELETED or IDumpStore) */
 #define	PIN_CLASS					0x00800000	/**< pin represents a class or a relation (set in commitPINs) */
-#define	PIN_TRANSFORMED				0x00400000	/**< pin is a result of some transformation (other than projection) */
+#define	PIN_DERIVED					0x00400000	/**< pin is a result of some transformation (other than projection) */
 #define	PIN_PROJECTED				0x00200000	/**< pin is a result of a projection of a stored pin */
+#define	PIN_SSV						0x00100000	/**< pin has SSV properties and they're not loaded yet */
+#define	PIN_EMPTY					0x00080000	/**< pin with no properties */
 
 class PIN : public IPIN
 {
-	const				PID	id;
 	Session				*const ses;
+	mutable	PID			id;
 	Value				*properties;
 	uint32_t			nProperties;
 	uint32_t			mode;
@@ -163,7 +141,7 @@ class PIN : public IPIN
 
 public:
 	PIN(Session *s,const PID& i,const PageAddr& a,ulong md=0,Value *vals=NULL,ulong nvals=0)
-		: id(i),ses(s),properties(vals),nProperties(nvals),mode(md),addr(a),nextPIN(NULL) {length=0;}
+		: ses(s),id(i),properties(vals),nProperties(nvals),mode(md),addr(a),nextPIN(NULL) {length=0;}
 	virtual		~PIN();
 	const PID&	getPID() const;
 	bool		isLocal() const;
@@ -175,7 +153,7 @@ public:
 	bool		isHidden() const;
 	bool		isDeleted() const;
 	bool		isClass() const;
-	bool		isTransformed() const;
+	bool		isDerived() const;
 	bool		isProjected() const;
 	uint32_t	getNumberOfProperties() const;
 	const Value	*getValueByIndex(unsigned idx) const;
@@ -198,6 +176,7 @@ public:
 	RC			refresh(bool);
 	void		destroy();
 
+	Session		*getSes() const {return ses;}
 	void		operator delete(void *p) {if (((PIN*)p)->ses!=NULL) ((PIN*)p)->ses->free(p);/* else ???*/}
 	RC			modify(const Value *pv,ulong epos,ulong eid,ulong flags,Session *ses);
 	const PageAddr& getAddr() const {return addr;}
@@ -231,6 +210,7 @@ public:
 	friend	class	NetMgr;
 	friend	class	RPIN;
 	friend	class	PINEx;
+	friend	class	TransOp;
 };
 
 inline bool isRemote(const PID& id) {return id.ident!=STORE_OWNER&&id.ident!=STORE_INVALID_IDENTITY||id.pid!=STORE_INVALID_PID&&ushort(id.pid>>48)!=StoreCtx::get()->storeID;}
