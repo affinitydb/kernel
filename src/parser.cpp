@@ -228,7 +228,7 @@ const OpDscr SInCtx::opDscr[] =
 	{0,		LX_RCBR,	S_L("{"),			{36,  2},	{2,	3}	},		 //LX_REPEAT
 	{0,		LX_ERR,		0,NULL,				{33, 32},	{2,	2}	},		 //LX_PATHQ
 	{0,		LX_ERR,		0,NULL,				{0,	  0},	{0,	0}	},		 //LX_SELF
-	{0,		LX_ERR,		0,NULL,				{40,  2},	{2,	2}	},		 //LX_SPROP
+	{0,		LX_ERR,		0,NULL,				{40,  3},	{2,	2}	},		 //LX_SPROP
 };
 
 const static Len_Str typeName[VT_ALL] = 
@@ -848,7 +848,7 @@ RC ExprTree::toPathSeg(PathSeg& ps,MemAlloc *ma) const
 			if (isBool(((ExprTree*)operands[2].exprt)->op)) {
 				// classID ?
 				Expr *exp=NULL; RC rc;
-				if ((rc=Expr::compile((ExprTree*)operands[2].exprt,exp,ma))!=RC_OK) return rc;
+				if ((rc=Expr::compile((ExprTree*)operands[2].exprt,exp,ma,true))!=RC_OK) return rc;
 				ps.filter=exp; break;
 			}
 		default:
@@ -878,7 +878,7 @@ RC Expr::render(int prty,SOutCtx& out) const
 			for	(unsigned i=0; i<vh->nProps; i++) if ((((uint32_t*)(vh+1))[i]&PROP_OPTIONAL)==0) {
 				if (i!=0 && !out.append(" "AND_S" ",sizeof(AND_S)+1)) return RC_NORESOURCES;
 				if (!out.append(exstr,lExist)||!out.append("(",1)) return RC_NORESOURCES;
-				if ((rc=out.renderName(((uint32_t*)(vh+1))[i]&STORE_MAX_PROPID,NULL))!=RC_OK) return rc;	// var?
+				if ((rc=out.renderName(((uint32_t*)(vh+1))[i]&STORE_MAX_URIID,NULL))!=RC_OK) return rc;	// var?
 				if (!out.append(")",1)) return RC_NORESOURCES;
 			}
 			if (fPar && !out.append(")",1)) return RC_NORESOURCES;
@@ -995,11 +995,8 @@ RC SOutCtx::renderPID(const PID& id,bool fJ) {
 
 RC SOutCtx::renderValue(const Value& v,bool fJ) {
 	RC rc=RC_OK; unsigned long u; Identity *ident; const char *s; size_t l; const Value *cv; int ll; const QVar *qv; Value vv;
-	if (fJ && v.type>VT_DOUBLE && !isString((ValueType)v.type) && v.type!=VT_ARRAY && v.type!=VT_COLLECTION && v.type!=VT_REFID) {
-		if (v.type!=VT_URIID) {if ((rc=convV(v,vv,VT_STRING))==RC_OK) {rc=renderValue(vv,true); freeV(vv);}}
-		else if (!append("\"",1)) return RC_NORESOURCES;
-		else if ((rc=renderName(v.uid,URIID_PREFIX,NULL,false,false))!=RC_OK) return rc;
-		else if (!append("\"",1)) return RC_NORESOURCES;
+	if (fJ && v.type>VT_DOUBLE && !isString((ValueType)v.type) && v.type!=VT_ARRAY && v.type!=VT_COLLECTION && v.type!=VT_STRUCT && v.type!=VT_REFID) {
+		if ((rc=convV(v,vv,VT_STRING,ses))==RC_OK) {rc=renderValue(vv,true); freeV(vv);}
 	} else switch (v.type) {
 	case VT_ANY: if (!append(NULL_S,sizeof(NULL_S)-1)) return RC_NORESOURCES; break;
 	case VT_URL: if (!fJ && !append("U",1)) return RC_NORESOURCES;
@@ -1083,7 +1080,6 @@ RC SOutCtx::renderValue(const Value& v,bool fJ) {
 			if ((rc=renderValue(v.varray[u],fJ))!=RC_OK) break;
 			if (!append(u+1==v.length?"}":",",1)) return RC_NORESOURCES;
 		}
-		break;
 		break;
 	case VT_RANGE:
 		if (!append("[",1)) return RC_NORESOURCES;
@@ -1414,7 +1410,7 @@ TLx SInCtx::lex()
 			case KW_CSTORE: v.setCStore(); break;
 			case KW_TIMESTAMP: case KW_INTERVAL:
 				if (lex()!=LX_CON || v.type!=VT_STRING || 
-					convV(v,v,kwn->kw==KW_TIMESTAMP?VT_DATETIME:VT_INTERVAL)!=RC_OK) throw SY_INVTMS;
+					convV(v,v,kwn->kw==KW_TIMESTAMP?VT_DATETIME:VT_INTERVAL,ses)!=RC_OK) throw SY_INVTMS;
 				break;
 			}
 			return LX_CON;
@@ -1651,7 +1647,7 @@ TLx SInCtx::parsePrologue()
 void SInCtx::mapURI(const char *prefix,size_t lPrefix)
 {
 	if (ses!=NULL && v.type==VT_STRING) {
-		char *str=(char*)v.str; bool fCopy=true/*v.flags!=mtype*/; bool fAddDel=false;
+		char *str=(char*)v.str; bool fCopy=v.flags!=mtype||str[v.length]!='\0'; bool fAddDel=false;
 		if (prefix!=NULL && lPrefix!=0) {
 			const QName *pq=NULL; QName qn={prefix,lPrefix,NULL,0,false};
 			if (lastQN>=nQNames || (pq=&qNames[lastQN])->lq!=lPrefix || memcmp(prefix,pq->qpref,lPrefix)!=0)
@@ -1835,36 +1831,17 @@ void SInCtx::parse(Value& res,const QVarRef *vars,unsigned nVars,unsigned pflags
 			od=&opDscr[lx]; est=0; opf=NOT_BOOLEAN_OP; break;
 		case LX_LPR:
 			if (est!=0) {lx=OP_CALL; est=0;}
-			else if ((mode&SIM_DML_EXPR)!=0 && ops.top().lx==LX_BOE && (nextLex=lex())==LX_KEYW) {
-				if (v.op==KW_INSERT) {
-					DynArray<Stmt*,1> stmts(ma); SynErr sy=SY_ALL;
-					for (;;) {
-						stmt=parseStmt(true); assert(stmt!=NULL && stmt->getOp()==STMT_INSERT); stmts+=stmt;
-						if ((lx=lex())!=LX_SEMI) break;
-						if ((nextLex=lex())!=LX_KEYW || v.op!=KW_INSERT) {sy=SY_SYNTAX; break;}
-					}
-					if (sy!=SY_ALL || (sy=SY_MISRPR,lx)!=LX_RPR) {for (unsigned i=stmts; i--!=0;) stmts[i]->destroy(); throw sy;}
-					if (stmts==1) res.set(stmts[0]);
-					else {
-						Value *pv=new(ma) Value[(unsigned)stmts]; 
-						if (pv==NULL) {for (unsigned i=stmts; i--!=0;) stmts[i]->destroy(); throw RC_NORESOURCES;}
-						for (unsigned i=0; i<stmts; i++) {pv[i].set(stmts[i]); pv[i].meta=META_PROP_EVAL;}
-						res.set(pv,(unsigned)stmts);
-					}
-					res.meta|=META_PROP_EVAL; return;
-				} else if (v.op==KW_SELECT) {
-					stmt=parseStmt(true); assert(stmt!=NULL && stmt->getOp()==STMT_QUERY);
-					if (lex()!=LX_RPR) {stmt->destroy(); throw SY_MISRPR;}
-					res.set(stmt); res.meta|=META_PROP_EVAL; return;
-				}
+			else if ((mode&SIM_DML_EXPR)!=0 && ((po=ops.top(1))->lx==LX_BOE||po->lx==LX_SPROP||po->lx==LX_LCBR||po->lx==LX_COMMA&&po->flag!=0) && (nextLex=lex())==LX_KEYW && (v.op==KW_INSERT||v.op==KW_SELECT)) {
+				stmt=parseStmt(true); assert(stmt!=NULL); if ((lx=lex())!=LX_RPR) {stmt->destroy(); throw SY_MISRPR;}
+				if ((po->lx==LX_LCBR||po->lx==LX_COMMA) && po->flag!=VT_STRUCT && stmt->getOp()==STMT_QUERY && (stmt->getTop()==NULL ||
+					(i=stmt->getTop()->stype)!=SEL_COUNT && i!=SEL_VALUE && i!=SEL_CONST && i!=SEL_DERIVED)) {stmt->destroy(); throw SY_SYNTAX;}	// SY_INVNST
+				vv.set(stmt); vv.meta|=META_PROP_EVAL; oprs.push(vv); est=1; continue;
 			}
 			break;
 		case OP_EQ:
 			if (est!=0) est=0; else throw SY_MISCON;
-			if ((po=ops.top(1))->lx==LX_LCBR && po->flag==0 || po->lx==LX_COMMA && po->flag!=0) {
-				// check LHS - simple name
-				po->flag=1; od=&opDscr[lx=LX_SPROP]; throw RC_INTERNAL;
-			}
+			if (((po=ops.top(1))->lx==LX_LCBR && po->flag==0 || po->lx==LX_COMMA && po->flag==VT_STRUCT) && oprs.top().type==VT_VARREF)
+				{po->flag=VT_STRUCT; od=&opDscr[lx=LX_SPROP];}
 			break;
 		case LX_KEYW:
 			switch (v.op) {
@@ -1914,7 +1891,7 @@ void SInCtx::parse(Value& res,const QVarRef *vars,unsigned nVars,unsigned pflags
 			case LX_LCBR:
 					if (op.lx==LX_LPR) {if (lx!=LX_RPR) throw SY_MISRPR;} else if (lx!=LX_RCBR) throw SY_MISRCBR;
 					vals=oprs.pop(nvals); assert(vals!=NULL);
-					if (op.lx==LX_LCBR && op.flag!=0) {
+					if (op.lx==LX_LCBR && op.flag==VT_STRUCT) {
 						// VT_STRUCT
 					} else if ((rc=ExprTree::normalizeArray(vals,nvals,vv,ma,ses!=NULL?ses->getStore():StoreCtx::get()))!=RC_OK) throw rc;
 					oprs.push(vv); goto next_lx;
@@ -2016,8 +1993,9 @@ void SInCtx::parse(Value& res,const QVarRef *vars,unsigned nVars,unsigned pflags
 				}
 				break;
 			case LX_SPROP:
-				// lhs->uid -> rhs->property, rhs -> lhs
-				oprs.pop(); continue;
+				if (lx!=LX_COMMA && lx!=LX_RCBR) throw SY_MISRCBR;
+				vals=oprs.top(2); assert(vals->type==VT_VARREF && vals->length!=0);
+				vals[1].property=vals[0].refV.id; vals[0]=vals[1]; oprs.pop(); continue;
 			}
 			if (od2->match!=LX_ERR && od2->match!=lx) switch (od2->match) {
 			case LX_RPR: throw SY_MISRPR;
@@ -2029,7 +2007,7 @@ void SInCtx::parse(Value& res,const QVarRef *vars,unsigned nVars,unsigned pflags
 			if (nvals>od2->nOps[1]) throw SY_MANYARG;
 			if ((vals=oprs.top(nvals))==NULL) throw SY_EMPTY;
 			if (op.lx==LX_EXPR) {
-				if ((rc=ExprTree::forceExpr(*vals,ses))!=RC_OK || (rc=Expr::compile((ExprTree*)vals->exprt,exp,ma))!=RC_OK) throw rc;		// ses ???
+				if ((rc=ExprTree::forceExpr(*vals,ses))!=RC_OK || (rc=Expr::compile((ExprTree*)vals->exprt,exp,ma,false))!=RC_OK) throw rc;		// ses ???
 				vals->exprt->destroy(); vals->set(exp); est=1; goto next_lx;
 			}
 			if ((rc=ExprTree::node(vv,ses,(ExprOp)op.lx,nvals,vals,flags))!=RC_OK) throw rc;	// fcopy? ses???
@@ -2037,18 +2015,22 @@ void SInCtx::parse(Value& res,const QVarRef *vars,unsigned nVars,unsigned pflags
 			if (od2->match!=LX_ERR) {assert((op.lx==OP_CALL||(od->flags&_C)!=0)&&est==1); goto next_lx;}
 		}
 		switch (lx) {
-		case LX_COMMA:
-			if (opDscr[ops.top().lx].match==LX_ERR) throw SY_INVCOM;
-			ops.push(OpF(LX_COMMA,ops.top().flag)); break;
 		default:
 			if (isBool((ExprOp)lx)) {
-				if ((lx2=lex())!=LX_KEYW || v.op!=KW_ALL&&v.op!=KW_SOME&&v.op!=KW_ANY) nextLex=lx2;
-				else {
-					opf|=v.op==KW_SOME?EXISTS_RIGHT_OP:FOR_ALL_RIGHT_OP;
-					if ((lx2=lex())!=LX_LPR) nextLex=lx2; else {ops.push(OpF(lx,opf)); opf=0; lx=lx2; goto check_select;}
+				if ((lx2=lex())==LX_KEYW && (v.op==KW_ALL || v.op==KW_SOME || v.op==KW_ANY)) {
+					opf|=v.op==KW_SOME?EXISTS_RIGHT_OP:FOR_ALL_RIGHT_OP; if ((lx2=lex())!=LX_LPR) throw SY_MISLPR;
 				}
+				if (lx2!=LX_LPR) nextLex=lx2; else {ops.push(OpF(lx,opf)); opf=0; lx=lx2; goto check_select;}
 			}
 			ops.push(OpF(lx,opf)); break;
+		case LX_COMMA:
+			switch ((po=ops.top(1))->lx) {
+			default: if (opDscr[po->lx].match==LX_ERR) throw SY_INVCOM; break;
+			case LX_LPR: if (ops.top(2)->lx!=OP_IN) throw SY_SYNTAX; break;
+			case LX_LCBR: if (po->flag==0) {opf=VT_ARRAY; break;}
+			case LX_COMMA: opf=po->flag; break;
+			}
+			ops.push(OpF(LX_COMMA,opf)); break;
 		case LX_IS:
 			flags=(pflags&PRS_COPYV)!=0?COPY_VALUES_OP:0;
 			if ((lx2=lex())==LX_CON) {
@@ -2566,7 +2548,7 @@ Stmt *SInCtx::parseStmt(bool fNested)
 				DynArray<Value,40> props(ma); unsigned msave=mode&SIM_DML_EXPR; mode|=SIM_DML_EXPR;
 				if ((lx=lex())==LX_IDENT && msave!=0 && v.type==VT_STRING && v.length==sizeof(PART_S)-1 && cmpncase(v.str,PART_S,sizeof(PART_S)-1))
 					{md=MODE_PART; lx=lex();}
-				if (lx==LX_KEYW && (v.op==KW_FROM || v.op==KW_WHERE || v.op==KW_MATCH)) nextLex=lx;
+				if (lx==LX_KEYW && (v.op==KW_SELECT || v.op==KW_FROM || v.op==KW_WHERE || v.op==KW_MATCH)) nextLex=lx;
 				else if (lx==LX_LPR) {
 					do {
 						if (lex()!=LX_IDENT) throw SY_MISPROP;
@@ -2604,10 +2586,10 @@ Stmt *SInCtx::parseStmt(bool fNested)
 				if (rc==RC_OK && sy==SY_ALL) {
 					uint32_t nVals=0; Value *vals=props.get(nVals);
 					if (nVals!=0) vals=PIN::normalize(vals,nVals,PIN_NO_FREE,ses!=NULL?ses->getStore()->getPrefix():0,ma);
-					rc=(stmt=new(ma) Stmt(md,ma,STMT_INSERT))!=NULL?stmt->setValuesNoCopy(vals,nVals):RC_NORESOURCES;
+					rc=(stmt=new(ma) Stmt(md,ma,STMT_INSERT))==NULL?RC_NORESOURCES:nVals==0?RC_OK:stmt->setValuesNoCopy(vals,nVals);
 					if (rc!=RC_OK) freeV(vals,nVals,ma);
-					else if ((lx=lex())!=LX_KEYW || v.op!=KW_FROM && v.op!=KW_WHERE && v.op!=KW_MATCH) nextLex=lx;
-					else try {parseSelect(stmt,true);} catch (...) {stmt->destroy(); throw;}
+					else if ((lx=lex())!=LX_KEYW || v.op!=KW_SELECT && v.op!=KW_FROM && v.op!=KW_WHERE && v.op!=KW_MATCH) nextLex=lx;
+					else try {if (v.op!=KW_SELECT) nextLex=lx; parseSelect(stmt,v.op!=KW_SELECT);} catch (...) {stmt->destroy(); throw;}
 				} else for (unsigned i=0; i<props; i++) freeV(*(Value*)&props[i]);
 			}
 			break;
@@ -2661,8 +2643,8 @@ Stmt *SInCtx::parseStmt(bool fNested)
 						case OP_MOVE:
 							if (eid==STORE_COLLECTION_ID) {sy=SY_SYNTAX; break;}
 							if (lx==LX_IDENT && v.type==VT_STRING && v.length==sizeof(BEFORE_S)-1 && cmpncase(v.str,BEFORE_S,sizeof(BEFORE_S)-1))
-								op=OP_MOVE_BEFORE;
-							else if (lx!=LX_IDENT ||  v.type!=VT_STRING || v.length!=sizeof(AFTER_S)-1 || cmpncase(v.str,AFTER_S,sizeof(AFTER_S)-1))
+								eop=OP_MOVE_BEFORE;
+							else if (lx!=LX_IDENT || v.type!=VT_STRING || v.length!=sizeof(AFTER_S)-1 || !cmpncase(v.str,AFTER_S,sizeof(AFTER_S)-1))
 								{sy=SY_SYNTAX; break;}
 							if (!parseEID(lx=lex(),eid2)) sy=SY_MISCON; else w.set((unsigned)eid2); 
 							break;
@@ -2723,12 +2705,7 @@ Stmt *SInCtx::parseStmt(bool fNested)
 		case KW_CREATE:
 			if (lex()!=LX_KEYW || v.op!=KW_CLASS) throw SY_SYNTAX;
 			if (lex()!=LX_IDENT) throw SY_MISNAME;
-			vals[0].setError(); vals[1].setError(); vals[2].setError();
-			if (v.type==VT_STRING) {
-				char *p=new(ma) char[v.length+1]; if (p==NULL) throw RC_NORESOURCES;
-				memcpy(p,v.str,v.length); p[v.length]=0; vals[0].set(p,v.length);
-				vals[0].setPropID(PROP_SPEC_URI); vals[0].flags=mtype;
-			} else {vals[0].setURIID(v.uid); vals[0].setPropID(PROP_SPEC_CLASSID);}
+			mapURI(); vals[0].setURIID(v.uid); vals[0].setPropID(PROP_SPEC_CLASSID); vals[1].setError(); vals[2].setError();
 			if ((lx=lex())==LX_IDENT && v.type==VT_STRING && v.length==sizeof(OPTIONS_S)-1 && cmpncase(v.str,OPTIONS_S,sizeof(OPTIONS_S)-1)) {
 				if (lex()!=LX_LPR) {freeV(vals[0]); throw SY_MISLPR;}
 				unsigned flags=0;
@@ -2749,7 +2726,7 @@ Stmt *SInCtx::parseStmt(bool fNested)
 			if (lx!=LX_KEYW || v.op!=KW_AS) {freeV(vals[0]); throw SY_SYNTAX;}
 			try {stmt=NULL; parseQuery(stmt);} catch (...) {if (stmt!=NULL) stmt->destroy(); freeV(vals[0]); throw;}
 			vals[1].set(stmt); vals[1].setPropID(PROP_SPEC_PREDICATE); vals[1].flags=mtype;
-			if ((stmt=new(ma) Stmt(0,ma,STMT_INSERT))==NULL) rc=RC_NORESOURCES;
+			if ((stmt=new(ma) Stmt(MODE_CLASS,ma,STMT_INSERT))==NULL) rc=RC_NORESOURCES;
 			else if ((lx=lex())!=LX_KEYW || v.op!=KW_SET) {nextLex=lx; rc=stmt->setValues(vals,vals[2].type==VT_ANY?2:3);}
 			else {
 				DynArray<Value,40> props(ma); 
@@ -3009,7 +2986,7 @@ IExpr *SessionX::createExpr(const char *s,const URIID *ids,unsigned nids,Compila
 		if (ce!=NULL) memset(ce,0,sizeof(CompilationError));
 		if (s==NULL||ses->getStore()->inShutdown()) return NULL;
 		SInCtx in(ses,s,strlen(s),ids,nids); Expr *pe=NULL;
-		try {ExprTree *et=in.parse(false); in.checkEnd(); Expr::compile(et,pe,ses); et->destroy(); return pe;}
+		try {ExprTree *et=in.parse(false); in.checkEnd(); Expr::compile(et,pe,ses,false); et->destroy(); return pe;}
 		catch (SynErr sy) {in.getErrorInfo(RC_SYNTAX,sy,ce);}
 		catch (RC rc) {in.getErrorInfo(rc,SY_ALL,ce);}
 	} catch (RC) {} catch (...) {report(MSG_ERROR,"Exception in ISession::toExpr()\n");}

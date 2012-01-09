@@ -25,25 +25,25 @@ const ExprOp ExprTree::notOp[] = {OP_NE,OP_EQ,OP_GE,OP_GT,OP_LE,OP_LT};
 
 const static ExprHdr hdrInit(sizeof(ExprHdr),0,0,0,0,0);
 
-RC Expr::compile(const ExprTree *tr,Expr *&expr,MemAlloc *ma,ValueV *aggs)
+RC Expr::compile(const ExprTree *tr,Expr *&expr,MemAlloc *ma,bool fCond,ValueV *aggs)
 {
-	ExprCompileCtx ctx(ma,aggs); expr=NULL; RC rc=RC_OK;
-	while ((rc=isBool(tr->op)?(ctx.pHdr->hdr.flags|=EXPR_BOOL,ctx.compileCondition(tr,0,0)):ctx.compileNode(tr))==RC_OK && ctx.fCollectRefs) {
+	ExprCompileCtx ctx(ma,aggs); expr=NULL; RC rc=RC_OK; if (fCond) if (isBool(tr->op)) ctx.pHdr->hdr.flags|=EXPR_BOOL; else return RC_INVOP;
+	while ((rc=fCond?ctx.compileCondition(tr,0,0):ctx.compileNode(tr))==RC_OK && ctx.fCollectRefs) {
 		for (ExprCompileCtx::ExprLbl *lb=ctx.labels,*lb2; lb!=NULL; lb=lb2) {lb2=lb->next; ma->free(lb);}
 		ctx.labels=NULL; ctx.labelCount=0; ctx.lStack=ctx.pHdr->hdr.lStack=0; ctx.lCode=0; ctx.fCollectRefs=false;
 	}
 	return rc==RC_OK?ctx.result(expr):rc;
 }
 
-RC Expr::compile(const ExprTree *const *tr,unsigned ntr,Expr *&expr,MemAlloc *ma)
+RC Expr::compileConds(const ExprTree *const *tr,unsigned ntr,Expr *&expr,MemAlloc *ma)
 {
 	ExprCompileCtx ctx(ma,NULL); expr=NULL; ctx.pHdr->hdr.flags|=EXPR_BOOL; RC rc=RC_OK; const ExprTree *et;
 	if (ntr==0 || tr[0]==NULL) expr=NULL;
-	else if (ntr>1 && !isBool(tr[0]->op)) rc=RC_INVPARAM;
+	else if (ntr>1 && !isBool(tr[0]->op)) rc=RC_INVOP;
 	else for (;;) {
 		rc=isBool(tr[0]->op)?(ctx.pHdr->hdr.flags|=EXPR_BOOL,ctx.compileCondition(tr[0],ntr>1?4:0,0)):ctx.compileNode(tr[0]);
 		for (unsigned i=1; rc==RC_OK && i<ntr; i++) if ((et=tr[i])!=NULL) {
-			if (!isBool(et->op)) rc=RC_INVPARAM;
+			if (!isBool(et->op)) rc=RC_INVOP;
 			else {
 				uint16_t lStack=ctx.lStack; ctx.lStack=0; 
 				if ((rc=ctx.compileCondition(et,i+1<ntr?4:0,0))==RC_OK) ctx.lStack=max(ctx.lStack,lStack);
@@ -54,6 +54,13 @@ RC Expr::compile(const ExprTree *const *tr,unsigned ntr,Expr *&expr,MemAlloc *ma
 		ctx.labels=NULL; ctx.labelCount=0; ctx.lStack=ctx.pHdr->hdr.lStack=0; ctx.lCode=0; ctx.fCollectRefs=false;
 	}
 	return rc==RC_OK?ctx.result(expr):rc;
+}
+
+RC Expr::create(uint16_t langID,const byte *body,uint32_t lBody,uint16_t flags,Expr *&exp,MemAlloc *ma)
+{
+	if ((exp=(Expr*)ma->malloc(sizeof(Expr)+lBody))==NULL) return RC_NORESOURCES;
+	new((byte*)exp) Expr(ExprHdr(sizeof(ExprHdr)+lBody,langID,flags|EXPR_EXTN,0,0,0));
+	memcpy(&exp->hdr+1,body,lBody); return RC_OK;
 }
 
 void Expr::getExtRefs(ushort var,const PropertyID *&pids,unsigned& nPids) const
@@ -84,7 +91,7 @@ RC Expr::addPropRefs(Expr **pex,const PropertyID *props,unsigned nProps,MemAlloc
 		for (unsigned i=0,n,c; i<nProps; i++) if (BIN<uint32_t,uint32_t,ExprPropCmp>::find(props[i],vp,np,&ins)==NULL) {
 			if (ins>=(uint32_t*)(vh+1)+vh->nProps) n=nProps-i,c=1;
 			else {
-				for (n=1,c=1; i+n<nProps; n++) if ((c=cmp3((uint32_t)props[i+n]&STORE_MAX_PROPID,*ins&STORE_MAX_PROPID))>=0) break;
+				for (n=1,c=1; i+n<nProps; n++) if ((c=cmp3((uint32_t)props[i+n]&STORE_MAX_URIID,*ins&STORE_MAX_URIID))>=0) break;
 				vp=ins+n; np=vh->nProps-uint16_t(ins-(uint32_t*)(vh+1)); if (c==0) ++vp,--np; else c=1;
 			}
 			if ((byte*)ins<(byte*)&pe->hdr+pe->hdr.lExpr) memmove(ins+n,ins,pe->hdr.lExpr-((byte*)ins-(byte*)&pe->hdr));
@@ -173,9 +180,7 @@ RC ExprCompileCtx::result(Expr *&res)
 RC ExprCompileCtx::compileNode(const ExprTree *node,ulong flg)
 {
 	unsigned i,j; RC rc; byte *p; uint32_t lbl; const Value *pv; Value w;
-	if (isBool(node->op)) {
-		return RC_INTERNAL;		//compileCondition(node,???,0);
-	}
+	if (isBool(node->op)) return compileCondition(node,CND_VBOOL|4,0,flg);
 	if (fCollectRefs) {
 		if (node->op==OP_COUNT && node->operands[0].type==VT_VARREF) flg|=CV_CARD;
 		for (i=0; i<node->nops; i++) if ((rc=compileValue(node->operands[i],flg))!=RC_OK) return rc;
@@ -244,7 +249,7 @@ RC ExprCompileCtx::compileNode(const ExprTree *node,ulong flg)
 				case VT_EXPRTREE:
 					if (isBool(((ExprTree*)node->operands[2].exprt)->op)) {
 						// classID ?
-						if ((rc=Expr::compile((ExprTree*)node->operands[2].exprt,filter,ma))!=RC_OK) return rc;
+						if ((rc=Expr::compile((ExprTree*)node->operands[2].exprt,filter,ma,true))!=RC_OK) return rc;
 						l+=(unsigned)filter->serSize(); f|=0x18; break;
 					}
 				default:
@@ -298,7 +303,7 @@ RC ExprCompileCtx::compileNode(const ExprTree *node,ulong flg)
 				if ((aggs->vals=(Value*)ma->realloc((Value*)aggs->vals,(aggs->nValues+1)*sizeof(Value)))==NULL) return RC_NORESOURCES;
 				Value &to=((Value*)aggs->vals)[aggs->nValues];
 				if (node->operands[0].type==VT_EXPRTREE) {
-					Expr *ag; if ((rc=Expr::compile((ExprTree*)node->operands[0].exprt,ag,ma))!=RC_OK) return rc;
+					Expr *ag; if ((rc=Expr::compile((ExprTree*)node->operands[0].exprt,ag,ma,false))!=RC_OK) return rc;
 					to.set(ag); to.meta|=META_PROP_EVAL;
 				} else if ((rc=copyV(node->operands[0],to,ma))!=RC_OK) return rc;
 				to.op=node->op; //if ((node->flags&DISTINCT_OP)!=0) ->META_PROP_DISTINCT
@@ -446,9 +451,9 @@ RC ExprCompileCtx::compileCondition(const ExprTree *node,ulong mode,uint32_t lbl
 				if (pv->type==VT_COLLECTION) {if ((cv=pv->nav->navigate(GO_NEXT))==NULL) break;}
 				else if (++i<pv->length) cv=&pv->varray[i]; else break;
 				if ((rc=putCondCode((ExprOp)OP_IN1,logOp[mode][1],lbl1))!=RC_OK) return rc;
-				assert(fCollectRefs || lStack>=1); --lStack;	 	// if no value required
+				assert(fCollectRefs || lStack>=1); if ((mode&CND_VBOOL)==0) --lStack;
 			}
-			if ((rc=putCondCode(ExprOp(OP_IN|0x80),mode,lbl))==RC_OK) {assert(fCollectRefs || lStack>=2); lStack-=2;}
+			if ((rc=putCondCode(ExprOp(OP_IN|0x80),mode,lbl))==RC_OK) {assert(fCollectRefs || lStack>=2); lStack-=((mode&CND_VBOOL)!=0?1:2);}
 			if (fJump) adjustRef(lbl1); return rc;
 		case VT_EXPRTREE:
 			if (((ExprTree*)pv->exprt)->op==OP_ARRAY) {
@@ -464,7 +469,7 @@ RC ExprCompileCtx::compileCondition(const ExprTree *node,ulong mode,uint32_t lbl
 		if (node->operands[0].type==VT_STMT) {
 			if ((rc=compileValue(node->operands[0],0))==RC_OK) {
 				if ((node->flags&NOT_BOOLEAN_OP)!=0) mode^=CND_NOT|1;
-				if ((rc=putCondCode(ExprOp(OP_EXISTS|0x80),mode,lbl))==RC_OK) {assert(fCollectRefs || lStack>=1); lStack-=1;}
+				if ((rc=putCondCode(ExprOp(OP_EXISTS|0x80),mode,lbl))==RC_OK) {assert(fCollectRefs || lStack>=1); if ((mode&CND_VBOOL)==0) lStack--;}
 			}
 			return rc;
 		}
@@ -473,7 +478,7 @@ RC ExprCompileCtx::compileCondition(const ExprTree *node,ulong mode,uint32_t lbl
 		if (node->nops<=2) goto bool_op;
 		for (i=0; i<node->nops; i++) if ((rc=compileValue(node->operands[i],flg))!=RC_OK) return rc;
 		if ((node->flags&NOT_BOOLEAN_OP)!=0) mode^=CND_NOT|1;
-		if ((rc=putCondCode(ExprOp(OP_IS_A|0x80),mode,lbl,true,node->nops))==RC_OK) {assert(fCollectRefs || lStack>=node->nops); lStack-=node->nops;} 	// or -1 if value required
+		if ((rc=putCondCode(ExprOp(OP_IS_A|0x80),mode,lbl,true,node->nops))==RC_OK) {assert(fCollectRefs || lStack>=node->nops); lStack-=node->nops-((mode&CND_VBOOL)!=0?1:0);}
 		break;
 	case OP_NE: if ((node->flags&NULLS_NOT_INCLUDED_OP)==0) flg|=CV_OPT; goto bool_op;
 	case OP_BEGINS: case OP_ENDS: case OP_REGEX: case OP_ISLOCAL: case OP_CONTAINS:
@@ -487,7 +492,7 @@ RC ExprCompileCtx::compileCondition(const ExprTree *node,ulong mode,uint32_t lbl
 			if ((node->flags&FOR_ALL_RIGHT_OP)!=0) mode|=CND_FORALL_R;
 			if ((node->flags&EXISTS_RIGHT_OP)!=0) mode|=CND_EXISTS_R;
 			if ((node->flags&NOT_BOOLEAN_OP)!=0) mode^=CND_NOT|1;
-			if ((rc=putCondCode(op,mode,lbl))==RC_OK) {assert(fCollectRefs || lStack>=node->nops); lStack-=node->nops;} 	// or -1 if value required
+			if ((rc=putCondCode(op,mode,lbl))==RC_OK) {assert(fCollectRefs || lStack>=node->nops); lStack-=node->nops-((mode&CND_VBOOL)!=0?1:0);}
 		}
 		break;
 	}
@@ -496,6 +501,7 @@ RC ExprCompileCtx::compileCondition(const ExprTree *node,ulong mode,uint32_t lbl
 
 RC Expr::decompile(ExprTree*&res,Session *ses) const
 {
+	if ((hdr.flags&EXPR_EXTN)!=0) {res=NULL; return RC_INVPARAM;}
 	if ((hdr.flags&EXPR_NO_CODE)!=0) {
 		//...
 		assert(0);
@@ -511,7 +517,7 @@ RC Expr::decompile(ExprTree*&res,Session *ses) const
 		case OP_CONID:
 			l=*codePtr++; if (l==0xFF) {l=codePtr[0]|codePtr[1]<<8; codePtr+=2;}
 			getExtRefs(ff?0xFFFF:0,pids,nPids); if (l<nPids) l=pids[l]; else {rc=RC_CORRUPTED; break;}
-			if (ff) top->setIdentity(l); else top->setURIID(l&STORE_MAX_PROPID);
+			if (ff) top->setIdentity(l); else top->setURIID(l&STORE_MAX_URIID);
 			top++; break;
 		case OP_VAR: case OP_PROP: case OP_ELT:
 			if (top>=end) {rc=RC_NORESOURCES; break;}
@@ -519,7 +525,7 @@ RC Expr::decompile(ExprTree*&res,Session *ses) const
 			if (op==OP_VAR) l=STORE_INVALID_PROPID;
 			else {
 				if (idx!=0xFF) {l=idx&0x3F; idx>>=6;} else {idx=codePtr[0]; l=codePtr[1]|codePtr[2]<<8; codePtr+=3;}
-				getExtRefs((ushort)idx,pids,nPids); if (l<nPids) l=pids[l]&STORE_MAX_PROPID; else {rc=RC_CORRUPTED; break;}
+				getExtRefs((ushort)idx,pids,nPids); if (l<nPids) l=pids[l]&STORE_MAX_URIID; else {rc=RC_CORRUPTED; break;}
 			}
 			top->setVarRef((byte)idx,l); if (op==OP_ELT) {ElementID eid; mv_dec32(codePtr,eid); top->eid=mv_dec32zz(eid);}
 			if (ff) {if ((exp=new(1,ses) ExprTree(OP_COUNT,1,0,0,top,ses))!=NULL) top->set(exp); else rc=RC_NORESOURCES;}
@@ -700,7 +706,7 @@ RC Expr::getPropDNF(ushort var,PropDNF *&dnf,size_t& ldnf,MemAlloc *ma) const
 		else if ((pd=(PropDNF*)ma->malloc(sizeof(PropDNF)+(nPids-1)*sizeof(PropertyID)))==NULL) return RC_NORESOURCES;
 		else {
 			pd->nIncl=pd->nExcl=0;
-			for (unsigned i=0; i<nPids; i++) if ((pids[i]&(PROP_OPTIONAL|PROP_NO_LOAD))==0) pd->pids[pd->nIncl++]=pids[i]&STORE_MAX_PROPID;
+			for (unsigned i=0; i<nPids; i++) if ((pids[i]&(PROP_OPTIONAL|PROP_NO_LOAD))==0) pd->pids[pd->nIncl++]=pids[i]&STORE_MAX_URIID;
 			if (pd->nIncl==0) {ma->free(pd); dnf=NULL; ldnf=0;} else {dnf=pd; ldnf=sizeof(PropDNF)+(pd->nIncl-1)*sizeof(PropertyID);}
 		}
 	} else if ((rc=decompile(et,Session::getSession()))==RC_OK) {
@@ -1177,7 +1183,7 @@ IExpr *ExprTree::compile()
 	try {
 		Session *ses=Session::getSession();
 		if (ses==NULL||ses->getStore()->inShutdown()) return NULL;
-		Expr *expr=NULL; Expr::compile(this,expr,ses); return expr;
+		Expr *expr=NULL; Expr::compile(this,expr,ses,false); return expr;
 	} catch (RC) {} catch (...) {report(MSG_ERROR,"Exception in IExprTree::compile()\n");}
 	return NULL;
 }
@@ -1208,5 +1214,25 @@ IExprTree *SessionX::expr(ExprOp op,unsigned nOperands,const Value *operands,uns
 		if (rc==RC_OK && (rc=ExprTree::forceExpr(v,ses,true))!=RC_OK) freeV(v);
 		return rc==RC_OK?v.exprt:(IExprTree*)0;
 	} catch (RC) {} catch (...) {report(MSG_ERROR,"Exception in IStmt::expr()\n");}
+	return NULL;
+}
+
+void **Expr::extnTab = NULL;
+int	Expr::nExtns=0;
+
+RC Expr::registerExtn(void *itf,uint16_t& langID)
+{
+	for (int i=0; i<nExtns; i++) if (extnTab[i]==itf) {langID=(uint16_t)i; return RC_OK;}
+	if ((extnTab=(void**)::realloc(extnTab,(nExtns+1)*sizeof(void*)))==NULL) return RC_NORESOURCES;
+	langID=(uint16_t)nExtns; extnTab[nExtns++]=itf; return RC_OK;
+}
+
+IExpr *SessionX::createExtExpr(uint16_t langID,const byte *body,uint32_t lBody,uint16_t flags)
+{
+	try {
+		assert(ses==Session::getSession());
+		if (langID>=Expr::nExtns || body==NULL || lBody==0 || (flags&EXPR_EXTN)!=0 || ses->getStore()->inShutdown()) return NULL;
+		Expr *exp=NULL; return Expr::create(langID,body,lBody,flags,exp,ses)==RC_OK?exp:NULL;
+	} catch (RC) {} catch (...) {report(MSG_ERROR,"Exception in ISession::createExtExpr()\n");}
 	return NULL;
 }

@@ -1105,9 +1105,10 @@ private:
 		while (rc==RC_OK);
 		return rc==RC_TRUE?RC_OK:rc;
 	}
-	RC pinOut(const PIN *pin,const OInfo& oi) {
+	RC pinOut(PIN *pin,const OInfo& oi) {
 		RC rc=RC_OK;
 		if (oi.rtt!=RTT_COUNT) {
+			if (pin->isClass()) pin->getSes()->getStore()->queryMgr->getClassInfo(pin->getSes(),pin);
 			enc->set(pin,oi.cid,oi.fCid,oi.rtt);
 			do if ((rc=enc->encode(obuf+lobuf-obleft,obleft))==RC_OK || rc==RC_TRUE && obleft==0)
 				{RC rc2=out->next(obuf,lobuf); obleft=lobuf; if (rc2!=RC_TRUE && rc2!=RC_OK) rc=rc2;}
@@ -1257,9 +1258,10 @@ class ServerStreamIn : public ProtoBufStreamIn {
 			while (rc==RC_OK);
 			return rc==RC_TRUE?RC_OK:rc;
 		}
-		RC pinOut(const PIN *pin,const OInfo& oi) {
+		RC pinOut(PIN *pin,const OInfo& oi) {
 			RC rc=RC_OK;
 			if (oi.rtt!=RTT_COUNT) {
+				if (pin->isClass()) pin->getSes()->getStore()->queryMgr->getClassInfo(pin->getSes(),pin);
 				MutexP lck(&str.lock); str.enc->set(pin,oi.cid,oi.fCid,oi.rtt);
 				do if ((rc=str.enc->encode(str.obuf+str.lobuf-str.obleft,str.obleft))==RC_OK || rc==RC_TRUE && str.obleft==0)
 					{RC rc2=str.cb->send(str.obuf,str.lobuf); str.obleft=str.lobuf; if (rc2!=RC_TRUE && rc2!=RC_OK) rc=rc2;}

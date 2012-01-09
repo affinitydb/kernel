@@ -91,13 +91,13 @@ RC QueryPrc::deletePINs(Session *ses,const PIN *const *pins,const PID *pids,unsi
 					case VT_STRING:
 						if (fFT && hprop->type.getFormat()!=HDF_COMPACT) {
 							fti.propID=hprop->getID(); fti.oldV=pv;
-							if (!fNotify && (rc=loadV(v,hprop->type,hprop->offset,pcb->hp,0,NULL))!=RC_OK ||
+							if (!fNotify && (rc=loadS(v,hprop->type,hprop->offset,pcb->hp,0,NULL))!=RC_OK ||
 								(rc=ctx->ftMgr->index(fti,ftl,IX_OFT,(hprop->type.flags&META_PROP_STOPWORDS)!=0?FTMODE_STOPWORDS:0,ses))!=RC_OK) throw rc;
 						}
 						break;
 					case VT_REFID:
 						if ((hprop->type.flags&META_PROP_PART)!=0) {
-							if (!fNotify && (rc=loadV(v,hprop->type,hprop->offset,pcb->hp,0,NULL))!=RC_OK ||
+							if (!fNotify && (rc=loadS(v,hprop->type,hprop->offset,pcb->hp,0,NULL))!=RC_OK ||
 								(rc=BIN<PID>::insert(parts,nParts,pv->id,pv->id,ses,&xParts))!=RC_OK) throw rc;
 						}
 						break;

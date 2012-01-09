@@ -716,7 +716,7 @@ RC SearchKey::toKey(const Value **ppv,ulong nv,const IndexSeg *kds,int idx,Sessi
 				if (kty==VT_ANY) {
 					if (pv->type==VT_STRING && testStrNum(pv->str,pv->length,w)) pv=&w;
 				} else if (pv->type!=kty && (!isString((ValueType)pv->type) || !isString(kty))) {
-					if ((rc=convV(*pv,w,kty,CV_NOTRUNC))==RC_OK) pv=&w; else break;
+					if ((rc=convV(*pv,w,kty,ma,CV_NOTRUNC))==RC_OK) pv=&w; else break;
 				}
 				switch (pv->type) {
 				default: rc=RC_TYPE; break;

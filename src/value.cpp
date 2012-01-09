@@ -19,64 +19,52 @@ Written by Mark Venguerov 2004 - 2010
 
 using namespace MVStoreKernel;
 
-RC MVStoreKernel::copyV(const Value &from,Value &to,MemAlloc *ma)
+RC MVStoreKernel::copyV0(Value &v,MemAlloc *ma)
 {
 	try {
-		ulong i; RC rc; Value v; size_t ll;
-		if (&to!=&from) to=from; to.flags=NO_HEAP;
-		if (ma!=NULL) switch (from.type) {
+		ulong i; RC rc; Value w; size_t ll; assert(ma!=NULL);
+		switch (v.type) {
 		default: break;
 		case VT_STRING: case VT_BSTR: case VT_URL: case VT_DECIMAL:
-			if (from.str==NULL) break;
-			ll=from.length+(from.type==VT_BSTR?0:1);
-			if ((v.bstr=(byte*)ma->malloc(ll))==NULL) {to.setError(from.property); return RC_NORESOURCES;}
-			memcpy((byte*)v.bstr,from.bstr,to.length=from.length);
-			if (from.type==VT_STRING||from.type==VT_URL) const_cast<char*>(v.str)[from.length]=0;
-			to.bstr=v.bstr; to.flags=ma->getAType(); break;
+			if (v.str==NULL) break;
+			ll=v.length+(v.type==VT_BSTR?0:1);
+			if ((w.bstr=(byte*)ma->malloc(ll))==NULL) {v.type=VT_ERROR; return RC_NORESOURCES;}
+			memcpy((byte*)w.bstr,v.bstr,v.length);
+			if (v.type==VT_STRING||v.type==VT_URL) const_cast<char*>(w.str)[v.length]=0;
+			v.bstr=w.bstr; v.flags=ma->getAType(); break;
 		case VT_COLLECTION:
-			if (from.nav!=NULL && (ma->getAType()!=SES_HEAP || (v.nav=from.nav->clone())==NULL))
-				{to.setError(from.property); return RC_NORESOURCES;}
-			to.nav=v.nav; to.flags=ma->getAType(); break;
+			if (v.nav!=NULL && (ma->getAType()!=SES_HEAP || (v.nav=v.nav->clone())==NULL)) {v.type=VT_ERROR; return RC_NORESOURCES;}
+			v.flags=ma->getAType(); break;
 		case VT_ARRAY: case VT_STRUCT:
-			assert(from.varray!=NULL && from.length>0);
-			if ((v.varray=(Value*)ma->malloc(from.length*sizeof(Value)))==NULL) {to.setError(from.property); return RC_NORESOURCES;}
-			for (i=0; i<from.length; i++) {
-				if ((rc=copyV(from.varray[i],const_cast<Value&>(v.varray[i]),ma))!=RC_OK) {
-					for (ulong j=0; j<i; j++) freeV(const_cast<Value&>(v.varray[j]));
-					ma->free((Value*)v.varray); to.setError(from.property); return rc;
-				}
-			}
-			to.varray=v.varray; to.flags=ma->getAType(); break;
+			assert(v.varray!=NULL && v.length>0);
+			if ((w.varray=(Value*)ma->malloc(v.length*sizeof(Value)))==NULL) {v.type=VT_ERROR; return RC_NORESOURCES;}
+			for (i=0; i<v.length; i++)
+				if ((rc=copyV(v.varray[i],const_cast<Value&>(w.varray[i]),ma))!=RC_OK) {freeV((Value*)w.varray,i,ma); v.type=VT_ERROR; return rc;}
+			v.varray=w.varray; v.flags=ma->getAType(); break;
 		case VT_RANGE:
-			assert(from.range!=NULL && from.length==2);
-			v.range=(Value*)ma->malloc(2*sizeof(Value));
-			if (v.range==NULL) {to.setError(from.property); return RC_NORESOURCES;}
-			if ((rc=copyV(from.range[0],v.range[0],ma))!=RC_OK)
-				{ma->free((Value*)v.range); to.setError(from.property); return rc;}
-			if ((rc=copyV(from.range[1],v.range[1],ma))!=RC_OK) 
-				{freeV(const_cast<Value&>(v.range[0])); ma->free((Value*)v.range); to.setError(from.property); return rc;}
-			to.range=v.range; to.flags=ma->getAType(); break;
+			assert(v.range!=NULL && v.length==2);
+			w.range=(Value*)ma->malloc(2*sizeof(Value));
+			if (w.range==NULL) {v.type=VT_ERROR; return RC_NORESOURCES;}
+			if ((rc=copyV(v.range[0],w.range[0],ma))!=RC_OK) {ma->free((Value*)w.range); v.type=VT_ERROR; return rc;}
+			if ((rc=copyV(v.range[1],w.range[1],ma))!=RC_OK) {freeV(const_cast<Value&>(w.range[0])); ma->free((Value*)w.range); v.type=VT_ERROR; return rc;}
+			v.range=w.range; v.flags=ma->getAType(); break;
 		case VT_REFIDPROP: case VT_REFIDELT:
-			v.refId=(RefVID*)ma->malloc(sizeof(RefVID));
-			if (v.refId==NULL) {to.setError(from.property); return RC_NORESOURCES;}
-			*const_cast<RefVID*>(v.refId)=*from.refId; to.refId=v.refId; to.flags=ma->getAType(); break;
+			w.refId=(RefVID*)ma->malloc(sizeof(RefVID));
+			if (w.refId==NULL) {v.type=VT_ERROR; return RC_NORESOURCES;}
+			*const_cast<RefVID*>(w.refId)=*v.refId; v.refId=w.refId; v.flags=ma->getAType(); break;
 		case VT_STMT:
-			if (from.stmt!=NULL && (to.stmt=((Stmt*)from.stmt)->clone(STMT_OP_ALL,ma,false))==NULL)
-				{to.setError(from.property); return RC_NORESOURCES;}
-			to.flags=ma->getAType(); break;
+			if (v.stmt!=NULL && (v.stmt=((Stmt*)v.stmt)->clone(STMT_OP_ALL,ma,false))==NULL) {v.type=VT_ERROR; return RC_NORESOURCES;}
+			v.flags=ma->getAType(); break;
 		case VT_EXPR:
-			if (from.expr!=NULL && (to.expr=Expr::clone((Expr*)from.expr,ma))==NULL)
-				{to.setError(from.property); return RC_NORESOURCES;}
-			to.flags|=ma->getAType(); break;
+			if (v.expr!=NULL && (v.expr=Expr::clone((Expr*)v.expr,ma))==NULL) {v.type=VT_ERROR; return RC_NORESOURCES;}
+			v.flags|=ma->getAType(); break;
 		case VT_EXPRTREE:
-			if (from.exprt!=NULL && (to.exprt=((ExprTree*)from.exprt)->clone())==NULL)
-				{to.setError(from.property); return RC_NORESOURCES;}
-			to.flags=ma->getAType(); break;
+			if (v.exprt!=NULL && (v.exprt=((ExprTree*)v.exprt)->clone())==NULL) {v.type=VT_ERROR; return RC_NORESOURCES;}
+			v.flags=ma->getAType(); break;
 		case VT_STREAM:
-			to.stream.prefix=NULL;
-			if (from.stream.is!=NULL && (ma->getAType()!=SES_HEAP || (to.stream.is=from.stream.is->clone())==NULL))
-				{to.setError(from.property); return RC_NORESOURCES;}
-			to.flags=ma->getAType(); break;
+			v.stream.prefix=NULL;
+			if (v.stream.is!=NULL && (ma->getAType()!=SES_HEAP || (v.stream.is=v.stream.is->clone())==NULL)) {v.type=VT_ERROR; return RC_NORESOURCES;}
+			v.flags=ma->getAType(); break;
 		}
 		return RC_OK;
 	} catch (RC rc) {return rc;} catch (...) {report(MSG_ERROR,"Exception in copyV(...)\n"); return RC_INTERNAL;}
@@ -477,15 +465,12 @@ int MVStoreKernel::cmpConv(const Value& arg,const Value& arg2,ulong u)
 	return cmp3(arg.type,arg2.type);
 }
 
-RC MVStoreKernel::convV(const Value& src,Value& dst,ValueType type,unsigned mode)
+RC MVStoreKernel::convV(const Value& src,Value& dst,ValueType type,MemAlloc *ma,unsigned mode)
 {
 	int l; char buf[256],*p; Value w; RC rc; TIMESTAMP ts; int64_t itv; URI *uri; Identity *ident; IdentityID iid; uint32_t ui;
 	for (const Value *ps=&src;;) {if (ps->type==type) {
 noconv:
-		if (ps!=&dst) {
-			MemAlloc *ma=Session::getSession(); if (ma==NULL) return RC_NOSESSION;
-			if ((rc=copyV(*ps,dst,ma))!=RC_OK) {dst.setError(src.property); return rc;}
-		}
+		if (ps!=&dst) {if ((rc=copyV(*ps,dst,ma))!=RC_OK) {dst.setError(src.property); return rc;}}
 	} else if (isRef((ValueType)ps->type) && type!=VT_URL && !isRef(type)) {
 		if ((rc=derefValue(*ps,dst,Session::getSession()))!=RC_OK) return rc;
 		ps=&dst; continue;
@@ -499,38 +484,37 @@ noconv:
 		default: return RC_TYPE;
 		case VT_STRING:
 			switch (ps->type) {
-			default: return RC_TYPE;
 			case VT_URL: goto noconv;
 			case VT_INT:
 				if ((l=sprintf(buf,"%d",ps->i))<0) return RC_INTERNAL;
-				if ((p=(char*)malloc(l+1,SES_HEAP))==NULL) return RC_NORESOURCES;
-				memcpy(p,buf,l+1); dst.set(p,(unsigned long)l); dst.flags=SES_HEAP; break;
+				if ((p=(char*)ma->malloc(l+1))==NULL) return RC_NORESOURCES;
+				memcpy(p,buf,l+1); dst.set(p,(unsigned long)l); dst.flags=ma->getAType(); break;
 			case VT_UINT:
 				ui=ps->ui;
 			ui_to_str:
 				if ((l=sprintf(buf,"%u",ui))<0) return RC_INTERNAL;
-				if ((p=(char*)malloc(l+1,SES_HEAP))==NULL) return RC_NORESOURCES;
-				memcpy(p,buf,l+1); dst.set(p,(unsigned long)l); dst.flags=SES_HEAP; break;
+				if ((p=(char*)ma->malloc(l+1))==NULL) return RC_NORESOURCES;
+				memcpy(p,buf,l+1); dst.set(p,(unsigned long)l); dst.flags=ma->getAType(); break;
 			case VT_INT64:
 				if ((l=sprintf(buf,_LD_FM,ps->i64))<0) return RC_INTERNAL;
-				if ((p=(char*)malloc(l+1,SES_HEAP))==NULL) return RC_NORESOURCES;
-				memcpy(p,buf,l+1); dst.set(p,(unsigned long)l); dst.flags=SES_HEAP; break;
+				if ((p=(char*)ma->malloc(l+1))==NULL) return RC_NORESOURCES;
+				memcpy(p,buf,l+1); dst.set(p,(unsigned long)l); dst.flags=ma->getAType(); break;
 			case VT_UINT64:
 				if ((l=sprintf(buf,_LU_FM,ps->ui64))<0) return RC_INTERNAL;
-				if ((p=(char*)malloc(l+1,SES_HEAP))==NULL) return RC_NORESOURCES;
-				memcpy(p,buf,l+1); dst.set(p,(unsigned long)l); dst.flags=SES_HEAP; break;
+				if ((p=(char*)ma->malloc(l+1))==NULL) return RC_NORESOURCES;
+				memcpy(p,buf,l+1); dst.set(p,(unsigned long)l); dst.flags=ma->getAType(); break;
 			case VT_FLOAT:
 				if ((l=sprintf(buf,"%g",ps->f))<0) return RC_INTERNAL;
-				if ((p=(char*)malloc(l+1,SES_HEAP))==NULL) return RC_NORESOURCES;
-				memcpy(p,buf,l+1); dst.set(p,(unsigned long)l); dst.flags=SES_HEAP; break;
+				if ((p=(char*)ma->malloc(l+1))==NULL) return RC_NORESOURCES;
+				memcpy(p,buf,l+1); dst.set(p,(unsigned long)l); dst.flags=ma->getAType(); break;
 			case VT_DOUBLE:
 				if ((l=sprintf(buf,"%g",ps->d))<0) return RC_INTERNAL;
-				if ((p=(char*)malloc(l+1,SES_HEAP))==NULL) return RC_NORESOURCES;
-				memcpy(p,buf,l+1); dst.set(p,(unsigned long)l); dst.flags=SES_HEAP; break;
+				if ((p=(char*)ma->malloc(l+1))==NULL) return RC_NORESOURCES;
+				memcpy(p,buf,l+1); dst.set(p,(unsigned long)l); dst.flags=ma->getAType(); break;
 			case VT_BOOL: 
 				if (ps->b) dst.set("true",4); else dst.set("false",5); break;
 			case VT_STREAM:
-				if ((rc=streamToValue(ps->stream.is,w,Session::getSession()))!=RC_OK) return rc;
+				if ((rc=streamToValue(ps->stream.is,w,ma))!=RC_OK) return rc;
 				if (w.type==VT_BSTR) {freeV(w); return RC_TYPE;}
 				if (ps==&dst) freeV(dst); dst=w;
 				if (dst.type!=type) {ps=&dst; continue;}
@@ -546,24 +530,24 @@ noconv:
 				ts=ps->ui64;
 			dt_to_str:
 				if ((rc=convDateTime(Session::getSession(),ts,buf,l))!=RC_OK) return rc;
-				if ((p=(char*)malloc(l+1,SES_HEAP))==NULL) return RC_NORESOURCES;
-				memcpy(p,buf,l+1); dst.set(p,(unsigned long)l); dst.flags=SES_HEAP; break;
+				if ((p=(char*)ma->malloc(l+1))==NULL) return RC_NORESOURCES;
+				memcpy(p,buf,l+1); dst.set(p,(unsigned long)l); dst.flags=ma->getAType(); break;
 			case VT_INTERVAL:
 				if ((rc=convInterval(ps->i64,buf,l))!=RC_OK) return rc;
-				if ((p=(char*)malloc(l+1,SES_HEAP))==NULL) return RC_NORESOURCES;
-				memcpy(p,buf,l+1); dst.set(p,(unsigned long)l); dst.flags=SES_HEAP; break;
+				if ((p=(char*)ma->malloc(l+1))==NULL) return RC_NORESOURCES;
+				memcpy(p,buf,l+1); dst.set(p,(unsigned long)l); dst.flags=ma->getAType(); break;
 				break;
 			case VT_URIID:
 				if (ps->uid==STORE_INVALID_PROPID) dst.set("",0);
 				else if ((uri=(URI*)StoreCtx::get()->uriMgr->ObjMgr::find(ps->uid))==NULL) return RC_NOTFOUND;
-				else {dst.set(strdup(uri->getName(),Session::getSession())); dst.flags=SES_HEAP; uri->release();}
+				else {dst.set(strdup(uri->getName(),ma)); dst.flags=ma->getAType(); uri->release();}
 				break;
 			case VT_IDENTITY:
 				iid=ps->iid;
 			ident_to_str:
 				if (iid==STORE_INVALID_IDENTITY) dst.set("",0);
 				else if ((ident=(Identity*)StoreCtx::get()->identMgr->ObjMgr::find(iid))==NULL) return RC_NOTFOUND;
-				else {dst.set(strdup(ident->getName(),Session::getSession())); dst.flags=SES_HEAP; ident->release();}
+				else {dst.set(strdup(ident->getName(),ma)); dst.flags=ma->getAType(); ident->release();}
 				break;
 			case VT_STMT:
 				if ((p=ps->stmt->toString())==NULL) return RC_NORESOURCES;
@@ -573,13 +557,11 @@ noconv:
 				if ((p=ps->expr->toString())==NULL) return RC_NORESOURCES;
 				if (&dst==ps && ps->flags!=NO_HEAP) freeV(dst);
 				dst.set(p); dst.flags=SES_HEAP; break;
-			case VT_ENUM:
-			case VT_DECIMAL:
-			case VT_ARRAY:
-			case VT_COLLECTION:
-			case VT_STRUCT:
-				// ???
-				return RC_TYPE;
+			default:
+				{SOutCtx so(Session::getSession()); if ((rc=so.renderValue(src))!=RC_OK) return rc;
+				if (&dst==ps && ps->flags!=NO_HEAP) freeV(dst);
+				size_t l; char *p=(char*)so.result(l); dst.set(p,(uint32_t)l); dst.flags=SES_HEAP;}
+				break;
 			}
 			break;
 		case VT_URL:
@@ -604,14 +586,14 @@ noconv:
 			case VT_STRING: case VT_URL: case VT_BSTR: goto noconv;
 			case VT_INT: case VT_UINT: case VT_INT64: case VT_UINT64: case VT_FLOAT: case VT_DOUBLE:
 			case VT_BOOL: case VT_DATETIME: case VT_INTERVAL:
-				if ((p=(char*)malloc(ps->length,SES_HEAP))==NULL) return RC_NORESOURCES;
-				memcpy(p,&ps->i,ps->length); dst.set((unsigned char*)p,ps->length); dst.flags=SES_HEAP; break;
+				if ((p=(char*)ma->malloc(ps->length))==NULL) return RC_NORESOURCES;
+				memcpy(p,&ps->i,ps->length); dst.set((unsigned char*)p,ps->length); dst.flags=ma->getAType(); break;
 			case VT_STREAM:
-				if ((rc=streamToValue(ps->stream.is,w,Session::getSession()))!=RC_OK) return rc;
+				if ((rc=streamToValue(ps->stream.is,w,ma))!=RC_OK) return rc;
 				if (ps==&dst) freeV(dst); dst=w; break;
 			case VT_CURRENT:		//????
-				if ((p=(char*)malloc(sizeof(TIMESTAMP),SES_HEAP))==NULL) return RC_NORESOURCES;
-				getTimestamp(*(TIMESTAMP*)p); dst.set((unsigned char*)p,sizeof(TIMESTAMP)); dst.flags=SES_HEAP; break;
+				if ((p=(char*)ma->malloc(sizeof(TIMESTAMP)))==NULL) return RC_NORESOURCES;
+				getTimestamp(*(TIMESTAMP*)p); dst.set((unsigned char*)p,sizeof(TIMESTAMP)); dst.flags=ma->getAType(); break;
 			case VT_ENUM:
 			case VT_DECIMAL:
 				return RC_INTERNAL;
@@ -825,8 +807,8 @@ noconv:
 			break;
 		case VT_STMT:
 			if (ps->type==VT_STRING) {
-				Session *ses=Session::getSession(); RC rc=RC_OK;
-				SInCtx in(ses,ps->str,ps->length,NULL,0,(Session::getSession()->getItf()&ITF_SPARQL)!=0?SQ_SPARQL:SQ_SQL);
+				Session *ses=Session::getSession(); if (ses==NULL) return RC_NOSESSION; RC rc=RC_OK;
+				SInCtx in(ses,ps->str,ps->length,NULL,0,(ses->getItf()&ITF_SPARQL)!=0?SQ_SPARQL:SQ_SQL);
 				try {Stmt *st=in.parseStmt(); if (&src==&dst) freeV(dst); dst.set(st); dst.flags=SES_HEAP; return RC_OK;}
 				catch (SynErr) {rc=RC_SYNTAX;} catch (RC rc2) {rc=rc2;}
 				return rc;
@@ -834,10 +816,10 @@ noconv:
 			return RC_TYPE;
 		case VT_EXPR:
 			if (ps->type==VT_STRING) {
-				Session *ses=Session::getSession();
+				Session *ses=Session::getSession(); if (ses==NULL) return RC_NOSESSION;
 				SInCtx in(ses,ps->str,ps->length,NULL,0); Expr *pe=NULL;
 				try {
-					ExprTree *et=in.parse(false); in.checkEnd(); rc=Expr::compile(et,pe,ses); et->destroy(); 
+					ExprTree *et=in.parse(false); in.checkEnd(); rc=Expr::compile(et,pe,ses,false); et->destroy(); 
 					if (rc!=RC_OK) return rc; if (&src==&dst) freeV(dst);
 					dst.set(pe); dst.flags=SES_HEAP; return RC_OK;
 				} catch (SynErr) {return RC_SYNTAX;} catch (RC rc) {return rc;}

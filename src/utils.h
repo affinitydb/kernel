@@ -641,9 +641,9 @@ public:
 	};
 };
 
-enum SListOp {SLO_LT, SLO_GT, SLO_NOOP, SLO_INSERT, SLO_DELETE};
+enum SListOp {SLO_LT, SLO_GT, SLO_NOOP, SLO_INSERT, SLO_DELETE, SLO_ERROR};
 
-template<typename T,class Cmp,int xHeight=16,unsigned int factor=4> class SList
+template<typename T,class SL,int xHeight=16,unsigned int factor=4> class SList
 {
 	struct Node {
 		T		obj;
@@ -661,12 +661,12 @@ template<typename T,class Cmp,int xHeight=16,unsigned int factor=4> class SList
 public:
 	SList(MemAlloc& ma,ulong ex=0) : current(&node0),level(0),count(0),extra(ex),alloc(ma) {for (int i=0; i<xHeight; i++) node0.ptrs[i]=NULL;}
 	~SList() {}
-	RC	add(const T& obj,T **ret=NULL) {
+	SListOp	add(const T& obj,T **ret=NULL) {
 		Node *update[xHeight],*node=&node0,*prev=NULL; int i=level; if (ret!=NULL) *ret=NULL;
 		if (--i>=0) for (;;) {
-			switch (node->ptrs[i]!=NULL&&node->ptrs[i]!=prev?Cmp::compare(obj,node->ptrs[i]->obj,extra):SLO_LT) {
+			switch (node->ptrs[i]!=NULL&&node->ptrs[i]!=prev?SL::compare(obj,node->ptrs[i]->obj,extra):SLO_LT) {
 			default: break;
-			case SLO_NOOP: if (ret!=NULL) *ret=&node->ptrs[i]->obj; return RC_OK;
+			case SLO_NOOP: if (ret!=NULL) *ret=&node->ptrs[i]->obj; return SLO_NOOP;
 			case SLO_GT: node=node->ptrs[i]; continue;
 			case SLO_LT: prev=(update[i]=node)->ptrs[i]; if (--i>=0) continue; else break;
 			case SLO_DELETE:
@@ -674,20 +674,20 @@ public:
 					node->ptrs[i]=prev->ptrs[i]; if (--i<0) break;
 					while (node->ptrs[i]!=prev) {assert(node->ptrs[i]!=NULL); node=node->ptrs[i];}
 				}
-				assert(count!=0); count--; return RC_OK;
+				assert(count!=0); count--; return SLO_DELETE;
 			}
 			break;
 		}
 		for (i=1; ;i++) if (i>=xHeight || rand()*factor>=RAND_MAX) {
 			if (i>level) for (assert(i<=xHeight); level<i; level++) update[level]=&node0;
-			if ((node=new(i,alloc) Node(obj))==NULL) return RC_NORESOURCES; count++;
+			if ((node=new(i,alloc) Node(obj))==NULL) return SLO_ERROR; count++;
 			while (--i>=0) {node->ptrs[i]=update[i]->ptrs[i]; update[i]->ptrs[i]=node;}
-			if (ret!=NULL) *ret=&node->obj; return RC_OK;
+			if (ret!=NULL) *ret=&node->obj; return SLO_INSERT;
 		}
 	}
 	bool	operator[](const T& obj) const {
 		if (level==0) return false; const Node *node=&node0,*prev=NULL;
-		for (int i=level-1;;) switch (node->ptrs[i]!=NULL && node->ptrs[i]!=prev?Cmp::compare(obj,node->ptrs[i]->obj,extra):SLO_LT) {
+		for (int i=level-1;;) switch (node->ptrs[i]!=NULL && node->ptrs[i]!=prev?SL::compare(obj,node->ptrs[i]->obj,extra):SLO_LT) {
 		default: return true;
 		case SLO_GT: node=node->ptrs[i]; continue;
 		case SLO_LT: prev=node->ptrs[i]; if (--i>=0) continue; return false;

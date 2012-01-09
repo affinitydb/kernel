@@ -507,10 +507,10 @@ const Value *Navigator::navigate(GO_DIR op,ElementID ei)
 	Value w,*res=NULL; bool fRelease=(mode&LOAD_ENAV)!=0;
 	if (op==GO_FINDBYID && ei==STORE_COLLECTION_ID) fRelease=true;
 	else if (ecb.get(op,op==GO_FINDBYID?ei:STORE_COLLECTION_ID,true)==RC_OK && 
-			ctx->queryMgr->loadV(w,ecb.hdr->type,ecb.hdr->type.isCompact()?*(ushort*)((byte*)(ecb.hdr+1)+ecb.hdr->shift):
-			ushort((byte*)(ecb.hdr+1)-(byte*)ecb.tp)+ecb.hdr->shift,(const HeapPageMgr::HeapPage*)ecb.tp,mode|LOAD_SSV,Session::getSession())==RC_OK) {
+			ctx->queryMgr->loadS(w,ecb.hdr->type,ecb.hdr->type.isCompact()?*(ushort*)((byte*)(ecb.hdr+1)+ecb.hdr->shift):
+			ushort((byte*)(ecb.hdr+1)-(byte*)ecb.tp)+ecb.hdr->shift,(const HeapPageMgr::HeapPage*)ecb.tp,mode|LOAD_SSV,allc)==RC_OK) {
 		freeV(curValue); curValue=w; curValue.property=STORE_INVALID_PROPID; curValue.eid=ecb.eid; res=&curValue;
-		if (type!=VT_ANY && curValue.type!=type && convV(curValue,curValue,type)!=RC_OK) res=NULL;
+		if (type!=VT_ANY && curValue.type!=type && convV(curValue,curValue,type,allc)!=RC_OK) res=NULL;
 	}
 	if (fRelease) ecb.release();
 	return res;
@@ -541,9 +541,9 @@ const Value *Navigator::getCurrentValue()
 RC Navigator::getElementByID(ElementID eid,Value& v)
 {
 	ECB ecb2(ctx,*this,ecb.coll); RC rc=ecb2.get(GO_FINDBYID,eid,true); if (rc!=RC_OK) return rc;
-	if ((rc=ctx->queryMgr->loadV(v,ecb2.hdr->type,ushort((byte*)ecb2.hdr-(byte*)ecb2.tp)+ecb2.hdr->shift+sizeof(ElementDataHdr),
-		(const HeapPageMgr::HeapPage*)ecb2.tp,mode|LOAD_SSV,Session::getSession()))==RC_OK) {v.property=STORE_INVALID_PROPID; v.eid=ecb2.eid;}
-	else if (type!=VT_ANY && v.type!=type) rc=convV(v,v,type);
+	if ((rc=ctx->queryMgr->loadS(v,ecb2.hdr->type,ushort((byte*)ecb2.hdr-(byte*)ecb2.tp)+ecb2.hdr->shift+sizeof(ElementDataHdr),
+		(const HeapPageMgr::HeapPage*)ecb2.tp,mode|LOAD_SSV,allc))==RC_OK) {v.property=STORE_INVALID_PROPID; v.eid=ecb2.eid;}
+	else if (type!=VT_ANY && v.type!=type) rc=convV(v,v,type,allc);
 	return rc;
 }
 
@@ -826,7 +826,7 @@ RC Collection::modify(ExprOp op,const Value *pv,ElementID epos,ElementID eid,Ses
 			assert(ecb.hdr!=NULL);
 			if (isString(ecb.hdr->type.getType())) {
 				Value v;
-				if ((rc=ctx->queryMgr->loadV(v,ecb.hdr->type,ecb.hdr->type.isCompact()?*(ushort*)((byte*)(ecb.hdr+1)+ecb.hdr->shift):
+				if ((rc=ctx->queryMgr->loadS(v,ecb.hdr->type,ecb.hdr->type.isCompact()?*(ushort*)((byte*)(ecb.hdr+1)+ecb.hdr->shift):
 					ushort((byte*)(ecb.hdr+1)-(byte*)ecb.tp)+ecb.hdr->shift,(const HeapPageMgr::HeapPage*)ecb.tp,0,ses))!=RC_OK) break;
 				if ((rc=Expr::calc(OP_EDIT,v,pv,2,0,ses))==RC_OK && (rc=persistElement(ses,v,lval,buf,lbuf,threshold,ecb.prevID,ecb.nextID))==RC_OK)
 					rc=ctx->trpgMgr->update(ecb,key,(byte*)ecb.hdr,ecb.lData,buf,lval);
@@ -1122,7 +1122,7 @@ RC Collection::persist(const Value& v,HeapPageMgr::HeapExtCollection& collection
 	else switch (v.type) {
 	case VT_ARRAY:
 		for (k=0; k<v.length; k++) {
-			if (fForce && v.varray[k].eid<prev) break; else prev=v.varray[k].eid;
+			if (fForce) {if (v.varray[k].eid<prev) break; else prev=v.varray[k].eid;}
 			if ((rc=init.persist(v.varray[k],k))!=RC_OK) break;
 		}
 		init.release(); 
@@ -1131,7 +1131,7 @@ RC Collection::persist(const Value& v,HeapPageMgr::HeapExtCollection& collection
 		break;
 	case VT_COLLECTION:
 		for (cv=v.nav->navigate(GO_FIRST),k=0; cv!=NULL; ++k,cv=v.nav->navigate(GO_NEXT))
-			{if (fForce && cv->eid<prev) break; else prev=cv->eid; if ((rc=init.persist(*cv,k))!=RC_OK) break;}
+			{if (fForce) {if (cv->eid<prev) break; else prev=cv->eid;} if ((rc=init.persist(*cv,k))!=RC_OK) break;}
 		init.release(); 
 		if (rc==RC_OK && cv!=NULL) for (Collection pcol(ses->getStore(),0,&collection,0,NO_HEAP); cv!=NULL; ++k,cv=v.nav->navigate(GO_NEXT))
 			{if ((rc=pcol.modify(OP_ADD,cv,prev,cv->eid,ses))!=RC_OK) break; prev=cv->eid;}

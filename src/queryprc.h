@@ -71,6 +71,7 @@ struct ChangeInfo
 #define	PM_NEWVALUES	0x00400000
 #define	PM_OLDVALUES	0x00800000
 #define	PM_CALCULATED	0x01000000
+#define	PM_GENEIDS		0x02000000
 
 struct PropInfo
 {
@@ -149,8 +150,7 @@ class QueryPrc
 	RC		loadProps(PINEx *pcb,unsigned mode,const PropertyID *pids=NULL,unsigned nPids=0);
 	RC		loadV(Value& v,ulong pid,const PINEx& cb,ulong mode,MemAlloc *ma,ulong eid=STORE_COLLECTION_ID);
 	RC		loadVH(Value& v,const HeapPageMgr::HeapV *hprop,const PINEx& cb,ulong mode,MemAlloc *ma,ulong eid=STORE_COLLECTION_ID);
-	RC		loadVTx(Value& v,const HeapPageMgr::HeapV *hprop,const PINEx& cb,ulong mode,MemAlloc *ma,ulong eid=STORE_COLLECTION_ID);
-	RC		loadV(Value& v,HType ty,PageOff offset,const HeapPageMgr::HeapPage *frame,ulong mode,MemAlloc *ma,ulong eid=STORE_COLLECTION_ID);
+	RC		loadS(Value& v,HType ty,PageOff offset,const HeapPageMgr::HeapPage *frame,ulong mode,MemAlloc *ma,ulong eid=STORE_COLLECTION_ID);
 	RC		loadSSVs(Value *values,unsigned nValues,unsigned mode,Session *ses,MemAlloc *ma);
 	RC		loadSSV(Value& val,ValueType ty,const HeapPageMgr::HeapObjHeader *hobj,unsigned mode,MemAlloc *ma);
 
@@ -170,7 +170,7 @@ class QueryPrc
 	size_t	splitLength(const Value *pv);
 	RC		estimateLength(const Value& v,size_t& res,ulong mode,size_t threshold,MemAlloc *ma,PageID pageID=INVALID_PAGEID,size_t *rlen=NULL);
 	RC		findCandidateSSVs(struct CandidateSSVs& cs,const Value *pv,ulong nv,bool fSplit,MemAlloc *ma,const AllocCtrl *act=NULL,PropertyID=STORE_INVALID_PROPID,struct ModInfo *mi=NULL);
-	RC		persistValue(const Value& v,ushort& sht,HType& vt,ushort& offs,byte *buf,size_t *plrec,const PageAddr &addr);
+	RC		persistValue(const Value& v,ushort& sht,HType& vt,ushort& offs,byte *buf,size_t *plrec,const PageAddr &addr,ElementID *keygen=NULL);
 	RC		putHeapMod(HeapPageMgr::HeapPropMod *hpm,struct ModInfo *pm,byte *buf,ushort& sht,const PINEx&,bool=false);
 	static	int __cdecl cmpCandidateSSV(const void *v1, const void *v2);
 

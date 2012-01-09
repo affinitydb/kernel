@@ -270,13 +270,13 @@ RC Stmt::addOutputNoCopy(QVarID var,Value *os,unsigned nO)
 					if ((qv->aggrs.vals=(Value*)ma->realloc((Value*)qv->aggrs.vals,(qv->aggrs.nValues+1)*sizeof(Value)))==NULL) return RC_NORESOURCES;
 					Value &to=((Value*)qv->aggrs.vals)[qv->aggrs.nValues];
 					if (et->operands[0].type==VT_EXPRTREE) {
-						Expr *ag; if ((rc=Expr::compile((ExprTree*)et->operands[0].exprt,ag,ma))!=RC_OK) return rc;
+						Expr *ag; if ((rc=Expr::compile((ExprTree*)et->operands[0].exprt,ag,ma,false))!=RC_OK) return rc;
 						to.set(ag); to.meta|=META_PROP_EVAL;
 					} else if ((rc=copyV(et->operands[0],to,ma))!=RC_OK) return rc;
 					to.op=et->op; //if ((et->flags&DISTINCT_OP)!=0) -> META_PROP_DISTINCT
 					et->destroy(); vv.type=VT_VARREF; vv.length=0; vv.refV.refN=byte(qv->aggrs.nValues); vv.refV.type=VT_ANY; vv.refV.flags=VAR_AGGS;
 					qv->aggrs.nValues++; qv->aggrs.fFree=true;
-				} else if ((rc=Expr::compile(et,exp,ma,&qv->aggrs))==RC_OK) {et->destroy(); vv.expr=exp; vv.type=VT_EXPR; vv.meta|=META_PROP_EVAL;}
+				} else if ((rc=Expr::compile(et,exp,ma,false,&qv->aggrs))==RC_OK) {et->destroy(); vv.expr=exp; vv.type=VT_EXPR; vv.meta|=META_PROP_EVAL;}
 				else return rc;
 			}
 			if (vv.property==PROP_SPEC_ANY) {
@@ -284,7 +284,7 @@ RC Stmt::addOutputNoCopy(QVarID var,Value *os,unsigned nO)
 				else if (nO==1) vv.property=PROP_SPEC_VALUE;
 				else if ((rc=(ctx!=NULL?ctx:(ctx=StoreCtx::get()))->queryMgr->getCalcPropID(i,vv.property))!=RC_OK) return rc;
 			}
-			if (vv.type==VT_VARREF && (vv.refV.flags&VAR_TYPE_MASK)!=VAR_PARAM) nVRef++;
+			if (vv.type==VT_VARREF && (vv.refV.flags&VAR_TYPE_MASK)!=VAR_PARAM) {if (vv.length==1 && vv.refV.id==vv.property) nVRef++;}
 			else if (vv.op!=OP_COUNT && (vv.type!=VT_STMT && vv.type!=VT_EXPR || (vv.meta&META_PROP_EVAL)==0)) nConst++;	// if no vars
 		}
 		if (nO>1) {
@@ -423,7 +423,7 @@ RC OrderSegQ::conv(const OrderSeg& sg,MemAlloc *ma)
 			break;
 		}
 		lPref=0; aggop=OP_SET; flags=flags&~ORD_NCASE|ORDER_EXPR;
-		return Expr::compile((ExprTree*)sg.expr,expr,ma);
+		return Expr::compile((ExprTree*)sg.expr,expr,ma,false);
 	}
 }
 
@@ -442,7 +442,7 @@ RC Stmt::setGroup(QVarID var,const OrderSeg *segs,unsigned nSegs,IExprTree *havi
 			for (unsigned i=0; i<nSegs; i++) if ((rc=qv->groupBy[i].conv(segs[i],ma))!=RC_OK) {qv->nGroupBy=i; return rc;}
 			qv->nGroupBy=nSegs;
 			if (qv->stype==SEL_COUNT) qv->stype=SEL_VALUESET; else if (qv->stype==SEL_DERIVED) qv->stype=SEL_DERIVEDSET;
-			if (having!=NULL && (rc=Expr::compile((ExprTree*)having,qv->having,ma,&qv->aggrs))!=RC_OK) return rc;
+			if (having!=NULL && (rc=Expr::compile((ExprTree*)having,qv->having,ma,true,&qv->aggrs))!=RC_OK) return rc;
 		}
 		return RC_OK;
 	} catch (RC rc) {return rc;} catch (...) {report(MSG_ERROR,"Exception in IStmt::setGroup()\n"); return RC_INTERNAL;}
@@ -490,7 +490,7 @@ RC Stmt::setValues(const Value *vals,unsigned nVals)
 						break;
 					}
 					rc=copyV(from,to,ma);
-				} else if ((rc=Expr::compile((ExprTree*)from.exprt,exp,ma))==RC_OK) {
+				} else if ((rc=Expr::compile((ExprTree*)from.exprt,exp,ma,false))==RC_OK) {
 					to.set(exp); to.flags=ma->getAType(); to.setPropID(from.property); 
 					to.meta=from.meta|META_PROP_EVAL; to.op=from.op; mode|=MODE_WITH_EVAL;
 				}
@@ -506,7 +506,7 @@ RC Stmt::setValuesNoCopy(Value *vals,unsigned nVals)
 	if (values!=NULL) {freeV(values,nValues,ma); values=NULL; nValues=nNested=0;}
 	for (unsigned i=0,j; i<nVals; i++) if (vals[i].type==VT_EXPRTREE) {
 		ExprTree *et=(ExprTree*)vals[i].exprt;
-		if ((rc=Expr::compile(et,exp,ma))!=RC_OK) return rc;
+		if ((rc=Expr::compile(et,exp,ma,false))!=RC_OK) return rc;
 		vals[i].expr=exp; vals[i].type=VT_EXPR;
 		vals[i].meta|=META_PROP_EVAL; mode|=MODE_WITH_EVAL; et->destroy();
 	} else if ((vals[i].meta&META_PROP_EVAL)!=0) switch (vals[i].type) {
@@ -547,14 +547,14 @@ RC Stmt::getNested(PIN **ppins,PIN *pins,unsigned& cnt,Session *ses,PIN *parent)
 			}
 		}
 		break;
-	case VT_ARRAY:
+	case VT_ARRAY: case VT_STRUCT:
 		for (j=0; j<pv[i].length; j++) {
 			Value &vv=*(Value*)&pv[i].varray[j];
 			if ((vv.meta&META_PROP_EVAL)!=0 && vv.type==VT_STMT && vv.stmt->getOp()==STMT_INSERT) {
 				cnt0=cnt; if ((rc=((Stmt*)vv.stmt)->getNested(ppins,pins,cnt,ses,pin))!=RC_OK) return rc;
 				if (cnt>cnt0) {
 					assert(ppins[cnt0]!=NULL); vv.pin=ppins[cnt0]; vv.type=VT_REF;
-					if ((((Stmt*)vv.stmt)->mode&MODE_PART)!=0) vv.meta|=META_PROP_PART;
+					if (pv[i].type==VT_ARRAY && (((Stmt*)vv.stmt)->mode&MODE_PART)!=0) vv.meta|=META_PROP_PART;
 				}
 			}
 		}
@@ -569,7 +569,7 @@ RC Stmt::processCondition(ExprTree *node,QVar *qv)
 	if (rc==RC_OK) exprs+=node; else if (rc==RC_FALSE) rc=RC_OK; else return rc;
 	if (exprs!=0 && qv!=NULL) {
 		if (qv->isMulti() && qv->type>=QRY_UNION) return RC_INVPARAM; Expr *expr,**pp;
-		RC rc=Expr::compile(exprs,exprs,expr,ma); if (rc!=RC_OK) return rc;
+		RC rc=Expr::compileConds(exprs,exprs,expr,ma); if (rc!=RC_OK) return rc;
 		if (qv->nConds==0) qv->cond=expr;
 		else if (qv->nConds==1) {
 			if ((pp=(Expr**)ma->malloc(sizeof(Expr*)*2))==NULL) {ma->free(expr); return RC_NORESOURCES;}
@@ -761,16 +761,16 @@ bool SimpleVar::checkXPropID(PropertyID xp) const
 		for (CondIdx *ci=condIdx; ci!=NULL; ci=ci->next) if (ci->expr!=NULL) {
 			ci->expr->getExtRefs(0,props,nProps);
 			if (props!=NULL) for (unsigned i=0; i<nProps; i++) 
-				if ((props[i]&PROP_OPTIONAL)==0 && (props[i]&STORE_MAX_PROPID)>xp) return false;	//???
+				if ((props[i]&PROP_OPTIONAL)==0 && (props[i]&STORE_MAX_URIID)>xp) return false;	//???
 		} else if (ci->ks.propID<=xp) {f=true; break;}
 		if (!f) return false;
 	}
 	if (nConds==1) {
 		cond->getExtRefs(0,props,nProps);
-		if (props!=NULL) for (unsigned i=0; i<nProps; i++) if ((props[i]&PROP_OPTIONAL)==0 && (props[i]&STORE_MAX_PROPID)>xp) return false;
+		if (props!=NULL) for (unsigned i=0; i<nProps; i++) if ((props[i]&PROP_OPTIONAL)==0 && (props[i]&STORE_MAX_URIID)>xp) return false;
 	} else if (nConds>1) for (unsigned j=0; j<nConds; j++) {
 		conds[j]->getExtRefs(0,props,nProps);
-		if (props!=NULL) for (unsigned i=0; i<nProps; i++) if ((props[i]&PROP_OPTIONAL)==0 && (props[i]&STORE_MAX_PROPID)>xp) return false;
+		if (props!=NULL) for (unsigned i=0; i<nProps; i++) if ((props[i]&PROP_OPTIONAL)==0 && (props[i]&STORE_MAX_URIID)>xp) return false;
 	}
 	return true;
 }

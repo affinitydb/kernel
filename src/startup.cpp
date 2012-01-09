@@ -381,6 +381,18 @@ unsigned getVersion()
 	return STORE_IFACE_VER;
 }
 
+RC loadLang(const char *path,uint16_t& langID)
+{
+	try {
+#ifdef _MSC_VER
+#else
+#endif
+		void *itf=NULL;
+		//...
+		return Expr::registerExtn(itf,langID);
+	} catch (RC rc) {return rc;} catch (...) {return RC_INTERNAL;}
+}
+
 static void reportTree(PageID pid,const char *t,StoreCtx *ctx)
 {
 	if (pid!=INVALID_PAGEID) {

@@ -122,7 +122,8 @@ RC TransOp::next(const PINEx *)
 				rc=ins[v.refV.refN]->getValue(v.refV.id,w,LOAD_SSV,qx->ses,v.eid<STORE_ALL_ELEMENTS||v.eid>=STORE_FIRST_ELEMENT?v.eid:STORE_COLLECTION_ID);
 			} else if (v.type==VT_EXPR && (v.meta&META_PROP_EVAL)!=0) rc=Expr::eval((const Expr**)&v.expr,1,w,ins,nIns,qx->vals,QV_ALL,qx->ses);
 			else if (v.type!=VT_ANY) {w=v; w.flags=NO_HEAP;}
-			if (rc==RC_OK) rc=ac[i].process(w); freeV(w); if (rc!=RC_OK) {state|=QST_EOF; return rc;}
+			if (rc==RC_OK) rc=ac[i].process(w); freeV(w);
+			if (rc==RC_NOTFOUND) rc=RC_OK; else if (rc!=RC_OK) {state|=QST_EOF; return rc;}
 		}
 		state&=~QST_BOF;
 		if (nGroup!=0) {
@@ -204,10 +205,10 @@ RC TransOp::next(const PINEx *)
 						//if (to!=&w) {
 							//copy
 						//}
-						if ((rc=convV(to->varray[k],*(Value*)&to->varray[k],ty))!=RC_OK) break;
+						if ((rc=convV(to->varray[k],*(Value*)&to->varray[k],ty,qx->ses))!=RC_OK) break;
 					} else if (to->type==VT_COLLECTION) {
 						((Navigator*)to->nav)->setType(ty);
-					} else if ((rc=convV(*to,*to,ty))!=RC_OK) continue;
+					} else if ((rc=convV(*to,*to,ty,qx->ses))!=RC_OK) continue;
 					md|=PIN_DERIVED;
 				}
 				to->property=v.property;

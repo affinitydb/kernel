@@ -57,7 +57,6 @@ public:
 	unsigned	getState() const {return (epr.lref==0&&id.pid==STORE_INVALID_PID?0:hpin!=NULL?PEX_PAGE|PEX_PID:PEX_PID)|(properties==NULL?0:(mode&PIN_PROJECTED)!=0?PEX_PROPS:PEX_PROPS|PEX_ALLPROPS);}
 	bool		defined(const PropertyID *pids,unsigned nProps) const;
 	RC			getValue(PropertyID pid,Value& v,ulong mode,MemAlloc *ma,ElementID=STORE_COLLECTION_ID) const;
-	RC			loadV(const PropertyID *props,Value *res,unsigned nProps) const;
 	bool		isCollection(PropertyID pid) const;
 	RC			pack() const;
 private:
@@ -72,6 +71,7 @@ private:
 	friend	class	LockMgr;
 	friend	class	Stmt;
 	friend	class	Cursor;
+	friend	class	CursorNav;
 	friend	class	FullScan;
 	friend	class	TransOp;
 };

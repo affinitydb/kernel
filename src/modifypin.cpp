@@ -166,7 +166,7 @@ RC QueryPrc::modifyPIN(Session *ses,const PID& id,const Value *v,unsigned nv,PIN
 		bool fAdd=op==OP_ADD||op==OP_ADD_BEFORE;
 		switch (propID) {
 		default: 
-			if (propID<=PROP_SPEC_LAST||propID>STORE_MAX_PROPID) return RC_INVPARAM;
+			if (propID<=PROP_SPEC_LAST||propID>STORE_MAX_URIID) return RC_INVPARAM;
 			if (xPropID==STORE_INVALID_PROPID || propID>xPropID) xPropID=propID;
 			break;
 		case PROP_SPEC_CREATEDBY:
@@ -229,6 +229,7 @@ RC QueryPrc::modifyPIN(Session *ses,const PID& id,const Value *v,unsigned nv,PIN
 				default: pi->flags|=PM_COLLECTION; break;
 				}
 			}
+			if ((mode&MODE_FORCE_EIDS)==0) pi->flags|=PM_GENEIDS;
 		}
 		if (fAdd) {mi=NULL; fNew=true; if (eid==STORE_COLLECTION_ID) eid=STORE_LAST_ELEMENT;}
 		else fNew=(mi=md.findMod(pi,eid,(const byte*)pcb->hp,pi->hprop!=NULL?pi->hprop->offset:0))==NULL;
@@ -300,10 +301,7 @@ RC QueryPrc::modifyPIN(Session *ses,const PID& id,const Value *v,unsigned nv,PIN
 					else
 						memcpy(&eid,&((HeapPageMgr::HeapExtCollection*)((byte*)pcb->hp+pi->hprop->offset))->keygen,sizeof(ElementID));
 				}
-				if (pv->type==VT_ARRAY) for (ulong i=0; i<pv->length; i++) pv->varray[i].eid=eid++;
-				else for (const Value *cv=pv->nav->navigate(GO_FIRST); cv!=NULL; cv=pv->nav->navigate(GO_NEXT)) cv->eid=eid++;
-				if ((pi->flags&PM_COLLECTION)==0) pi->flags|=PM_NEWCOLL;
-				pi->maxKey=eid;
+				pi->maxKey=eid; if ((pi->flags&PM_COLLECTION)==0) pi->flags|=PM_NEWCOLL;
 			} else if (pi->hprop!=NULL) {
 				if (!pi->hprop->type.isCollection()) {
 					// check it's not the same as will be assigned
@@ -403,7 +401,7 @@ RC QueryPrc::modifyPIN(Session *ses,const PID& id,const Value *v,unsigned nv,PIN
 				continue;
 			}
 			if ((opv=md.alloc<Value>())==NULL) return RC_NORESOURCES;
-			if ((rc=loadVTx(*opv,pi->hprop,*pcb,0,&md,meid))!=RC_OK)
+			if ((rc=loadVH(*opv,pi->hprop,*pcb,0,&md,meid))!=RC_OK)
 				{if (rc==RC_NOTFOUND && (pv->meta&META_PROP_IFEXIST)!=0) continue; else return RC_NOTFOUND;}
 			if (propID==PROP_SPEC_DOCUMENT) {if (opv->type==VT_REFID) oldDoc=opv->id; else return RC_CORRUPTED;}
 			if ((mi=md.addMod(pv,n,pi,op))==NULL) {freeV(*opv); return RC_NORESOURCES;}
@@ -525,7 +523,7 @@ RC QueryPrc::modifyPIN(Session *ses,const PID& id,const Value *v,unsigned nv,PIN
 	if ((md.flags&(MF_REPSES|MF_UPDBY))==0) {
 		if ((rc=md.addPropMod(PROP_SPEC_UPDATEDBY,pcb->hpin,mi,prefix))!=RC_OK) return rc;
 		if (mi!=NULL) {
-			if (loadVTx(*mi->oldV,mi->pInfo->hprop,*pcb,0,&md)!=RC_OK||mi->oldV->type!=VT_IDENTITY
+			if (loadVH(*mi->oldV,mi->pInfo->hprop,*pcb,0,&md)!=RC_OK||mi->oldV->type!=VT_IDENTITY
 				||mi->oldV->iid==ses->getIdentity()) mi->flags=PM_PROCESSED|PM_INVALID;
 			else {mi->newV->setIdentity(ses->getIdentity()); mi->newV->setPropID(PROP_SPEC_UPDATEDBY);}
 		}
@@ -533,7 +531,7 @@ RC QueryPrc::modifyPIN(Session *ses,const PID& id,const Value *v,unsigned nv,PIN
 	if ((md.flags&(MF_REPSES|MF_LASTUPD))==0) {
 		if ((rc=md.addPropMod(PROP_SPEC_UPDATED,pcb->hpin,mi,prefix))!=RC_OK) return rc;
 		if (mi!=NULL) {
-			if (loadVTx(*mi->oldV,mi->pInfo->hprop,*pcb,0,&md)!=RC_OK) mi->flags=PM_PROCESSED|PM_INVALID;
+			if (loadVH(*mi->oldV,mi->pInfo->hprop,*pcb,0,&md)!=RC_OK) mi->flags=PM_PROCESSED|PM_INVALID;
 			else {mi->newV->setNow(); mi->newV->setPropID(PROP_SPEC_UPDATED);}
 		}
 	}
@@ -748,7 +746,7 @@ RC QueryPrc::modifyPIN(Session *ses,const PID& id,const Value *v,unsigned nv,PIN
 						} else if (cd.mi->pv==NULL) {
 							cd.mi->oldV=md.alloc<Value>(); cd.mi->pv=cd.mi->newV=md.alloc<Value>();
 							if (cd.mi->oldV==NULL||cd.mi->newV==NULL) {rc=RC_NORESOURCES; goto finish;}
-							if ((rc=loadVTx(*cd.mi->oldV,cd.mi->pInfo->hprop,*pcb,0,&md))!=RC_OK) goto finish;	// LOAD_SSV???
+							if ((rc=loadVH(*cd.mi->oldV,cd.mi->pInfo->hprop,*pcb,0,&md))!=RC_OK) goto finish;	// LOAD_SSV???
 							cd.mi->eid=cd.mi->eltKey=STORE_COLLECTION_ID; cd.mi->flags=PM_SPILL; cd.mi->pvIdx=~0u;
 							*cd.mi->newV=*cd.mi->oldV; cd.mi->newV->flags=NO_HEAP|VF_SSV; cd.mi->next=md.list; md.list=cd.mi;
 							nMod++; lrec+=ceil(cd.length,HP_ALIGN)+cd.dlen;
@@ -787,11 +785,10 @@ RC QueryPrc::modifyPIN(Session *ses,const PID& id,const Value *v,unsigned nv,PIN
 				HeapPageMgr::HeapExtCollection coll;
 				if (pInfo->hprop==NULL) {
 					assert((pInfo->flags&PM_NEWCOLL)!=0 && mi==pInfo->first);
-					if ((rc=Collection::persist(*mi->pv,coll,ses,false))!=RC_OK) goto finish;
+					if ((rc=Collection::persist(*mi->pv,coll,ses,(pInfo->flags&PM_GENEIDS)==0))!=RC_OK) goto finish;
 				} else {
 					mi->flags|=PM_PUTOLD;
-					if ((rc=loadVTx(w,pInfo->hprop,*pcb,LOAD_SSV,&md))!=RC_OK ||
-						(rc=Collection::persist(w,coll,ses,true,true))!=RC_OK) goto finish;
+					if ((rc=loadVH(w,pInfo->hprop,*pcb,LOAD_SSV,&md))!=RC_OK || (rc=Collection::persist(w,coll,ses,true,true))!=RC_OK) goto finish;
 					if (pInfo->hprop->type.getFormat()!=HDF_COMPACT)
 						lrec+=ceil(HeapPageMgr::dataLength(pInfo->hprop->type,(byte*)pcb->hp+pInfo->hprop->offset,(byte*)pcb->hp),HP_ALIGN);
 				}
@@ -816,7 +813,7 @@ RC QueryPrc::modifyPIN(Session *ses,const PID& id,const Value *v,unsigned nv,PIN
 				ExprOp op=(ExprOp)pv->op; assert(op==OP_ADD||op==OP_ADD_BEFORE);
 				ElementID eid=mi->eid!=STORE_COLLECTION_ID?mi->eid:op==OP_ADD?STORE_LAST_ELEMENT:STORE_FIRST_ELEMENT;
 				for (ulong k=0; k<pv->length; k++) {
-					ElementID newEid=pv->varray[k].eid;
+					ElementID newEid=(mode&MODE_FORCE_EIDS)!=0?pv->varray[k].eid:mi->pInfo->maxKey++;
 					if ((rc=pInfo->pcol->modify(op,&pv->varray[k],eid,newEid,ses))!=RC_OK) goto finish;
 					if ((mi->pInfo->flags&PM_FTINDEXABLE)!=0 && pv->varray[k].isFTIndexable()) {mi->flags|=IX_NFT; newDescr|=HOH_FT;}
 					if (op==OP_ADD) eid=newEid;
@@ -826,9 +823,10 @@ RC QueryPrc::modifyPIN(Session *ses,const PID& id,const Value *v,unsigned nv,PIN
 				ElementID eid=mi->eid!=STORE_COLLECTION_ID?mi->eid:op==OP_ADD?STORE_LAST_ELEMENT:STORE_FIRST_ELEMENT;
 				for (const Value *cv=pv->nav->navigate(op==OP_ADD?GO_LAST:GO_FIRST);
 					cv!=NULL; cv=pv->nav->navigate(op==OP_ADD?GO_PREVIOUS:GO_NEXT)) {
-					if ((rc=pInfo->pcol->modify(op,cv,eid,cv->eid,ses))!=RC_OK) goto finish;
+					ElementID newEid=(mode&MODE_FORCE_EIDS)!=0?cv->eid:mi->pInfo->maxKey++;
+					if ((rc=pInfo->pcol->modify(op,cv,eid,newEid,ses))!=RC_OK) goto finish;
 					if ((mi->pInfo->flags&PM_FTINDEXABLE)!=0 && cv->isFTIndexable()) {mi->flags|=IX_NFT; newDescr|=HOH_FT;}
-					if (op==OP_ADD) eid=cv->eid;
+					if (op==OP_ADD) eid=newEid;
 				}
 			}
 			if ((pInfo->flags&PM_NEWCOLL)==0 || mi!=pInfo->first) {mi->flags|=PM_PROCESSED; nMod--;}	// lrec???
@@ -1105,8 +1103,8 @@ RC QueryPrc::modifyPIN(Session *ses,const PID& id,const Value *v,unsigned nv,PIN
 					clru.classes[clru.nClasses++]=clrn.classes[i];
 					if ((clrn.classes[i]->notifications&CLASS_NOTIFY_CHANGE)!=0) md.flags|=MF_CNOTIFY;
 				}
-				if (i<--clrn.nClasses) memmove(&clrn.classes[i],&clrn.classes[i+1],(clrn.nClasses-i)*sizeof(ClassRef*));
-				if (j<--clro.nClasses) memmove(&clro.classes[j],&clro.classes[j+1],(clro.nClasses-j)*sizeof(ClassRef*));
+				if (i<--clrn.nClasses) memmove(&clrn.classes[i],&clrn.classes[i+1],(clrn.nClasses-i)*sizeof(ClassRefT*));
+				if (j<--clro.nClasses) memmove(&clro.classes[j],&clro.classes[j+1],(clro.nClasses-j)*sizeof(ClassRefT*));
 			}
 		}
 	}
@@ -1319,7 +1317,8 @@ RC QueryPrc::putHeapMod(HeapPageMgr::HeapPropMod *hpm,ModInfo *mi,byte *buf,usho
 	} else if (hpm->op==OP_DELETE) hpm->newData.type.setType(VT_ERROR,HDF_COMPACT);
 	else {
 		osht=hpm->newData.ptr.offset=sht; hpm->newData.type.flags=mi->pv->meta; if (fLocal) hpm->newData.type.flags|=META_PROP_LOCAL;
-		if ((rc=persistValue(*mi->pv,sht,hpm->newData.type,hpm->newData.ptr.offset,buf+sht,NULL,cb.addr))!=RC_OK) return rc;
+		if ((rc=persistValue(*mi->pv,sht,hpm->newData.type,hpm->newData.ptr.offset,buf+sht,NULL,cb.addr,
+														(mi->pInfo->flags&PM_GENEIDS)!=0?&mi->pInfo->maxKey:NULL))!=RC_OK) return rc;
 		hpm->newData.ptr.len=sht-osht; sht=(ushort)ceil(sht,HP_ALIGN);
 	}
 	// old value descriptor, empty for inserts

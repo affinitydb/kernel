@@ -46,7 +46,7 @@ RC QBuildCtx::process(QueryOp *&qop)
 
 	if (qv->groupBy==NULL || qv->nGroupBy==0) switch (qv->dtype) {
 	case DT_DISTINCT: case DT_DEFAULT:
-		if ((qop->qflags&QO_UNIQUE)==0) {
+		if ((qop->qflags&QO_UNIQUE)==0 && (qv->stype==SEL_PINSET||qv->stype==SEL_COMPOUND/*||qv->stype==SEL_PROJECTED||qv->stype==SEL_PROJECTED1*/)) {
 			QueryOp *q=new(ses,0,propsReq.nPls) Sort(qop,NULL,0,flg|QO_UNIQUE,0,NULL,0/*propsReq,nPropsReq*/);
 			if (q==NULL) {delete qop; qop=NULL; return RC_NORESOURCES;}
 			qop=q;
@@ -569,7 +569,7 @@ RC QBuildCtx::load(QueryOp *&qop,const PropListP& plp)
 			if (j>=plp.nPls) return RC_OK;
 			const PropertyID *pp,*qp=qop->props[j].props; unsigned np=qop->props[j].nProps;
 			for (unsigned i=0; i<plp.pls[j].nProps; i++) {
-				if ((pp=BIN<PropertyID,PropertyID,ExprPropCmp>::find(plp.pls[j].props[i]&STORE_MAX_PROPID,qp,np))==NULL) {fFound=false; break;}
+				if ((pp=BIN<PropertyID,PropertyID,ExprPropCmp>::find(plp.pls[j].props[i]&STORE_MAX_URIID,qp,np))==NULL) {fFound=false; break;}
 				np-=unsigned(pp-qp)+1; qp=pp+1;
 			}
 		}
@@ -594,7 +594,7 @@ RC QBuildCtx::out(QueryOp *&qop,const QVar *qv)
 			else vv[i].fFree=true;
 		outs=vv;
 	}
-	if (qv->stype==SEL_CONST) {if (qop!=NULL) {delete qop; qop=NULL;} return (qop=new(ses) TransOp(qx,outs,nOuts,flg))!=NULL?RC_OK:RC_NORESOURCES;}
+	if (qv->stype==SEL_CONST) {if (qop!=NULL) {delete qop; qop=NULL;} return (qop=new(ses) TransOp(qx,outs,nOuts,flg|QO_UNIQUE))!=NULL?RC_OK:RC_NORESOURCES;}
 	
 	PropListP plp(ses);
 	for (unsigned i=0; i<nOuts; i++) for (unsigned j=0; j<outs[i].nValues; j++) {
@@ -617,7 +617,8 @@ RC QBuildCtx::out(QueryOp *&qop,const QVar *qv)
 			// get them from gb/nG
 		}
 	} else if ((rc=load(qop,plp))!=RC_OK) return rc;
-	try {return rc!=RC_OK||(qop=new(ses) TransOp(qop,outs,nOuts,qv->aggrs,qv->groupBy,qv->nGroupBy,qv->having,flg))!=NULL?rc:RC_NORESOURCES;}
+	unsigned f=flg; if (qv->stype!=SEL_PINSET && qv->stype!=SEL_PROJECTED && qv->stype!=SEL_COMPOUND) f|=QO_UNIQUE;
+	try {return (qop=new(ses) TransOp(qop,outs,nOuts,qv->aggrs,qv->groupBy,qv->nGroupBy,qv->having,f))!=NULL?RC_OK:RC_NORESOURCES;}
 	catch (RC rc) {return rc;}
 }
 
@@ -648,15 +649,15 @@ RC PropListP::merge(uint16_t var,const PropertyID *pids,unsigned nPids,bool fFor
 	if (pl.props==NULL) {
 		if (!fForce) {
 			pl.props=(PropertyID*)pids; pl.nProps=nPids; pl.fFree=false; if (fFlags) return RC_OK; 
-			bool f=false; for (unsigned i=0; i<nPids; i++) if ((pids[i]&~STORE_MAX_PROPID)!=0) {f=true; break;}
+			bool f=false; for (unsigned i=0; i<nPids; i++) if ((pids[i]&~STORE_MAX_URIID)!=0) {f=true; break;}
 			if (!f) return rc;
 		}
 		if ((pl.props=new(ma) PropertyID[nPids])==NULL) return RC_NORESOURCES;
 		memcpy(pl.props,pids,(pl.nProps=nPids)*sizeof(uint32_t)); pl.fFree=true;
-		if (!fFlags) for (unsigned i=0; i<nPids; i++) pl.props[i]&=STORE_MAX_PROPID;
+		if (!fFlags) for (unsigned i=0; i<nPids; i++) pl.props[i]&=STORE_MAX_URIID;
 	} else for (unsigned i=0,sht=0; i<nPids; i++) {
 		const PropertyID pid=pids[i]; unsigned ex=0,s2;
-		PropertyID *ins,*pp=(PropertyID*)BIN<PropertyID,PropertyID,ExprPropCmp>::find(pid&STORE_MAX_PROPID,pl.props+sht,pl.nProps-sht,&ins);
+		PropertyID *ins,*pp=(PropertyID*)BIN<PropertyID,PropertyID,ExprPropCmp>::find(pid&STORE_MAX_URIID,pl.props+sht,pl.nProps-sht,&ins);
 		if (pp!=NULL) {sht=unsigned(pp+1-pl.props); if (!fFlags||*pp==pid) continue; if (pl.fFree) {*pp|=pid; continue;}}
 		else {s2=unsigned(ins-pl.props); if (s2>=pl.nProps) ex=nPids-i; else ex=1;}							// more?
 		if (pl.fFree) {if ((pl.props=(PropertyID*)ma->realloc(pl.props,(pl.nProps+ex)*sizeof(PropertyID)))==NULL) return RC_NORESOURCES;}

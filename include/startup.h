@@ -171,6 +171,7 @@ extern "C" _EXP	RC			getStoreCreationParameters(StoreCreationParameters& params,
 extern "C" _EXP	unsigned	getVersion();
 extern "C" _EXP unsigned	getStoreState(MVStoreCtx=NULL);
 extern "C" _EXP void		setReport(IReport *);
+extern "C" _EXP	RC			loadLang(const char *path,uint16_t& langID);
 
 enum StreamInType
 {

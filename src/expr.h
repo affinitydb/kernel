@@ -24,12 +24,13 @@ namespace MVStoreKernel
 #define	NO_VREFS		0xFFFF
 #define	MANY_VREFS		0xFFFE
 
-#define	EXPR_PARAMS			0x8000
+#define	EXPR_EXTN			0x8000
 #define	EXPR_PATH			0x4000
 #define	EXPR_BOOL			0x2000
 #define	EXPR_DISJUNCTIVE	0x1000
 #define	EXPR_NO_CODE		0x0800
 #define	EXPR_PRELOAD		0x0400
+#define	EXPR_PARAMS			0x0200
 
 #define	PROP_OPTIONAL	0x80000000
 #define	PROP_NO_LOAD	0x40000000
@@ -50,15 +51,16 @@ namespace MVStoreKernel
 #define	CND_EQ			0x40000000
 #define	CND_NE			0x20000000
 
-#define	CND_EXISTS_R	0x0800
-#define	CND_FORALL_R	0x0400
-#define	CND_EXISTS_L	0x0200
-#define	CND_FORALL_L	0x0100
+#define	CND_EXISTS_R	0x2000
+#define	CND_FORALL_R	0x1000
+#define	CND_EXISTS_L	0x0800
+#define	CND_FORALL_L	0x0400
+#define	CND_IN_LBND		0x0200
+#define	CND_IN_RBND		0x0100
 #define	CND_EXT			0x80
-#define	CND_IN_LBND		0x40
-#define	CND_UNS			0x40
-#define	CND_IN_RBND		0x20
 #define	CND_DISTINCT	0x20
+#define	CND_UNS			0x20
+#define	CND_VBOOL		0x20
 #define	CND_NCASE		0x10
 #define	CND_NOT			0x08
 #define	CND_MASK		0x07
@@ -91,7 +93,7 @@ struct VarHdr
 class ExprPropCmp
 {
 public:
-	__forceinline static int cmp(uint32_t x,uint32_t y) {return cmp3(x&STORE_MAX_PROPID,y&STORE_MAX_PROPID);}
+	__forceinline static int cmp(uint32_t x,uint32_t y) {return cmp3(x&STORE_MAX_URIID,y&STORE_MAX_URIID);}
 };
 
 class	ExprTree;
@@ -108,8 +110,9 @@ public:
 	IExpr			*clone() const;
 	void			destroy();
 	static	RC		eval(const Expr *const *exprs,ulong nExp,Value& result,PINEx **vars,ulong nVars,const ValueV *params,ulong nParams,MemAlloc *ma,bool fIgnore=false);
-	static	RC		compile(const ExprTree *,Expr *&,MemAlloc *ma,ValueV *aggs=NULL);
-	static	RC		compile(const ExprTree *const *,unsigned nExp,Expr *&,MemAlloc*);
+	static	RC		compile(const ExprTree *,Expr *&,MemAlloc *ma,bool fCond,ValueV *aggs=NULL);
+	static	RC		compileConds(const ExprTree *const *,unsigned nExp,Expr *&,MemAlloc*);
+	static	RC		create(uint16_t langID,const byte *body,uint32_t lBody,uint16_t flags,Expr *&,MemAlloc*);
 	RC				decompile(ExprTree*&,Session *ses) const;
 	static	RC		calc(ExprOp op,Value& arg,const Value *moreArgs,int nargs,unsigned flags,MemAlloc *ma,PINEx **vars=NULL,ulong nVars=0);
 	static	RC		calcAgg(ExprOp op,Value& res,const Value *more,unsigned nargs,unsigned flags,MemAlloc *ma);
@@ -125,6 +128,10 @@ public:
 	static	Expr	*clone(const Expr *exp,MemAlloc *ma);
 	static	RC		getI(const Value& v,long& num);
 	static	bool	condSatisfied(const class Expr *const *exprs,ulong nExp,PINEx **vars,unsigned nVars,const ValueV *pars,unsigned nPars,MemAlloc *ma,bool fIgnore=false);
+	static	RC		condRC(int c,ExprOp op) {assert(op>=OP_EQ && op<=OP_GE); return c<-2?RC_TYPE:c==-2||(compareCodeTab[op-OP_EQ]&1<<(c+1))==0?RC_FALSE:RC_TRUE;}
+	static	RC		registerExtn(void *itf,uint16_t& langID);
+	static	void	**extnTab;
+	static	int		nExtns;
 private:
 	Expr(const ExprHdr& h) : hdr(h) {}
 	void			*operator new(size_t,byte *p) throw() {return p;}
@@ -132,6 +139,7 @@ private:
 	static	const	Value *strOpConv(Value&,const Value*,Value&);
 	static	const	Value *numOpConv(Value&,const Value*,Value&,unsigned flg);
 	static	bool	numOpConv(Value&,unsigned flg);
+	static	const	byte	compareCodeTab[];
 	struct	VarD	{
 		bool				fInit;
 		bool				fLoaded;
@@ -221,19 +229,20 @@ class ExprCompileCtx {
 	bool	expand(uint32_t l);
 	RC		result(Expr *&);
 	byte	*alloc(uint32_t l) {return lCode+l>xlCode && !expand(l)?NULL:(lCode+=l,pCode+lCode-l);}
-	friend	RC	Expr::compile(const ExprTree *,Expr *&,MemAlloc*,ValueV*);
-	friend	RC	Expr::compile(const ExprTree *const *,unsigned nExp,Expr *&,MemAlloc*);
+	friend	RC	Expr::compile(const ExprTree *,Expr *&,MemAlloc*,bool fCond,ValueV*);
+	friend	RC	Expr::compileConds(const ExprTree *const *,unsigned nExp,Expr *&,MemAlloc*);
 };
 
-class CmpValueC
+class CmpValue
 {
 public:
-	static SListOp compare(const ValueC& v1,ValueC& v2,ulong u) {
-		int c=cmp(v1,v2,u); if (c<0) return SLO_LT; if (c>0) return SLO_GT; v2.count++; return SLO_NOOP;
+	static SListOp compare(const Value& v1,Value& v2,ulong u) {
+		int c=cmp(v1,v2,u); if (c<0) return SLO_LT; if (c>0) return SLO_GT; 
+		if (++v2.eid==0) v2.property++; return SLO_NOOP;
 	}
 };
 
-typedef SList<ValueC,CmpValueC>	Histogram;
+typedef SList<Value,CmpValue>	Histogram;
 
 struct AggAcc
 {

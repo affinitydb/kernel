@@ -105,20 +105,33 @@ enum TVState
 	TV_INS, TV_UPD, TV_DEL, TV_PRG, TV_UDL
 };
 
+struct DataSS
+{
+	DataSS				*nextD;
+	DataSS				*nextSS;
+	TVers				*tv;
+//	ValueV				data;
+	uint32_t			stamp;
+	uint16_t			dscr;
+	bool				fDelta;
+	bool				fNew;
+};
+
 class TVers
 {
 	const	PageIdx		idx;
 	RWLock				lock;
 	LockHdr	*volatile	hdr;
-	void	*volatile	tv;
+	DataSS	*volatile	stack;
 	TVState	volatile	state;
 	bool	volatile	fCommited;
 public:
-	TVers(PageIdx i,LockHdr *h,void *t,TVState s=TV_UPD,bool fC=false) : idx(i),hdr(h),tv(t),state(s),fCommited(fC) {}
+	TVers(PageIdx i,LockHdr *h,DataSS *st,TVState s=TV_UPD,bool fC=false) : idx(i),hdr(h),stack(st),state(s),fCommited(fC) {}
 	~TVers();
 	class TVersCmp {public: __forceinline static int cmp(const TVers *tv,PageIdx i) {return cmp3(tv->idx,i);}};
 	friend	struct		LockHdr;
 	friend	class		LockMgr;
+	friend	class		QueryPrc;
 };
 
 struct PageV : public VBlock {

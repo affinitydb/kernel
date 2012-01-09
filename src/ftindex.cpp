@@ -168,7 +168,7 @@ RC FTIndexMgr::index(const ChangeInfo& ft,FTList *ftl,ulong mode,MemAlloc *ma)
 					if (rc!=RC_NOTFOUND) break;		//????????
 				}
 			} else if (/*(char*)pW!=wbuf && !oT->saveCopy() || */(pW=(const char*)ftl->store(pW,lW))!=NULL) {
-				fti.op=OP_DELETE; fti.word=pW; fti.lw=lW; fti.propID=ft.propID; if ((rc=ftl->add(fti))!=RC_OK) break;
+				fti.op=OP_DELETE; fti.word=pW; fti.lw=lW; fti.propID=ft.propID; if (ftl->add(fti)==SLO_ERROR) {rc=RC_NORESOURCES; break;}
 			}
 		}
 	if (nT!=NULL) while ((pW=nT->nextToken(lW,loc,wbuf,FTBUFSIZE))!=NULL)
@@ -182,7 +182,7 @@ RC FTIndexMgr::index(const ChangeInfo& ft,FTList *ftl,ulong mode,MemAlloc *ma)
 					break;
 				}
 			} else if (/*(char*)pW!=wbuf && !nT->saveCopy() ||*/ (pW=(const char*)ftl->store(pW,lW))!=NULL) {
-				fti.op=OP_ADD; fti.word=pW; fti.lw=lW; fti.propID=ft.propID; if ((rc=ftl->add(fti))!=RC_OK) break;
+				fti.op=OP_ADD; fti.word=pW; fti.lw=lW; fti.propID=ft.propID; if (ftl->add(fti)==SLO_ERROR) {rc=RC_NORESOURCES; break;}
 			}
 		}
 	return rc;
@@ -235,7 +235,7 @@ RC FTIndexMgr::rebuildIndex(Session *ses)
 			ChangeInfo inf={qr.id,v.type==VT_REFID?v.id:PIN::defPID,NULL,&v,STORE_INVALID_PROPID,STORE_COLLECTION_ID};
 			const HeapPageMgr::HeapV *hprop=qr.hpin->getPropTab();
 			for (ulong k=0; k<qr.hpin->nProps; ++k,++hprop) if ((hprop->type.flags&META_PROP_NOFTINDEX)==0) {
-				if ((rc=ctx->queryMgr->loadVTx(v,hprop,qr,LOAD_SSV,NULL))!=RC_OK) break;
+				if ((rc=ctx->queryMgr->loadVH(v,hprop,qr,LOAD_SSV,NULL))!=RC_OK) break;
 				inf.propID=v.property;
 				rc=ctx->ftMgr->index(inf,&ftl,IX_NFT,(hprop->type.flags&META_PROP_STOPWORDS)!=0?FTMODE_STOPWORDS:0,ses);
 				freeV(v); if (rc!=RC_OK) break;

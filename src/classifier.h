@@ -38,6 +38,7 @@ class Class
 {
 	friend	class		Classifier;
 	friend	class		ClassIndex;
+	friend	class		ClassDelTx;
 	typedef	QElt<Class,ClassID,ClassID> QE;
 	ClassID				cid;
 	QE					*qe;
@@ -119,22 +120,48 @@ public:
 class ClassPropIndex;
 class Expr;
 
-struct ClassRef {
+struct ClassRef
+{
 	const	ClassID		cid;
-	const	ulong		nConds;
-	const	ushort		nIndexProps;
+	ushort				nIndexProps;
+	ushort				notifications;
+	unsigned			flags;
+	ClassRef(ClassID id,ushort np,ushort nots,unsigned flg) : cid(id),nIndexProps(np),notifications(nots),flags(flg) {}
+};
+
+struct ClassRefT : public ClassRef
+{
+	const	ushort		nConds;
 	ushort				refCnt;
 	ClassPropIndex		*sub;
-	ushort				notifications;
-	ushort				flags;
 	union {
 		Expr			*cond;
 		Expr			**conds;
 	};
 	PropertyID			indexProps[1];
-	ClassRef(ClassID id,ushort np,ulong nc,ushort nots,ushort flg) : cid(id),nConds(nc),nIndexProps(np),refCnt(0),sub(NULL),notifications(nots),flags(flg) {cond=NULL;}
+	ClassRefT(ClassID id,ushort np,ushort nc,ushort nots,unsigned flg) : ClassRef(id,np,nots,flg),nConds(nc),refCnt(0),sub(NULL) {cond=NULL;}
 	void				*operator new(size_t s,ulong np,MemAlloc *ma) {return ma->malloc(s+int(np-1)*sizeof(PropertyID));}
 	class ClassRefCmp	{public: __forceinline static int cmp(const ClassRef *cr,ClassID ci) {return cmp3(cr->cid,ci);}};
+};
+
+struct ClassDscr : public ClassRef
+{
+	ClassDscr		*next;
+	const Stmt		*query;
+	class IndexInit	*cidx;
+	PID				id;
+	PageAddr		addr;
+	ClassDscr(ClassID cid,ushort np,unsigned flags) : ClassRef(cid,np,0,flags),next(NULL),query(NULL),cidx(NULL),id(PIN::defPID),addr(PageAddr::invAddr) {}
+};
+
+class ClassDelTx : public TxDelete
+{
+	const	ClassID		cid;
+	Session	*const		ses;
+public:
+	ClassDelTx(ClassID id,Session *s) : cid(id),ses(s) {}
+	RC					deleteData();
+	void				release();
 };
 
 struct ClassResult
@@ -148,6 +175,7 @@ struct ClassResult
 	ulong				notif;
 	ClassResult(MemAlloc *m,StoreCtx *ct) : ma(m),ctx(ct),classes(NULL),nClasses(0),xClasses(0),nIndices(0),notif(0) {}
 	~ClassResult() {if (classes!=NULL) ma->free(classes);}
+	RC					insert(const ClassRef *cr,const ClassRef **cins=NULL);
 };
 
 struct PIdxNode {
@@ -155,15 +183,16 @@ struct PIdxNode {
 	PIdxNode			*up;
 	PIdxNode			*next;
 	PIdxNode			*down;
-	const	ClassRef	**classes;
+	const	ClassRefT	**classes;
 	ulong				nClasses;
 };
 
 class ClassPropIndex
 {
-	friend class Classifier;
+	friend	class	Classifier;
+	friend	class	ClassDelTx;
 	PIdxNode		*root;
-	const ClassRef	**other;
+	const ClassRefT	**other;
 	ulong			nOther;
 	ulong			nClasses;
 	MemAlloc		*const allc;
@@ -171,23 +200,23 @@ private:
 	ClassPropIndex(MemAlloc *ma) : root(NULL),other(NULL),nOther(0),nClasses(0),allc(ma) {}
 	~ClassPropIndex();
 	void operator delete(void *p) {if (p!=NULL)((ClassPropIndex*)p)->allc->free(p);}
-	bool			add(ClassID cid,const Stmt *qry,ulong flags,const struct PropDNF *dnf,size_t ldnf,ulong notifications,StoreCtx *ctx);
-	const ClassRef	*find(ClassID cid,const PropertyID *pids,ulong npids) const;
+	bool			add(ClassID cid,const Stmt *qry,unsigned flags,const struct PropDNF *dnf,size_t ldnf,ulong notifications,StoreCtx *ctx);
+	const ClassRefT	*find(ClassID cid,const PropertyID *pids,ulong npids) const;
 	RC				remove(ClassID cid,const PropertyID *pids,ulong npids);
-	RC				insert(ClassID cid,const Stmt *qry,ulong flags,ClassRef *&cr,ulong notifications,const ClassRef **&pc,ulong& n);
+	RC				insert(ClassID cid,const Stmt *qry,unsigned flags,ClassRefT *&cr,ulong notifications,const ClassRefT **&pc,ulong& n);
 	RC				classify(PINEx *pe,ClassResult& res);
-	RC				classify(const ClassRef *cp,PINEx *pin,ClassResult& res);
+	RC				classify(const ClassRefT *cp,PINEx *pin,ClassResult& res);
 	template<typename T> class it {
 		const	ClassPropIndex&	pidx;
 		const	T				*pt;
 		const	ulong			nProps;
 		const	PIdxNode		*node;
-		const	ClassRef		**cp;
+		const	ClassRefT		**cp;
 				ulong			nc;
 				ulong			idx;
 	public:
 		it(const ClassPropIndex& pi,const T *p,ulong np) : pidx(pi),pt(p),nProps(np),node(pidx.root),cp(NULL),nc(0),idx(0) {}
-		const ClassRef **next() {
+		const ClassRefT **next() {
 			if (cp==NULL) {
 				if (pt==NULL || idx>=nProps || node==NULL) {nc=pidx.nOther; return cp=pidx.other;}
 			} else if (nc>1) {--nc; return ++cp;}
@@ -280,6 +309,7 @@ class Classifier : public ClassHash, public TreeFactory, public TreeConnect
 	friend	class		ClassIndex;
 	friend	class		ClassPropIndex;
 	friend	class		IndexInit;
+	friend	class		ClassDelTx;
 	StoreCtx			*const ctx;
 	RWLock				rwlock;
 	Mutex				lock;
@@ -312,8 +342,8 @@ public:
 	RC					setFlags(ClassID,ulong,ulong);
 	RC					remove(ClassID,Session *ses);
 	PropertyID			getXPropID() const {return (PropertyID)xPropID;}
-	RC					classTx(Session *ses,struct ClassDscr*&,bool fCommit=true);
-	static	void		merge(struct ClassDscr *from,struct ClassDscr *&to);
+	RC					classTx(Session *ses,ClassDscr*&,bool fCommit=true);
+	static	void		merge(ClassDscr *from,ClassDscr *&to);
 
 	byte				getID() const;
 	byte				getParamLength() const;
@@ -321,8 +351,8 @@ public:
 	RC					createTree(const byte *params,byte lparams,Tree *&tree);
 	static	const		BuiltinURI	builtinURIs[PROP_SPEC_MAX+1];
 private:
-	RC					add(Session *ses,ClassID cid,const Stmt *qry,ulong flags,ulong notifications=0);
-	ClassRef			*findBaseRef(const Class *base,Session *ses);
+	RC					add(Session *ses,ClassID cid,const Stmt *qry,unsigned flags,ulong notifications=0);
+	ClassRefT			*findBaseRef(const Class *base,Session *ses);
 	ClassPropIndex		*getClassPropIndex(const class SimpleVar *qv,Session *ses,bool fAdd=true);
 	RC					indexFormat(ulong vt,IndexFormat& fmt) const;
 	RC					insertRef(struct ClassCtx& cctx,ushort **ppb,size_t *ps,const byte *extb,ushort lext,struct IndexValue *iv=NULL);

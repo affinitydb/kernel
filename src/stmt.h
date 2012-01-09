@@ -119,6 +119,7 @@ public:
 	friend	class	Stmt;
 	friend	class	SimpleVar;
 	friend	class	Classifier;
+	friend	class	ClassDelTx;
 	friend	class	ClassPropIndex;
 	friend	class	QueryPrc;
 	friend	class	QBuildCtx;
@@ -156,6 +157,7 @@ public:
 	friend	class	Stmt;
 	friend	class	Class;
 	friend	class	Classifier;
+	friend	class	ClassDelTx;
 	friend	class	ClassPropIndex;
 	friend	class	SInCtx;
 	friend	class	SOutCtx;
@@ -257,6 +259,7 @@ public:
 
 	bool	isSatisfied(const IPIN *,const Value *pars=NULL,unsigned nPars=0,unsigned long mode=0) const;
 	bool	isSatisfied(const IPIN *const *pins,unsigned nPins,const Value *pars=NULL,unsigned nPars=0,unsigned long mode=0) const;
+	RC		cmp(const Value& v,ExprOp op,unsigned flags);
 
 	char	*toString(unsigned mode=0,const QName *qNames=NULL,unsigned nQNames=0) const;
 	IStmt	*clone(STMT_OP=STMT_OP_ALL) const;
@@ -285,6 +288,7 @@ private:
 	static	bool	classOK(const QVar *);
 	friend class	Class;
 	friend class	Classifier;
+	friend	class	ClassDelTx;
 	friend class	ClassPropIndex;
 	friend class	QueryPrc;
 	friend class	QBuildCtx;
@@ -312,12 +316,13 @@ class Cursor : public ICursor
 	TxSP				tx;
 	bool				fSnapshot;
 	bool				fProc;
+	bool				fAdvance;
 	void	operator	delete(void *p) {if (p!=NULL) ((Cursor*)p)->ses->free(p);}
 	RC					skip();
 public:
 	Cursor(QueryOp *qop,uint64_t nRet,ulong md,const Value *vals,unsigned nV,Session *s,STMT_OP sop=STMT_QUERY,SelectType ste=SEL_PINSET,bool fSS=false)
 		: queryOp(qop),ses(s),nReturn(nRet),values(vals),nValues(nV),mode(md),stype(ste),op(sop),results(NULL),nResults(0),qr(s),pqr(&qr),
-		txid(INVALID_TXID),txcid(NO_TXCID),cnt(0),tx(s),fSnapshot(fSS),fProc(false) {}
+		txid(INVALID_TXID),txcid(NO_TXCID),cnt(0),tx(s),fSnapshot(fSS),fProc(false),fAdvance(true) {}
 	virtual				~Cursor();
 	IPIN				*next();
 	RC					next(PID&);
@@ -334,6 +339,7 @@ public:
 	PINEx				**getResults(unsigned& nRes) const {nRes=nResults; return results!=NULL?results:(PINEx**)&pqr;}
 	bool				isCount() const {return stype==SEL_COUNT;}
 	friend	class		CursorNav;
+	friend	class		QueryPrc;
 };
 
 enum CNavRet	{CNR_PID, CNR_VALUE, CNR_PIN};
@@ -341,10 +347,9 @@ enum CNavRet	{CNR_PID, CNR_VALUE, CNR_PIN};
 class CursorNav : public INav
 {
 	Cursor	*const	curs;
-	const	CNavRet	rtype;
 	Value			v;
 public:
-	CursorNav(Cursor *cu,CNavRet rt=CNR_PID) : curs(cu),rtype(rt) {v.setError();}
+	CursorNav(Cursor *cu) : curs(cu) {v.setError();}
 	~CursorNav()	{freeV(v); if (curs!=NULL) curs->destroy();}
 	const	Value	*navigate(GO_DIR=GO_NEXT,ElementID=STORE_COLLECTION_ID);
 	ElementID		getCurrentID();

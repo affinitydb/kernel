@@ -1189,7 +1189,7 @@ RC SessionX::copyValue(const Value& src,Value& dest)
 
 RC SessionX::convertValue(const Value& src,Value& dest,ValueType vt)
 {
-	try {assert(ses==Session::getSession()); src.flags=NO_HEAP; return ses->getStore()->inShutdown()?RC_SHUTDOWN:convV(src,dest,vt);}
+	try {assert(ses==Session::getSession()); src.flags=NO_HEAP; return ses->getStore()->inShutdown()?RC_SHUTDOWN:convV(src,dest,vt,ses);}
 	catch (RC rc) {return rc;} catch (...) {report(MSG_ERROR,"Exception in ISession::convertValue()\n"); return RC_INVPARAM;}
 }
 

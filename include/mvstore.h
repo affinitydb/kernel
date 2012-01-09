@@ -51,13 +51,13 @@ namespace MVStore
 	#define	STORE_INVALID_IDENTITY		(~MVStore::IdentityID(0))	
 	#define	STORE_INVALID_CLASSID		(~MVStore::ClassID(0))	
 	#define	STORE_CURRENT_VERSION		(~MVStore::VersionID(0))	
+	#define	STORE_MAX_URIID				MVStore::URIID(0x1FFFFFFF)		/**< Maximum value for URIID */
 
 	/**
 	 * special identity ID
 	 */
 	#define	STORE_OWNER					MVStore::IdentityID(0)			/**< The owner of the store always has IdentityID equals to 0 */
 
-	#define	STORE_MAX_PROPID			MVStore::PropertyID(0x1FFFFFFF)	/**< Maximum value for PropertyID */
 
 	/**
 	 * special property and class IDs
@@ -114,6 +114,7 @@ namespace MVStore
 	/**
 	 * PIN create/commit/modify/delete, IStmt execute mode flags
 	 */
+	#define MODE_NO_EID					0x00010000	/**< in modify() - don't update "eid" field of Value structure */
 	#define	MODE_FOR_UPDATE				0x00020000	/**< in IStmt::execute(): lock pins for update while reading them */
 	#define	MODE_NEW_COMMIT				0x00040000	/**< used in PIN::clone() to immediately commit a cloned pin */
 	#define	MODE_PURGE					0x00040000	/**< in deletePINs(): purge pins rather than just delete */
@@ -127,7 +128,6 @@ namespace MVStore
 	#define	MODE_CHECK_STAMP			0x00200000	/**< forces stamp check before modification; if stamp changed the op is aborted and RC_REPEAT is returned */
 	#define	MODE_HOLD_RESULT			0x00200000	/**< for IStmt::execute(): don't close result set on transaction commit/rollback */
 	#define	MODE_ALL_WORDS				0x00400000	/**< all words must be present in FT condition */
-	#define MODE_NO_EID					0x00800000	/**< in modify() - don't update "eid" field of Value structure */
 	#define	MODE_DELETED				0x00800000	/**< for query: return only (soft)deleted pins */
 	#define	MODE_SSV_AS_STREAM			0x01000000	/**< for getPIN(), IStmt::execute() - return SSVs as streams instead of strings */
 	#define	MODE_FORCED_SSV_AS_STREAM	0x02000000	/**< for getPIN(), IStmt::execute(): return only META_PROP_SSTORAGE SSVs as streams instead of strings */
@@ -934,6 +934,7 @@ namespace MVStore
 		virtual	IStmt		*createStmt(const char *queryStr,const URIID *ids=NULL,unsigned nids=0,CompilationError *ce=NULL) = 0;
 		virtual	IExprTree	*createExprTree(const char *str,const URIID *ids=NULL,unsigned nids=0,CompilationError *ce=NULL) = 0;
 		virtual	IExpr		*createExpr(const char *str,const URIID *ids=NULL,unsigned nids=0,CompilationError *ce=NULL) = 0;
+		virtual	IExpr		*createExtExpr(uint16_t langID,const unsigned char *body,uint32_t lBody,uint16_t flags) = 0;
 		virtual	RC			getTypeName(ValueType type,char buf[],size_t lbuf) = 0;
 		virtual	void		abortQuery() = 0;
 

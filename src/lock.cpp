@@ -66,19 +66,9 @@ RC LockMgr::lock(LockType lt,PINEx& pe,ulong flags)
 {
 	RC rc=RC_OK; assert(lt<LOCK_ALL);
 	Session *ses=pe.getSes(); if (ses==NULL) return RC_NOSESSION;
-	if ((ses->getStore()->mode&STARTUP_SINGLE_SESSION)!=0) return RC_OK;
-	if (!ses->inWriteTx()) {
-		report(MSG_ERROR,"LockMgr: an attempt to lock a resource outside of a transaction\n");
-		return RC_READTX;
-	}
-	if (pe.tv==NULL) {
-		if (pe.pb.isNull()) {
-			//???
-			return RC_OK;
-		} else if ((rc=getTVers(pe,lt==LOCK_SHARED?TVO_READ:TVO_UPD))!=RC_OK) return rc;
-		assert(pe.tv!=NULL);
-	}
-	bool fLocked=false; GrantedLock *gl=NULL,*og=NULL; if (lt>=LOCK_UPDATE) ses->lockClass();
+	if (!ses->inWriteTx() || (ses->getStore()->mode&STARTUP_SINGLE_SESSION)!=0) return RC_OK;
+	if (pe.tv==NULL && (rc=getTVers(pe,lt==LOCK_SHARED?TVO_READ:TVO_UPD))!=RC_OK) return rc==RC_NOTFOUND?RC_OK:rc;
+	bool fLocked=false; GrantedLock *gl=NULL,*og=NULL; if (lt>=LOCK_UPDATE) ses->lockClass(); assert(pe.tv!=NULL);
 	LockHdr *lh=pe.tv->hdr;
 	if (lh==NULL) {
 		RWLockP tlck(&pe.tv->lock,RW_X_LOCK);
@@ -207,16 +197,26 @@ void PageV::release()
 
 RC LockMgr::getTVers(PINEx& pe,TVOp tvo)
 {
-	assert(!pe.pb.isNull() && (tvo==TVO_READ || pe.pb->isXLocked() || pe.pb->isULocked()));
+	assert(tvo==TVO_READ || pe.pb.isNull() || pe.pb->isXLocked() || pe.pb->isULocked());
 	if (pe.tv==NULL) {
 		Session *ses=pe.getSes(); if (ses==NULL) return RC_NOSESSION;
-		PageV *pv=(PageV*)pe.pb->getVBlock();
+		PageV *pv=NULL; PageID pageID=INVALID_PAGEID;
+		if (!pe.pb.isNull()) {pageID=pe.pb->getPageID(); pv=(PageV*)pe.pb->getVBlock();}
+		else {
+			PageAddr ad;
+			if ((pe.epr.flags&PINEX_ADDRSET)!=0) ad=pe.getAddr();
+			else {
+				PID id; RC rc=pe.getID(id); if (rc!=RC_OK) return rc;
+				if (!ad.convert(id.pid)) return RC_NOTFOUND;
+			}
+			pv=(PageV*)getVBlock(pageID=ad.pageID);
+		}
 		if (pv==NULL) {
 			if (tvo==TVO_READ && !ses->inWriteTx()) return RC_OK;
-			PageVTab::Find findPV(pageVTab,pe.pb->getPageID());
+			PageVTab::Find findPV(pageVTab,pageID);
 			if ((pv=findPV.findLock(RW_X_LOCK))!=NULL) ++pv->fixCnt;
-			else if ((pv=new(ctx) PageV(pe.pb->getPageID(),*this))==NULL) return RC_NORESOURCES;
-			else {++pv->fixCnt; pageVTab.insertNoLock(pv); pe.pb->setVBlock(pv);}
+			else if ((pv=new(ctx) PageV(pageID,*this))==NULL) return RC_NORESOURCES;
+			else {++pv->fixCnt; pageVTab.insertNoLock(pv); if (!pe.pb.isNull()) pe.pb->setVBlock(pv);}
 		}
 		RWLockP lck(&pv->lock,RW_S_LOCK);
 		pe.tv=(TVers*)BIN<TVers,PageIdx,TVers::TVersCmp>::find(pe.getAddr().idx,(const TVers**)pv->vArray,pv->nTV);
@@ -224,7 +224,7 @@ RC LockMgr::getTVers(PINEx& pe,TVOp tvo)
 			lck.set(NULL); lck.set(&pv->lock,RW_X_LOCK); const TVers **ins=NULL;
 			if ((pe.tv=(TVers*)BIN<TVers,PageIdx,TVers::TVersCmp>::find(pe.getAddr().idx,(const TVers**)pv->vArray,pv->nTV,&ins))==NULL) {
 				LockHdr *lh=tvo!=TVO_INS?new(alloc<LockHdr>(freeHeaders)) LockHdr(pe.tv):(LockHdr*)0;
-				if ((pe.tv=new(ctx) TVers(pe.getAddr().idx,lh,NULL))==NULL) return RC_NORESOURCES;
+				if ((pe.tv=new(ctx) TVers(pe.getAddr().idx,lh,NULL,tvo==TVO_INS?TV_INS:TV_UPD,tvo!=TVO_INS))==NULL) return RC_NORESOURCES;
 				if (pv->vArray==NULL || pv->nTV>=pv->xTV) {
 					ptrdiff_t sht=ins-(const TVers**)pv->vArray;
 					if ((pv->vArray=(TVers**)ctx->realloc(pv->vArray,(pv->xTV+=(pv->xTV==0?10:pv->xTV/2))*sizeof(TVers*)))==NULL) 

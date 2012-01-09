@@ -622,7 +622,7 @@ RC TreePageMgr::update(PBlock *pb,size_t len,ulong info,const byte *rec,size_t l
 			const byte *p1=(byte*)tp+tpk.key.offset,*p0=p1; l=tpk.key.len;
 			memcpy(&tpk,(byte*)tp+vp->offset+(vp->len&~TRO_EXT_DATA)-sizeof(SubTreePageKey),sizeof(SubTreePageKey));
 			byte *p2=(byte*)tp+tpk.key.offset; if (tpk.key.len<l) l=tpk.key.len;
-			for (; tp2->info.lPrefix<l; ++tp2->info.lPrefix) if (*p1++!=*p2++) break;
+			//for (; tp2->info.lPrefix<l; ++tp2->info.lPrefix) if (*p1++!=*p2++) break;					// no prefix (see calcPrefixSize())
 			if (tp2->info.lPrefix>0) tp2->store(p0,tp2->info.lPrefix,*(PagePtr*)&tp2->info.prefix);
 			p1=(byte*)tp+vp->offset+sizeof(SubTreePage); p2=(byte*)(tp2+1);
 			lElt=fVM?sizeof(PagePtr):tp->info.fmt.dataLength()-tp2->info.lPrefix;
@@ -649,8 +649,8 @@ RC TreePageMgr::update(PBlock *pb,size_t len,ulong info,const byte *rec,size_t l
 				for (ulong i=0; i<n; ++i,p1+=l,p2+=l-tp2->info.lPrefix) memcpy(p2,p1+tp2->info.lPrefix,l-tp2->info.lPrefix);
 			} else if (vp->len>=256) {
 				const byte *p1=(byte*)tp+vp->offset,*p2,*p0; l=_u16(p1);
-				p2=p1+l-4; ll=min(_u16(p2+2)-_u16(p2),_u16(p1+2)-l); p2=p1+_u16(p2); p1+=l;
-				for (p0=p1; tp2->info.lPrefix<ll; ++tp2->info.lPrefix) if (*p1++!=*p2++) break;
+				p2=p1+l-4; ll=min(_u16(p2+2)-_u16(p2),_u16(p1+2)-l); p2=p1+_u16(p2); p0=p1+=l;
+				//for (; tp2->info.lPrefix<ll; ++tp2->info.lPrefix) if (*p1++!=*p2++) break;			// no prefix (see calcPrefixSize())
 				p1=p2=(byte*)tp+vp->offset; tpExt.counter=tp2->info.nSearchKeys=l/L_SHT-1;
 				tp2->info.freeSpaceLength-=ushort(vp->len-tp2->info.nSearchKeys*tp2->info.lPrefix);
 				if (tp2->info.lPrefix==0) memcpy((ushort*)(tp2+1),p1,vp->len);

@@ -1180,10 +1180,17 @@ RC MVStoreKernel::strToNum(const char *str,size_t lstr,Value& res,const char **p
 		case VT_DOUBLE: res.d=-res.d; break;
 		default: assert(0);
 		}
-		if ((flags&TN_FLT)!=0 && res.type!=VT_FLOAT) {
-			assert(res.type==VT_DOUBLE);
-			try {res.f=float(res.d); res.type=VT_FLOAT;} catch (...) {return RC_TOOBIG;}
-		}
+		if ((flags&TN_FLT)!=0 && res.type!=VT_FLOAT) try {
+			switch (res.type) {
+			default: return RC_INTERNAL;
+			case VT_DOUBLE: res.f=float(res.d); break;
+			case VT_INT: res.f=float(res.i); break;
+			case VT_UINT: res.f=float(res.ui); break;
+			case VT_INT64: res.f=float(res.i64); break;
+			case VT_UINT64: res.f=float(res.ui64); break;
+			}
+			res.type=VT_FLOAT;
+		} catch (...) {return RC_TOOBIG;}
 		if (res.type==VT_DOUBLE || res.type==VT_FLOAT) res.qval.units=units;
 		return RC_OK;
 	} catch (RC rc) {return rc;} catch (...) {return RC_SYNTAX;}		// ???

@@ -7,6 +7,7 @@ Written by Mark Venguerov 2004 - 2010
 **************************************************************************************/
 
 #include "queryprc.h"
+#include "maps.h"
 #include "lock.h"
 #include "stmt.h"
 #include "expr.h"
@@ -34,21 +35,40 @@ RC QueryPrc::loadPIN(Session *ses,const PID& id,PIN *&pin,unsigned mode,PINEx *p
 
 RC QueryPrc::loadProps(PINEx *pcb,unsigned mode,const PropertyID *pids,unsigned nPids)
 {
-	assert(!pcb->pb.isNull() && pcb->hpin!=NULL); RC rc=RC_OK;
-	if ((pcb->nProperties=pcb->hpin->nProps)!=0) {
-		if (pids!=NULL) {if (nPids==0 || pids[0]==PROP_SPEC_ANY) pids=NULL; else if (nPids!=0 && nPids<pcb->nProperties) pcb->nProperties=nPids;}
+	assert(!pcb->pb.isNull() && pcb->hpin!=NULL);
+	RC rc=RC_OK; unsigned nProps=pcb->hpin->nProps; const DataSS *dss=NULL;
+//	if (!pcb->ses->inWriteTx() && pcb->tv!=NULL && (!pcb->tv->fCommited || (dss=pcb->tv->stack)!=NULL && dss->fNew)) return RC_DELETED;
+	if ((pcb->nProperties=nProps)!=0) {
+		if (pids!=NULL) {if (nPids==0 || pids[0]==PROP_SPEC_ANY) pids=NULL; else if (nPids!=0 && nPids<pcb->nProperties) {pcb->nProperties=nPids; pcb->mode|=PIN_PROJECTED;}}
 		if ((pcb->properties=(Value*)pcb->ses->realloc(pcb->properties,pcb->nProperties*sizeof(Value)))==NULL) return RC_NORESOURCES;
-		const HeapPageMgr::HeapV *hprop=pcb->hpin->getPropTab(); pcb->mode&=~PIN_SSV; 
+		const HeapPageMgr::HeapV *hprop=pcb->hpin->getPropTab(),*const hend=hprop+pcb->hpin->nProps,*hpr; pcb->mode&=~PIN_SSV; 
 		for (unsigned i=0; i<pcb->nProperties; ++i,++hprop) {
-			if (pids!=NULL && nPids!=0) {
-				if (i>=nPids) {pcb->mode|=PIN_PROJECTED; pcb->nProperties=i; break;}
-				if (hprop->getPropID()!=(pids[i]&STORE_MAX_PROPID)) {
-					pcb->mode|=PIN_PROJECTED;
-					// find ...
+			const PropertyID pid=pids!=NULL?pids[i]&STORE_MAX_URIID:hprop->getPropID();
+			if (dss) {
+				if (pids==NULL) {
+					// check if there are properties>=prev(i>0) && <pid
+				}
+				bool fFound=false;
+				for (const DataSS *ds=dss; ds!=NULL; ds=ds->nextSS) {
+					// try to find pid
+					// found -> fFound=true
+					// if (fDelta && collection) {
+					//	  if (!loaded && hprop valid) -> loadHV
+					//	  apply delta
+					//  } else {
+					//	  remember old value
+					//  }
+					// if 
 				}
 			}
+			if (pids!=NULL) {
+				if (hprop>=hend || (hpr=hprop)->getPropID()!=pid && (hpr=pcb->hpin->findProperty(pid))==NULL) {
+					//skip
+				}
+				if (hpr!=hprop) {hprop=hpr; pcb->mode|=PIN_PROJECTED;}
+			}
 			if ((rc=loadVH(pcb->properties[i],hprop,*pcb,mode&~LOAD_CARDINALITY,pcb->ses))!=RC_OK) break;
-			else if ((pcb->properties[i].flags&VF_SSV)!=0) pcb->mode|=PIN_SSV;
+			if ((pcb->properties[i].flags&VF_SSV)!=0) pcb->mode|=PIN_SSV;
 		}
 		if (rc==RC_OK && (mode&LOAD_SSV)!=0 && (pcb->mode&PIN_SSV)!=0 && (rc=loadSSVs(pcb->properties,pcb->nProperties,mode,pcb->ses,pcb->ses))==RC_OK) pcb->mode&=~PIN_SSV;
 	}
@@ -57,16 +77,24 @@ RC QueryPrc::loadProps(PINEx *pcb,unsigned mode,const PropertyID *pids,unsigned 
 
 RC QueryPrc::getClassInfo(Session *ses,PIN *pin)
 {
-	const Value *cv; Class *cls=NULL; uint64_t nPINs=0,nDeletedPINs=0; RC rc=RC_OK;
-	if ((pin->mode&PIN_CLASS)==0 || (cv=pin->findProperty(PROP_SPEC_CLASSID))==NULL || cv->type!=VT_URIID) return RC_CORRUPTED;
-	if ((rc=ctx->classMgr->getClassInfo(cv->uid,cls,nPINs,nDeletedPINs))!=RC_OK) return rc;
-	assert(cls!=NULL); Value vv,*pv; ClassIndex *ci; Stmt *qry; QVar *qv; PropListP plp(ses);
+	const Value *cv; Class *cls=NULL; uint64_t nPINs=0,nDeletedPINs=0; RC rc=RC_OK; Value vv,*pv;
+	if (pin==NULL || (pin->mode&PIN_CLASS)==0 || (cv=pin->findProperty(PROP_SPEC_CLASSID))==NULL || cv->type!=VT_URIID) return RC_CORRUPTED;
+	const ClassID clsid=cv->uid;
+	if (pin->findProperty(PROP_SPEC_URI)==NULL) {
+		URI *uri=(URI*)ctx->uriMgr->ObjMgr::find(clsid);
+		if (uri!=NULL) {
+			vv.set(strdup(uri->getName(),ses)); vv.flags=SES_HEAP; vv.setPropID(PROP_SPEC_URI); uri->release();
+			rc=BIN<Value,PropertyID,ValCmp,uint32_t>::insert(pin->properties,pin->nProperties,vv.property,vv,ses);
+		}
+	}
+	if (rc!=RC_OK || (rc=ctx->classMgr->getClassInfo(clsid,cls,nPINs,nDeletedPINs))!=RC_OK) return rc;
+	assert(cls!=NULL); ClassIndex *ci; Stmt *qry; QVar *qv; PropListP plp(ses);
 	if ((qry=cls->getQuery())!=NULL && (qv=qry->getTop())!=NULL && qv->mergeProps(plp)==RC_OK && plp.pls!=NULL && plp.nPls!=0) {
 		Value *va=new(ses) Value[plp.pls[0].nProps];
 		if (va==NULL) rc=RC_NORESOURCES;
 		else {
 			ElementID prefix=ctx->getPrefix();
-			for (unsigned i=0; i<plp.pls[0].nProps; i++) {va[i].setURIID(plp.pls[0].props[i]&STORE_MAX_PROPID); va[i].eid=prefix+i;}
+			for (unsigned i=0; i<plp.pls[0].nProps; i++) {va[i].setURIID(plp.pls[0].props[i]&STORE_MAX_URIID); va[i].eid=prefix+i;}
 			vv.set(va,plp.pls[0].nProps); vv.setPropID(PROP_SPEC_PROPERTIES);
 			if ((rc=BIN<Value,PropertyID,ValCmp,uint32_t>::insert(pin->properties,pin->nProperties,vv.property,vv,ses))!=RC_OK) ses->free(va);
 		}
@@ -251,12 +279,6 @@ RC QueryPrc::loadV(Value& v,ulong propID,const PINEx& cb,ulong mode,MemAlloc *ma
 																					(v.setError(propID),RC_NOTFOUND);
 }
 
-RC QueryPrc::loadVTx(Value& v,const HeapPageMgr::HeapV *hprop,const PINEx& cb,ulong mode,MemAlloc *ma,ulong eid)
-{
-	//???
-	return loadVH(v,hprop,cb,mode,ma,eid);
-}
-
 RC QueryPrc::loadVH(Value& v,const HeapPageMgr::HeapV *hprop,const PINEx& cb,ulong mode,MemAlloc *ma,ulong eid)
 {
 	HType ty=hprop->type; ushort offset=hprop->offset; PropertyID pid=hprop->getID(); PID id; Value val;
@@ -293,7 +315,7 @@ RC QueryPrc::loadVH(Value& v,const HeapPageMgr::HeapV *hprop,const PINEx& cb,ulo
 				for (i=j=0; i<v.length; i++) {
 					const HeapPageMgr::HeapV *elt=&coll->start[i]; ValueType vt;
 					if ((mode&LOAD_REF)==0 || (vt=elt->type.getType())==VT_REFID || vt==VT_STRUCT /*&& ??? */) {
-						if ((rc=loadV(const_cast<Value&>(v.varray[j]),elt->type,elt->offset,cb.hp,mode,ma,elt->getID()))!=RC_OK) break;
+						if ((rc=loadS(const_cast<Value&>(v.varray[j]),elt->type,elt->offset,cb.hp,mode,ma,elt->getID()))!=RC_OK) break;
 						flg|=v.varray[j].flags&VF_SSV; const_cast<Value&>(v.varray[j]).property=STORE_INVALID_PROPID; j++;
 					}
 				}
@@ -319,10 +341,10 @@ RC QueryPrc::loadVH(Value& v,const HeapPageMgr::HeapV *hprop,const PINEx& cb,ulo
 	if (eid==STORE_COLLECTION_ID||eid==STORE_FIRST_ELEMENT)
 		eid=cb.hpin->hasRemoteID() && (hprop->type.flags&META_PROP_LOCAL)==0 && cb.hpin->getAddr(id)?HeapPageMgr::getPrefix(id):ctx->getPrefix();
 	if ((mode&LOAD_REF)!=0 && ty.getType()!=VT_REFID && ty.getType()!=VT_STRUCT /* || ???*/) {v.setError(pid); return RC_OK;}
-	RC rc=loadV(v,ty,offset,cb.hp,mode,ma,eid); v.property=pid; return rc;
+	RC rc=loadS(v,ty,offset,cb.hp,mode,ma,eid); v.property=pid; return rc;
 }
 
-RC QueryPrc::loadV(Value& v,HType vt,PageOff offset,const HeapPageMgr::HeapPage *hp,ulong mode,MemAlloc *ma,ulong eid)
+RC QueryPrc::loadS(Value& v,HType vt,PageOff offset,const HeapPageMgr::HeapPage *hp,ulong mode,MemAlloc *ma,ulong eid)
 {
 	ValueType ty=vt.getType(); 
 	if (ty==VT_ERROR || ty>=VT_ALL) {

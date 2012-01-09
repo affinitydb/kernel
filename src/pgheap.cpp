@@ -667,7 +667,7 @@ ushort HeapPageMgr::dataLength(HType vt,const byte *pData,const byte *frame,ulon
 			const HeapVV *coll=(const HeapVV*)pData; len=0; assert(frame!=NULL);
 			for (l=coll->cnt; l!=0; ) {
 				const HeapV *elt=&coll->start[--l];
-				if (!elt->type.isCompact()) 	len+=ushort(ceil(dataLength(elt->type,frame+elt->offset,frame,idxMask),HP_ALIGN)); 
+				if (!elt->type.isCompact()) len+=ushort(ceil(dataLength(elt->type,frame+elt->offset,frame,idxMask),HP_ALIGN)); 
 			}
 			len+=coll->length();
 		}
@@ -730,7 +730,7 @@ void HeapPageMgr::initPage(byte *frame,size_t len,PageID pid)
 bool PINPageMgr::afterIO(PBlock *pb,size_t lPage,bool fLoad)
 {
 	if (!TxPage::afterIO(pb,lPage,fLoad) || !((HeapPage*)pb->getPageBuf())->checkPage(false)) return false;
-	if (fLoad) pb->setVBlock(ctx->lockMgr->getVBlock(pb->getPageID()));	// && !SSV/BLOB
+	if (fLoad) pb->setVBlock(ctx->lockMgr->getVBlock(pb->getPageID()));
 	return true;
 }
 

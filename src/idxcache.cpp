@@ -70,7 +70,7 @@ RC PIDStore::operator+=(PINEx& cb)
 		// add to ext mem
 	}
 	PID id; RC rc=cb.getID(id); 
-	if (rc==RC_OK && (rc=cache.add(id))==RC_OK) count++;
+	if (rc==RC_OK && cache.add(id)!=SLO_ERROR) count++;
 	return rc;
 }
 

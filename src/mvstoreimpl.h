@@ -23,8 +23,9 @@ namespace MVStoreKernel
 #define	CV_NOTRUNC	0x0001
 
 extern	MemAlloc *createMemAlloc(size_t,bool fMulti);
-extern	RC		copyV(const Value& from,Value& to,MemAlloc *ma);
 extern	RC		copyV(const Value *from,ulong nv,Value *&to,MemAlloc *ma);
+extern	RC		copyV0(Value& to,MemAlloc *ma);
+__forceinline	RC	copyV(const Value& from,Value& to,MemAlloc *ma) {return (to=from).type>=VT_STRING && ma!=NULL?copyV0(to,ma):RC_OK;}
 extern	bool	operator==(const Value& lhs, const Value& rhs);
 inline	bool	operator!=(const Value& lhs, const Value& rhs) {return !(lhs==rhs);}
 extern	size_t	serSize(const Value& val,bool full=false);
@@ -37,7 +38,7 @@ extern	RC		streamToValue(IStream *str,Value& val,MemAlloc*);
 extern	int		cmpNoConv(const Value&,const Value&,ulong u);
 extern	int		cmpConv(const Value&,const Value&,ulong u);
 extern	bool	testStrNum(const char *s,size_t l,Value& res);
-extern	RC		convV(const Value& src,Value& dst,ValueType type,unsigned mode=0);
+extern	RC		convV(const Value& src,Value& dst,ValueType type,MemAlloc *ma,unsigned mode=0);
 extern	RC		derefValue(const Value& src,Value& dst,Session *ses);
 extern	RC		convURL(const Value& src,Value& dst,HEAP_TYPE alloc);
 extern	bool	compatible(QualifiedValue&,QualifiedValue&);
@@ -49,11 +50,6 @@ __forceinline	void freeV(Value& v) {if ((v.flags&HEAP_TYPE_MASK)!=NO_HEAP) freeV
 __forceinline	int	cmp(const Value& arg,const Value& arg2,ulong u) {return arg.type==arg2.type?cmpNoConv(arg,arg2,u):cmpConv(arg,arg2,u);}
 
 #define PIDKeySize		(sizeof(uint64_t)+sizeof(IdentityID))
-
-struct ValueC : public Value
-{
-	uint64_t	count;
-};
 
 class ValCmp
 {
@@ -202,6 +198,7 @@ public:
 	friend	class	ServerStreamIn;
 	friend	class	FullScan;
 	friend	class	QueryPrc;
+	friend	class	CursorNav;
 	friend	class	Cursor;
 	friend	class	Stmt;
 	friend	class	SessionX;
@@ -263,6 +260,7 @@ public:
 	IExprTree	*expr(ExprOp op,unsigned nOperands,const Value *operands,unsigned flags=0);
 	IExprTree	*createExprTree(const char *str,const URIID *ids=NULL,unsigned nids=0,CompilationError *ce=NULL);
 	IExpr		*createExpr(const char *str,const URIID *ids=NULL,unsigned nids=0,CompilationError *ce=NULL);
+	IExpr		*createExtExpr(uint16_t langID,const byte *body,uint32_t lBody,uint16_t flags);
 	RC			getTypeName(ValueType type,char buf[],size_t lbuf);
 	void		abortQuery();
 
