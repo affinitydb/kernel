@@ -231,7 +231,7 @@ void PathOp::connect(PINEx **results,unsigned nRes)
 RC PathOp::next(const PINEx *)
 {
 	if ((state&QST_EOF)!=0) return RC_EOF;
-	RC rc; const Value *pv; bool fOK; PID id;
+	RC rc; const Value *pv; bool fOK; PID id; PathState *spst;
 	if (res!=NULL) {res->cleanup(); *res=saveID; res->epr=saveEPR;}
 	if ((state&QST_INIT)!=0) {state&=~QST_INIT; if (nSkip>0 && (rc=initSkip())!=RC_OK) return rc;}
 	for (;;) {
@@ -277,8 +277,8 @@ RC PathOp::next(const PINEx *)
 			if (pst->vidx>=2) {pop(); continue;}	// rmin==0 && pst->nSucc==0 -> goto next seg
 			switch (pst->v[pst->vidx].type) {
 			default: pst->vidx++; continue;		// rmin==0 -> goto next seg
-			case VT_REF: id=pst->v[pst->vidx].pin->getPID(); if (res!=NULL) *res=id; if ((rc=push(id))!=RC_OK) return rc; pst->next->vidx++; continue;
-			case VT_REFID: id=pst->v[pst->vidx].id; if (res!=NULL) *res=id; if ((rc=push(id))!=RC_OK) return rc; pst->next->vidx++; continue;
+			case VT_REF: id=pst->v[pst->vidx].pin->getPID(); spst=pst; if (res!=NULL) *res=id; if ((rc=push(id))!=RC_OK) return rc; spst->vidx++; continue;
+			case VT_REFID: id=pst->v[pst->vidx].id; spst=pst; if (res!=NULL) *res=id; if ((rc=push(id))!=RC_OK) return rc; spst->vidx++; continue;
 			case VT_STRUCT:
 				//????
 				continue;
