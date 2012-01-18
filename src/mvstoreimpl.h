@@ -77,6 +77,7 @@ protected:
 		unsigned	rcnt;
 		unsigned	vidx;
 		unsigned	cidx;
+		PID			id;
 		Value		v[2];
 	};
 	MemAlloc		*const	ma;
@@ -99,11 +100,12 @@ protected:
 			ma->free((void*)path);
 		}
 	}
-	RC push() {
+	RC push(const PID& id) {
 		PathState *ps;
+		if (pst!=NULL && pst->vidx!=0) for (ps=pst; ps!=NULL && ps->idx==pst->idx; ps=ps->next) if (ps->id==id) {if (pst->state==2) pst->vidx++; return RC_OK;}
 		if ((ps=freePst)!=NULL) freePst=ps->next; else if ((ps=new(ma) PathState)==NULL) return RC_NORESOURCES;
-		if (pst==0) ps->idx=0,ps->rcnt=1; else if (pst->vidx==0) ps->idx=pst->idx+1,ps->rcnt=1; else ps->idx=pst->idx,ps->rcnt=pst->rcnt+1;
-		ps->state=0; ps->vidx=2; ps->cidx=0; ps->v[0].setError(); ps->v[1].setError(); ps->next=pst; pst=ps; return RC_OK;
+		if (pst==NULL) ps->idx=0,ps->rcnt=1; else if (pst->vidx==0) ps->idx=pst->idx+1,ps->rcnt=1; else ps->idx=pst->idx,ps->rcnt=pst->rcnt+1;
+		ps->state=0; ps->vidx=2; ps->cidx=0; ps->id=id; ps->v[0].setError(); ps->v[1].setError(); ps->next=pst; pst=ps; return RC_OK;
 	}
 	void pop() {PathState *ps=pst; if (ps!=NULL) {pst=ps->next; freeV(ps->v[0]); freeV(ps->v[1]); ps->next=freePst; freePst=ps;}}
 };

@@ -316,7 +316,7 @@ const Value *PathIt::navigate(GO_DIR dir,ElementID eid)
 	case GO_FIRST: sidx=0; while(pst!=NULL) pop();
 	case GO_NEXT: break;
 	}
-	RC rc; const Value *pv; bool fOK=false;
+	const Value *pv; bool fOK=false; //RC rc;
 	for (;;) {
 		if (pst==NULL) {
 			switch (src.type) {
@@ -330,8 +330,8 @@ const Value *PathIt::navigate(GO_DIR dir,ElementID eid)
 				if ((pv=src.nav->navigate(sidx==0?GO_FIRST:GO_NEXT))==NULL) return NULL;
 				break;
 			}
-			sidx++;
-			if ((rc=push())!=RC_OK) return NULL; pst->v[0].setError(path[0].pid);
+			sidx++; //pex.getID(id);
+//			if ((rc=push(id))!=RC_OK) return NULL; pst->v[0].setError(path[0].pid);
 //			if ((rc=getData(pex,&pst->v[0],1,NULL,ses,path[0].eid))!=RC_OK) {state|=QST_EOF; return rc;}
 			pst->state=2; pst->vidx=0; if (fThrough) return &res;
 		}
@@ -356,9 +356,9 @@ const Value *PathIt::navigate(GO_DIR dir,ElementID eid)
 					for (;;) {
 //						if ((rc=ses->getStore()->queryMgr->loadV(pst->v[0],path[pst->idx].pid,*res,LOAD_SSV|LOAD_REF,ses,path[pst->idx].eid))!=RC_OK && rc!=RC_NOTFOUND)
 //							{freeV(res); res.setError(); return NULL;}
-						if (rc==RC_OK && pst->v[0].type!=VT_ERROR) {pst->vidx=0; break;}
+//						if (rc==RC_OK && pst->v[0].type!=VT_ERROR) {pst->vidx=0; break;}
 						if (path[pst->idx].rmin!=0) break; if (pst->idx+1>=nPathSeg) return &res;
-						unsigned s=pst->vidx; pst->vidx=0; if ((rc=push())!=RC_OK) return NULL; pst->next->vidx=s;
+						unsigned s=pst->vidx; pst->vidx=0; //if ((rc=push())!=RC_OK) return NULL; pst->next->vidx=s;
 					}
 				} else if (path[pst->idx-1].filter!=NULL) {/*printf("->\n");*/ return &res;}
 			}

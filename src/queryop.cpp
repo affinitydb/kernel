@@ -230,13 +230,15 @@ void PathOp::connect(PINEx **results,unsigned nRes)
 
 RC PathOp::next(const PINEx *)
 {
-	RC rc; const Value *pv; bool fOK; if ((state&QST_EOF)!=0) return RC_EOF;
+	if ((state&QST_EOF)!=0) return RC_EOF;
+	RC rc; const Value *pv; bool fOK; PID id;
 	if (res!=NULL) {res->cleanup(); *res=saveID; res->epr=saveEPR;}
 	if ((state&QST_INIT)!=0) {state&=~QST_INIT; if (nSkip>0 && (rc=initSkip())!=RC_OK) return rc;}
 	for (;;) {
 		if (pst==NULL) {
 			if ((rc=queryOp->next())!=RC_OK) {state|=QST_EOF; return rc;}
-			if ((rc=push())!=RC_OK) return rc; pst->v[0].setError(path[0].pid);
+			if ((rc=pex.getID(id))!=RC_OK || (rc=push(id))!=RC_OK) return rc;
+			pst->v[0].setError(path[0].pid);
 			if ((rc=getData(pex,&pst->v[0],1,NULL,path[0].eid))!=RC_OK) {state|=QST_EOF; return rc;}
 			pst->state=2; pst->vidx=0; if (fThrough) {if (res!=NULL) {*res=pex; save();} return RC_OK;}
 		}
@@ -249,7 +251,7 @@ RC PathOp::next(const PINEx *)
 			}
 		case 1:
 			pst->state=2; //printf("%*s(%d,%d):"_LX_FM"\n",(pst->idx-1+pst->rcnt-1)*2,"",pst->idx,pst->rcnt,res->id.pid);
-			if ((rc=getBody(*res))!=RC_OK || res->isHidden())
+			if ((rc=getBody(*res))!=RC_OK || res->isHidden() || (rc=res->getID(id))!=RC_OK)
 				{res->cleanup(); if (rc==RC_OK || rc==RC_NOACCESS || rc==RC_REPEAT || rc==RC_DELETED) {pop(); continue;} else {state|=QST_EOF; return rc;}}
 			fOK=path[pst->idx-1].filter==NULL || Expr::condSatisfied((const Expr* const*)&path[pst->idx-1].filter,1,&res,1,qx->vals,QV_ALL,qx->ses);
 			if (!fOK && !path[pst->idx-1].fLast) {res->cleanup(); pop(); continue;}
@@ -266,7 +268,7 @@ RC PathOp::next(const PINEx *)
 							{res->cleanup(); state|=QST_EOF; return rc;}
 						if (rc==RC_OK && pst->v[0].type!=VT_ERROR) {pst->vidx=0; break;}
 						if (path[pst->idx].rmin!=0) break; if (pst->idx+1>=nPathSeg) {save(); return RC_OK;}
-						unsigned s=pst->vidx; pst->vidx=0; if ((rc=push())!=RC_OK) return rc; pst->next->vidx=s;
+						unsigned s=pst->vidx; pst->vidx=0; if ((rc=push(id))!=RC_OK) return rc; pst->next->vidx=s;
 					}
 				} else if (path[pst->idx-1].filter!=NULL) {/*printf("->\n");*/ save(); return RC_OK;}
 			}
@@ -275,8 +277,8 @@ RC PathOp::next(const PINEx *)
 			if (pst->vidx>=2) {pop(); continue;}	// rmin==0 && pst->nSucc==0 -> goto next seg
 			switch (pst->v[pst->vidx].type) {
 			default: pst->vidx++; continue;		// rmin==0 -> goto next seg
-			case VT_REF: if (res!=NULL) *res=pst->v[pst->vidx].pin->getPID(); if ((rc=push())!=RC_OK) return rc; pst->next->vidx++; continue;
-			case VT_REFID: if (res!=NULL) *res=pst->v[pst->vidx].id; if ((rc=push())!=RC_OK) return rc; pst->next->vidx++; continue;
+			case VT_REF: id=pst->v[pst->vidx].pin->getPID(); if (res!=NULL) *res=id; if ((rc=push(id))!=RC_OK) return rc; pst->next->vidx++; continue;
+			case VT_REFID: id=pst->v[pst->vidx].id; if (res!=NULL) *res=id; if ((rc=push(id))!=RC_OK) return rc; pst->next->vidx++; continue;
 			case VT_STRUCT:
 				//????
 				continue;
@@ -288,8 +290,8 @@ RC PathOp::next(const PINEx *)
 				pst->cidx++;
 				switch (pv->type) {
 				default: continue;
-				case VT_REF: if (res!=NULL) *res=pv->pin->getPID(); if ((rc=push())!=RC_OK) return rc; continue;
-				case VT_REFID: if (res!=NULL) *res=pv->id; if ((rc=push())!=RC_OK) return rc; continue;
+				case VT_REF: id=pv->pin->getPID(); if (res!=NULL) *res=id; if ((rc=push(id))!=RC_OK) return rc; continue;
+				case VT_REFID: id=pv->id; if (res!=NULL) *res=id; if ((rc=push(id))!=RC_OK) return rc; continue;
 				case VT_STRUCT:
 					//????
 					continue;
