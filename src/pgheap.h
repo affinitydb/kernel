@@ -94,8 +94,10 @@ class HeapPageMgr : public TxPage
 protected:
 	friend	class	QueryPrc;
 	friend	class	PINEx;
+	friend	class	BigMgr;
 	friend	class	Stmt;
 	friend	class	Expr;
+	friend	struct	SubTx;
 	friend	class	StreamX;
 	friend	struct	PropMod;
 	friend	struct	PropInfo;

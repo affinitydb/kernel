@@ -125,7 +125,7 @@ QVarID Stmt::addVariable(const PID& pid,PropertyID propID,IExprTree *cond)
 		if ((var->pids=new(ma) PID)==NULL) return RC_NORESOURCES; var->pids[0]=pid; var->nPids=1;
 		if ((var->path=new(ma) PathSeg)==NULL) return RC_NORESOURCES;
 		var->path[0].pid=propID; var->path[0].eid=STORE_COLLECTION_ID;
-		var->path[0].filter=NULL; var->path[0].cls=STORE_INVALID_CLASSID;
+		var->path[0].filter=NULL; var->path[0].cid=STORE_INVALID_CLASSID;
 		var->path[0].rmin=var->path[0].rmax=1; var->path[0].fLast=false; var->nPathSeg=1;
 		if (cond!=NULL && processCondition((ExprTree*)cond,var)!=RC_OK) {delete var; return INVALID_QVAR_ID;}
 		var->next=vars; vars=var; nVars++; top=++nTop==1?var:(QVar*)0; return byte(var->id);
@@ -578,7 +578,9 @@ RC Stmt::processCondition(ExprTree *node,QVar *qv)
 			if ((qv->conds=(Expr**)ma->realloc(qv->conds,(qv->nConds+1)*sizeof(Expr*)))==NULL) {ma->free(expr); return RC_NORESOURCES;}
 			qv->conds[qv->nConds]=expr;
 		}
-		qv->nConds++; if ((expr->getFlags()&EXPR_PARAMS)!=0) mode|=QRY_PARAMS;
+		if ((expr->getFlags()&EXPR_PARAMS)!=0) mode|=QRY_PARAMS;
+		if ((expr->getFlags()&EXPR_PATH)!=0) mode|=QRY_PATH;
+		qv->nConds++;
 	}
 	return RC_OK;
 }
@@ -1077,7 +1079,7 @@ RC QVar::deserialize(const byte *&buf,const byte *const ebuf,MemAlloc *ma,QVar *
 
 size_t SimpleVar::serSize() const
 {
-	size_t len=QVar::serSize()+mv_len32(nClasses)+mv_len32(nCondIdx)+mv_len32(nPids)+1;
+	size_t len=QVar::serSize()+mv_len32(nClasses)+mv_len32(nCondIdx)+mv_len32(nPids)+1+mv_len32(nPathSeg);
 	if (classes!=NULL) for (unsigned i=0; i<nClasses; i++) {
 		const ClassSpec &cs=classes[i]; len+=mv_len32(cs.classID)+mv_len32(cs.nParams);
 		for (unsigned i=0; i<cs.nParams; i++) len+=MVStoreKernel::serSize(cs.params[i]);
@@ -1096,8 +1098,14 @@ size_t SimpleVar::serSize() const
 		for (unsigned i=0; i<cf->nPids; i++) len+=mv_len32(cf->pids[i]);
 	}
 	len+=mv_len32(cnt);
-	if (path!=NULL) {
-		//???
+	if (path!=NULL) for (unsigned i=0; i<nPathSeg; i++) {
+		const PathSeg& ps=path[i];
+		len+=mv_len32(ps.pid)+1;
+		if (ps.eid!=STORE_COLLECTION_ID) len+=mv_len32(ps.eid);
+		if (ps.filter!=NULL) len+=((Expr*)ps.filter)->serSize();
+		if (ps.cid!=STORE_INVALID_CLASSID) len+=mv_len32(ps.cid);
+		if (ps.rmin!=1) len+=mv_len32(ps.rmin);
+		if (ps.rmax!=1) len+=mv_len32(ps.rmax);
 	}
 	return len;
 }
@@ -1128,10 +1136,17 @@ byte *SimpleVar::serialize(byte *buf) const
 		mv_enc32(buf,cf->flags); mv_enc32(buf,cf->nPids);
 		for (unsigned i=0; i<cf->nPids; i++) mv_enc32(buf,cf->pids[i]);
 	}
-	*buf++=fOrProps;
-	if (path!=NULL) {
-		//???
+	mv_enc32(buf,nPathSeg);
+	if (path!=NULL) for (unsigned i=0; i<nPathSeg; i++) {
+		const PathSeg& ps=path[i]; mv_enc32(buf,ps.pid);
+		byte *pf=buf; *buf++=ps.fLast?0x80:0;
+		if (ps.eid!=STORE_COLLECTION_ID) {*pf|=0x01; mv_enc32(buf,ps.eid);}
+		if (ps.filter!=NULL) {*pf|=0x02; buf=((Expr*)ps.filter)->serialize(buf);}
+		if (ps.cid!=STORE_INVALID_CLASSID) {*pf|=0x04; mv_enc32(buf,ps.cid);}
+		if (ps.rmin!=1) {*pf|=0x08; mv_enc32(buf,ps.rmin);}
+		if (ps.rmax!=1) {*pf|=0x10; mv_enc32(buf,ps.rmax);}
 	}
+	*buf++=fOrProps;
 	return buf;
 }
 
@@ -1180,8 +1195,22 @@ RC SimpleVar::deserialize(const byte *&buf,const byte *const ebuf,QVarID id,MemA
 		for (unsigned i=0; i<np; i++) {CHECK_dec32(buf,flg,ebuf); cf->pids[i]=flg;}
 		*pft=cf; pft=&cf->next;
 	}
+	CHECK_dec32(buf,cv->nPathSeg,ebuf);
+	if (cv->nPathSeg!=0) {
+		if ((cv->path=new(ma) PathSeg[cv->nPathSeg])==NULL) return RC_NORESOURCES;
+		memset(cv->path,0,cv->nPathSeg*sizeof(PathSeg));
+		for (unsigned i=0; i<cv->nPathSeg; i++) {
+			PathSeg& ps=cv->path[i]; CHECK_dec32(buf,ps.pid,ebuf);
+			if (buf>=ebuf) return RC_CORRUPTED; byte f=*buf++;
+			if ((f&0x01)!=0) {CHECK_dec32(buf,ps.eid,ebuf);}
+			if ((f&0x02)!=0) {if ((rc=Expr::deserialize(*(Expr**)&ps.filter,buf,ebuf,ma))!=RC_OK) return rc;}
+			if ((f&0x04)!=0) {CHECK_dec32(buf,ps.cid,ebuf);}
+			if ((f&0x08)!=0) {CHECK_dec32(buf,ps.rmin,ebuf);}
+			if ((f&0x10)!=0) {CHECK_dec32(buf,ps.rmax,ebuf);}
+			ps.fLast=(f&0x80)!=0;
+		}
+	}
 	if (buf<ebuf) cv->fOrProps=*buf++!=0; else return RC_CORRUPTED;
-	// path ???
 	return RC_OK;
 }
 

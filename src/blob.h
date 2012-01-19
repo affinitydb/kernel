@@ -44,7 +44,6 @@ public:
 	RC					reset();
 	void				destroy();
 	void				destroyObj();
-	RC					deleteData(Session *ses);
 };
 
 class StreamEdit : public IStream
@@ -139,10 +138,11 @@ class Collection : public Tree
 	HeapPageMgr::HeapExtCollection	*coll;
 	ulong							stamp;
 	bool							fMod;
+	class CollFreeData : public TreeFreeData {public: RC freeData(const byte *data,StoreCtx *ctx);};
 public:
 	Collection(StoreCtx *ctx,ulong stamp,const HeapPageMgr::HeapExtCollection *c,MemAlloc *ma,ulong xP=0);
 	virtual				~Collection();
-	TreeFactory		*getFactory() const;
+	TreeFactory			*getFactory() const;
 	IndexFormat			indexFormat() const;
 	ulong				getMode() const;
 	PageID				startPage(const SearchKey*,int& level,bool,bool=false);
@@ -161,53 +161,52 @@ public:
 	RC					modify(ExprOp op,const Value *pv,ElementID epos,ElementID eid,Session *ses);
 
 	static	Collection	*create(const PageAddr& addr,PropertyID pid,StoreCtx *ctx,MemAlloc *ma,PBlock *pb=NULL);
-	static	RC				persist(const Value& v,HeapPageMgr::HeapExtCollection& collection,Session *ses,bool fForce=true,bool fOld=false,ulong maxPages=0);
-	static	RC				persistElement(Session *ses,const Value& v,ushort& lval,byte *&buf,size_t& lbuf,size_t threshold,
+	static	RC			persist(const Value& v,HeapPageMgr::HeapExtCollection& collection,Session *ses,bool fForce=true,bool fOld=false,ulong maxPages=0);
+	static	RC			persistElement(Session *ses,const Value& v,ushort& lval,byte *&buf,size_t& lbuf,size_t threshold,
 											ulong prev=STORE_COLLECTION_ID,ulong next=STORE_COLLECTION_ID,bool fOld=false);
+	static	RC			purge(const HeapPageMgr::HeapExtCollection *hc,StoreCtx *ctx);
 
 	const static IndexFormat collFormat;
 };
 
 class Navigator : public INav, public Tree, public ObjDealloc
 {
-	const	PageAddr						heapAddr;
-	const	PropertyID						propID;
-	const	ulong							mode;
-	MemAlloc *const							allc;
-	ECB										ecb;
-	Value									curValue;
-	ValueType								type;
+	const	PageAddr	heapAddr;
+	const	PropertyID	propID;
+	const	ulong		mode;
+	MemAlloc *const		allc;
+	ECB					ecb;
+	Value				curValue;
+	ValueType			type;
 public:
 	Navigator(const PageAddr& addr,PropertyID pid,const HeapPageMgr::HeapExtCollection *coll,ulong md,MemAlloc *ma);
-	virtual					~Navigator();
-	const	Value			*navigate(GO_DIR=GO_NEXT,ElementID=STORE_COLLECTION_ID);
-	ElementID				getCurrentID();
-	const	Value			*getCurrentValue();
-	RC						getElementByID(ElementID,Value&);
-	INav	*clone() const;
-	unsigned	long		count() const;	
-	void					destroy();
-	void					destroyObj();
-	RC						deleteData(Session *ses);
+	virtual				~Navigator();
+	const	Value		*navigate(GO_DIR=GO_NEXT,ElementID=STORE_COLLECTION_ID);
+	ElementID			getCurrentID();
+	const	Value		*getCurrentValue();
+	RC					getElementByID(ElementID,Value&);
+	INav				*clone() const;
+	unsigned	long	count() const;	
+	void				destroy();
+	void				destroyObj();
 
-	TreeFactory				*getFactory() const;
-	IndexFormat				indexFormat() const;
-	PageID					startPage(const SearchKey*,int& level,bool,bool=false);
-	PageID					prevStartPage(PageID pid);
-	RC						addRootPage(const SearchKey& key,PageID& pageID,ulong level);
-	RC						removeRootPage(PageID page,PageID leftmost,ulong level);
-	ulong					getStamp(TREE_NODETYPE) const;
-	void					getStamps(ulong stamps[TREE_NODETYPE_ALL]) const;
-	void					advanceStamp(TREE_NODETYPE);
-	bool					lock(RW_LockType,bool fTry=false) const;
-	void					unlock() const;
-	TreeConnect				*persist(uint32_t& hndl) const;
+	TreeFactory			*getFactory() const;
+	IndexFormat			indexFormat() const;
+	PageID				startPage(const SearchKey*,int& level,bool,bool=false);
+	PageID				prevStartPage(PageID pid);
+	RC					addRootPage(const SearchKey& key,PageID& pageID,ulong level);
+	RC					removeRootPage(PageID page,PageID leftmost,ulong level);
+	ulong				getStamp(TREE_NODETYPE) const;
+	void				getStamps(ulong stamps[TREE_NODETYPE_ALL]) const;
+	void				advanceStamp(TREE_NODETYPE);
+	bool				lock(RW_LockType,bool fTry=false) const;
+	void				unlock() const;
+	TreeConnect			*persist(uint32_t& hndl) const;
+	void				setType(ValueType ty) {type=ty;}
 	
 	const HeapPageMgr::HeapExtCollection	*getDescriptor() const {return ecb.coll;}
-	static	RC				getPageAddr(const ElementDataHdr *edh,PageAddr&);
-	void					setType(ValueType ty) {type=ty;}
-
-	friend	class			Collection;
+	static	RC			getPageAddr(const ElementDataHdr *edh,PageAddr&);
+	friend	class		Collection;
 };
 
 #define	DEFAULT_BLOBREADTAB_SIZE	64
@@ -228,15 +227,14 @@ typedef SyncHashTab<BlobRead,const PageAddr&,&BlobRead::list> BlobReadTab;
 class BigMgr
 {
 	friend	class					StreamX;
-	friend	class					StrTxDelete;
 	friend	class					Navigator;
-	friend	class					NavTxDelete;
 	StoreCtx						*const ctx;
 	BlobReadTab						blobReadTab;
 	FreeQ<DEFAULT_BLOBREAD_BLOCK,Std_Alloc<STORE_HEAP> >	freeBlob;
 public:
 	BigMgr(StoreCtx *ct,ulong blobReadTabSize=DEFAULT_BLOBREADTAB_SIZE);
 	void *operator new(size_t s,StoreCtx *ctx) {void *p=ctx->malloc(s); if (p==NULL) throw RC_NORESOURCES; return p;}
+	bool canBePurged(const PageAddr& addr);
 };
 
 };

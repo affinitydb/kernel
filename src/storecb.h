@@ -73,8 +73,10 @@ struct StoreCB
 	float			pctFree;
 	uint16_t		storeID;
 	uint16_t		fIsEncrypted;
+	uint32_t		filler;
 	uint8_t			encKey[ENC_KEY_SIZE];
 	uint8_t			HMACKey[HMAC_KEY_SIZE];
+
 	TIMESTAMP		timestamp;
 	TXID			lastTXID;
 	LSN				checkpoint;

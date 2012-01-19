@@ -10,6 +10,7 @@ Written by Mark Venguerov 2004 - 2010
 #define _LOGMGR_H_
 
 #include "txmgr.h"
+#include "buffer.h"
 
 #define	MINSEGSIZE			0x10000
 #define	MAXLOGRECSIZE		0x100000ul		// 1Mb
@@ -155,10 +156,10 @@ private:
 class LogReadCtx
 {
 	LogMgr	*const		logMgr;
-	const	HEAP_TYPE	alloc;
+	Session	*const		ses;
 	ulong				currentLogSeg;
 	FileID				fid;
-	PBlock				*pb;
+	PBlockP				pb;
 	const	byte		*ptr;
 	size_t				len;
 	bool				fCheck;
@@ -173,7 +174,7 @@ public:
 	byte				*rbuf;
 	size_t				lrec;
 public:
-	LogReadCtx(LogMgr *mgr,HEAP_TYPE allc=SES_HEAP);
+	LogReadCtx(LogMgr *mgr,Session *s);
 	~LogReadCtx();
 	RC					read(LSN& lsn);
 	void				closeFile();

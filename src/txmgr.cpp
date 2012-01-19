@@ -147,10 +147,10 @@ RC TxMgr::commit(Session *ses,bool fAll,bool fFlush)
 		assert(ses->tx.next==NULL);
 		if ((ses->txState&TX_READONLY)==0 && ses->getTxState()!=TX_ABORTING) {
 			ses->txState=ses->txState&~0xFFFFul|TX_COMMITTING;
-			while (ses->tx.txDelete!=NULL) {
-				TxDelete *td=ses->tx.txDelete; ses->tx.txDelete=td->next;
-				RC rc=td->deleteData(); if (rc!=RC_OK) {cleanup(ses); return rc;}							// rollback?
-				ses->free(td);
+			uint32_t nPurge=0; TxPurge *tpa=ses->tx.txPurge.get(nPurge); rc=RC_OK;
+			if (tpa!=NULL) {
+				for (unsigned i=0; i<nPurge; i++) {if (rc==RC_OK) rc=tpa[i].purge(ses); ses->free(tpa[i].bmp); tpa[i].bmp=NULL;}
+				ses->free(tpa); if (rc!=RC_OK) {cleanup(ses); return rc;}											// rollback?
 			}
 			if ((ulong)ses->tx.defHeap!=0) {
 				if ((rc=ctx->heapMgr->addPagesToMap(ses->tx.defHeap,ses))!=RC_OK) {cleanup(ses); return rc;}	// rollback?

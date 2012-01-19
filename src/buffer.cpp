@@ -90,27 +90,35 @@ void BufMgr::checkState()
 }
 #endif
 
-PBlock* BufMgr::getPage(PageID pid,PageMgr *pageMgr,ulong flags,PBlock *old)
+PBlock* BufMgr::getPage(PageID pid,PageMgr *pageMgr,ulong flags,PBlock *old,Session *ses)
 {
-	assert(old==NULL || (flags&PGCTL_NOREG)!=0 || Session::getSession()->isLatched(old));
 	if (old!=NULL && old->pageID==pid) {
 		if ((flags&PGCTL_XLOCK)!=0) {
 			if (old->isULocked() && (flags&QMGR_UFORCE)!=0) old->upgradeLock();
-			else if (!old->isXLocked()) relock(old,RW_X_LOCK);
+			else if (!old->isXLocked())
+				{if ((ses!=NULL || (ses=Session::getSession())!=NULL) && !ses->relatch(old)) old=NULL; else relock(old,RW_X_LOCK);}
 		} else if ((flags&PGCTL_ULOCK)!=0) {
 			if (old->isXLocked()) old->downgradeLock(RW_U_LOCK);
-			else if (!old->isULocked() || (flags&QMGR_UFORCE)==0) relock(old,RW_U_LOCK);
+			else if (!old->isULocked() || (flags&QMGR_UFORCE)==0)
+				{if ((ses!=NULL || (ses=Session::getSession())!=NULL) && !ses->relatch(old)) old=NULL; else relock(old,RW_U_LOCK);}
 		} else if (old->isXLocked() || old->isULocked() && (flags&QMGR_UFORCE)!=0)
 			old->downgradeLock(RW_S_LOCK);
 		return old;
 	}
-	PBlock *ret=NULL; Session *ses=Session::getSession();
-	if (ses!=NULL && (flags&QMGR_TRY)!=0 && ses->getLatched(pid)!=NULL) {
-		if (old!=NULL) {if (ses!=NULL && (flags&PGCTL_NOREG)==0) ses->unregLatched(old); old->release(flags|PGCTL_NOREG);}
-		return NULL;
+	PBlock *ret=NULL; LatchedPage *lp; if (ses==NULL) ses=Session::getSession();
+	if (ses!=NULL && (lp=(LatchedPage*)BIN<LatchedPage,PageID,LatchedPage::Cmp>::find(pid,ses->latched,ses->nLatched))!=NULL) {
+		if (old!=NULL) {
+			const bool fAfter=pid>old->getPageID(); old->release(flags,ses); 
+			if (fAfter) {lp=(LatchedPage*)BIN<LatchedPage,PageID,LatchedPage::Cmp>::find(pid,ses->latched,ses->nLatched); assert(lp!=NULL);}
+		}
+		assert(lp->pb->getPageID()==pid);
+		if ((flags&(PGCTL_ULOCK|PGCTL_XLOCK))==0) {if (lp->cntS==0xFFFF) return NULL; lp->cntS++; return lp->pb;}
+		if (lp->cntX!=0) {if (lp->cntX==0xFFFF) return NULL; lp->cntX++; return lp->pb;}
+		assert(lp->cntS!=0); ses->releaseLatches(pid,pageMgr,true);
+		if (ses->nLatched!=0 && BIN<LatchedPage,PageID,LatchedPage::Cmp>::find(pid,ses->latched,ses->nLatched)!=NULL) return NULL;
 	}
-	assert(ses==NULL || ses->getLatched(pid)==NULL);
-	if (old!=NULL && ses!=NULL && (flags&(PGCTL_COUPLE|PGCTL_NOREG))==0) ses->unregLatched(old);
+	if (old!=NULL && ses!=NULL && (flags&PGCTL_COUPLE)==0 && !ses->unlatch(old,flags)) old=NULL;
+	if ((flags&PGCTL_RLATCH)!=0 && ses!=NULL) ses->releaseLatches(pid,pageMgr,(flags&(PGCTL_ULOCK|PGCTL_XLOCK))!=0);
 	ulong flg=((flags&PGCTL_XLOCK)!=0?RW_X_LOCK:(flags&PGCTL_ULOCK)!=0?RW_U_LOCK:RW_S_LOCK)|(flags&(QMGR_TRY|QMGR_UFORCE|QMGR_INMEM));
 	if (pid==INVALID_PAGEID || ctx->theCB->nMaster==0 && PageNumFromPageID(pid)==0 && FileIDFromPageID(pid)==0) flags|=PGCTL_COUPLE;
 	else if (get(ret,pid,pageMgr,flg,(flags&PGCTL_COUPLE)==0?old:NULL)!=RC_OK) {assert(ret==0);}
@@ -120,33 +128,35 @@ PBlock* BufMgr::getPage(PageID pid,PageMgr *pageMgr,ulong flags,PBlock *old)
 			if (ret->pageMgr==NULL) ret->pageMgr=pageMgr;
 			else if (pageMgr!=NULL) {
 				if (ses==NULL || ses->getExtAddr().pageID!=ret->pageID)
-					report(MSG_ERROR,"PageMgr error: request=%d, page type=%d, page %X\n",
-								pageMgr->getPGID(),ret->pageMgr->getPGID(),ret->pageID);
-				release(ret); ret=NULL;
+					report(MSG_ERROR,"PageMgr error: request=%d, page type=%d, page %X\n",pageMgr->getPGID(),ret->pageMgr->getPGID(),ret->pageID);
+				release(ret,(flags&PGCTL_ULOCK)!=0); ret=NULL;
 			}
 		}
 	}
-	if (old!=NULL && (flags&PGCTL_COUPLE)!=0) {
-		if (ses!=NULL && (flags&PGCTL_NOREG)==0) ses->unregLatched(old); old->release(flags|PGCTL_NOREG);
-	}
-	if (ret!=NULL && ses!=NULL && (flags&PGCTL_NOREG)==0) ses->regLatched(ret);
+	if (old!=NULL && (flags&PGCTL_COUPLE)!=0) old->release(flags,ses);
+	if (ret!=NULL && ses!=NULL && ses->latch(ret,flags)!=RC_OK) {release(ret,(flags&PGCTL_ULOCK)!=0); ret=NULL;}
 	return ret;
 }
 
-PBlock *BufMgr::newPage(PageID pid,PageMgr *pageMgr,PBlock *old,ulong flags)
+PBlock *BufMgr::newPage(PageID pid,PageMgr *pageMgr,PBlock *old,ulong flags,Session *ses)
 {
-	PBlock *pb=NULL; Session *ses=Session::getSession();
 	if (pid==INVALID_PAGEID || ctx->theCB->nMaster==0 && PageNumFromPageID(pid)==0 && FileIDFromPageID(pid)==0)
 		{if (old!=NULL) old->release(flags); return NULL;}
-	if (old!=NULL && ses!=NULL) ses->unregLatched(old);
+	PBlock *pb=NULL;
+	if (ses!=NULL || (ses=Session::getSession())!=NULL) {
+		if (BIN<LatchedPage,PageID,LatchedPage::Cmp>::find(pid,ses->latched,ses->nLatched)!=NULL)	// shouldn't happen
+			{if (old!=NULL) old->release(flags,ses); return NULL;}
+		if (old!=NULL && !ses->unlatch(old,flags)) old=NULL;
+	}
 	switch (get(pb,pid,pageMgr,QMGR_NEW|RW_X_LOCK|(flags&QMGR_UFORCE),old)) {
 	case RC_ALREADYEXISTS: 
 		report(MSG_ERROR,"BufMgr::newPage: page %X already exists\n",pid);
 	default: assert(pb==NULL); break;
 	case RC_OK:
-		assert(pb->QE->getKey()==pb->pageID && pb->QE->isFixed());
+		pb->state=BLOCK_NEW_PAGE; assert(pb->QE->getKey()==pb->pageID && pb->QE->isFixed());
 		if ((pb->pageMgr=pageMgr)!=NULL) pageMgr->initPage(pb->frame,lPage,pid);
-		pb->state=BLOCK_NEW_PAGE; if (ses!=NULL) ses->regLatched(pb); break;
+		if (ses!=NULL && ses->latch(pb,flags|PGCTL_XLOCK)!=RC_OK) {release(pb,(flags&PGCTL_ULOCK)!=0); pb=NULL;}
+		break;
 	}
 	return pb;
 }
@@ -367,22 +377,21 @@ bool PBlock::save()
 	return RequestQueue::postRequest(new(asyncWriteReqs.alloc(sizeof(AsyncWriteReq))) AsyncWriteReq(this),mgr->ctx,RQ_IO);
 }
 
-void PBlock::release(ulong flags) 
+void PBlock::release(ulong flags,Session *ses)
 {
-	if ((flags&PGCTL_NOREG)==0) {Session *ses=Session::getSession(); if (ses!=NULL) ses->unregLatched(this);}
 	assert(QE->getKey()==pageID && QE->isFixed());
+	if ((ses!=NULL || (ses=Session::getSession())!=NULL) && !ses->unlatch(this,flags)) return;
 	if ((flags&PGCTL_DISCARD)!=0 || (state&(BLOCK_NEW_PAGE|BLOCK_REDO_SET))==BLOCK_NEW_PAGE)
 		{assert(!isDependent()); if (mgr->drop(this,(flags&QMGR_UFORCE)!=0)) destroy(); return;}
-	bool fSaved=false;
 	if (isDependent()) {
 		if (pageMgr!=NULL && redoLSN<mgr->ctx->getOldLSN()) pageMgr->unchain(this);
-	} else if ((flags&PGCTL_NOREG)==0 && (isXLocked() || isULocked() && (flags&QMGR_UFORCE)!=0)) {
+	} else if (isXLocked() || isULocked() && (flags&QMGR_UFORCE)!=0) {
 		bool fS=redoLSN<mgr->ctx->getOldLSN(); ulong cnt=0;
 		if (!fS && dependent!=NULL) for (PBlock *pb=this; pb->dependent!=NULL; pb=pb->dependent)
 			if (++cnt>=FLUSH_CHAIN_THR) {fS=true; setStateBits(BLOCK_FLUSH_CHAIN); break;}
-		if (fS) fSaved=save();
+		if (fS && save()) return;
 	}
-	if (!fSaved) mgr->release(this,(flags&QMGR_UFORCE)!=0);
+	mgr->release(this,(flags&QMGR_UFORCE)!=0);
 }
 
 RC PBlock::flushBlock()
@@ -488,4 +497,18 @@ void PBlock::setKey(PageID pid,void *mg)
 	if (mgr!=NULL && pageList.isInList()) {MutexP lck(&mgr->pageLock); pageList.remove();}
 	pageID=pid; mgr=(BufMgr*)(BufQMgr*)mg;
 	MutexP lck(&mgr->pageLock); mgr->pageList.insertFirst(&pageList);
+}
+
+PBlock*	PBlockP::getPage(PageID pid,PageMgr *mgr,ulong f,Session *ses)
+{
+	PBlock *tmp=(flags&PGCTL_NOREL)==0?pb:(PBlock*)0; pb=NULL; if (ses==NULL) ses=Session::getSession();
+	pb=(ses!=NULL?ses->getStore():StoreCtx::get())->bufMgr->getPage(pid,mgr,(f&~QMGR_UFORCE)|(flags&QMGR_UFORCE),tmp,ses);
+	flags=f|((f&(PGCTL_XLOCK|PGCTL_ULOCK))!=0?QMGR_UFORCE:0); return pb;
+}
+
+PBlock*	PBlockP::newPage(PageID pid,PageMgr *mgr,ulong f,Session *ses)
+{
+	PBlock *tmp=(flags&PGCTL_NOREL)==0?pb:(PBlock*)0; pb=NULL; if (ses==NULL) ses=Session::getSession();
+	pb=(ses!=NULL?ses->getStore():StoreCtx::get())->bufMgr->newPage(pid,mgr,tmp,(f&~QMGR_UFORCE)|(flags&QMGR_UFORCE),ses);
+	flags=f|((f&(PGCTL_XLOCK|PGCTL_ULOCK))!=0?QMGR_UFORCE:0); return pb;
 }

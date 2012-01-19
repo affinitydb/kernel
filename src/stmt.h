@@ -26,6 +26,7 @@ namespace MVStoreKernel
 #define	QRY_ORDEXPR		0x40000000
 #define	QRY_IDXEXPR		0x20000000
 #define	QRY_CPARAMS		0x10000000
+#define	QRY_PATH		0x08000000
 
 class SOutCtx;
 class SInCtx;
@@ -258,7 +259,6 @@ public:
 	RC		analyze(char *&plan,const Value *pars=NULL,unsigned nPars=0,unsigned long md=0) const;
 
 	bool	isSatisfied(const IPIN *,const Value *pars=NULL,unsigned nPars=0,unsigned long mode=0) const;
-	bool	isSatisfied(const IPIN *const *pins,unsigned nPins,const Value *pars=NULL,unsigned nPars=0,unsigned long mode=0) const;
 	RC		cmp(const Value& v,ExprOp op,unsigned flags);
 
 	char	*toString(unsigned mode=0,const QName *qNames=NULL,unsigned nQNames=0) const;
@@ -332,8 +332,7 @@ public:
 	void				destroy();
 
 	RC					connect();
-	RC					release() {return queryOp!=NULL?queryOp->release():RC_OK;}
-	RC					advance(bool fRet=true,bool *fRel=NULL);
+	RC					advance(bool fRet=true);
 	void				getPID(PID &id) {qr.getID(id);}
 	RC					extract(PIN *&,unsigned idx=0,bool fCopy=false);
 	PINEx				**getResults(unsigned& nRes) const {nRes=nResults; return results!=NULL?results:(PINEx**)&pqr;}

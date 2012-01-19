@@ -23,38 +23,38 @@ namespace MVStoreKernel
 #define	PINEX_ACL_CHKED		0x0008
 #define	PINEX_ADDRSET		0x0010
 #define	PINEX_EXTPID		0x0020
+#define	PINEX_RLOAD			0x0040
 
 #define	PEX_PID				0x0001
 #define	PEX_PAGE			0x0002
 #define	PEX_PROPS			0x0004
 #define	PEX_ALLPROPS		0x0008
 
-class PINEx : public PIN
+class PINEx : public PIN, public LatchHolder
 {
 	PBlockP							pb;
-	const	HeapPageMgr::HeapPage	*hp;
 	const	HeapPageMgr::HeapPIN	*hpin;
 	class	TVers					*tv;
 public:
 	mutable	EncPINRef				epr;
 public:
-	PINEx(Session *s) : PIN(s,PIN::defPID,PageAddr::invAddr),hp(NULL),hpin(NULL),tv(NULL) {epr.flags=0; epr.lref=0;}
-	PINEx(Session *s,const PID& pid,const Value *pv=NULL,unsigned nv=0) : PIN(s,pid,PageAddr::invAddr,0,(Value*)pv,nv),hp(NULL),hpin(NULL),tv(NULL) {epr.flags=0; epr.lref=0;}
-	PINEx(const PIN *pin) : PIN(pin->ses,pin->id,pin->addr,pin->mode|PIN_NO_FREE,pin->properties,pin->nProperties),hp(NULL),hpin(NULL),tv(NULL) {stamp=pin->stamp; epr.flags=0; epr.lref=0;}
-	PINEx(Session *s,PBlock *p,const PageAddr &ad,bool fRel=true);
-	~PINEx()	{free();}
-	void		cleanup() {pb.release(); hp=NULL; hpin=NULL; addr=PageAddr::invAddr; free(); tv=NULL; epr.flags=0; epr.lref=0;}
-	void		release() {pb.release(); hp=NULL; hpin=NULL; free(); tv=NULL; epr.flags&=~PINEX_TVERSION;}
+	PINEx(Session *s) : PIN(s,PIN::defPID,PageAddr::invAddr),LatchHolder(s),hpin(NULL),tv(NULL) {epr.flags=0; epr.lref=0;}
+	PINEx(Session *s,const PID& pid,const Value *pv=NULL,unsigned nv=0) : PIN(s,pid,PageAddr::invAddr,0,(Value*)pv,nv),LatchHolder(s),hpin(NULL),tv(NULL) {epr.flags=0; epr.lref=0;}
+	PINEx(const PIN *pin) : PIN(pin->ses,pin->id,pin->addr,pin->mode|PIN_NO_FREE,pin->properties,pin->nProperties),LatchHolder(pin->ses),hpin(NULL),tv(NULL) {stamp=pin->stamp; epr.flags=0; epr.lref=0;}
+	~PINEx()	{pb.release(ses); free();}
+	void		cleanup() {id=PIN::defPID; addr=PageAddr::invAddr; pb.release(ses); hpin=NULL; free(); tv=NULL; epr.flags=0; epr.lref=0;}
 	void		setProps(const Value *props,unsigned nProps,unsigned f=PIN_NO_FREE) {properties=(Value*)props; nProperties=nProps; mode|=f;}
 	void		resetProps() {if (properties!=NULL) {if ((mode&PIN_NO_FREE)==0) freeV((Value*)properties,nProperties,ses); properties=NULL; nProperties=0;}}
-	RC			releaseCopy(const PropertyID *flt=NULL,unsigned nFlt=0);
+	void		releaseLatches(PageID pid,PageMgr*,bool);
+	void		checkNotHeld(PBlock*);
 	RC			load(unsigned mode=0,const PropertyID *pids=NULL,unsigned nPids=0);
-	void		operator=(const PINEx &);
+	void		moveTo(PINEx &);
 	void		operator=(const PID& pid) const {id=pid;}
 	void		operator=(const PageAddr& ad) const {addr=ad;}
+	const		PageAddr& getAddr() const {return addr;}
 	RC			getID(PID& pid) const {RC rc=RC_OK; if (id.pid==STORE_INVALID_PID) rc=epr.lref==0?RC_NOTFOUND:unpack(); pid=id; return rc;}
-	const		PageAddr&	getAddr() const {return addr;}
 	unsigned	getState() const {return (epr.lref==0&&id.pid==STORE_INVALID_PID?0:hpin!=NULL?PEX_PAGE|PEX_PID:PEX_PID)|(properties==NULL?0:(mode&PIN_PROJECTED)!=0?PEX_PROPS:PEX_PROPS|PEX_ALLPROPS);}
+	const		HeapPageMgr::HeapPIN *fill() {if (pb.isNull()) hpin=NULL; else {const HeapPageMgr::HeapPage *hp=(HeapPageMgr::HeapPage*)pb->getPageBuf(); hpin=(HeapPageMgr::HeapPIN*)hp->getObject(hp->getOffset(addr.idx));} return hpin;}
 	bool		defined(const PropertyID *pids,unsigned nProps) const;
 	RC			getValue(PropertyID pid,Value& v,ulong mode,MemAlloc *ma,ElementID=STORE_COLLECTION_ID) const;
 	bool		isCollection(PropertyID pid) const;

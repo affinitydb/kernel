@@ -151,7 +151,7 @@ RC	FileMgr::listIO(int mode,int nent,myaio* const* pcbs,bool fSync)
 	IStoreIO::iodesc **adescs=(IStoreIO::iodesc **)ctx->malloc(sizeof(IStoreIO::iodesc *)*nent); if (adescs==NULL) return RC_NORESOURCES;
 	for (i=0; i<nent; i++) 
 	{
-		adescs[i]=(IStoreIO::iodesc *)ctx->malloc(sizeof(IStoreIO::iodesc));
+		adescs[i]=(IStoreIO::iodesc *)ctx->malloc(sizeof(IStoreIO::iodesc)); if (adescs[i]==NULL) return RC_NORESOURCES;
 		adescs[i]->aio_buf=pcbs[i]->aio_buf;
 		adescs[i]->aio_fildes=pcbs[i]->aio_fildes;
 		adescs[i]->aio_lio_opcode=pcbs[i]->aio_lio_opcode;

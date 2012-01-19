@@ -296,7 +296,7 @@ RC Sort::sort(ulong nAbort)
 			if (rc!=RC_OK) break;
 		}
 	}
-	queryOp->release(); //delete queryOp; const_cast<QueryOp*&>(this->queryOp)=NULL;
+	//delete queryOp; const_cast<QueryOp*&>(this->queryOp)=NULL;
 	for (unsigned i=1; i<nqr; i++) {pqr[i]->~PINEx(); qx->ses->free((void*)pqr[i]);}
 	if (rc==RC_EOF && (nAllPins<=nRunPins||(rc=prepMerge())==RC_OK||rc==RC_EOF)) {rc=RC_OK; idx=0;} else {nAllPins=0; pinMem.release();}
 	return rc;
@@ -831,7 +831,7 @@ RC Sort::count(uint64_t& cnt,ulong nAbort)
 				if (!fSkip) nAllPins++; pinMem.truncate(mrk);
 			}
 			for (unsigned i=1; i<nqr; i++) {pqr[i]->~PINEx(); qx->ses->free((void*)pqr[i]);}
-			pinMem.release(); queryOp->release();
+			pinMem.release();
 		}
 	}
 	cnt=nAllPins; return RC_OK;
@@ -877,9 +877,4 @@ void Sort::print(SOutCtx& buf,int level) const
 		// var
 	}
 	buf.append("\n",1); if (queryOp!=NULL) queryOp->print(buf,level+1);
-}
-
-RC Sort::release()
-{
-	return RC_OK;
 }

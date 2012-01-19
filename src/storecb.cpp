@@ -81,6 +81,7 @@ RC StoreCB::create(StoreCtx *ctx,const char *fname,const StoreCreationParameters
 		theCB->pctFree = cpar.pctFree<=0.f?DEFAULTPCTFREE:cpar.pctFree;
 		theCB->storeID = ctx->storeID = cpar.storeId;
 		theCB->fIsEncrypted = ushort(cpar.fEncrypted ? ~0 : 0);
+		theCB->filler = 0;
 		if (cpar.fEncrypted) {
 			ctx->cryptoMgr->randomBytes(theCB->encKey,ENC_KEY_SIZE);
 			memcpy(ctx->encKey,theCB->encKey,ENC_KEY_SIZE); ctx->fEncrypted=true;

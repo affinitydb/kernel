@@ -263,7 +263,7 @@ RC FSMgr::allocNewExtent(ExtentInfo*& ext,PBlock*& pb,bool fForce)
 				report(MSG_CRIT,"FSMgr: Too many directory pages\n"); return RC_NORESOURCES;
 			}
 			// can be in master file?
-			dir=ctx->bufMgr->newPage(PageIDFromPageNum(dataFile,ulong(addr/lPage)),&extentDirPage);
+			dir.newPage(PageIDFromPageNum(dataFile,ulong(addr/lPage)),&extentDirPage);
 			addr+=lPage; nNewPages--; slotsLeft=ExtentDirPage::maxDirSlots(lPage); fNewDirPage=true;
 		}
 		PageID pid=PageIDFromPageNum(dataFile,ulong(addr/lPage));

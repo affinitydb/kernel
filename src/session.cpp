@@ -62,10 +62,11 @@ void Session::terminateSession()
 }
 
 Session::Session(StoreCtx *ct,MemAlloc *ma)
-	: txid(INVALID_TXID),txcid(NO_TXCID),txState(TX_NOTRAN),sFlags(0),identity(STORE_INVALID_IDENTITY),
-	list(this),lockReq(this),heldLocks(NULL),nLatched(0),firstLSN(0),undoNextLSN(0),flushLSN(0),sesLSN(0),nLogRecs(0),
-	tx(this),subTxCnt(0),mini(NULL),nTotalIns(0),xHeapPage(INVALID_PAGEID),forcedPage(INVALID_PAGEID),classLocked(RW_NO_LOCK),fAbort(false),
-	txil(0),repl(NULL),itf(0),URIBase(NULL),lURIBaseBuf(0),lURIBase(0),qNames(NULL),nQNames(0),fStdOvr(false),ctx(ct),mem(ma),
+	: ctx(ct),mem(ma),txid(INVALID_TXID),txcid(NO_TXCID),txState(TX_NOTRAN),sFlags(0),identity(STORE_INVALID_IDENTITY),
+	list(this),lockReq(this),heldLocks(NULL),latched(new(ma) LatchedPage[INITLATCHED]),nLatched(0),xLatched(INITLATCHED),
+	firstLSN(0),undoNextLSN(0),flushLSN(0),sesLSN(0),nLogRecs(0),tx(this),subTxCnt(0),mini(NULL),
+	nTotalIns(0),xHeapPage(INVALID_PAGEID),forcedPage(INVALID_PAGEID),classLocked(RW_NO_LOCK),fAbort(false),
+	txil(0),repl(NULL),itf(0),URIBase(NULL),lURIBaseBuf(0),lURIBase(0),qNames(NULL),nQNames(0),fStdOvr(false),
 	iTrace(NULL),traceMode(0),defExpiration(0),allocCtrl(NULL),tzShift(0)
 {
 	extAddr.pageID=INVALID_PAGEID; extAddr.idx=INVALID_INDEX;
@@ -92,9 +93,8 @@ void Session::cleanup()
 	if (ctx!=NULL) {
 		ctx->lockMgr->releaseSession(this);
 		if (classLocked!=RW_NO_LOCK) {ctx->classMgr->getLock()->unlock(); classLocked=RW_NO_LOCK;}
-		while (nLatched>0) latched[--nLatched]->release(PGCTL_NOREG);
+		while (nLatched--!=0) ctx->bufMgr->release(latched[nLatched].pb,latched[nLatched].cntX!=0);
 		tx.cleanup(); delete repl; repl=NULL;
-		if (rlatch!=NULL) {rlatch->release(); rlatch=NULL;}
 		if (reuse.pinPages!=NULL) for (ulong i=0; i<reuse.nPINPages; i++)
 			ctx->heapMgr->HeapPageMgr::reuse(reuse.pinPages[i].pid,reuse.pinPages[i].space,ctx);
 		if (reuse.ssvPages!=NULL) for (ulong i=0; i<reuse.nSSVPages; i++)
@@ -116,10 +116,55 @@ void Session::setRestore()
 	sFlags|=S_RESTORE; identity=STORE_OWNER;
 }
 
-PBlock *Session::getLatched(PageID pid) const 
+int LatchedPage::Cmp::cmp(const LatchedPage& lp,PageID pid)
 {
-	for (int i=nLatched; --i>=0; ) if (latched[i]->getPageID()==pid) return latched[i];
-	return NULL;
+	return cmp3(lp.pb->getPageID(),pid);
+}
+
+RC Session::latch(PBlock *pb,ulong mode)
+{
+	if (nLatched>=xLatched && (latched=(LatchedPage*)mem->realloc(latched,(xLatched*=2)*sizeof(LatchedPage)))==NULL) return RC_NORESOURCES;
+	LatchedPage *ins=latched;
+	if (BIN<LatchedPage,PageID,LatchedPage::Cmp>::find(pb->getPageID(),latched,nLatched,&ins)!=NULL) return RC_INTERNAL;
+	if (ins<&latched[nLatched]) memmove(ins+1,ins,(byte*)&latched[nLatched]-(byte*)ins);
+	if ((mode&(PGCTL_XLOCK|PGCTL_ULOCK))!=0) {ins->cntX=1; ins->cntS=0;} else {ins->cntS=1; ins->cntX=0;}
+	ins->pb=pb; nLatched++; return RC_OK;
+}
+
+bool Session::relatch(PBlock *pb)
+{
+	LatchedPage *lp=(LatchedPage*)BIN<LatchedPage,PageID,LatchedPage::Cmp>::find(pb->getPageID(),latched,nLatched);
+	if (lp!=NULL) {if (lp->cntS>1) return false; lp->cntS=0; lp->cntX=1;}
+	return true;
+}
+
+bool Session::unlatch(PBlock *pb,ulong mode)
+{
+	LatchedPage *lp=(LatchedPage*)BIN<LatchedPage,PageID,LatchedPage::Cmp>::find(pb->getPageID(),latched,nLatched);
+	if (lp!=NULL) {
+		uint16_t *pcnt=(mode&QMGR_UFORCE)!=0||lp->cntS==0?&lp->cntX:&lp->cntS; assert(*pcnt!=0);
+		if (--*pcnt!=0) return false;
+		if ((lp->cntS|lp->cntX)!=0) {
+			if ((mode&QMGR_UFORCE)!=0) pb->downgradeLock(RW_S_LOCK);
+			return false;
+		}
+		if (lp<&latched[--nLatched]) memcpy(lp,lp+1,(byte*)&latched[nLatched]-(byte*)lp);
+#ifdef _DEBUG
+		for (DLList *lh=latchHolderList.next; lh!=&latchHolderList; lh=lh->next) ((LatchHolder*)lh)->checkNotHeld(pb);
+#endif
+	}
+	return true;
+}
+
+void Session::releaseLatches(PageID pid,PageMgr *mgr,bool fX)
+{
+	for (DLList *lh=latchHolderList.next; lh!=&latchHolderList; lh=lh->next) ((LatchHolder*)lh)->releaseLatches(pid,mgr,fX);
+}
+
+RC Session::releaseAllLatches()
+{
+	for (DLList *lh=latchHolderList.next; lh!=&latchHolderList; lh=lh->next) ((LatchHolder*)lh)->releaseLatches(INVALID_PAGEID,NULL,true);
+	return nLatched==0?RC_OK:RC_DEADLOCK;
 }
 
 void Session::lockClass(RW_LockType lt)
@@ -237,16 +282,12 @@ RC Session::popTx(bool fCommit,bool fAll)
 	for (SubTx *st=tx.next; st!=NULL; st=tx.next) {
 		if (fCommit) {
 			st->defHeap+=tx.defHeap; st->defClass+=tx.defClass; st->defFree+=tx.defFree; st->nInserted+=tx.nInserted;
-			if (tx.txDelete!=NULL) {
-				if (st->txDelete==NULL) st->txDelete=tx.txDelete;
-				else for (TxDelete *td=st->txDelete;;td=td->next) if (td->next==NULL) {td->next=tx.txDelete; break;}
-				tx.txDelete=NULL;
-			}
+			if (tx.txPurge!=NULL) {RC rc=st->txPurge.merge(tx.txPurge); if (rc!=RC_OK) return rc;}
+			if (tx.txClass!=NULL) {Classifier::merge(tx.txClass,st->txClass); tx.txClass=NULL;}
 			if (tx.txIndex!=NULL) {
 				// txIndex!!! merge to st
 				tx.txIndex=NULL;
 			}
-			if (tx.txClass!=NULL) {Classifier::merge(tx.txClass,st->txClass); tx.txClass=NULL;}
 		} else if (fAll) st->nInserted=nTotalIns=0;
 		else {
 			ctx->lockMgr->releaseLocks(this,tx.subTxID,true); st->nInserted-=tx.nInserted; nTotalIns-=tx.nInserted;
@@ -258,13 +299,13 @@ RC Session::popTx(bool fCommit,bool fAll)
 	return RC_OK;
 }
 
-SubTx::SubTx(Session *s) : next(NULL),ses(s),subTxID(0),lastLSN(0),txClass(NULL),txIndex(NULL),txDelete(NULL),defHeap(s),defClass(s),defFree(s),nInserted(0)
+SubTx::SubTx(Session *s) : next(NULL),ses(s),subTxID(0),lastLSN(0),txClass(NULL),txIndex(NULL),txPurge(s),defHeap(s),defClass(s),defFree(s),nInserted(0)
 {
 }
 
 SubTx::~SubTx()
 {
-	while (txDelete!=NULL) {TxDelete *td=txDelete; txDelete=td->next; td->release(); ses->free(td);}
+	for (unsigned i=0,j=(unsigned)txPurge; i<j; i++) if (txPurge[i].bmp!=NULL) ses->free(txPurge[i].bmp);
 	if (txClass!=NULL) ses->getStore()->classMgr->classTx(ses,txClass,false);
 	//delete txIndex;
 }
@@ -272,7 +313,8 @@ SubTx::~SubTx()
 void SubTx::cleanup()
 {
 	if (next!=NULL) {next->cleanup(); next->~SubTx(); ses->free(next); next=NULL;}
-	while (txDelete!=NULL) {TxDelete *td=txDelete; txDelete=td->next; td->release(); ses->free(td);}
+	for (unsigned i=0,j=(unsigned)txPurge; i<j; i++) if (txPurge[i].bmp!=NULL) ses->free(txPurge[i].bmp);
+	txPurge.clear();
 	if (txClass!=NULL) ses->getStore()->classMgr->classTx(ses,txClass,false);
 	if (txIndex!=NULL) {
 		//...
@@ -289,6 +331,57 @@ void SubTx::cleanup()
 		if (ses->getStore()->fsMgr->freeTxPages(defFree)==RC_OK) ses->getStore()->fsMgr->txUnlock(); defFree.cleanup();
 	}
 	lastLSN=LSN(0);
+}
+
+RC SubTx::queueForPurge(const PageAddr& addr,PurgeType pt,const void *data)
+{
+	TxPurge prg={addr.pageID,0,NULL},*tp=NULL; RC rc=txPurge.add(prg,&tp); uint32_t flg=pt==TXP_SSV?0x80000000:pt==TXP_IDS?0x40000000:0;
+	if (rc==RC_FALSE) {
+		if (data!=NULL || (tp->range&0xC0000000)!=flg || tp->range==uint32_t(~0u)) return RC_CORRUPTED;	// report error
+		ushort idx=addr.idx/(sizeof(uint32_t)*8),l=tp->range>>16&0x3fff; assert(tp->bmp!=NULL);
+		if (idx<ushort(tp->range)) {
+			ushort d=ushort(tp->range)-idx;
+			if ((tp->bmp=(uint32_t*)ses->realloc(tp->bmp,(l+d)*sizeof(uint32_t)))==NULL) return RC_NORESOURCES;
+			memmove(tp->bmp+d,tp->bmp,l*sizeof(uint32_t)); if (d==1) tp->bmp[0]=0; else memset(tp->bmp,0,d*sizeof(uint32_t));
+			tp->range=(tp->range&0x80000000)+(uint32_t(l+d)<<16)+idx;
+		} else if (idx>=ushort(tp->range)+l) {
+			ushort d=idx+1-ushort(tp->range)-l;
+			if ((tp->bmp=(uint32_t*)ses->realloc(tp->bmp,(l+d)*sizeof(uint32_t)))==NULL) return RC_NORESOURCES;
+			if (d==1) tp->bmp[l]=0; else memset(tp->bmp+l,0,d*sizeof(uint32_t)); tp->range+=uint32_t(d)<<16;
+		}
+		tp->bmp[idx-ushort(tp->range)]|=1<<addr.idx%(sizeof(uint32_t)*8); rc=RC_OK;
+	} else if (rc==RC_OK) {
+		if (data!=NULL) {
+			ushort l=HeapPageMgr::collDescrSize((HeapPageMgr::HeapExtCollection*)data);
+			if ((tp->bmp=(uint32_t*)ses->malloc(l))==NULL) return RC_NORESOURCES;
+			memcpy(tp->bmp,data,l); tp->range=uint32_t(~0u);
+		} else {
+			tp->range=(addr.idx/(sizeof(uint32_t)*8))|flg|0x00010000;
+			if ((tp->bmp=new(ses) uint32_t)==NULL) return RC_NORESOURCES;
+			tp->bmp[0]=1<<addr.idx%(sizeof(uint32_t)*8);
+		}
+	}
+	return rc;
+}
+
+RC TxPurge::purge(Session *ses)
+{
+	return ses->getStore()->queryMgr->purge(pageID,range&0xFFFF,range>>16&0x3FFF,bmp,(range&0x80000000)!=0?TXP_SSV:(range&0x40000000)!=0?TXP_IDS:TXP_PIN,ses);
+}
+
+RC TxPurge::Cmp::merge(TxPurge& dst,TxPurge& src,MemAlloc *ma)
+{
+	unsigned ss=src.range&0xFFFF,ds=dst.range&0xFFFF; assert(src.pageID==dst.pageID);
+	if (ds==0xFFFF) {ma->free(src.bmp); src.bmp=NULL; return ss==0xFFFF?RC_OK:RC_CORRUPTED;}
+	unsigned si=ss+(src.range>>16&0x3FFF),di=ds+(dst.range>>16&0x3FFF);
+	if (ss<ds) {unsigned t=ss; ss=ds; ds=t; t=si; si=di; di=t; uint32_t *p=src.bmp; src.bmp=dst.bmp; dst.bmp=p;}
+	if (di<si) {
+		if ((dst.bmp=(uint32_t*)ma->realloc(dst.bmp,(si-ds)*sizeof(uint32_t)))==NULL) return RC_OK;
+		if (ss<=di) memcpy(dst.bmp+di-ds,src.bmp+di-ss,(si-di)*sizeof(uint32_t));
+		else {memset(dst.bmp+di-ds,0,(ss-di)*sizeof(uint32_t)); memcpy(dst.bmp+ss-ds,src.bmp,(si-ss)*sizeof(uint32_t));}
+	}
+	for (unsigned i=ss,end=min(si,di); i<end; i++) dst.bmp[i-ds]|=src.bmp[i-ss];
+	ma->free(src.bmp); src.bmp=NULL; dst.range=(dst.range&0xC0000000)|(max(di,si)-ds)<<16|ds; return RC_OK;
 }
 
 TxGuard::~TxGuard()

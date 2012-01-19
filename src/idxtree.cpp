@@ -155,14 +155,13 @@ RC TreeCtx::getParentPage(const SearchKey &key,ulong flags)
 {
 	assert(depth>0 && ((flags&PTX_FORDELETE)==0||(mode&TF_WITHDEL)!=0));
 	if (!parent.isNull()) {
-		pb.release(); pb=parent; parent=NULL; --depth;
+		parent.moveTo(pb); --depth;
 		if ((flags&PTX_FORUPDATE)!=0 && !pb->isXLocked() && 
 			(!pb->isULocked() || !pb.isSet(QMGR_UFORCE) || (flags&PTX_TRY)!=0 && !pb->tryupgrade())) return RC_NOACCESS;
 		assert(mainKey==NULL || !((TreePageMgr::TreePage*)pb->getPageBuf())->isLeaf() || vp.len!=0 && vp.offset!=0);
 		return RC_OK;
 	}
-	PageID pid=stack[--depth]; if (pb.isSet(PGCTL_NOREL)) pb=NULL;
-	ulong xlock=(flags&PTX_TRY)!=0?PGCTL_XLOCK|QMGR_TRY:PGCTL_ULOCK|QMGR_UFORCE;
+	PageID pid=stack[--depth]; if (pb.isSet(PGCTL_NOREL)) pb=NULL; ulong xlock=(flags&PTX_TRY)!=0?PGCTL_XLOCK|QMGR_TRY:PGCTL_ULOCK|QMGR_UFORCE;
 	if ((mode&TF_WITHDEL)!=0) {
 		if (!tree->lock((flags&PTX_FORDELETE)!=0?RW_X_LOCK:RW_S_LOCK,(flags&PTX_TRY)!=0)) {pb.release(); return RC_FALSE;}
 		TREE_NODETYPE ptty=depth>leaf?PITREE_INT2:depth==leaf?PITREE_LEAF:PITREE_INT;
@@ -171,13 +170,12 @@ RC TreeCtx::getParentPage(const SearchKey &key,ulong flags)
 	}
 	// check latched!!!
 	StoreCtx *ctx=tree->getStoreCtx();
-	pb=ctx->bufMgr->getPage(pid,ctx->trpgMgr,((flags&PTX_TRY)!=0?PGCTL_XLOCK|QMGR_TRY:PGCTL_ULOCK)|pb.uforce(),pb);
+	pb.getPage(pid,ctx->trpgMgr,(flags&PTX_TRY)!=0?PGCTL_XLOCK|QMGR_TRY:PGCTL_ULOCK);
 	if ((mode&TF_WITHDEL)!=0) tree->unlock();
 	while (!pb.isNull()) {
 		const TreePageMgr::TreePage *tp=(const TreePageMgr::TreePage*)pb->getPageBuf();
 		bool fLeaf=mainKey!=NULL && tp->isLeaf(); assert(!fLeaf || tp->info.fmt.isKeyOnly() || !tp->info.fmt.isUnique());
-		if (tp->checkSibling(fLeaf?*mainKey:key))
-			pb=ctx->bufMgr->getPage(tp->info.sibling,ctx->trpgMgr,xlock,pb);
+		if (tp->checkSibling(fLeaf?*mainKey:key)) pb.getPage(tp->info.sibling,ctx->trpgMgr,xlock);
 		else {
 			if (fLeaf) {
 				ushort l; const PagePtr *pv=NULL;
@@ -200,16 +198,16 @@ RC TreeCtx::getPreviousPage(bool fRead)
 	PageID prev=pb->getPageID(),pid; StoreCtx *ctx=tree->getStoreCtx();
 	while (depth!=0 && getParentPage(*key,fRead?0:PTX_FORUPDATE)==RC_OK) {
 		tp=(const TreePageMgr::TreePage *)pb->getPageBuf(); if (tp->info.leftMost==prev) break;
-		ulong pos; tp->findKey(*key,pos); assert(tp->info.level>0); parent=pb; pb=NULL; depth++;
+		ulong pos; tp->findKey(*key,pos); assert(tp->info.level>0); pb.moveTo(parent); depth++;
 		while (pos!=~0ul && ((pid=tp->getPageID(--pos))!=prev || pos!=~0ul && (pid=tp->getPageID(--pos))!=INVALID_PAGEID)) {
-			while ((pb=ctx->bufMgr->getPage(pid,ctx->trpgMgr,(fRead?0:PGCTL_XLOCK)|((mode&TF_WITHDEL)!=0?PGCTL_COUPLE:0)|pb.uforce(),pb))!=NULL) {
+			while (pb.getPage(pid,ctx->trpgMgr,(fRead?0:PGCTL_XLOCK)|((mode&TF_WITHDEL)!=0?PGCTL_COUPLE:0))!=NULL) {
 				const TreePageMgr::TreePage *tp2=(const TreePageMgr::TreePage *)pb->getPageBuf();
 				if (tp2->info.level==0) {if (tp2->info.nSearchKeys>0) return RC_OK; else break;}
 				stack[depth++]=pid; pid=tp2->getPageID(tp->info.nSearchKeys-1);
 			}
 			if (pb.isNull()) break;
 		}
-		pb.release(); pb=parent; parent=NULL; depth--;
+		parent.moveTo(pb); depth--;
 	}
 	pb.release(); parent.release();
 	if (leaf==~0u) {depth=0; return findPrevPage(key,!fRead);}
@@ -220,12 +218,9 @@ RC TreeCtx::getPreviousPage(bool fRead)
 RC TreeCtx::findPage(const SearchKey *key)
 {
 	StoreCtx *ctx=tree->getStoreCtx(); getStamps(stamps);
-	int level=-1; PageID pid=startPage(key,level); PBlock *pb2;
-	if (!parent.isSet(PGCTL_NOREL)) pb=parent; parent=NULL; 
+	int level=-1; PageID pid=startPage(key,level); parent.moveTo(pb);
 	ulong xlock=(mode&TF_WITHDEL)!=0?PGCTL_COUPLE:0,kpos=~0ul; ++ctx->treeMgr->traverse;
-	if (pid!=INVALID_PAGEID) for (Session *ses=Session::getSession();;) {
-		if (ses!=NULL && (pb2=ses->getLatched(pid))!=NULL) {	pb.release(); pb=pb2; pb.set(PGCTL_NOREL);}
-		else if ((pb=ctx->bufMgr->getPage(pid,ctx->trpgMgr,xlock,pb.isSet(PGCTL_NOREL)?(PBlock*)0:(PBlock*)pb))==NULL) break;
+	if (pid!=INVALID_PAGEID) while (pb.getPage(pid,ctx->trpgMgr,xlock)!=NULL) {
 		const TreePageMgr::TreePage *tp=(const TreePageMgr::TreePage*)pb->getPageBuf();
 		++ctx->treeMgr->pageRead; if (tp->info.level>TREE_MAX_DEPTH) break;
 		if (tp->info.nSearchKeys==0 && depth>0 && key!=NULL)
@@ -246,11 +241,10 @@ RC TreeCtx::findPage(const SearchKey *key)
 
 RC TreeCtx::findPageForUpdate(const SearchKey *key,bool fIns)
 {
-	ulong xlock=pb.isSet(QMGR_UFORCE)?QMGR_UFORCE:0,kpos=~0ul;
 	StoreCtx *ctx=tree->getStoreCtx(); ++ctx->treeMgr->traverse; getStamps(stamps); assert(key!=NULL);
-	int level=-1; PageID pid=startPage(key,level,false); if (level==0||level==1) xlock|=PGCTL_ULOCK;
-	while (pid!=INVALID_PAGEID && (pb=ctx->bufMgr->getPage(pid,ctx->trpgMgr,xlock,pb))!=NULL) {
-		++ctx->treeMgr->pageRead; xlock&=~PGCTL_COUPLE; if ((xlock&PGCTL_ULOCK)!=0) pb.set(QMGR_UFORCE);
+	int level=-1; PageID pid=startPage(key,level,false); unsigned xlock=level==0||level==1?PGCTL_ULOCK:0; ulong kpos=~0u;
+	while (pid!=INVALID_PAGEID && pb.getPage(pid,ctx->trpgMgr,xlock)!=NULL) {
+		++ctx->treeMgr->pageRead; xlock&=~PGCTL_COUPLE;
 		const TreePageMgr::TreePage *tp=(const TreePageMgr::TreePage*)pb->getPageBuf();
 		if (tp->info.level>TREE_MAX_DEPTH) break;
 		if (tp->info.nSearchKeys==0 && depth>0) TreeRQ::post(*this,Tree::TO_DELETE,pid,key,parent,ushort(kpos));
@@ -264,7 +258,7 @@ RC TreeCtx::findPageForUpdate(const SearchKey *key,bool fIns)
 			pid=tp->info.sibling; if ((mode&TF_WITHDEL)!=0) xlock|=PGCTL_COUPLE; ++ctx->treeMgr->sideLink;
 		} else if (!fIns && tp->info.nSearchKeys==0 && (tp->info.level==0||tp->info.leftMost==INVALID_PAGEID)) break;
 		else if (tp->info.level!=0) {
-			parent.release(); parent=pb; pb=NULL; if (tp->info.level<=2) xlock|=PGCTL_ULOCK;
+			pb.moveTo(parent); if (tp->info.level<=2) xlock|=PGCTL_ULOCK;
 			assert(!tp->isLeaf() && depth<TREE_MAX_DEPTH); stack[depth++]=pid;
 			if (tp->info.level==1) stamps[PITREE_1STLEV]=tp->info.stamp; pid=tp->getChild(*key,kpos,false);
 		} else if ((xlock&PGCTL_ULOCK)==0) {assert(depth==0||depth==leaf+1); xlock|=PGCTL_ULOCK;}
@@ -277,11 +271,11 @@ RC TreeCtx::findPageForUpdate(const SearchKey *key,bool fIns)
 
 RC TreeCtx::findPrevPage(const SearchKey *key0,bool fUpd)
 {
-	ulong xlock=pb.isSet(QMGR_UFORCE)?QMGR_UFORCE:0,kpos=~0ul,lkey=0; const SearchKey *key=key0; 
+	ulong kpos=~0ul,lkey=0; const SearchKey *key=key0;
 	StoreCtx *ctx=tree->getStoreCtx(); ++ctx->treeMgr->traverse; getStamps(stamps); PageID next=INVALID_PAGEID;
-	int level=-1; PageID pid=startPage(key,level,!fUpd,true); if (fUpd && (level==0||level==1)) xlock|=PGCTL_ULOCK;
-	while (pid!=INVALID_PAGEID && (pb=ctx->bufMgr->getPage(pid,ctx->trpgMgr,xlock,pb))!=NULL) {
-		++ctx->treeMgr->pageRead; xlock&=~PGCTL_COUPLE; if ((xlock&PGCTL_ULOCK)!=0) pb.set(QMGR_UFORCE);
+	int level=-1; PageID pid=startPage(key,level,!fUpd,true); unsigned xlock=fUpd && (level==0||level==1)?PGCTL_ULOCK:0;
+	while (pid!=INVALID_PAGEID && pb.getPage(pid,ctx->trpgMgr,xlock)!=NULL) {
+		++ctx->treeMgr->pageRead; xlock&=~PGCTL_COUPLE;
 		const TreePageMgr::TreePage *tp=(const TreePageMgr::TreePage*)pb->getPageBuf();
 		if (tp->info.level>TREE_MAX_DEPTH) break; 
 		bool fFollow=tp->hasSibling()&&(key==NULL||tp->hasSibling()&&next!=tp->info.sibling&&tp->testKey(*key,ushort(~0u))>0);
@@ -318,7 +312,7 @@ RC TreeCtx::findPrevPage(const SearchKey *key0,bool fUpd)
 		}
 		if (!fUpd && tp->info.nSearchKeys==0 && (tp->info.level==0||tp->info.leftMost==INVALID_PAGEID)) break;
 		if (tp->info.level!=0) {
-			parent.release(); parent=pb; pb=NULL; next=INVALID_PAGEID; assert(!tp->isLeaf() && depth<TREE_MAX_DEPTH);		// if !fUpd???
+			pb.moveTo(parent); next=INVALID_PAGEID; assert(!tp->isLeaf() && depth<TREE_MAX_DEPTH);		// if !fUpd???
 			if ((xlock&PGCTL_ULOCK)!=0) xlock|=QMGR_UFORCE; else if (fUpd && tp->info.level<=2) xlock|=PGCTL_ULOCK;
 			stack[depth++]=pid; if (tp->info.level==1) stamps[PITREE_1STLEV]=tp->info.stamp;
 			pid=key!=NULL?tp->getChild(*key,kpos,true):tp->getPageID(kpos=tp->info.nSearchKeys-1);
@@ -375,9 +369,8 @@ RC Tree::insert(IMultiKey& mk)
 		if (tctx.pb.isNull() || (cmp=(tp=(TreePageMgr::TreePage*)tctx.pb->getPageBuf())->cmpKey(*pkey))!=0) {
 			if (cmp>0) {
 				assert(tp->hasSibling()); ++ctx->treeMgr->sibRead;
-				ulong xlock=tctx.pb.isSet(QMGR_UFORCE)?QMGR_UFORCE|PGCTL_COUPLE|PGCTL_ULOCK:PGCTL_COUPLE|PGCTL_ULOCK;
-				if ((tctx.pb=ctx->bufMgr->getPage(tp->info.sibling,ctx->trpgMgr,xlock,tctx.pb))==NULL) cmp=-1;
-				else {tctx.pb.set(QMGR_UFORCE); if (((TreePageMgr::TreePage*)tctx.pb->getPageBuf())->cmpKey(*pkey)>0) cmp=-1;}
+				if (tctx.pb.getPage(tp->info.sibling,ctx->trpgMgr,PGCTL_COUPLE|PGCTL_ULOCK)==NULL ||
+					((TreePageMgr::TreePage*)tctx.pb->getPageBuf())->cmpKey(*pkey)>0) cmp=-1;
 			}
 			if (cmp<0 && (tctx.depth=0,rc=tctx.findPageForUpdate(pkey,true))!=RC_OK) break;
 		}
@@ -429,7 +422,7 @@ RC Tree::drop(PageID pid,StoreCtx *ctx,TreeFreeData *dd)
 	PageID stack[TREE_MAX_DEPTH]; int stkp=0; RC rc; SubAlloc pending(0);
 	do {
 		stack[stkp++]=pid; assert(pid!=INVALID_PAGEID);
-		PBlockP pb(ctx->bufMgr->getPage(pid,ctx->trpgMgr)); if (pb.isNull()) return RC_NOTFOUND;
+		PBlockP pb(ctx->bufMgr->getPage(pid,ctx->trpgMgr),0); if (pb.isNull()) return RC_NOTFOUND;
 		const TreePageMgr::TreePage *tp=(const TreePageMgr::TreePage*)pb->getPageBuf();
 		if (tp->info.level>=TREE_MAX_DEPTH) return RC_CORRUPTED;
 		pid=tp->isLeaf()?INVALID_PAGEID:tp->info.leftMost;
@@ -469,7 +462,6 @@ TreeStdRoot::~TreeStdRoot()
 
 PageID TreeStdRoot::startPage(const SearchKey*,int& level,bool fRead,bool fBefore)
 {
-	level=-1;
 	if (root==INVALID_PAGEID && !fRead) {
 		PBlock *pb=ctx->fsMgr->getNewPage(ctx->trpgMgr);
 		if (pb!=NULL) {
@@ -479,6 +471,7 @@ PageID TreeStdRoot::startPage(const SearchKey*,int& level,bool fRead,bool fBefor
 				{root=pb->getPageID(); pb->release(); level=0;}
 		}
 	}
+	level=root==INVALID_PAGEID?-1:(int)height;
 	return root;
 }
 
@@ -493,12 +486,11 @@ RC TreeStdRoot::addRootPage(const SearchKey& key,PageID& pageID,ulong level)
 		// re-traverse from root etc.
 		return RC_OK;
 	}
-	Session *ses=Session::getSession();
-	if (ses==NULL) return RC_NOSESSION; if (!ses->inWriteTx()) return RC_READTX;
+	Session *ses=Session::getSession(); if (ses==NULL) return RC_NOSESSION; if (!ses->inWriteTx()) return RC_READTX;
 	PageID newp; PBlock *pb; RC rc;
 	if ((rc=ctx->fsMgr->allocPages(1,&newp))!=RC_OK) return rc;
 	assert(newp!=INVALID_PAGEID);
-	if ((pb=ctx->bufMgr->newPage(newp,ctx->trpgMgr))==NULL) return RC_NORESOURCES;
+	if ((pb=ctx->bufMgr->newPage(newp,ctx->trpgMgr,NULL,0,ses))==NULL) return RC_NORESOURCES;
 	if ((rc=ctx->trpgMgr->initPage(pb,indexFormat(),ushort(level+1),&key,root,pageID))==RC_OK)
 		{pageID=root=newp; height=level+1;}
 	pb->release(); return rc;
@@ -548,7 +540,6 @@ ulong TreeGlobalRoot::getMode() const
 
 PageID TreeGlobalRoot::startPage(const SearchKey *key,int& level,bool fRead,bool fBefore)
 {
-	level=-1;
 	if (root==INVALID_PAGEID) {
 		RWLockP rw(&rootLock,RW_X_LOCK);
 		if (root==INVALID_PAGEID) {
@@ -559,6 +550,7 @@ PageID TreeGlobalRoot::startPage(const SearchKey *key,int& level,bool fRead,bool
 			}
 		}
 	}
+	level=root==INVALID_PAGEID?-1:(int)height;
 	return root;
 }
 
@@ -724,13 +716,13 @@ RC SearchKey::toKey(const Value **ppv,ulong nv,const IndexSeg *kds,int idx,Sessi
 				case VT_UINT: case VT_URIID: case VT_IDENTITY: v.u=pv->ui; type=KT_UINT; break;
 				case VT_INT64: case VT_INTERVAL: v.i=pv->i64; type=KT_INT; break;
 				case VT_UINT64: case VT_DATETIME: v.u=pv->ui64; type=KT_UINT; break;
-				//case VT_DECIMAL:
+				//case VT_RESERVED2:
 				case VT_FLOAT: v.f=pv->f; type=KT_FLOAT; break;		// units?
 				case VT_DOUBLE: v.d=pv->d; type=KT_DOUBLE; break;	// units?
 				case VT_BOOL: v.u=pv->b?1:0; type=KT_UINT; break;
 				case VT_STREAM:
 					//???
-				//case VT_ENUM:
+				//case VT_RESERVED1:
 				case VT_STRING:
 					if (pv->str!=NULL && (ks.flags&ORD_NCASE)!=0) {
 						uint32_t len=0;
@@ -784,11 +776,12 @@ RC SearchKey::toKey(const Value **ppv,ulong nv,const IndexSeg *kds,int idx,Sessi
 			case KT_REF:
 				pd=kbuf; l=v.ptr.l; l0++; kt|=KVT_REF; break;
 			}
-			if (buf==NULL && (buf=(byte*)alloca(xbuf))==NULL || lkey+l0+l>=xbuf) {
+			if (lkey+l0+l>xbuf || buf==NULL && (buf=(byte*)alloca(xbuf))==NULL) {
+				xbuf=max((ulong)(lkey+l0+l),xbuf);
 				if (buf!=NULL && !fDel) {
-					if ((p=(byte*)ma->malloc(xbuf*=2))==NULL) {rc=RC_NORESOURCES; break;}
+					if ((p=(byte*)ma->malloc(xbuf))==NULL) {rc=RC_NORESOURCES; break;}
 					memcpy(p,buf,lkey); buf=p; fDel=true;
-				} else if ((buf=(byte*)ma->realloc(buf,buf==NULL?xbuf:xbuf*=2))==NULL) {rc=RC_NORESOURCES; break;}
+				} else if ((buf=(byte*)ma->realloc(buf,xbuf))==NULL) {rc=RC_NORESOURCES; break;}
 			}
 			buf[lkey]=kt; lkey+=l0; while (l0>1) {--l0; buf[lkey-l0]=byte(l>>8*(l0-1));}
 			if (l!=0) {memcpy(buf+lkey,pd,l); lkey+=l;} if (loc==PLC_ALLC) ma->free((void*)v.ptr.p);
@@ -818,12 +811,12 @@ static int cmpSeg(const byte *&s1,ushort& l1,const byte *&s2,ushort& l2,byte mbe
 
 	if ((mod1&0x80)==0) {ty1=KVT_STR; ls1=mod1; mod1=0;}
 	else if (ty1==KVT_FLOAT) ls1=((mod1&0x10)!=0?sizeof(double):sizeof(float))+((mod1&0x20)!=0?1:0);
-	else if (ty1!=KVT_NULL) {ls1=1<<(mod1>>4&3); if (ty1>=KVT_STR) {if (l1<ls1) throw 1; l1-=ls1; for (unsigned j=ls1,i=ls1=0; i<j; i++) ls1|=*s1++<<i*8;}} 
+	else if (ty1!=KVT_NULL) {ls1=1<<(mod1>>4&3); if (ty1>=KVT_STR) {if (l1<ls1) throw 1; l1-=ls1; for (unsigned j=ls1,i=ls1=0; i<j; i++) ls1=ls1<<8|*s1++;}} 
 	if (l1<ls1 || ty1>KVT_REF) throw 2;
 
 	if ((mod2&0x80)==0) {ty2=KVT_STR; ls2=mod2; mod2=0;}
 	else if (ty2==KVT_FLOAT) ls2=((mod2&0x10)!=0?sizeof(double):sizeof(float))+((mod2&0x20)!=0?1:0);
-	else if (ty2!=KVT_NULL) {ls2=1<<(mod2>>4&3); if (ty2>=KVT_STR) {if (l2<ls2) throw 3; l2-=ls2; for (unsigned j=ls2,i=ls2=0; i<j; i++) ls2|=*s2++<<i*8;}} 
+	else if (ty2!=KVT_NULL) {ls2=1<<(mod2>>4&3); if (ty2>=KVT_STR) {if (l2<ls2) throw 3; l2-=ls2; for (unsigned j=ls2,i=ls2=0; i<j; i++) ls2=ls2<<8|*s2++;}} 
 	if (l2<ls2 || ty2>KVT_REF) throw 4;
 
 	if (ty1==KVT_NULL) cmp=ty2==KVT_NULL?cmp3(mod1&0x10,mod2&0x10):(mod1&0x10)!=0?1:-1; else if (ty2==KVT_NULL) cmp=(mod2&0x10)!=0?-1:1;
@@ -945,7 +938,7 @@ RC SearchKey::getValues(Value *vals,unsigned nv,const IndexSeg *kd,unsigned nFie
 			byte mod=*s++,ty=mod&0x0F; ushort ls=0; --l;
 			if ((mod&0x80)==0) {ty=KVT_STR; ls=mod; mod=0;}
 			else if (ty==KVT_FLOAT) ls=((mod&0x10)!=0?sizeof(double):sizeof(float))+((mod&0x20)!=0?1:0);
-			else if (ty!=KVT_NULL) {ls=1<<(mod>>4&3); if (ty>=KVT_STR) {if (l<ls) return RC_CORRUPTED; for (unsigned j=ls,i=ls=0; i<j; i++) ls|=*s++<<i*8;}} 
+			else if (ty!=KVT_NULL) {ls=1<<(mod>>4&3); if (ty>=KVT_STR) {if (l<ls) return RC_CORRUPTED; for (unsigned j=ls,i=ls=0; i<j; i++) ls=ls<<8|*s++;}} 
 			if (l<ls || ty>KVT_REF) return RC_CORRUPTED;
 			if (pv!=NULL && (pv->property==kd->propID||pv->property==PROP_SPEC_ANY)) {
 				pv->type=vtFromKVT[ty]; pv->flags=NO_HEAP; pv->meta=0; pv->eid=STORE_COLLECTION_ID; pv->op=OP_SET; pv->length=ls; pv->property=kd->propID;

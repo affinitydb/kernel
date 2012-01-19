@@ -191,6 +191,7 @@ template<typename T> class DefCmp
 {
 public:
 	__forceinline static int cmp(T x,T y) {return cmp3(x,y);}
+	__forceinline static RC merge(T&,T&,MemAlloc*) {return RC_OK;}
 };
 
 template<typename T,typename Key=T,class C=DefCmp<Key>,typename N=unsigned> class BIN
@@ -719,6 +720,7 @@ class PageSet
 public:
 	PageSet(MemAlloc *m) : chunks(NULL),nChunks(0),xChunks(0),nPages(0),ma(m) {}
 	~PageSet() {cleanup();}
+	void	destroy() {cleanup(); ma->free((void*)this);}
 	void	cleanup() {
 		if (ma!=NULL) {
 			for (ulong i=0; i<nChunks; i++) if (chunks[i].bmp!=NULL) ma->free(chunks[i].bmp);
@@ -766,6 +768,7 @@ public:
 		ulong					idx,bidx,sht,start;
 	public:
 		it(const PageSet& ps) : set(ps),chunk(ps.nChunks>0?ps.chunks:(PageSetChunk*)0),idx(0),bidx(~0u),sht(0),start(0) {}
+		const PageSet& getPageSet() const {return set;}
 		PageID	operator++() {
 			if (chunk!=NULL) {
 				do if (chunk->bmp!=NULL) {
@@ -781,7 +784,7 @@ public:
 	};
 };
 
-template<typename T,int initSize=10> class DynArray
+template<typename T,int initSize=10,unsigned factor=1> class DynArray
 {
 	MemAlloc	*const ma;
 	T			tbuf[initSize];
@@ -793,14 +796,90 @@ public:
 	~DynArray() {if (ts!=tbuf) ma->free(ts);}
 	RC operator+=(T t) {return nTs>=xTs && !expand() ? RC_NORESOURCES : (ts[nTs++]=t,RC_OK);}
 	RC operator-=(unsigned idx) {if (idx>=nTs) return RC_INVPARAM; if (idx+1<nTs) memcpy(ts+idx,ts+idx+1,(nTs-idx-1)*sizeof(T)); --nTs; return RC_OK;}
+	T* pop() {return nTs!=0?&ts[--nTs]:NULL;}
 	T& add() {return nTs>=xTs && !expand() ? *(T*)0 : ts[nTs++];}
 	T* get(uint32_t& n) {T *pt=NULL; if ((n=nTs)!=0) {if ((pt=ts)!=tbuf) ts=tbuf; else if ((pt=new(ma) T[nTs])!=NULL) memcpy(pt,ts,nTs*sizeof(T));} return pt;}
 	operator const T* () const {return ts;}
 	operator unsigned () const {return nTs;}
+	void clear() {if (ts!=tbuf) {ma->free(ts); ts=tbuf;} nTs=0; xTs=initSize;}
 private:
 	bool expand() {
-		if (ts!=tbuf) ts=(T*)ma->realloc(ts,(xTs*=2)*sizeof(T));
-		else if ((ts=(T*)ma->malloc((xTs*=2)*sizeof(T)))!=NULL) memcpy(ts,tbuf,sizeof(tbuf));
+		if (ts!=tbuf) ts=(T*)ma->realloc(ts,(xTs+=xTs/factor)*sizeof(T));
+		else if ((ts=(T*)ma->malloc((xTs+=xTs/factor)*sizeof(T)))!=NULL) memcpy(ts,tbuf,sizeof(tbuf));
+		return ts!=NULL;
+	}
+};
+
+template<typename T,typename Key=T,class C=DefCmp<Key>,unsigned initX=16,unsigned factor=1> class DynOArray
+{
+	MemAlloc	*const ma;
+	T			*ts;
+	unsigned	nTs;
+	unsigned	xTs;
+public:
+	DynOArray(MemAlloc *m) : ma(m),ts(NULL),nTs(0),xTs(0) {}
+	~DynOArray() {if (ts!=NULL) ma->free(ts);}
+	RC operator+=(T t) {return add(t);}
+	RC add(T t,T **ret=NULL) {
+		T *p,*ins=NULL;
+		if ((p=(T*)BIN<T,Key,C>::find((Key)t,(const T*)ts,nTs,&ins))!=NULL) {if (ret!=NULL) *ret=p; return RC_FALSE;}
+		if (nTs>=xTs) {ptrdiff_t sht=ins-ts; if ((ts=(T*)ma->realloc(ts,(xTs+=xTs==0?initX:xTs/factor)*sizeof(T)))==NULL) return RC_NORESOURCES; ins=ts+sht;}
+		if (ins<&ts[nTs]) memmove(ins+1,ins,(byte*)&ts[nTs]-(byte*)ins); *ins=t; nTs++; if (ret!=NULL) *ret=ins; return RC_OK;
+	}
+	void moveTo(DynOArray<T,Key,C,initX,factor>& to) {if (to.ts!=NULL) to.ma->free(to.ts); to.ts=ts; to.nTs=nTs; to.xTs=xTs; ts=NULL; nTs=xTs=0;}
+	RC merge(DynOArray<T,Key,C,initX,factor>& src) {
+		if (src.nTs==0) return RC_OK; if (nTs==0) {src.moveTo(*this); return RC_OK;}
+		if (xTs-nTs<src.nTs) {
+			if (src.xTs-src.nTs>=nTs) {T *tt=src.ts; unsigned tn=src.nTs,tx=src.xTs; src.ts=ts; src.nTs=nTs; src.xTs=xTs; ts=tt; nTs=tn; xTs=tx;}
+			else if ((ts=(T*)ma->realloc(ts,(xTs+=src.nTs)*sizeof(T)))==NULL) return RC_NORESOURCES;
+		}
+		T *p=ts,*from=src.ts,*const end=from+src.nTs; unsigned n=nTs; RC rc;
+		do {
+			T *ins,*pt=(T*)BIN<T,Key,C>::find((Key)*from,p,n,&ins);
+			if (pt!=NULL) {
+				if ((rc=C::merge(*pt,*from,ma))!=RC_OK || ++from>=end) {src.clear(); return rc;}
+				p=pt+1; n=unsigned(&ts[nTs]-p);
+			} else if ((n=unsigned(&ts[nTs]-ins))!=0) {
+				Key k=(Key)*ins; unsigned nc=1; for (T* pf=from; ++pf<end && C::cmp(*pf,k)<0;) nc++;
+				memmove(ins+nc,ins,n*sizeof(T)); memcpy(ins,from,nc*sizeof(T)); nTs+=nc;
+				if ((from+=nc)>=end) {src.clear(); return RC_OK;} p+=nc;
+			}
+		} while (n!=0);
+		assert(from<end); memcpy(&ts[nTs],from,(byte*)end-(byte*)from); nTs+=unsigned(end-from);
+		src.clear(); return RC_OK;
+	}
+	T* get(uint32_t& n) {T *pt=NULL; if ((n=nTs)!=0) {pt=ts; ts=NULL; xTs=nTs=0;} return pt;}
+	operator const T* () const {return ts;}
+	operator unsigned () const {return nTs;}
+	void clear() {if (ts!=NULL) {ma->free(ts); ts=NULL;} nTs=xTs=0;}
+};
+
+template<typename T,typename Key=T,class C=DefCmp<Key>,int initSize=16,unsigned factor=1> class DynOArrayBuf
+{
+	MemAlloc	*const ma;
+	T			tbuf[initSize];
+	T			*ts;
+	unsigned	nTs;
+	unsigned	xTs;
+public:
+	DynOArrayBuf(MemAlloc *m) : ma(m),ts(tbuf),nTs(0),xTs(initSize) {}
+	~DynOArrayBuf() {if (ts!=tbuf) ma->free(ts);}
+	RC operator+=(T t) {return add(t);}
+	RC add(T t,T **ret=NULL) {
+		T *p,*ins=NULL;
+		if ((p=(T*)BIN<T,Key,C>::find((Key)t,(const T*)ts,nTs,&ins))!=NULL) {if (ret!=NULL) *ret=p; return RC_FALSE;}
+		if (nTs>=xTs) {ptrdiff_t sht=ins-ts; if (!expand()) return RC_NORESOURCES; ins=ts+sht;}
+		if (ins<&ts[nTs]) memmove(ins+1,ins,(byte*)&ts[nTs]-(byte*)ins); *ins=t; nTs++; if (ret!=NULL) *ret=ins; return RC_OK;
+	}
+	void moveTo(DynOArrayBuf<T,Key,C,initSize,factor>& to) {if (to.ts!=to.tbuf) to.ma->free(to.ts); if (ts==tbuf) memcpy(to.ts=to.tbuf,tbuf,sizeof(tbuf)); else to.ts=ts; to.nTs=nTs; to.xTs=xTs; ts=tbuf; nTs=0; xTs=initSize;}
+	T* get(uint32_t& n) {T *pt=NULL; if ((n=nTs)!=0) {if ((pt=ts)!=tbuf) ts=tbuf; else if ((pt=new(ma) T[nTs])!=NULL) memcpy(pt,ts,nTs*sizeof(T));} return pt;}
+	operator const T* () const {return ts;}
+	operator unsigned () const {return nTs;}
+	void clear() {if (ts!=tbuf) {ma->free(ts); ts=tbuf;} nTs=0; xTs=initSize;}
+private:
+	bool expand() {
+		if (ts!=tbuf) ts=(T*)ma->realloc(ts,(xTs+=xTs/factor)*sizeof(T));
+		else if ((ts=(T*)ma->malloc((xTs+=xTs/factor)*sizeof(T)))!=NULL) memcpy(ts,tbuf,sizeof(tbuf));
 		return ts!=NULL;
 	}
 };

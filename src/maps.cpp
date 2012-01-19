@@ -93,11 +93,12 @@ RC IdentityMgr::changePassword(IdentityID iid,const char *oldPwd,const char *new
 
 RC IdentityMgr::changeCertificate(IdentityID iid,const char *pwd,const unsigned char *cert,unsigned lcert)
 {
+	Session *ses=Session::getSession(); if (ses==NULL) return RC_NOSESSION;
 	Identity *ident=(Identity*)ObjMgr::find(iid); if (ident==NULL) return RC_NOTFOUND;
-	const byte *spwd=ident->getPwd(); if ((spwd==NULL)!=(pwd==NULL)) return RC_NOACCESS;
-	if (spwd!=NULL) {PWD_ENCRYPT pwd_enc((const byte*)pwd,strlen(pwd),spwd); if (!pwd_enc.isOK()) return RC_NOACCESS;}
-	MiniTx tx(Session::getSession()); RC rc=RC_OK; PageAddr addr; uint64_t ll;
-	if (ident->certificate.defined()) rc=ctx->queryMgr->deleteData(ident->certificate);
+	const byte *spwd=ident->getPwd(); if ((spwd==NULL)!=(pwd==NULL)) {ident->release(); return RC_NOACCESS;}
+	if (spwd!=NULL) {PWD_ENCRYPT pwd_enc((const byte*)pwd,strlen(pwd),spwd); if (!pwd_enc.isOK()) {ident->release(); return RC_NOACCESS;}}
+	MiniTx tx(ses); RC rc=RC_OK; PageAddr addr; uint64_t ll;
+	if (ident->certificate.defined()) rc=ctx->queryMgr->deleteData(ident->certificate,ses);
 	if (rc==RC_OK) {
 		if (cert==NULL || lcert==0) {addr.pageID=INVALID_PAGEID; addr.idx=INVALID_INDEX;}
 		else if ((rc=ctx->queryMgr->persistData(NULL,cert,lcert,addr,ll))==RC_TRUE) rc=RC_OK;

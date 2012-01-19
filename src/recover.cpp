@@ -50,7 +50,7 @@ RC LogMgr::recover(Session *ses,bool fRollforward)
 
 	ctx->theCB->state=SST_IN_RECOVERY; ctx->theCB->update(ctx,false); fRecovery=fAnalizing=true;
 
-	DirtyPg *dpg,*dp; LogReadCtx rctx(this,STORE_HEAP);
+	DirtyPg *dpg,*dp; LogReadCtx rctx(this,ses);
 #ifdef _DEBUG
 	TIMESTAMP startTime,endTime; getTimestamp(startTime);
 #endif
@@ -194,7 +194,7 @@ RC LogMgr::recover(Session *ses,bool fRollforward)
 		default: break;
 		case LR_COMPENSATE2: case LR_DISCARD:
 			if (rctx.logRec.pageID!=INVALID_PAGEID && (dpg=dirtyPages.find(rctx.logRec.pageID))!=NULL && dpg->redoLSN<redo) {
-				if (pb!=NULL && pb->getPageID()==rctx.logRec.pageID) {pb->release(PGCTL_DISCARD); pb=NULL;}
+				if (pb!=NULL && pb->getPageID()==rctx.logRec.pageID) {pb->release(PGCTL_DISCARD|QMGR_UFORCE,ses); pb=NULL;}
 				else if (rctx.logRec.pageID!=INVALID_PAGEID) ctx->bufMgr->drop(rctx.logRec.pageID);
 			}
 			break;
@@ -211,8 +211,8 @@ RC LogMgr::recover(Session *ses,bool fRollforward)
 				if (pageMgr==NULL)
 					report(MSG_ERROR,"Invalid PGID %d in recovery:redo, LSN: "_LX_FM"\n",extra&PGID_MASK,ctx->logMgr->recv.lsn);
 				else {
-					pb=rctx.type==LR_CREATE||rctx.type==LR_COMPENSATE3 ? ctx->bufMgr->newPage(rctx.logRec.pageID,pageMgr,pb) :
-															ctx->bufMgr->getPage(rctx.logRec.pageID,pageMgr,PGCTL_XLOCK,pb);
+					pb=rctx.type==LR_CREATE||rctx.type==LR_COMPENSATE3 ? ctx->bufMgr->newPage(rctx.logRec.pageID,pageMgr,pb,0,ses) :
+															ctx->bufMgr->getPage(rctx.logRec.pageID,pageMgr,PGCTL_XLOCK,pb,ses);
 					if (pb==NULL)
 						report(MSG_ERROR,"%s redo: cannot read page %08X , LSN: "_LX_FM"\n",LR_Tab[rctx.type],rctx.logRec.pageID,ctx->logMgr->recv.lsn);
 					else if (pageMgr->getLSN(pb->getPageBuf(),lPage)<ctx->logMgr->recv) {
@@ -225,7 +225,7 @@ RC LogMgr::recover(Session *ses,bool fRollforward)
 							bool fDiscard=true;
 							if ((dpg=dirtyPages.find(pb2->getPageID()))!=NULL && dpg->redoLSN<redo)
 								{pageMgr->setLSN(ctx->logMgr->recv,pb2->getPageBuf(),lPage); pb2->setRedo(ctx->logMgr->recv); fDiscard=false;}
-							pb2->release(fDiscard?PGCTL_DISCARD:0); ctx->logMgr->newPage=NULL;
+							pb2->release(fDiscard?PGCTL_DISCARD|QMGR_UFORCE:QMGR_UFORCE,ses); ctx->logMgr->newPage=NULL;
 						}
 					}
 				}
@@ -261,7 +261,7 @@ RC LogMgr::recover(Session *ses,bool fRollforward)
 				report(MSG_ERROR,"Invalid PGID %d in recovery:undo(LR_LUNDO), LSN: "_LX_FM"\n",extra&PGID_MASK,lastLSN.lsn);
 			else {
 				act=activeTx.find(rctx.logRec.txid); assert(act!=NULL); txid=act->txid;
-				if (pb!=NULL) {pb->release(); pb=NULL;}
+				if (pb!=NULL) {pb->release(QMGR_UFORCE,ses); pb=NULL;}
 				rc=pageMgr->undo(extra>>PGID_SHIFT,rctx.rbuf,rctx.lrec);
 				if (rc!=RC_OK) report(MSG_ERROR,"LR_LUNDO: update failed: %d, LSN: "_LX_FM"\n",rc,lastLSN.lsn);
 				act->lastLSN=insert(ses,LR_COMPENSATE,extra,INVALID_PAGEID,&rctx.logRec.undoNext,NULL,0);
@@ -279,12 +279,12 @@ RC LogMgr::recover(Session *ses,bool fRollforward)
 			} else if ((pageMgr=TxMgr::getPageMgr(extra,ctx))==NULL)
 				report(MSG_ERROR,"Invalid PGID %d in recovery:undo, LSN: "_LX_FM"\n",extra&PGID_MASK,lastLSN.lsn);
 			else if ((rctx.flags&LRC_LUNDO)!=0) {
-				if (pb!=NULL) {pb->release(); pb=NULL;}
+				if (pb!=NULL) {pb->release(QMGR_UFORCE,ses); pb=NULL;}
 				if ((rc=pageMgr->undo(extra>>PGID_SHIFT,rctx.rbuf,rctx.lrec,rctx.logRec.pageID))!=RC_OK)
 					report(MSG_ERROR,"LR_UPDATE(lundo): update failed: %d, page: %08X, tx: "_LX_FM", LSN: "_LX_FM"\n",rc,rctx.logRec.pageID,rctx.logRec.txid,lastLSN.lsn);
 				act->lastLSN=insert(ses,LR_COMPENSATE,extra,INVALID_PAGEID,&rctx.logRec.undoNext,NULL,0);
 			} else {
-				pb=ctx->bufMgr->getPage(rctx.logRec.pageID,pageMgr,PGCTL_XLOCK,pb);
+				pb=ctx->bufMgr->getPage(rctx.logRec.pageID,pageMgr,PGCTL_XLOCK,pb,ses);
 				if (pb==NULL)
 					report(MSG_ERROR,"Cannot read page %08X in recovery:undo, LSN: "_LX_FM"\n",rctx.logRec.pageID,lastLSN.lsn);
 				else if (pageMgr->getLSN(pb->getPageBuf(),lPage)>=lastLSN) {
@@ -300,7 +300,7 @@ RC LogMgr::recover(Session *ses,bool fRollforward)
 			assert(!TxMgr::isMaster(rctx.logRec.getExtra()));
 			act=activeTx.find(rctx.logRec.txid); assert(act!=NULL);	txid=act->txid;			// ?????
 			act->lastLSN=insert(ses,LR_COMPENSATE2,0,rctx.logRec.pageID,&rctx.logRec.undoNext,rctx.rbuf,rctx.lrec);
-			if (pb!=NULL && pb->getPageID()==rctx.logRec.pageID) {pb->release(PGCTL_DISCARD); pb=NULL;}
+			if (pb!=NULL && pb->getPageID()==rctx.logRec.pageID) {pb->release(PGCTL_DISCARD|QMGR_UFORCE,ses); pb=NULL;}
 			else ctx->bufMgr->drop(rctx.logRec.pageID);
 			break;
 		case LR_DISCARD:
@@ -309,7 +309,7 @@ RC LogMgr::recover(Session *ses,bool fRollforward)
 			act->lastLSN=insert(ses,LR_COMPENSATE3,extra,rctx.logRec.pageID,&rctx.logRec.undoNext,rctx.rbuf,rctx.lrec);
 			if ((pageMgr=TxMgr::getPageMgr(extra,ctx))==NULL)
 				report(MSG_ERROR,"Invalid PGID %d in recovery:undo, LSN: "_LX_FM"\n",extra&PGID_MASK,lastLSN.lsn);
-			else if ((pb=ctx->bufMgr->newPage(rctx.logRec.pageID,pageMgr,pb))==NULL)
+			else if ((pb=ctx->bufMgr->newPage(rctx.logRec.pageID,pageMgr,pb,0,ses))==NULL)
 				report(MSG_ERROR,"%s undo: cannot re-create page %08X , LSN: "_LX_FM"\n",LR_Tab[rctx.type],rctx.logRec.pageID,ctx->logMgr->recv.lsn);
 			else {
 				pageMgr->setLSN(act->lastLSN,pb->getPageBuf(),lPage); pb->setRedo(act->lastLSN);
@@ -335,7 +335,7 @@ RC LogMgr::recover(Session *ses,bool fRollforward)
 	getTimestamp(endTime);
 	report(MSG_DEBUG,"\tRecovery: undo pass finished, %.3fsec\n",double(endTime-startTime)/1000000.);
 #endif
-	if (pb!=NULL) pb->release();
+	if (pb!=NULL) pb->release(QMGR_UFORCE,ses);
 	ctx->txMgr->setTXID(ctx->theCB->lastTXID);
 	ses->flushLSN=0;
 	checkpoint();
@@ -353,7 +353,7 @@ RC LogMgr::recover(Session *ses,bool fRollforward)
 RC LogMgr::rollback(Session *ses,bool fSavepoint)
 {
 	if (ses==NULL) return RC_NOSESSION; if ((ctx->mode&STARTUP_NO_RECOVERY)!=0) return RC_FALSE;
-	RC rc=RC_OK; PageMgr *mgr; LogReadCtx rctx(this); ulong extra; LSN nullLSN(0),lastLSN(ses->tx.lastLSN);
+	RC rc=RC_OK; PageMgr *mgr; LogReadCtx rctx(this,ses); ulong extra; LSN nullLSN(0),lastLSN(ses->tx.lastLSN);
 #ifdef _DEBUG
 	TXID txid=ses->getTXID();
 #endif
@@ -387,7 +387,7 @@ RC LogMgr::rollback(Session *ses,bool fSavepoint)
 			redo=insert(ses,LR_COMPENSATE3,extra,rctx.logRec.pageID,&rctx.logRec.undoNext,rctx.rbuf,rctx.lrec);
 			if ((mgr=TxMgr::getPageMgr(extra,ctx))==NULL)
 				report(MSG_ERROR,"Invalid PGID %d in rollback:undo(LR_DISCARD), LSN: "_LX_FM"\n",extra&PGID_MASK,lastLSN.lsn);
-			else if ((pb=ctx->bufMgr->newPage(rctx.logRec.pageID,mgr))==NULL)
+			else if (pb.newPage(rctx.logRec.pageID,mgr,0,ses)==NULL)
 				report(MSG_ERROR,"%s rollback: cannot re-create page %08X , LSN: "_LX_FM"\n",LR_Tab[rctx.type],rctx.logRec.pageID,lastLSN.lsn);
 			else {
 				if (rctx.rbuf!=NULL && rctx.lrec!=0) {
@@ -412,10 +412,9 @@ RC LogMgr::rollback(Session *ses,bool fSavepoint)
 					insert(ses,LR_COMPENSATE,extra,INVALID_PAGEID,&rctx.logRec.undoNext,NULL,0);
 				break;
 			}
-			if ((pb=ses->getLatched(rctx.logRec.pageID))!=NULL) pb.set(PGCTL_NOREL);
-			else if ((pb=ctx->bufMgr->getPage(rctx.logRec.pageID,mgr,PGCTL_XLOCK))==NULL) {
-					report(MSG_ERROR,"Cannot read page %08X in rollback, transaction "_LX_FM"\n",rctx.logRec.pageID,rctx.logRec.txid);
-					rc=RC_CORRUPTED; break;
+			if (pb.getPage(rctx.logRec.pageID,mgr,PGCTL_XLOCK,ses)==NULL) {
+				report(MSG_ERROR,"Cannot read page %08X in rollback, transaction "_LX_FM"\n",rctx.logRec.pageID,rctx.logRec.txid);
+				rc=RC_CORRUPTED; break;
 			}
 			redo=insert(ses,LR_COMPENSATE,extra,rctx.logRec.pageID,&rctx.logRec.undoNext,rctx.rbuf,rctx.lrec);
 			if ((rc=mgr->update(pb,lPage,extra>>PGID_SHIFT,rctx.rbuf,rctx.lrec,TXMGR_UNDO))!=RC_OK)
@@ -440,7 +439,8 @@ RC LogMgr::checkpoint()
 	LogDirtyPages *ldp=ctx->bufMgr->getDirtyPageInfo(maxLSN<logSegSize?LSN(0):maxLSN-logSegSize,
 								start,asyncPages,nAsyncPages,sizeof(asyncPages)/sizeof(asyncPages[0]));
 	LogActiveTransactions *lat=ctx->txMgr->getActiveTx(start);
-	assert(ldp!=NULL && lat!=NULL && (!fRecovery || lat->nTransactions==0));
+	if (ldp==NULL || lat==NULL) {bufferLock.unlock(); return RC_NORESOURCES;}
+	assert(!fRecovery || lat->nTransactions==0);
 	size_t lAt=lat->nTransactions*sizeof(LogActiveTransactions::LogActiveTx);
 	size_t lDp=ldp->nPages*sizeof(LogDirtyPages::LogDirtyPage);
 	byte *pData=(byte*)ctx->malloc(lAt+lDp+2*sizeof(uint32_t));

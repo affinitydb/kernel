@@ -140,7 +140,7 @@ enum LockType {LOCK_IS,LOCK_IX,LOCK_SHARED,LOCK_SIX,LOCK_UPDATE,LOCK_EXCLUSIVE,L
 
 #define	MAX_SUBTX_ID	0x00FFFFFF
 
-#define	MAXLATCHED		32		// required for cascated split in index trees
+#define	INITLATCHED		32
 
 #define	INSERT_THRSH	16
 
@@ -171,15 +171,26 @@ public:
 	~TxGuard();
 };
 
-class TxDelete
+enum PurgeType
 {
-	friend	struct	SubTx;
-	friend	class	TxMgr;
-	friend	class	Session;
-	TxDelete		*next;
-	virtual	RC		deleteData() = 0;
-	virtual	void	release() = 0;
+	TXP_PIN, TXP_IDS, TXP_SSV
 };
+
+struct TxPurge
+{
+	PageID			pageID;
+	uint32_t		range;
+	uint32_t		*bmp;
+	operator		PageID() const {return pageID;}
+	RC				purge(class Session *ses);
+	class Cmp {
+	public: 
+		static int cmp(const TxPurge& lp,PageID pid) {return cmp3(lp.pageID,pid);}
+		static RC merge(TxPurge& dst,TxPurge& src,MemAlloc *ma);
+	};
+};
+
+typedef DynOArray<TxPurge,PageID,TxPurge::Cmp,16,2>	TxPurgeArr;
 
 struct TxReuse
 {
@@ -198,13 +209,6 @@ struct TxReuse
 	void			cleanup() {if (pinPages!=NULL) {free(pinPages,SES_HEAP); pinPages=NULL;} if (ssvPages!=NULL) {free(ssvPages,SES_HEAP); ssvPages=NULL;} nPINPages=nSSVPages=0;}
 };
 
-struct TxData
-{
-	TXCID	txcid;
-	TxData	*next;
-	DLList	vList;
-};
-
 class	TxIndex;
 struct	ClassDscr;
 
@@ -216,7 +220,7 @@ struct SubTx
 	LSN			lastLSN;
 	ClassDscr	*txClass;
 	TxIndex		*txIndex;
-	TxDelete	*txDelete;
+	TxPurgeArr	txPurge;
 	PageSet		defHeap;
 	PageSet		defClass;
 	PageSet		defFree;
@@ -224,21 +228,26 @@ struct SubTx
 	SubAlloc::SubMark rmark;
 	SubTx(Session *s);
 	~SubTx();
-	void		addTxDelete(TxDelete *td) {if (td!=NULL) {td->next=txDelete; txDelete=td;}}
 	RC			addToHeap(PageID pid,bool fC) {return fC?defClass+=pid:defHeap+=pid;}
 	RC			addToHeap(const PageID *pids,ulong nPages,bool fC) {return fC?defClass.add(pids,nPages):defHeap.add(pids,nPages);}
 	bool		testHeap(PageID pid) {for (SubTx *tx=this; tx!=NULL; tx=tx->next) if (tx->defHeap[pid]) return true; return false;}
+	RC			queueForPurge(const PageAddr& addr,PurgeType pt,const void *data);
 	void		cleanup();
 };
 
-class ReleaseLatches
+struct LatchedPage
 {
-public: 
-	virtual RC release() = 0;
+	PBlock		*pb;
+	uint16_t	cntX;
+	uint16_t	cntS;
+	class	Cmp	{public: static int cmp(const LatchedPage& lp,PageID pid);};
 };
 
 class Session : public MemAlloc
 {
+	StoreCtx		*ctx;
+	MemAlloc		*const mem;
+
 	TXID			txid;
 	TXCID			txcid;
 	ulong			txState;
@@ -248,8 +257,10 @@ class Session : public MemAlloc
 
 	LockReq			lockReq;
 	GrantedLock		*heldLocks;
-	PBlock			*latched[MAXLATCHED];
-	int				nLatched;
+	LatchedPage		*latched;
+	unsigned		nLatched;
+	unsigned		xLatched;
+	DLList			latchHolderList;
 
 	LSN				firstLSN;
 	LSN				undoNextLSN;
@@ -271,7 +282,6 @@ class Session : public MemAlloc
 	volatile bool	fAbort;
 	ulong			txil;
 	SubAlloc		*repl;
-	ReleaseLatches	*rlatch;
 
 	unsigned		itf;
 	char			*URIBase;
@@ -281,8 +291,6 @@ class Session : public MemAlloc
 	unsigned		nQNames;
 	bool			fStdOvr;
 
-	StoreCtx		*ctx;
-	MemAlloc		*const mem;
 	MVStore::ITrace	*iTrace;
 	unsigned		traceMode;
 
@@ -346,20 +354,19 @@ public:
 	HEAP_TYPE		getAType() const;
 	void			release();
 
-	PBlock			*getLatched(PageID pid) const;
+	RC				latch(PBlock *pb,ulong mode);
+	bool			relatch(PBlock *pb);
+	bool			unlatch(PBlock *pb,ulong mode);
 	bool			hasLatched() const {return nLatched>0;}
-	bool			isLatched(const PBlock *pb) const {for (int i=nLatched; --i>=0; ) if (latched[i]==pb) return true; return false;}
-	void			regLatched(PBlock *pb) {assert(!isLatched(pb)&&nLatched<MAXLATCHED); latched[nLatched++]=pb;}
-	void			unregLatched(PBlock *pb) {assert(isLatched(pb)); if (latched[--nLatched]!=pb) for (int i=nLatched; --i>=0;)
-												if (latched[i]==pb) {do latched[i]=latched[i+1]; while (++i<nLatched); break;}}
-	RC				releaseLatches() const {return rlatch!=NULL?rlatch->release():RC_OK;}
+	void			releaseLatches(PageID,PageMgr*,bool fX);
+	RC				releaseAllLatches();
 
 	RC				pushTx();
 	RC				popTx(bool fCommit,bool fAll);
-	void			addTxDelete(TxDelete *td) {tx.addTxDelete(td);}
 
 	RC				addToHeap(PageID pid,bool fC) {return tx.addToHeap(pid,fC);}
 	RC				addToHeap(const PageID *pids,ulong nPages,bool fC) {return tx.addToHeap(pids,nPages,fC);}
+	RC				queueForPurge(const PageAddr& addr,PurgeType pt=TXP_SSV,const void *data=NULL) {return tx.queueForPurge(addr,pt,data);}
 
 	RC				replicate(const class PIN *pin);
 
@@ -376,6 +383,7 @@ public:
 	friend	class	TxGuard;
 	friend	class	LogMgr;
 	friend	class	LockMgr;
+	friend	class	LatchHolder;
 	friend	class	SessionX;
 	friend	class	ThreadGroup;
 	friend	class	BufMgr;
@@ -388,8 +396,18 @@ public:
 	friend	class	SInCtx;
 	friend	class	SOutCtx;
 	friend	class	Classifier;
+	friend	class	FullScan;
 	friend	class	Cursor;
 	friend	class	Stmt;
+};
+
+class LatchHolder : public DLList
+{
+public:
+	LatchHolder(Session *ses) {assert(ses!=NULL); insertAfter(&ses->latchHolderList);}
+	~LatchHolder()	{remove();}
+	virtual	void	releaseLatches(PageID pid,PageMgr*,bool fX) = 0;
+	virtual	void	checkNotHeld(PBlock*) = 0;
 };
 
 };

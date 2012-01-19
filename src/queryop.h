@@ -55,7 +55,7 @@ class	SOutCtx;
 
 // Base query operator class/interface
 
-class QueryOp : public ReleaseLatches
+class QueryOp
 {
 	friend		class	QBuildCtx;
 	friend		class	SimpleVar;
@@ -84,7 +84,6 @@ public:
 	virtual	void		unique(bool);
 	virtual	void		reverse();
 	virtual	void		print(SOutCtx& buf,int level) const = 0;
-	virtual	RC			release();
 	void	operator	delete(void *p) {if (p!=NULL) {QCtx *qx=((QueryOp*)p)->qx; qx->ses->free(p); qx->destroy();}}
 	void				setSkip(ulong n) {nSkip=n;}
 	ulong				getSkip() const {return nSkip;}
@@ -109,15 +108,16 @@ class FullScan : public QueryOp
 	PageID			heapPageID;
 	ulong			idx;
 	ulong			slot;
-	PBlock			*init(bool& f,bool fLast=false);
+	SubTx			*stx;
+	PageSet::it		*it;
+	PBlock			*init();
 public:
 	FullScan(QCtx *s,uint32_t msk=HOH_DELETED|HOH_HIDDEN,ulong qf=0,bool fCl=false)
-		: QueryOp(s,qf|QO_UNIQUE|QO_STREAM|QO_ALLPROPS),mask(msk),fClasses(fCl),dirPageID(INVALID_PAGEID),heapPageID(INVALID_PAGEID),idx(~0u),slot(0) {}
+		: QueryOp(s,qf|QO_UNIQUE|QO_STREAM|QO_ALLPROPS),mask(msk),fClasses(fCl),dirPageID(INVALID_PAGEID),heapPageID(INVALID_PAGEID),idx(~0u),slot(0),stx(&s->ses->tx),it(NULL) {}
 	virtual		~FullScan();
 	RC			next(const PINEx *skip=NULL);
 	RC			rewind();
 	void		print(SOutCtx& buf,int level) const;
-	RC			release();
 };
 
 class ClassScan : public QueryOp
@@ -131,7 +131,6 @@ public:
 	RC			rewind();
 	RC			count(uint64_t& cnt,ulong nAbort=~0ul);
 	void		print(SOutCtx& buf,int level) const;
-	RC			release();
 };
 
 class IndexScan : public QueryOp
@@ -160,7 +159,6 @@ public:
 	void				unique(bool);
 	void				reverse();
 	void				print(SOutCtx& buf,int level) const;
-	RC					release();
 	friend	class		SimpleVar;
 };
 
@@ -200,7 +198,6 @@ public:
 	RC			next(const PINEx *skip=NULL);
 	RC			rewind();
 	void		print(SOutCtx& buf,int level) const;
-	RC			release();
 	friend	class	PhraseFlt;
 };
 
@@ -221,7 +218,6 @@ public:
 	RC			next(const PINEx *skip=NULL);
 	RC			rewind();
 	void		print(SOutCtx& buf,int level) const;
-	RC			release();
 };
 
 // Join and set operators
@@ -247,7 +243,6 @@ public:
 	RC		rewind();
 	RC		loadData(PINEx& qr,Value *pv,unsigned nv,ElementID eid=STORE_COLLECTION_ID,bool fSort=false,MemAlloc *ma=NULL);
 	void	print(SOutCtx& buf,int level) const;
-	RC		release();
 	friend	class	QBuildCtx;
 };
 
@@ -276,7 +271,6 @@ public:
 	RC		loadData(PINEx& qr,Value *pv,unsigned nv,ElementID eid=STORE_COLLECTION_ID,bool fSort=false,MemAlloc *ma=NULL);
 	void	unique(bool);
 	void	print(SOutCtx& buf,int level) const;
-	RC		release();
 	friend	class	QBuildCtx;
 };
 
@@ -289,7 +283,6 @@ public:
 	virtual	~HashOp();
 	RC		next(const PINEx *skip=NULL);
 	void	print(SOutCtx& buf,int level) const;
-	RC		release();
 };
 
 class NestedLoop : public QueryOp
@@ -311,7 +304,6 @@ public:
 	RC		next(const PINEx *skip=NULL);
 	RC		rewind();
 	void	print(SOutCtx& buf,int level) const;
-	RC		release();
 };
 
 class LoadOp : public QueryOp
@@ -400,7 +392,6 @@ public:
 	RC			loadData(PINEx& qr,Value *pv,unsigned nv,ElementID eid=STORE_COLLECTION_ID,bool fSort=false,MemAlloc *ma=NULL);
 	void		unique(bool);
 	void		print(SOutCtx& buf,int level) const;
-	RC			release();
 	Sort(QueryOp *qop,const OrderSegQ *os,unsigned nSegs,ulong qf,unsigned nP,const PropList *pids,unsigned nPids);
 	void*		operator new(size_t s,Session *ses,unsigned nSegs,unsigned nPids) throw() {return ses->malloc(s+int(nSegs-1)*sizeof(OrderSegQ)+nPids*sizeof(PropList)+nSegs*sizeof(unsigned));}
 	const	Value	*getvalues() const;
@@ -432,7 +423,6 @@ public:
 	RC			next(const PINEx *skip=NULL);
 	RC			rewind();
 	void		print(SOutCtx& buf,int level) const;
-	RC			release();
 };
 
 class TransOp : public QueryOp

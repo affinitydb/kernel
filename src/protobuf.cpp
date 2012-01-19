@@ -123,8 +123,8 @@ const static byte tags[VT_ALL] = {
 	_L(13), _L(13), _L(15), _L(15), _L(15), _L(15), _L(4), _L(4), _L(14), _L(14), _L(14), _L(14), 0, _V(6), 0, 0
 };
 const static byte types[VT_ALL] = {
-		VT_ERROR, VT_INT, VT_UINT, VT_INT64, VT_UINT64, VT_DECIMAL, VT_FLOAT, VT_DOUBLE, VT_BOOL, VT_DATETIME, VT_INTERVAL, VT_URIID, VT_IDENTITY,
-		VT_STRING, VT_BSTR, VT_URL, VT_ENUM, VT_REFID, VT_REFID, VT_REFIDPROP, VT_REFIDPROP, VT_REFIDELT, VT_REFIDELT,
+		VT_ERROR, VT_INT, VT_UINT, VT_INT64, VT_UINT64, VT_RESERVED2, VT_FLOAT, VT_DOUBLE, VT_BOOL, VT_DATETIME, VT_INTERVAL, VT_URIID, VT_IDENTITY,
+		VT_STRING, VT_BSTR, VT_URL, VT_RESERVED1, VT_REFID, VT_REFID, VT_REFIDPROP, VT_REFIDPROP, VT_REFIDELT, VT_REFIDELT,
 		VT_EXPR, VT_STMT, VT_ARRAY, VT_ARRAY, VT_STRUCT, VT_RANGE, VT_ERROR, VT_CURRENT, VT_REF, VT_ERROR,
 };
 
@@ -229,8 +229,8 @@ private:
 		switch (v.type) {
 		default: return 0ULL;
 		case VT_STRING: case VT_BSTR: case VT_URL: l=v.length; break;
-		case VT_ENUM:
-		case VT_DECIMAL:
+		case VT_RESERVED1:
+		case VT_RESERVED2:
 			//???
 			return 0ULL;
 		case VT_INT: u=mv_enc32zz(v.i); l=mv_len32(u); break;
@@ -473,8 +473,8 @@ public:
 							break;
 						case VT_STREAM:
 							push_state(ST_STREAM,os.pv->stream.is,tg); continue;
-						case VT_ENUM:
-						case VT_DECIMAL:
+						case VT_RESERVED1:
+						case VT_RESERVED2:
 							//???
 							break;
 						default:
@@ -639,7 +639,7 @@ public:
 		if (ses->getStore()->inShutdown()) return RC_SHUTDOWN;
 		size_t left=lbuf; RC rc;
 		while (res!=NULL) {
-			if ((rc=enc.encode(buf+lbuf-left,left))!=RC_TRUE) {res->release(); return rc;}
+			if ((rc=enc.encode(buf+lbuf-left,left))!=RC_TRUE) {ses->releaseAllLatches(); return rc;}
 			if ((rc=res->advance())!=RC_OK||(rc=res->extract(pin))!=RC_OK) {res->destroy(); res=NULL;}
 			else if (pin!=NULL) {enc.set(pin); result.cnt++;} else {result.cnt=res->getCount(); res->destroy(); res=NULL;}
 		}
@@ -773,8 +773,7 @@ private:
 			if (find.find()==NULL) {
 				URIIDMapElt *u=new(&mapAlloc) URIIDMapElt; if (u==NULL) return RC_NORESOURCES;
 				URI *uri=ses->getStore()->uriMgr->insert((char*)mapBuf); if (uri==NULL) return RC_NORESOURCES;
-				u->id=is.idx; u->mapped=uri->getID(); uri->release();
-				uriMap->insert(u,find.getIdx());
+				u->id=is.idx; u->mapped=uri->getID(); uri->release(); uriMap->insert(u,find.getIdx());
 			}
 		} else if (!fProp && is.idx!=STORE_OWNER) {
 			IdentityIDMap::Find find(*identMap,is.idx);

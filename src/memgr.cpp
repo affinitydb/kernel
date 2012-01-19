@@ -44,7 +44,7 @@ namespace MVStoreKernel
 
 MemAlloc *MVStoreKernel::createMemAlloc(size_t startSize,bool fMulti)
 {
-	return fMulti?(MemAlloc*)new StoreMemAlloc(startSize):(MemAlloc*)new SesMemAlloc(startSize);
+	try {return fMulti?(MemAlloc*)new StoreMemAlloc(startSize):(MemAlloc*)new SesMemAlloc(startSize);} catch (...) {return NULL;}
 }
 
 void* MVStoreKernel::malloc(size_t s,HEAP_TYPE alloc)
@@ -59,7 +59,7 @@ void* MVStoreKernel::malloc(size_t s,HEAP_TYPE alloc)
 	case SERVER_HEAP:
 		break;
 	}
-	return ::malloc(s);
+	try {return ::malloc(s);} catch(...) {return NULL;}
 }
 
 void* MVStoreKernel::memalign(size_t a,size_t s,HEAP_TYPE alloc)
@@ -74,14 +74,16 @@ void* MVStoreKernel::memalign(size_t a,size_t s,HEAP_TYPE alloc)
 	case SERVER_HEAP:
 		break;
 	}
+	try {
 #ifdef WIN32
-	return ::_aligned_malloc(s,a);
+		return ::_aligned_malloc(s,a);
 #elif !defined(Darwin)
-	return ::memalign(a,s);
+		return ::memalign(a,s);
 #else
-	void * tmp; 
-	return posix_memalign(&tmp,a,s) ? NULL : tmp ;
+		void * tmp; 
+		return posix_memalign(&tmp,a,s) ? NULL : tmp ;
 #endif
+	} catch (...) {return NULL;}
 }
 
 void* MVStoreKernel::realloc(void *p,size_t s,HEAP_TYPE alloc)
@@ -96,7 +98,7 @@ void* MVStoreKernel::realloc(void *p,size_t s,HEAP_TYPE alloc)
 	case SERVER_HEAP:
 		break;
 	}
-	return ::realloc(p,s);
+	try {return ::realloc(p,s);} catch (...) {return NULL;}
 }
 
 char* MVStoreKernel::strdup(const char *s,HEAP_TYPE alloc)

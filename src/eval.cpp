@@ -245,7 +245,7 @@ RC Expr::path(Value *&top,const byte *&codePtr,const ValueV& params,MemAlloc *ma
 	const byte *dscr=pc; pc+=nPathSeg; RC rc=RC_OK; --top;
 	for (unsigned i=0; i<nPathSeg; i++) {
 		PathSeg& sg=path[i]; byte u=*dscr++; Expr *filter=NULL;
-		sg.eid=STORE_COLLECTION_ID; sg.filter=NULL; sg.cls=STORE_INVALID_CLASSID; sg.rmin=sg.rmax=1; sg.fLast=(u&1)!=0;
+		sg.eid=STORE_COLLECTION_ID; sg.filter=NULL; sg.cid=STORE_INVALID_CLASSID; sg.rmin=sg.rmax=1; sg.fLast=(u&1)!=0;
 		switch (u&0xE0) {
 		default: break;
 		case 0x20: sg.rmin=0; break;
@@ -358,7 +358,7 @@ const Value *PathIt::navigate(GO_DIR dir,ElementID eid)
 //							{freeV(res); res.setError(); return NULL;}
 //						if (rc==RC_OK && pst->v[0].type!=VT_ERROR) {pst->vidx=0; break;}
 						if (path[pst->idx].rmin!=0) break; if (pst->idx+1>=nPathSeg) return &res;
-						unsigned s=pst->vidx; pst->vidx=0; //if ((rc=push())!=RC_OK) return NULL; pst->next->vidx=s;
+						unsigned s=pst->vidx; pst->vidx=0; //if ((rc=push(id))!=RC_OK) return NULL; pst->next->vidx=s;
 					}
 				} else if (path[pst->idx-1].filter!=NULL) {/*printf("->\n");*/ return &res;}
 			}
@@ -891,11 +891,14 @@ RC Expr::calc(ExprOp op,Value& arg,const Value *moreArgs,int nargs,unsigned flag
 			return ((Stmt*)moreArgs->stmt)->cmp(arg,op,flags);
 		case VT_ARRAY:
 			for (len=moreArgs->length; len!=0;) {
-				arg2=&moreArgs->varray[--len]; if (arg2->type!=VT_RANGE) return RC_TRUE;
-				c=cmp(arg,arg2->range[0],(flags&CND_IN_LBND)!=0?flags|CND_NE:flags|CND_EQ);
-				if (c>=-1 && (compareCodeTab[OP_GE-OP_EQ]&1<<(c+1))!=0) {
-					c=cmp(arg,arg2->range[1],(flags&CND_IN_RBND)!=0?flags|CND_NE:flags|CND_EQ);
-					if (c>=-1 && (compareCodeTab[OP_LE-OP_EQ]&1<<(c+1))!=0) return RC_TRUE;
+				arg2=&moreArgs->varray[--len];
+				if (arg2->type!=VT_RANGE) {if (cmp(arg,*arg2,flags|CND_EQ)==0) return RC_TRUE;}
+				else {
+					c=cmp(arg,arg2->range[0],(flags&CND_IN_LBND)!=0?flags|CND_NE:flags|CND_EQ);
+					if (c>=-1 && (compareCodeTab[OP_GE-OP_EQ]&1<<(c+1))!=0) {
+						c=cmp(arg,arg2->range[1],(flags&CND_IN_RBND)!=0?flags|CND_NE:flags|CND_EQ);
+						if (c>=-1 && (compareCodeTab[OP_LE-OP_EQ]&1<<(c+1))!=0) return RC_TRUE;
+					}
 				}
 			}
 			return RC_FALSE;

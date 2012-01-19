@@ -142,44 +142,6 @@ RC Classifier::setFlags(ClassID cid,ulong f,ulong mask)
 	cls->flags=cls->flags&~mask|f; cls->release(); return RC_OK;
 }
 
-RC Classifier::remove(ClassID cid,Session *ses)
-{
-	ClassDelTx *dtx=new(ses) ClassDelTx(cid,ses); if (dtx==NULL) return RC_NORESOURCES;
-	ses->addTxDelete(dtx); return RC_OK;
-}
-
-RC ClassDelTx::deleteData()
-{
-	RC rc=RC_OK; Classifier *cf=ses->getStore()->classMgr;
-	Class *cls=cf->getClass(cid,RW_X_LOCK); if (cls==NULL) return RC_NOTFOUND;
-	if ((cls->getFlags()&CLASS_VIEW)==0) {
-		if (cls->index!=NULL) rc=cls->index->drop();
-		else {
-			SearchKey key((uint64_t)cid); SearchKey dkey((uint64_t)(cid|SDEL_FLAG));
-			if ((rc=cf->classMap.remove(key,NULL,0))==RC_NOTFOUND) rc=RC_OK;
-			if (rc==RC_OK && (cls->getFlags()&CLASS_SDELETE)!=0 && (rc=cf->classMap.remove(dkey,NULL,0))==RC_NOTFOUND) rc=RC_OK;
-		}
-	}
-	SearchKey key((uint64_t)cid); 
-	if ((rc=cf->classPINs.remove(key))==RC_OK) {
-		const Stmt *qry=cls->getQuery(); const QVar *qv; ClassPropIndex *cpi;
-		if (qry!=NULL && (qv=qry->top)!=NULL && qv->type==QRY_SIMPLE && (cpi=cf->getClassPropIndex((SimpleVar*)qv,ses,false))!=NULL) {
-			PropDNF *dnf=NULL; size_t ldnf=0;
-			if ((rc=((SimpleVar*)qv)->getPropDNF(dnf,ldnf,ses))==RC_OK) {
-				if (dnf==NULL) rc=cpi->remove(cls->getID(),NULL,0);
-				else for (const PropDNF *p=dnf,*end=(const PropDNF*)((byte*)p+ldnf); p<end; p=(const PropDNF*)((byte*)(p+1)+int(p->nIncl+p->nExcl-1)*sizeof(PropertyID)))
-					if ((rc=cpi->remove(cls->getID(),p->nIncl!=0?p->pids:(PropertyID*)0,p->nIncl))!=RC_OK) break;
-			}
-		}
-	}
-	if (rc!=RC_OK) cls->release(); else if (cf->drop(cls)) cls->destroy();
-	return rc;
-}
-
-void ClassDelTx::release()
-{
-}
-
 //--------------------------------------------------------------------------------------------------------
 
 Class::Class(ulong id,Classifier& cls,Session *s)
@@ -282,7 +244,6 @@ IndexFormat ClassIndex::indexFormat() const
 
 PageID ClassIndex::startPage(const SearchKey *key,int& level,bool fRead,bool fBefore)
 {
-	level=-1;
 	if (root==INVALID_PAGEID) {
 		RWLockP rw(&rootLock,RW_X_LOCK);
 		if (root==INVALID_PAGEID && !fRead) {
@@ -291,6 +252,7 @@ PageID ClassIndex::startPage(const SearchKey *key,int& level,bool fRead,bool fBe
 				root=INVALID_PAGEID; else tx.ok();
 		}
 	}
+	level=root==INVALID_PAGEID?-1:(int)height;
 	return root;
 }
 
@@ -865,8 +827,33 @@ RC Classifier::classTx(Session *ses,ClassDscr *&cds,bool fCommit)
 	RC rc=RC_OK;
 	for (ClassDscr *cd=cds,*cd2; cd!=NULL; cd=cd2) {
 		if (fCommit && rc==RC_OK) {
-			Class *cls=NULL; assert(cd->query!=NULL);
-			if ((rc=get(cls,cd->cid,0,QMGR_NEW|RW_X_LOCK))==RC_OK) {
+			Class *cls=NULL;
+			if (cd->query==NULL) {
+				if ((cls=getClass(cd->cid,RW_X_LOCK))==NULL) rc=RC_NOTFOUND;
+				else {
+					SearchKey key((uint64_t)cd->cid);
+					if ((cls->getFlags()&CLASS_VIEW)==0) {
+						if (cls->index!=NULL) rc=cls->index->drop();
+						else {
+							SearchKey dkey((uint64_t)(cd->cid|SDEL_FLAG));
+							if ((rc=classMap.remove(key,NULL,0))==RC_NOTFOUND) rc=RC_OK;
+							if (rc==RC_OK && (cls->getFlags()&CLASS_SDELETE)!=0 && (rc=classMap.remove(dkey,NULL,0))==RC_NOTFOUND) rc=RC_OK;
+						}
+					}
+					if ((rc=classPINs.remove(key))==RC_OK) {
+						const Stmt *qry=cls->getQuery(); const QVar *qv; ClassPropIndex *cpi;
+						if (qry!=NULL && (qv=qry->top)!=NULL && qv->type==QRY_SIMPLE && (cpi=getClassPropIndex((SimpleVar*)qv,ses,false))!=NULL) {
+							PropDNF *dnf=NULL; size_t ldnf=0;
+							if ((rc=((SimpleVar*)qv)->getPropDNF(dnf,ldnf,ses))==RC_OK) {
+								if (dnf==NULL) rc=cpi->remove(cls->getID(),NULL,0);
+								else for (const PropDNF *p=dnf,*end=(const PropDNF*)((byte*)p+ldnf); p<end; p=(const PropDNF*)((byte*)(p+1)+int(p->nIncl+p->nExcl-1)*sizeof(PropertyID)))
+								if ((rc=cpi->remove(cls->getID(),p->nIncl!=0?p->pids:(PropertyID*)0,p->nIncl))!=RC_OK) break;
+							}
+						}
+					}
+					if (rc!=RC_OK) cls->release(); else if (drop(cls)) cls->destroy();
+				}
+			} else if ((rc=get(cls,cd->cid,0,QMGR_NEW|RW_X_LOCK))==RC_OK) {
 				assert(cls!=NULL); cls->id=cd->id; cls->addr=cd->addr; cls->flags=cd->flags;
 				if ((cls->query=cd->query->clone(STMT_QUERY,ctx,true))==NULL) rc=RC_NORESOURCES;
 				else if (cd->cidx!=NULL) {
@@ -881,6 +868,12 @@ RC Classifier::classTx(Session *ses,ClassDscr *&cds,bool fCommit)
 		cd2=cd->next; ses->free(cd);
 	}
 	cds=NULL; return rc;
+}
+
+RC Classifier::remove(ClassID cid,Session *ses)
+{
+	ClassDscr *dtx=new(ses) ClassDscr(cid,0,0); if (dtx==NULL) return RC_NORESOURCES;
+	dtx->next=ses->tx.txClass; ses->tx.txClass=dtx; return RC_OK;
 }
 
 void Classifier::merge(struct ClassDscr *from,struct ClassDscr *&to)

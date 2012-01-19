@@ -276,7 +276,7 @@ static RC renderElement(ElementID eid,SOutCtx& out,bool fBefore=false)
 	return RC_OK;
 }
 
-static RC renderOrder(const OrderSegQ *seg,unsigned nSegs,SOutCtx& out)
+static RC renderOrder(const OrderSegQ *seg,unsigned nSegs,SOutCtx& out,bool fExprOnly=false)
 {
 	RC rc;
 	for (unsigned i=0; i<nSegs; i++,seg++) {
@@ -288,11 +288,13 @@ static RC renderOrder(const OrderSegQ *seg,unsigned nSegs,SOutCtx& out)
 			if ((rc=out.renderName(seg->pid))!=RC_OK) return rc;
 			if ((seg->flags&ORD_NCASE)!=0 && !out.append(")",1)) return RC_NORESOURCES;
 		}
-		if ((seg->flags&ORD_DESC)!=0 && !out.append(" "DESC_S,sizeof(DESC_S))) return RC_NORESOURCES;
-		if ((seg->flags&ORD_NULLS_BEFORE)!=0) {
-			if (!out.append(" "NULLS_S" "FIRST_S,sizeof(NULLS_S)+sizeof(FIRST_S))) return RC_NORESOURCES;
-		} else if ((seg->flags&ORD_NULLS_AFTER)!=0) {
-			if (!out.append(" "NULLS_S" "LAST_S,sizeof(NULLS_S)+sizeof(LAST_S))) return RC_NORESOURCES;
+		if (!fExprOnly) {
+			if ((seg->flags&ORD_DESC)!=0 && !out.append(" "DESC_S,sizeof(DESC_S))) return RC_NORESOURCES;
+			if ((seg->flags&ORD_NULLS_BEFORE)!=0) {
+				if (!out.append(" "NULLS_S" "FIRST_S,sizeof(NULLS_S)+sizeof(FIRST_S))) return RC_NORESOURCES;
+			} else if ((seg->flags&ORD_NULLS_AFTER)!=0) {
+				if (!out.append(" "NULLS_S" "LAST_S,sizeof(NULLS_S)+sizeof(LAST_S))) return RC_NORESOURCES;
+			}
 		}
 	}
 	return RC_OK;
@@ -413,36 +415,19 @@ RC QVar::render(SOutCtx& out) const
 	if (stype==SEL_COUNT) {
 		if (!out.append(COUNT_S"("STAR_S")",sizeof(COUNT_S)+sizeof(STAR_S))) return RC_NORESOURCES;
 	} else if (outs!=NULL && nOuts!=0) for (unsigned j=0; j<nOuts; j++) {
-		const ValueV& o=outs[j]; rc=RC_OK;
+		const ValueV& o=outs[j]; rc=RC_OK; const QVar *save=out.cvar; out.cvar=this;
 		if (nOuts>1) {
 				//???
 		}
 		for (unsigned i=0; i<o.nValues; i++) {
-			const Value &v=o.vals[i]; const QVar *qv; bool fAs=true;
+			const Value &v=o.vals[i]; bool fAs=true;
 			if (i!=0 && !out.append(", ",2)) return RC_NORESOURCES;
 			switch (v.type) {
-			case VT_ANY: if (v.op==OP_COUNT) {if (!out.append(STAR_S,sizeof(STAR_S)-1)) return RC_NORESOURCES; break;}
+			case VT_ANY: if (v.op==OP_COUNT) {if (!out.append(STAR_S,sizeof(STAR_S)-1)) rc=RC_NORESOURCES; break;}
 			default: rc=out.renderValue(v); break;
 			case VT_EXPR: rc=((Expr*)v.expr)->render(SInCtx::opDscr[LX_COMMA].prty[0],out); break;
 			case VT_EXPRTREE: rc=((ExprTree*)v.exprt)->render(SInCtx::opDscr[LX_COMMA].prty[0],out); break;
-			case VT_VARREF:
-				if ((v.refV.flags&VAR_TYPE_MASK)!=0) {
-//					if (v.op<OP_ALL && (SInCtx::opDscr[v.op].flags&_A)!=0) {
-//						if (!out.append(SInCtx::opDscr[v.op].str,SInCtx::opDscr[v.op].lstr) || !out.append("(",1)) return RC_NORESOURCES;
-//						fAgg=true;
-//					}
-					//...param, aggregate, groupby
-//					if (fAgg && !out.append(")",1)) return RC_NORESOURCES;
-				} else {
-					qv=NULL;
-					if (v.length==0 || type!=QRY_SIMPLE) {
-						if ((qv=getRefVar(v.refV.refN))==NULL) return RC_CORRUPTED;
-						if (v.length==0) {rc=out.renderVarName(qv); break;}
-					}
-					if (v.length!=0 && (rc=out.renderName(v.refV.id,NULL,qv))==RC_OK) rc=renderElement(v.eid,out);
-					fAs=v.length==0 || v.refV.id!=v.property;
-				}
-				break;
+			case VT_VARREF: rc=out.renderValue(v); fAs=(v.refV.flags&VAR_TYPE_MASK)!=0 || v.length==0 || v.refV.id!=v.property; break;
 			}
 			if (rc==RC_OK && fAs && v.property!=STORE_INVALID_PROPID && !out.ses->getStore()->queryMgr->checkCalcPropID(v.property))
 				{if (!out.append(" "AS_S" ",sizeof(AS_S)+1)) return RC_NORESOURCES; rc=out.renderName(v.property);}
@@ -451,6 +436,7 @@ RC QVar::render(SOutCtx& out) const
 		if (nOuts>1) {
 			//???
 		}
+		out.cvar=save;
 	} else {
 		// check dscr in children (if join)
 		if (!out.append(STAR_S,sizeof(STAR_S)-1)) return RC_NORESOURCES;
@@ -517,12 +503,13 @@ RC QVar::render(RenderPart part,SOutCtx& out) const
 		break;
 	case RP_WHERE:
 		if (nConds>0) {
-			Expr *const *pcnd=nConds==1?&cond:conds; out.cvar=this;
+			Expr *const *pcnd=nConds==1?&cond:conds; const QVar *save=out.cvar; out.cvar=this;
 			const int prty=(out.flags&SOM_AND)!=0||nConds>1?SInCtx::opDscr[OP_LAND].prty[0]:0;
 			for (unsigned i=0; i<nConds; out.flags|=SOM_AND,i++) {
 				if ((out.flags&SOM_AND)!=0 && !out.append("\n\t"AND_S" ",sizeof(AND_S)+2)) return RC_NORESOURCES;
 				if ((rc=pcnd[i]->render(prty,out))!=RC_OK) return rc;
 			}
+			out.cvar=save;
 		}
 		break;
 	}
@@ -555,7 +542,7 @@ RC JoinVar::render(RenderPart part,SOutCtx& out) const
 		if ((rc=vr.var->render(part,out))!=RC_OK) return rc;
 	}
 	if (part==RP_FROM && (condEJ!=NULL || nConds!=0)) {
-		out.cvar=this;
+		const QVar *save=out.cvar; out.cvar=this;
 		if (!out.append(" "ON_S" ",sizeof(ON_S)+1)) return RC_NORESOURCES;
 		for (CondEJ *ej=condEJ; ej!=NULL; ej=ej->next) {
 			if (ej!=condEJ && !out.append(" "AND_S" ",sizeof(AND_S)+1)) return RC_NORESOURCES;
@@ -573,6 +560,7 @@ RC JoinVar::render(RenderPart part,SOutCtx& out) const
 				if ((rc=pcnd[i]->render(prty,out))!=RC_OK) return rc;
 			}
 		}
+		out.cvar=save;
 	}
 	//if (part==RP_FROM && level!=0 && !out.append(")",1)) return RC_NORESOURCES;
 	return RC_OK;
@@ -590,7 +578,7 @@ RC SetOpVar::render(RenderPart,SOutCtx&) const
 
 RC SimpleVar::render(RenderPart part,SOutCtx& out) const
 {
-	RC rc;
+	RC rc; const QVar *save;
 	switch (part) {
 	default: break;
 	case RP_FROM:
@@ -630,7 +618,7 @@ RC SimpleVar::render(RenderPart part,SOutCtx& out) const
 		if (path!=NULL) for (unsigned i=0; i<nPathSeg; i++) if ((rc=out.renderPath(path[i]))!=RC_OK) return rc;
 		break;
 	case RP_WHERE:
-		out.cvar=this;
+		save=out.cvar; out.cvar=this;
 		for (CondIdx *ci=condIdx; ci!=NULL; ci=ci->next,out.flags|=SOM_AND) {
 			assert(ci->ks.op>=OP_EQ && ci->ks.op<=OP_BEGINS);
 			if ((out.flags&SOM_AND)!=0 && !out.append("\n\t"AND_S" ",sizeof(AND_S)+2)) return RC_NORESOURCES;
@@ -646,7 +634,7 @@ RC SimpleVar::render(RenderPart part,SOutCtx& out) const
 			Value v; v.setParam((byte)ci->param,(ValueType)ci->ks.type,ci->ks.flags);
 			if ((rc=out.renderValue(v))!=RC_OK) return rc;
 		}
-		break;
+		out.cvar=save; break;
 	case RP_MATCH:
 		if (condFT!=NULL) {
 			if (!out.append("\n"MATCH_S,sizeof(MATCH_S))) return RC_NORESOURCES;
@@ -833,7 +821,7 @@ RC ExprTree::toPathSeg(PathSeg& ps,MemAlloc *ma) const
 		ps.pid=STORE_INVALID_PROPID;
 		//???
 	}
-	ps.eid=STORE_COLLECTION_ID; ps.filter=NULL; ps.cls=STORE_INVALID_CLASSID; ps.fLast=(flags&FILTER_LAST_OP)!=0;
+	ps.eid=STORE_COLLECTION_ID; ps.filter=NULL; ps.cid=STORE_INVALID_CLASSID; ps.fLast=(flags&FILTER_LAST_OP)!=0;
 	switch (flags&(QUEST_PATH_OP|PLUS_PATH_OP|STAR_PATH_OP)) {
 	default: ps.rmin=ps.rmax=1; break;
 	case QUEST_PATH_OP: ps.rmin=0; ps.rmax=1; break;
@@ -996,7 +984,7 @@ RC SOutCtx::renderPID(const PID& id,bool fJ) {
 RC SOutCtx::renderValue(const Value& v,bool fJ) {
 	RC rc=RC_OK; unsigned long u; Identity *ident; const char *s; size_t l; const Value *cv; int ll; const QVar *qv; Value vv;
 	if (fJ && v.type>VT_DOUBLE && !isString((ValueType)v.type) && v.type!=VT_ARRAY && v.type!=VT_COLLECTION && v.type!=VT_STRUCT && v.type!=VT_REFID) {
-		if ((rc=convV(v,vv,VT_STRING,ses))==RC_OK) {rc=renderValue(vv,true); freeV(vv);}
+		if ((rc=convV(v,vv,VT_STRING,ses,CV_NODEREF))==RC_OK) {rc=renderValue(vv,true); freeV(vv);}
 	} else switch (v.type) {
 	case VT_ANY: if (!append(NULL_S,sizeof(NULL_S)-1)) return RC_NORESOURCES; break;
 	case VT_URL: if (!fJ && !append("U",1)) return RC_NORESOURCES;
@@ -1117,7 +1105,16 @@ RC SOutCtx::renderValue(const Value& v,bool fJ) {
 		if ((v.meta&META_PROP_EVAL)==0 && !append("${",2) || (rc=((Stmt*)v.stmt)->render(*this))==RC_OK && (v.meta&META_PROP_EVAL)==0 && !append("}",1)) rc=RC_NORESOURCES;
 		break;
 	case VT_VARREF:
-		if ((v.refV.flags&VAR_TYPE_MASK)==VAR_PARAM) {
+		switch (v.refV.flags&VAR_TYPE_MASK) {
+		case 0:
+			qv=NULL;
+			if (v.length==0 || (flags&SOM_VAR_NAMES)!=0) {
+				if ((qv=cvar!=NULL?cvar->getRefVar(v.refV.refN):(QVar*)0)==NULL) return RC_CORRUPTED;
+				if (v.length==0) {rc=renderVarName(qv); break;}
+			}
+			if (v.length!=0 && (rc=renderName(v.refV.id,NULL,qv))==RC_OK) rc=renderElement(v.eid,*this);
+			break;
+		case VAR_PARAM:
 			l=sprintf(cbuf,PARAM_PREFIX"%d",v.refV.refN); if (!append(cbuf,l)) return RC_NORESOURCES;
 			if (v.refV.type<VT_ALL && v.refV.type!=VT_ANY) {
 				if (!append("(",1)) return RC_NORESOURCES;
@@ -1130,19 +1127,22 @@ RC SOutCtx::renderValue(const Value& v,bool fJ) {
 				}
 				if (!append(")",1)) return RC_NORESOURCES;
 			}
-		} else if ((v.refV.flags&VAR_TYPE_MASK)!=0) {
-			//???
-		} else {
-			qv=NULL;
-			if (v.length==0 || (flags&SOM_VAR_NAMES)!=0) {
-				if ((qv=cvar!=NULL?cvar->getRefVar(v.refV.refN):(QVar*)0)==NULL) return RC_CORRUPTED;
-				if (v.length==0) {rc=renderVarName(qv); break;}
+			break;
+		case VAR_AGGS: case VAR_GROUP:
+			if (cvar!=NULL) {
+				if ((v.refV.flags&VAR_TYPE_MASK)==VAR_AGGS) {
+					if (cvar->aggrs.vals!=NULL && v.refV.refN<cvar->aggrs.nValues) {
+						const Value &ag=cvar->aggrs.vals[v.refV.refN]; assert(ag.op<OP_ALL && (SInCtx::opDscr[ag.op].flags&_A)!=0);
+						if (!append(SInCtx::opDscr[ag.op].str,SInCtx::opDscr[ag.op].lstr) || !append("(",1)) return RC_NORESOURCES;
+						return (rc=renderValue(ag))!=RC_OK||append(")",1)?rc:RC_NORESOURCES;
+					}
+				} else if (cvar->groupBy!=NULL && v.refV.refN<cvar->nGroupBy) return renderOrder(&cvar->groupBy[v.refV.refN],1,*this,true);
 			}
-			if (v.length!=0 && (rc=renderName(v.refV.id,NULL,qv))==RC_OK) rc=renderElement(v.eid,*this);
+		default: rc=RC_NOTFOUND; break;
 		}
 		break;
-	case VT_ENUM:
-	case VT_DECIMAL:
+	case VT_RESERVED1:
+	case VT_RESERVED2:
 		//???
 		break;
 	}
@@ -1187,6 +1187,47 @@ RC SOutCtx::renderVarName(const QVar *qv)
 	}
 	char buf[10]; size_t l=sprintf(buf,"_%d",qv->id); 
 	return append(buf,l)?RC_OK:RC_NORESOURCES;
+}
+
+RC SOutCtx::renderJSON(Cursor *cr,uint64_t& cnt)
+{
+	RC rc=RC_OK; cnt=0;
+	if (!((Cursor*)cr)->isCount()) {
+		unsigned nRes=0; PINEx **res=((Cursor*)cr)->getResults(nRes); size_t l=1; cbuf[0]='['; assert(nRes!=0);
+		while (rc==RC_OK && (rc=((Cursor*)cr)->advance())==RC_OK) {
+			if (nRes>1) cbuf[l++]='['; PIN *ip=NULL; cnt++;
+			for (unsigned n=0; n<nRes && (rc=((Cursor*)cr)->extract(ip,n))==RC_OK; n++) {
+				cbuf[l++]='{'; bool fPID=false; assert(ip!=NULL);
+				if (ip->getPID().pid!=STORE_INVALID_PID) {l+=sprintf(cbuf+l,"\"id\":\""_LX_FM"\"",ip->getPID().pid); fPID=true;}
+				if (!append(cbuf,l)) rc=RC_NORESOURCES;
+				else {
+					unsigned nProps=ip->getNumberOfProperties();
+					for (unsigned i=0; i<nProps; i++) {
+						const Value *pv=ip->getValueByIndex(i);
+						if (pv!=NULL && pv->property!=STORE_INVALID_PROPID) {
+							if (!fPID) {if (append("\"",1)) fPID=true; else {rc=RC_NORESOURCES; break;}}
+							else if (!append(", \"",3)) {rc=RC_NORESOURCES; break;}
+							if ((rc=renderName(pv->property,NULL,NULL,true))!=RC_OK) break;
+							if (!append("\": ",3)) {rc=RC_NORESOURCES; break;}
+							if ((rc=renderValue(*pv,true))!=RC_OK) break;
+						}
+					}
+					if (rc==RC_OK && !append("}",1)) rc=RC_NORESOURCES;
+					cbuf[0]=','; l=1;
+				}
+			}
+			if (nRes>1) append("]",1); cbuf[0]=','; cbuf[1]='\n'; l=2;
+		}
+	} else if ((rc=((Cursor*)cr)->advance())==RC_OK) {
+		cnt=((Cursor*)cr)->getCount();
+		if (!append("[{\"",3)) rc=RC_NORESOURCES;
+		else if ((rc=renderName(PROP_SPEC_VALUE,NULL,NULL,true))==RC_OK) {
+			size_t l=sprintf(cbuf,"\": "_LD_FM"}",cnt);
+			if (!append(cbuf,l)) rc=RC_NORESOURCES;
+		}
+		cnt=1;
+	}
+	if (rc==RC_EOF) rc=RC_OK; return rc!=RC_OK||cnt==0||append("]",1)?rc:RC_NORESOURCES;
 }
 
 //----------------------------------------------------------------------------------------------------------------
@@ -2457,6 +2498,8 @@ RC SInCtx::resolveVars(QVarRef *qv,Value& vv,Value *par)
 {
 	if (vv.type==VT_EXPRTREE) {
 		ExprTree *pe=(ExprTree*)vv.exprt;
+		if (pe->op==OP_PATH && pe->operands[0].type==VT_VARREF && pe->operands[0].length==1 && (pe->operands[0].refV.flags&VAR_TYPE_MASK)==0) {
+		}
 		for (unsigned i=0; i<pe->nops; i++) {
 			Value *pv=&pe->operands[i]; RC rc;
 			switch (pv->type) {
@@ -2492,7 +2535,7 @@ RC SInCtx::replaceGroupExprs(Value& v,const OrderSeg *segs,unsigned nSegs)
 {
 	ExprTree *et; RC rc;
 	if (v.type==VT_VARREF) {
-		if (v.length==1) for (unsigned i=0; i<nSegs && i<256; i++) 
+		if (v.length==1 && (v.refV.flags&VAR_TYPE_MASK)==0) for (unsigned i=0; i<nSegs && i<256; i++) 
 			if (segs[i].expr==NULL && segs[i].var==v.refV.refN && segs[i].pid==v.refV.id) {
 				if (v.property==PROP_SPEC_ANY) v.property=v.refV.id;
 				v.length=0; v.refV.refN=byte(i); v.refV.type=VT_ANY; v.refV.flags|=VAR_GROUP; return RC_OK;
@@ -2500,7 +2543,7 @@ RC SInCtx::replaceGroupExprs(Value& v,const OrderSeg *segs,unsigned nSegs)
 		// not found -> ???
 	} else if (v.type==VT_EXPRTREE && ((et=(ExprTree*)v.exprt)->op>=OP_ALL || (SInCtx::opDscr[et->op].flags&_A)==0)) {
 		if (!isBool(et->op)) for (unsigned i=0; i<nSegs && i<256; i++) if (segs[i].expr!=NULL && *(ExprTree*)segs[i].expr==*et) 
-			{et->destroy(); v.length=0; v.refV.refN=byte(i); v.refV.type=VT_ANY; v.refV.flags|=VAR_GROUP; return RC_OK;}
+			{et->destroy(); v.type=VT_VARREF; v.length=0; v.refV.refN=byte(i); v.refV.type=VT_ANY; v.refV.flags=VAR_GROUP; return RC_OK;}
 		for (unsigned i=0; i<et->nops; i++) if ((rc=replaceGroupExprs(et->operands[i],segs,nSegs))!=RC_OK) return rc;
 	}
 	return RC_OK;
@@ -2800,56 +2843,22 @@ Stmt *SInCtx::parseStmt(bool fNested)
 
 RC SInCtx::exec(const Value *params,unsigned nParams,char **result,uint64_t *nProcessed,unsigned nProcess,unsigned nSkip)
 {
-	SOutCtx out(ses); assert(ses!=NULL);
+	SOutCtx out(ses); assert(ses!=NULL); unsigned fMany=false;
 	for (TLx lx=lex();;lx=lex()) {
 		if (lx==LX_EOE) break; if (lx!=LX_LPR && lx!=LX_KEYW) throw SY_SYNTAX;
 		nextLex=lx; uint64_t cnt=0; SynErr sy=SY_ALL; RC rc=RC_OK; Stmt *stmt; ICursor *ir=NULL;
 		if ((stmt=parseStmt())!=NULL) {
-			if ((rc=stmt->execute(result!=NULL?&ir:NULL,params,nParams,nProcess,nSkip,0/*mode???*/))==RC_OK && ir!=NULL) {
-				if (!((Cursor*)ir)->isCount()) {
-					unsigned nRes=0; PINEx **res=((Cursor*)ir)->getResults(nRes); size_t l=1; out.cbuf[0]='['; assert(nRes!=0);
-					while (rc==RC_OK && (rc=((Cursor*)ir)->advance())==RC_OK) {
-						if (nRes>1) out.cbuf[l++]='['; PIN *ip=NULL; cnt++;
-						for (unsigned n=0; n<nRes && (rc=((Cursor*)ir)->extract(ip,n))==RC_OK; n++) {
-							out.cbuf[l++]='{'; bool fPID=false; assert(ip!=NULL);
-							if (ip->getPID().pid!=STORE_INVALID_PID) {l+=sprintf(out.cbuf+l,"\"id\":\""_LX_FM"\"",ip->getPID().pid); fPID=true;}
-							if (!out.append(out.cbuf,l)) rc=RC_NORESOURCES;
-							else {
-								unsigned nProps=ip->getNumberOfProperties();
-								for (unsigned i=0; i<nProps; i++) {
-									const Value *pv=ip->getValueByIndex(i);
-									if (pv!=NULL && pv->property!=STORE_INVALID_PROPID) {
-										if (!fPID) {if (out.append("\"",1)) fPID=true; else {rc=RC_NORESOURCES; break;}}
-										else if (!out.append(", \"",3)) {rc=RC_NORESOURCES; break;}
-										if ((rc=out.renderName(pv->property,NULL,NULL,true))!=RC_OK) break;
-										if (!out.append("\": ",3)) {rc=RC_NORESOURCES; break;}
-										if ((rc=out.renderValue(*pv,true))!=RC_OK) break;
-									}
-								}
-								if (rc==RC_OK && !out.append("}",1)) rc=RC_NORESOURCES;
-								out.cbuf[0]=','; l=1;
-							}
-						}
-						if (nRes>1) out.append("]",1); out.cbuf[0]=','; out.cbuf[1]='\n'; l=2;
-					}
-				} else if ((rc=((Cursor*)ir)->advance())==RC_OK) {
-					cnt=((Cursor*)ir)->getCount();
-					if (!out.append("[{\"",3)) rc=RC_NORESOURCES;
-					else if ((rc=out.renderName(PROP_SPEC_VALUE,NULL,NULL,true))==RC_OK) {
-						size_t l=sprintf(out.cbuf,"\": "_LD_FM"}",cnt);
-						if (!out.append(out.cbuf,l)) rc=RC_NORESOURCES;
-					}
-					cnt=1;
-				}
-				ir->destroy(); if (rc==RC_EOF) rc=RC_OK;
-				if (rc==RC_OK && cnt!=0 && !out.append("]\n",2)) rc=RC_NORESOURCES;
-			}
+			if ((rc=stmt->execute(result!=NULL?&ir:NULL,params,nParams,nProcess,nSkip,0/*mode???*/))==RC_OK && ir!=NULL)
+				{if ((rc=out.renderJSON((Cursor*)ir,cnt))==RC_EOF) rc=RC_OK; ir->destroy();}
 			stmt->destroy();
 		}
 		if (nProcessed!=NULL) *nProcessed=cnt;
 		if (sy!=SY_ALL) throw sy; if (rc!=RC_OK) throw rc;
 		if (lex()!=LX_SEMI) break;
+		if (!fMany) {fMany=true; if (!out.insert("[",1,0)) throw RC_NORESOURCES;}
+		if (!out.append(",\n",2)) throw RC_NORESOURCES;
 	}
+	if (!out.append(fMany?"]\n":"\n",fMany?2:1)) throw RC_NORESOURCES;
 	return result==NULL||(*result=(char*)out)!=NULL?RC_OK:RC_NORESOURCES;
 }
 

@@ -300,12 +300,10 @@ RC QueryPrc::commitPINs(Session *ses,PIN *const *pins,unsigned nPins,unsigned mo
 	for (AllocPage *pg=pages; pg!=NULL; pg=pg->next) {
 		assert(pg->pid!=INVALID_PAGEID);
 		if (pb.isNull() || pb->getPageID()!=pg->pid) {
-			if ((pg->flags&PGF_FORCED)==0) pb=(pg->flags&PGF_NEW)==0 ? ctx->bufMgr->getPage(pg->pid,ctx->heapMgr,PGCTL_XLOCK,pb):
-																				ctx->bufMgr->newPage(pg->pid,ctx->heapMgr,pb);
-			else if (pg->pid==ses->forcedPage || !ses->isRestore() && !ctx->fsMgr->isFreePage(pg->pid))
-				pb=ctx->bufMgr->getPage(pg->pid,ctx->heapMgr,PGCTL_XLOCK,pb);
+			if ((pg->flags&PGF_FORCED)==0) (pg->flags&PGF_NEW)==0 ? pb.getPage(pg->pid,ctx->heapMgr,PGCTL_XLOCK,ses):pb.newPage(pg->pid,ctx->heapMgr,0,ses);
+			else if (pg->pid==ses->forcedPage || !ses->isRestore() && !ctx->fsMgr->isFreePage(pg->pid)) pb.getPage(pg->pid,ctx->heapMgr,PGCTL_XLOCK,ses);
 			else if (!ses->isRestore() && (rc=ctx->fsMgr->reservePage(pg->pid))!=RC_OK) goto finish;
-			else pb=ctx->bufMgr->newPage(pg->pid,ctx->heapMgr,pb);
+			else pb.newPage(pg->pid,ctx->heapMgr,0,ses);
 			if (pb.isNull()) {rc=ses->isRestore()?RC_NOTFOUND:RC_NORESOURCES; break;}
 		}
 		hp=(HeapPageMgr::HeapPage *)pb->getPageBuf(); size_t lrec=0; PageIdx prevIdx=0,startIdx=0;
@@ -370,8 +368,8 @@ RC QueryPrc::commitPINs(Session *ses,PIN *const *pins,unsigned nPins,unsigned mo
 				const HeapPageMgr::HeapPage *hp2=(HeapPageMgr::HeapPage*)pb2->getPageBuf();
 				PageAddr newAddr={pb2->getPageID(),hp2->nSlots}; assert(pin->length+sizeof(PageOff)<=hp2->totalFree());
 				rc=ctx->txMgr->update(pb2,ctx->heapMgr,(ulong)newAddr.idx<<HPOP_SHIFT|HPOP_INSERT,pbuf,(ulong)pin->length);
-				if (rc!=RC_OK) {pb2->release(); break;}
-				ctx->heapMgr->reuse(pb2,ses,reserve); pb2->release();
+				if (rc!=RC_OK) {pb2->release(QMGR_UFORCE,ses); break;}
+				ctx->heapMgr->reuse(pb2,ses,reserve); pb2->release(QMGR_UFORCE,ses);
 				if (isRemote(pin->id)) {pin->addr=newAddr; if ((rc=ctx->netMgr->insert(pin))!=RC_OK) break; else continue;}
 				HeapPageMgr::HeapObjHeader *hobj=(HeapPageMgr::HeapObjHeader*)pbuf; hobj->descr=HO_FORWARD; 
 				sht=hobj->length=sizeof(HeapPageMgr::HeapObjHeader)+PageAddrSize; memcpy(hobj+1,&newAddr,PageAddrSize);
@@ -385,7 +383,7 @@ RC QueryPrc::commitPINs(Session *ses,PIN *const *pins,unsigned nPins,unsigned mo
 	mem.truncate(mrk);
 
 finish:
-	if (!pb.isNull()) {if (rc==RC_OK) {if (fForced) ses->forcedPage=pb->getPageID(); else ctx->heapMgr->reuse(pb,ses,reserve);} pb.release();}
+	if (!pb.isNull()) {if (rc==RC_OK) {if (fForced) ses->forcedPage=pb->getPageID(); else ctx->heapMgr->reuse(pb,ses,reserve);} pb.release(ses);}
 
 	ClassResult clr(ses,ses->getStore());
 	for (i=0; i<nPins; i++) if ((pin=pins[i])!=NULL) {
@@ -502,7 +500,7 @@ RC QueryPrc::estimateLength(const Value& v,size_t& res,ulong mode,size_t thresho
 	case VT_DATETIME: case VT_UINT64: res=v.ui64<=0xFFFF?0:sizeof(uint64_t); break;
 	case VT_FLOAT: res=sizeof(float); if (v.qval.units!=Un_NDIM) res+=sizeof(uint16_t); break;
 	case VT_DOUBLE: res=sizeof(double); if (v.qval.units!=Un_NDIM) res+=sizeof(uint16_t); break;
-	case VT_ENUM: res=sizeof(uint32_t)*2; break;
+	case VT_RESERVED1: res=sizeof(uint32_t)*2; break;
 	case VT_BOOL: res=0; break;
 	case VT_URIID: res=v.uid<=0xFFFF?0:sizeof(URIID); break;
 	case VT_IDENTITY: res=v.iid<=0xFFFF?0:sizeof(IdentityID); break;
@@ -849,7 +847,7 @@ RC QueryPrc::persistValue(const Value& v,ushort& sht,HType& vt,ushort& offs,byte
 			vt.setType(ty,HDF_NORMAL); 
 		}
 		break;
-	case VT_ENUM:
+	case VT_RESERVED1:
 		// ???
 		return RC_INTERNAL;
 	}
@@ -864,7 +862,7 @@ RC QueryPrc::persistData(IStream *stream,const byte *str,size_t lstr,PageAddr& a
 	size_t xSize=HeapPageMgr::contentSize(ctx->bufMgr->getPageSize())-sizeof(PageOff);
 	size_t l=ceil(lstr,HP_ALIGN)+sizeof(HeapPageMgr::HeapObjHeader); bool fNew=true;
 	if (lastAddr==NULL && l<=xSize) {
-		PBlockP pb(ctx->ssvMgr->getNewPage(l+sizeof(PageOff),ses,fNew)); if (pb.isNull()) return RC_FULL;
+		PBlockP pb(ctx->ssvMgr->getNewPage(l+sizeof(PageOff),ses,fNew),QMGR_UFORCE); if (pb.isNull()) return RC_FULL;
 		const HeapPageMgr::HeapPage *hp=(const HeapPageMgr::HeapPage *)pb->getPageBuf();
 		assert(hp->totalFree()>=l+sizeof(PageOff));
 		if ((buf=(byte*)ses->malloc(l))==NULL) rc=RC_NORESOURCES;
@@ -881,7 +879,7 @@ RC QueryPrc::persistData(IStream *stream,const byte *str,size_t lstr,PageAddr& a
 		if (rc==RC_OK) ctx->ssvMgr->reuse(pb,ses,fNew);
 		return rc;
 	}
-	PBlockP pb(ctx->fsMgr->getNewPage(ctx->ssvMgr));
+	PBlockP pb(ctx->fsMgr->getNewPage(ctx->ssvMgr),QMGR_UFORCE);
 	if (pb.isNull()) rc=RC_FULL;
 	else if ((buf=(byte*)ses->malloc(xSize))==NULL) rc=RC_NORESOURCES;
 	else {
@@ -902,13 +900,13 @@ RC QueryPrc::persistData(IStream *stream,const byte *str,size_t lstr,PageAddr& a
 			else if ((next=ctx->ssvMgr->getNewPage(lpiece,ses,fNew))==NULL) {rc=RC_FULL; break;}
 			else {PageAddr nxt={next->getPageID(),0}; memcpy(hl->next,&nxt,PageAddrSize);}
 			if ((rc=ctx->txMgr->update(pb,ctx->ssvMgr,(ulong)idx<<HPOP_SHIFT|HPOP_INSERT,buf,lpiece))!=RC_OK) 
-				{if (next!=NULL) next->release(); break;}
+				{if (next!=NULL) next->release(QMGR_UFORCE,ses); break;}
 			if (next==NULL) {rc=RC_TRUE; break;}
-			PageAddr prev={pb->getPageID(),idx}; pb.release(); 
+			PageAddr prev={pb->getPageID(),idx}; pb.release(ses); 
 			memcpy(hl->prev,&prev,PageAddrSize); pb=next;
 			hp=(const HeapPageMgr::HeapPage *)pb->getPageBuf();
 		}
-		if (rc==RC_TRUE) {if (lastPB!=NULL) {*lastPB=pb; pb=NULL;} else ctx->ssvMgr->reuse(pb,ses,fNew);}
+		if (rc==RC_TRUE) {if (lastPB!=NULL) pb.moveTo(*lastPB); else ctx->ssvMgr->reuse(pb,ses,fNew);}
 		ses->free(buf);
 	}
 	return rc;
@@ -927,12 +925,9 @@ RC QueryPrc::editData(Session *ses,PageAddr &startAddr,uint64_t& len,const Value
 	for (uint64_t pos=0; pos<epos || pos==epos && left>0; pos+=lpiece) {
 		if (addr.pageID==INVALID_PAGEID) {rc=RC_CORRUPTED; break;}
 		if (pbp!=NULL && !pbp->isNull()) {
-			if ((*pbp)->getPageID()!=addr.pageID) pbp->release(); else {pb=*pbp; *pbp=NULL;}
+			if ((*pbp)->getPageID()!=addr.pageID) pbp->release(ses); else pbp->moveTo(pb);
 		}
-		if (pb.isNull() || pb->getPageID()!=addr.pageID) {
-			pb=ctx->bufMgr->getPage(addr.pageID,ctx->ssvMgr,PGCTL_XLOCK,pb);
-			if (pb.isNull()) {rc=RC_NOTFOUND; break;}
-		}
+		if ((pb.isNull() || pb->getPageID()!=addr.pageID) && pb.getPage(addr.pageID,ctx->ssvMgr,PGCTL_XLOCK,ses)==NULL) {rc=RC_NOTFOUND; break;}
 		const HeapPageMgr::HeapPage *hp=(const HeapPageMgr::HeapPage*)pb->getPageBuf();
 		const HeapPageMgr::HeapObjHeader *hobj=hp->getObject(hp->getOffset(idx=addr.idx));
 		if (hobj==NULL || (hobj->descr&HOH_DELETED)!=0) {rc=RC_NOTFOUND; break;}
@@ -955,12 +950,12 @@ RC QueryPrc::editData(Session *ses,PageAddr &startAddr,uint64_t& len,const Value
 				{rc=RC_NORESOURCES; break;}
 			memcpy(buf,hobj,l); 
 			if ((rc=ctx->txMgr->update(pb,ctx->ssvMgr,(ulong)idx<<HPOP_SHIFT|HPOP_PURGE,buf,l))!=RC_OK) break;
-			ctx->ssvMgr->reuse(pb,ses,false,true); pb.release(); continue;
+			ctx->ssvMgr->reuse(pb,ses,false,true); pb.release(ses); continue;
 		}
 		if (htype==HO_SSVALUE && left>lmod && left-lmod>hp->totalFree() &&
 								(lnew=ulong(lpiece+sizeof(HeapPageMgr::HeapObjHeader)+left-lmod+sizeof(PageOff)))<=
 															HeapPageMgr::contentSize(ctx->bufMgr->getPageSize())) {
-			PBlockP newPB(ctx->ssvMgr->getNewPage(lnew,ses,fNew)); if (newPB.isNull()) {rc=RC_FULL; break;}
+			PBlockP newPB(ctx->ssvMgr->getNewPage(lnew,ses,fNew),QMGR_UFORCE); if (newPB.isNull()) {rc=RC_FULL; break;}
 			byte *ssv=(byte*)ses->malloc(lpiece+lhdr);
 			if (ssv!=NULL) memcpy(ssv,hobj,lhdr+lpiece); else {rc=RC_NORESOURCES; break;}
 			if ((rc=ctx->txMgr->update(pb,ctx->ssvMgr,(ulong)idx<<HPOP_SHIFT|HPOP_PURGE,ssv,lhdr+lpiece))==RC_OK) {
@@ -970,7 +965,7 @@ RC QueryPrc::editData(Session *ses,PageAddr &startAddr,uint64_t& len,const Value
 					hp=(const HeapPageMgr::HeapPage*)newPB->getPageBuf(); idx=hp->nSlots;
 					if ((rc=ctx->txMgr->update(newPB,ctx->ssvMgr,(ulong)idx<<HPOP_SHIFT|HPOP_INSERT,w.bstr,w.length))==RC_OK) {
 						startAddr.pageID=newPB->getPageID(); startAddr.idx=idx; fAddrChanged=true; 
-						ctx->ssvMgr->reuse(newPB,ses,fNew,true); newPB.release();
+						ctx->ssvMgr->reuse(newPB,ses,fNew,true); newPB.release(ses);
 					}
 				}
 				ssv=(byte*)w.bstr;
@@ -997,7 +992,7 @@ RC QueryPrc::editData(Session *ses,PageAddr &startAddr,uint64_t& len,const Value
 					byte *ssv=(byte*)ses->malloc(lnew=lhdr+lpiece+PageAddrSize*2); if (ssv==NULL) {rc=RC_NORESOURCES; break;}
 					memcpy(ssv,hobj,lhdr+lpiece);
 					if ((rc=ctx->txMgr->update(pb,ctx->ssvMgr,(ulong)idx<<HPOP_SHIFT|HPOP_PURGE,ssv,lhdr+lpiece))==RC_OK) {
-						ctx->ssvMgr->reuse(pb,ses,false); pb.release(); newAddr=PageAddr::invAddr;
+						ctx->ssvMgr->reuse(pb,ses,false); pb.release(ses); newAddr=PageAddr::invAddr;
 						if ((rc=persistData(NULL,ssv+lhdr,lpiece,newAddr,ll,&PageAddr::invAddr,&pb))==RC_TRUE) rc=RC_OK;
 					}
 					ses->free(ssv); if (rc!=RC_OK) break;
@@ -1056,8 +1051,7 @@ RC QueryPrc::editData(Session *ses,PageAddr &startAddr,uint64_t& len,const Value
 	if (fSetAddr && rc==RC_OK) {
 		assert(prevAddr.defined());
 		if (!pb.isNull()) ctx->ssvMgr->reuse(pb,ses,false,true);
-		pb=ctx->bufMgr->getPage(prevAddr.pageID,ctx->ssvMgr,PGCTL_XLOCK,pb);
-		if (pb.isNull()) rc=RC_NOTFOUND;
+		if (pb.getPage(prevAddr.pageID,ctx->ssvMgr,PGCTL_XLOCK,ses)==NULL) rc=RC_NOTFOUND;
 		else {
 			const HeapPageMgr::HeapPage *hp=(const HeapPageMgr::HeapPage*)pb->getPageBuf();
 			const HeapPageMgr::HeapObjHeader *hobj=hp->getObject(hp->getOffset(prevAddr.idx));
@@ -1074,22 +1068,19 @@ RC QueryPrc::editData(Session *ses,PageAddr &startAddr,uint64_t& len,const Value
 		}
 	}
 	ses->free(buf);
-	if (rc==RC_OK) {ctx->ssvMgr->reuse(pb,ses,false,true); pb.release(); len+=v.length; len-=v.edit.length;}
+	if (rc==RC_OK) {ctx->ssvMgr->reuse(pb,ses,false,true); pb.release(ses); len+=v.length; len-=v.edit.length;}
 	return rc!=RC_OK?rc:fSSVLOB?RC_TRUE:fAddrChanged?RC_FALSE:RC_OK;
 }
 
-RC QueryPrc::deleteData(const PageAddr& start,PBlockP *pbp)
+RC QueryPrc::deleteData(const PageAddr& start,Session *ses,PBlockP *pbp)
 {
-	Session *ses=Session::getSession(); if (ses==NULL) return RC_NOSESSION;
+	if (ses==NULL && (ses=Session::getSession())==NULL) return RC_NOSESSION;
 	PBlockP pb; PageAddr addr=start; RC rc=RC_OK;
 	do {
 		if (pbp!=NULL && !pbp->isNull()) {
-			if ((*pbp)->getPageID()!=addr.pageID) pbp->release(); else {pb=*pbp; *pbp=NULL;}
+			if ((*pbp)->getPageID()!=addr.pageID) pbp->release(ses); else pbp->moveTo(pb);
 		}
-		if (pb.isNull() || pb->getPageID()!=addr.pageID) {
-			pb=ctx->bufMgr->getPage(addr.pageID,ctx->ssvMgr,PGCTL_XLOCK,pb);
-			if (pb.isNull()) {rc=RC_NOTFOUND; break;}
-		}
+		if ((pb.isNull() || pb->getPageID()!=addr.pageID) && pb.getPage(addr.pageID,ctx->ssvMgr,PGCTL_XLOCK,ses)==NULL) {rc=RC_NOTFOUND; break;}
 		const HeapPageMgr::HeapPage *hp=(const HeapPageMgr::HeapPage*)pb->getPageBuf(); PageIdx idx=addr.idx;
 		const HeapPageMgr::HeapObjHeader *hobj=hp->getObject(hp->getOffset(idx));
 		if (hobj==NULL || (hobj->descr&HOH_DELETED)!=0) {rc=RC_NOTFOUND; break;}
@@ -1132,8 +1123,7 @@ RC QueryPrc::makeRoom(PIN *pin,ushort lxtab,PBlock *pb,Session *ses,size_t reser
 	const bool fRemote=cand->hasRemoteID(),fMigrated=cand->isMigrated(); PID id; if (fRemote) cand->getAddr(id);
 	byte *buf=NULL,*img=NULL,fbuf[sizeof(HeapPageMgr::HeapModEdit)+PageAddrSize*2]; size_t lr=0,limg=0;
 	size_t expLen=(cand->hdr.descr&HOH_COMPACTREF)!=0?cand->expLength((const byte*)hp):cand->hdr.getLength(); if (!fMigrated) expLen+=PageAddrSize;
-	PBlockP newPB(ctx->heapMgr->getNewPage(expLen+sizeof(PageOff),reserve,ses));
-	if (newPB.isNull()) return RC_FULL;
+	PBlockP newPB(ctx->heapMgr->getNewPage(expLen+sizeof(PageOff),reserve,ses),QMGR_UFORCE); if (newPB.isNull()) return RC_FULL;
 	PageAddr newAddr={newPB->getPageID(),((HeapPageMgr::HeapPage*)newPB->getPageBuf())->nSlots},oldAddr={pb->getPageID(),cidx},origAddr;
 	RC rc=cand->serialize(buf,lr,hp,ses,expLen,(cand->hdr.descr&HOH_COMPACTREF)!=0); if (rc!=RC_OK) return rc;
 	if (fMigrated) {

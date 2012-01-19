@@ -227,6 +227,7 @@ RC ExprCompileCtx::compileNode(const ExprTree *node,ulong flg)
 		break;
 	case OP_PATH:
 		return RC_INTERNAL;
+		pHdr->hdr.flags|=EXPR_PATH;
 		for (i=1,pv=&node->operands[0]; pv->type==VT_EXPRTREE && ((ExprTree*)pv->exprt)->op==OP_PATH; pv=&((ExprTree*)pv->exprt)->operands[0]) 
 			if (++i>=256) return RC_INVOP;
 		if ((rc=compileValue(*pv,flg))!=RC_OK) return rc;

@@ -24,7 +24,6 @@ namespace MVStoreKernel
 #define	GB_DELETED			0x0001
 #define	GB_REREAD			0x0002
 #define	GB_FORWARD			0x0004
-#define	GB_SAFE				0x0008
 
 /**
  * PIN skew calculation constants
@@ -162,16 +161,17 @@ class QueryPrc
 	RC		checkACLs(PINEx& cb,IdentityID iid,TVOp tvo,ulong flags=0,bool fProp=true);
 	RC		checkACLs(const PINEx *pin,PINEx& cb,IdentityID iid,TVOp tvo,ulong flags=0,bool fProp=true);
 	RC		checkACL(const Value&,PINEx&,IdentityID,uint8_t,const RefTrace*,bool=true);
-	RC		getRefValues(const PID& id,Value *&vals,ulong& nValues,ulong mode,PINEx& cb);
+	RC		getRefSafe(const PID& id,Value *&vals,ulong& nValues,ulong mode,PINEx& cb);
 	RC		apply(Session *ses,STMT_OP op,PINEx& qr,const Value *values,unsigned nValues,unsigned mode,const ValueV& params,PIN *pin=NULL);
 	RC		count(QueryOp *qop,uint64_t& cnt,unsigned long nAbort,const OrderSegQ *os=NULL,unsigned nos=0);
 	RC		eval(Session *ses,const Value *pv,Value& res,PINEx **vars,ulong nVars,const ValueV *params,unsigned nParams,MemAlloc *ma,bool fInsert);
+	RC		purge(PageID pageID,unsigned start,unsigned len,const uint32_t *bmp,PurgeType pt,Session *ses);
 
 	size_t	splitLength(const Value *pv);
 	RC		estimateLength(const Value& v,size_t& res,ulong mode,size_t threshold,MemAlloc *ma,PageID pageID=INVALID_PAGEID,size_t *rlen=NULL);
 	RC		findCandidateSSVs(struct CandidateSSVs& cs,const Value *pv,ulong nv,bool fSplit,MemAlloc *ma,const AllocCtrl *act=NULL,PropertyID=STORE_INVALID_PROPID,struct ModInfo *mi=NULL);
 	RC		persistValue(const Value& v,ushort& sht,HType& vt,ushort& offs,byte *buf,size_t *plrec,const PageAddr &addr,ElementID *keygen=NULL);
-	RC		putHeapMod(HeapPageMgr::HeapPropMod *hpm,struct ModInfo *pm,byte *buf,ushort& sht,const PINEx&,bool=false);
+	RC		putHeapMod(HeapPageMgr::HeapPropMod *hpm,struct ModInfo *pm,byte *buf,ushort& sht,PINEx&,bool=false);
 	static	int __cdecl cmpCandidateSSV(const void *v1, const void *v2);
 
 private:
@@ -197,7 +197,7 @@ public:
 	RC		loadData(const PageAddr& addr,byte *&p,size_t& len,MemAlloc *ma);
 	RC		persistData(IStream *stream,const byte *str,size_t lstr,PageAddr& addr,uint64_t&,const PageAddr* =NULL,PBlockP* =NULL);
 	RC		editData(Session *ses,PageAddr &addr,uint64_t& length,const Value&,PBlockP *pbp=NULL,byte *pOld=NULL);
-	RC		deleteData(const PageAddr& addr,PBlockP *pbp=NULL);
+	RC		deleteData(const PageAddr& addr,Session *ses=NULL,PBlockP *pbp=NULL);
 	bool	test(PINEx *,ClassID,const ValueV& pars,bool fIgnore=false);
 	RC		transform(const PINEx **vars,ulong nVars,PIN **pins,unsigned nPins,unsigned &nOut,Session*) const;
 	RC		getClassInfo(Session *ses,PIN *pin);
@@ -209,6 +209,7 @@ public:
 	friend	class	Cursor;
 	friend	class	Navigator;
 	friend	class	PINEx;
+	friend	struct	TxPurge;
 	friend	class	FTIndexMgr;
 	friend	struct	ModData;
 	friend	class	Collection;

@@ -81,8 +81,13 @@ public:
 	RC		renderRep(unsigned rm,unsigned rx);
 	RC		renderPath(const struct PathSeg& ps);
 	char	*renderAll();
+	RC		renderJSON(class Cursor *cr,uint64_t& cnt);
 	size_t	getCLen() const {return cLen;}
-	bool	append(const void *p,size_t l) {if (l==0) return true;byte *pp=alloc(l); return pp==NULL?false:(memcpy(pp,p,l),true);}
+	bool	append(const void *p,size_t l) {if (l==0) return true; byte *pp=alloc(l); return pp==NULL?false:(memcpy(pp,p,l),true);}
+	bool	insert(const void *p,size_t l,size_t pos) {
+		if (l==0) return true; size_t cl=cLen; byte *pp=alloc(l); if (pp==NULL) return false; 
+		if (pos>=cl) memcpy(pp,p,l); else {memmove(ptr+pos+l,ptr+pos,cl-pos); memcpy(ptr+pos,p,l);} return true;
+	}
 	bool	fill(char c,int n) {if (n==0) return true; byte *pp=alloc(n); return pp==NULL?false:(memset(pp,c,n),true);}
 	byte	*result(size_t& len) {byte *p=ptr; ptr=NULL; len=cLen; return cLen<xLen?(byte*)ses->realloc(p,cLen):p;}
 	operator char*() {char *p=(char*)ptr; ptr=NULL; if (cLen+1!=xLen) p=(char*)ses->realloc(p,cLen+1); if (p!=NULL) p[cLen]=0; return p;}
@@ -99,7 +104,7 @@ public:
 #define	SIM_NO_BASE			0x0002
 #define	SIM_STD_OVR			0x0004
 #define	SIM_INT_NUM			0x0008
-#define	SIM_SELECT		0x0010
+#define	SIM_SELECT			0x0010
 #define	SIM_DML_EXPR		0x0020
 #define	SIM_HAVING			0x0040
 

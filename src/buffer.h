@@ -26,11 +26,12 @@ Written by Mark Venguerov 2004 - 2010
 #define	BLOCK_FLUSH_CHAIN	0x0100
 
 #define	PGCTL_XLOCK			0x0001
-#define PGCTL_COUPLE		0x0002
-#define	PGCTL_NOREL			0x0004
-#define	PGCTL_ULOCK			0x0008
-#define	PGCTL_DISCARD		0x0010
-#define	PGCTL_NOREG			0x0020
+#define	PGCTL_ULOCK			0x0002
+#define	PGCTL_COUPLE		0x0004
+#define	PGCTL_DISCARD		0x0008
+#define	PGCTL_RLATCH		0x0010
+#define	PGCTL_NOREL			0x0020
+#define	PGCTL_INREL			0x0040
 
 #define MAX_ASYNC_PAGES		32
 #define	FLUSH_CHAIN_THR		12
@@ -39,6 +40,8 @@ Written by Mark Venguerov 2004 - 2010
 namespace MVStoreKernel
 {
 
+class Session;
+struct LogDirtyPages;
 struct DirtyPageInfo
 {
 	PageID		pageID;
@@ -66,7 +69,7 @@ private:
 	PBlock(class BufMgr *bm,byte *frm,struct myaio *ai=NULL);
 	void			setStateBits(ulong v) {setStateBits(v,v);}
 	void			resetStateBits(ulong v) {setStateBits(0,v);}
-	void			setStateBits(ulong v,ulong mask) {for (long s=state; !cas(&state,s,long(s&~mask|v)); s=state);}
+	void			setStateBits(ulong v,ulong mask) {for (long s=state; !cas(&state,s,long(s&~mask|v)); s=state) ;}
 	RC				flushBlock();
 	RC				readResult(RC rc);
 	void			writeResult(RC rc);
@@ -74,7 +77,7 @@ private:
 	void			fillaio(int,void (*callback)(void*,RC)) const;
 public:
 	~PBlock();
-	void			release(ulong mode=0);
+	void			release(ulong mode=0,Session *ses=NULL);
 	PageID			getPageID() const {return pageID;}
 	byte			*getPageBuf() const {return frame;}
 	PageMgr			*getPageMgr() const {return pageMgr;}
@@ -114,22 +117,24 @@ public:
 class PBlockP
 {
 	PBlock			*pb;
-	ulong	mutable	flags;
+	ulong			flags;
 public:
-	PBlockP(const PBlockP& pbp) : pb(pbp.pb),flags(pbp.flags) {pbp.flags|=PGCTL_NOREL;}
-	PBlockP(PBlock *p,ulong flg=0) : pb(p),flags(flg) {}
+	PBlockP(PBlock *p,ulong flg) : pb(p),flags(flg) {}
+	PBlockP(PBlockP& pbp) : pb(pbp.pb),flags(pbp.flags) {pbp.flags|=PGCTL_NOREL;}
 	PBlockP() : pb(NULL),flags(0) {}
-	~PBlockP() {if (pb!=NULL && (flags&PGCTL_NOREL)==0) pb->release(flags&(QMGR_UFORCE|PGCTL_DISCARD));}
-	void release() {if (pb!=NULL) {if ((flags&PGCTL_NOREL)==0) pb->release(flags&(QMGR_UFORCE|PGCTL_DISCARD)); pb=NULL;} flags=0;}
-	void set(ulong flg) const {flags|=flg;}
-	void reset(ulong flg) const {flags&=~flg;}
-	PBlock *operator=(const PBlockP& pbp) {pb=pbp.pb; flags=pbp.flags; pbp.flags|=PGCTL_NOREL; return pb;}
+	~PBlockP() {if (pb!=NULL && (flags&PGCTL_NOREL)==0) {flags|=PGCTL_INREL; pb->release(flags&(QMGR_UFORCE|PGCTL_DISCARD));}}
+	void release(Session *s=NULL) {if (pb!=NULL && (flags&PGCTL_NOREL)==0) {flags|=PGCTL_INREL; pb->release(flags&(QMGR_UFORCE|PGCTL_DISCARD),s);} pb=NULL; flags=0;}
+	void moveTo(PBlockP& to) {if (to.pb!=NULL && (to.flags&PGCTL_NOREL)==0) {to.flags|=PGCTL_INREL; to.pb->release(to.flags&(QMGR_UFORCE|PGCTL_DISCARD));} to.pb=pb; to.flags=flags; pb=NULL; flags=0;}
 	PBlock *operator=(PBlock *p) {pb=p; flags=0; return p;}
+	void set(ulong flg) {flags|=flg;}
+	void reset(ulong flg) {flags&=~flg;}
 	operator PBlock*() const {return pb;}
 	PBlock* operator->() const {return pb;}
 	bool isNull() const {return pb==NULL;}
 	bool isSet(ulong flg) const {return (flags&flg)!=0;}
 	ulong uforce() const {return flags&QMGR_UFORCE;}
+	PBlock*	newPage(PageID pid,PageMgr*,ulong flags=0,Session *ses=NULL);
+	PBlock*	getPage(PageID pid,PageMgr*,ulong flags=0,Session *ses=NULL);
 };
 
 typedef QMgr<PBlock,PageID,PageID,PageMgr*,SERVER_HEAP> BufQMgr;
@@ -161,13 +166,13 @@ public:
 	RC					init();
 	RC					flushAll(bool fWait=true);
 	size_t				getPageSize() const {return lPage;}
-	PBlock*				newPage(PageID pid,PageMgr* =NULL,PBlock *old=NULL,ulong flags=0);
-	PBlock*				getPage(PageID pid,PageMgr* =NULL,ulong flags=0,PBlock *old=NULL);
+	PBlock*				newPage(PageID pid,PageMgr*,PBlock *old=NULL,ulong flags=0,Session *ses=NULL);
+	PBlock*				getPage(PageID pid,PageMgr*,ulong flags=0,PBlock *old=NULL,Session *ses=NULL);
 	void				prefetch(const PageID *pages,int nPages,PageMgr *mgr,PageMgr *const *mgrs=NULL);
 	void				asyncWrite();
 	RC					close(FileID fid,bool fAll=false);
-	struct LogDirtyPages *getDirtyPageInfo(LSN old,LSN& redo,PageID *asyncPages,ulong& nAsyncPages,ulong maxAsyncPages);
 	void				writeAsyncPages(const PageID *asyncPages,ulong nAsyncPages);
+	LogDirtyPages		*getDirtyPageInfo(LSN old,LSN& redo,PageID *asyncPages,ulong& nAsyncPages,ulong maxAsyncPages);
 #ifdef _DEBUG
 	void				checkState();
 #endif
@@ -175,6 +180,7 @@ private:
 	static	void		asyncReadNotify(void*,RC);
 	static	void		asyncWriteNotify(void*,RC);
 	friend	class		PBlock;
+	friend	class		Session;
 };
 
 };

@@ -141,7 +141,7 @@ enum ClassFlags {
 	CF_UNIQUE		= 16;		// Family with unique values.
 }
 
-// mvSQL statements (query,insert,update,delete) and individual PIN modification operations can return information with various level of details.
+// PathSQL statements (query,insert,update,delete) and individual PIN modification operations can return information with various level of details.
 enum ReturnType {
 	RT_PINS			= 0; // Specifies that a query will return entire MVStream::PIN object(s) (see definition below).
 	RT_COUNT		= 1; // Specifies that a query will return a simple count.
@@ -180,7 +180,7 @@ message Value {
 		VT_UINT			= 2; // A 32-bit unsigned integer.
 		VT_INT64		= 3; // A 64-bit signed integer.
 		VT_UINT64		= 4; // A 64-bit unsigned integer.
-		VT_DECIMAL		= 5; // [Future.] A resolution-independent decimal number.
+		VT_RESERVED2	= 5; // [Future.] A resolution-independent decimal number.
 		VT_FLOAT		= 6; // A single-precision IEEE 754 floating-point number.
 		VT_DOUBLE		= 7; // A double-precision IEEE 754 floating-point number.
 
@@ -195,14 +195,14 @@ message Value {
 		VT_STRING		= 13; // A standard text string.
 		VT_BSTR			= 14; // A binary string.
 		VT_URL			= 15; // A text string representing a URL.
-		VT_ENUM			= 16; // {Future.] A 32-bit unsigned enumeration value.
+		VT_RESERVED1	= 16; // {Future.] A 32-bit unsigned enumeration value.
 
 		VT_REFID		= 18; // A reference (Ref) to a PIN.
 		VT_REFIDPROP	= 20; // A reference (Ref) to a property of a PIN.
 		VT_REFIDELT		= 22; // A reference (Ref) to a collection element of a property of a PIN.
 
-		VT_EXPR			= 23; // A stored expression, expressed in mvSQL or BLOB.
-		VT_QUERY		= 24; // A stored statement, expressed in mvSQL or BLOB.
+		VT_EXPR			= 23; // A stored expression, expressed in PathSQL or BLOB.
+		VT_QUERY		= 24; // A stored statement, expressed in PathSQL or BLOB.
 
 		VT_ARRAY		= 25; // A collection (array of values).
 		VT_STRUCT		= 27; // A composite value.
@@ -327,18 +327,18 @@ message MVStream
 	}
 	// Query result meta-data, returned by mvStore in an output stream.
 	message Result {
-		optional uint64		cid		= 1; // Client-side ID of corresponding MVSQL or PIN message.
+		optional uint64		cid		= 1; // Client-side ID of corresponding PathSQL or PIN message.
 		optional ErrorCode	error	= 2; // Error code. If success - this field is omitted.
 		optional uint64		count	= 3; // Result count (only in case of success).
 		optional MODOP		op		= 4; // The operation performed.
 	}
-	// Specifies a mvsql statement, in an input stream.
-	message MVSQL {
-		required string		sq		= 1; // Specifies the mvsql statement as a string.
+	// Specifies a PathSQL statement, in an input stream.
+	message PathSQL {
+		required string		sq		= 1; // Specifies the PathSQL statement as a string.
 		optional uint64		cid		= 2; // Client-side ID. Allows identifying results that relate to this statement.
 		optional ReturnType	rtt		= 3; // Specifies what level of details is expected in the result.
-		repeated uint32		uids	= 4; // Specifies the property ids referred to by the mvsql statement, if any.
-		repeated Value		params	= 5; // Specifies the values of the parameters in the mvsql statement, if any.
+		repeated uint32		uids	= 4; // Specifies the property ids referred to by the PathSQL statement, if any.
+		repeated Value		params	= 5; // Specifies the values of the parameters in the PathSQL statement, if any.
 		optional uint32		limit	= 6; // For pagination (standard).
 		optional uint32		offset	= 7; // For pagination (standard).
 		optional uint32		mode	= 8; // Special modifiers.
@@ -376,7 +376,7 @@ message MVStream
 	repeated PIN		pins		= 3; // A set of PIN descriptions. In input streams, can be used to insert or update PINs. In output streams, describes the query result.
 	repeated StringMap	properties	= 4; // A map of property IDs vs names (URIs). In input streams sent to mvStore, the mapping is purely logical (note: by convention property IDs start at 64). In output streams returned by mvStore, the mapping is mvStore's persistent internal mapping.
 	repeated StringMap	identities	= 5; // A map of identity IDs vs names (URIs). In input streams sent to mvStore, the mapping is purely logical. In output streams, the mapping is mvStore's persistent internal mapping.
-	repeated MVSQL		stmt		= 6; // Query to be executed. Only relevant in input streams sent to mvStore.
+	repeated PathSQL	stmt		= 6; // Query to be executed. Only relevant in input streams sent to mvStore.
 	repeated TXOP		txop		= 7; // A transaction operation. In practice, this will only ever contain one element.
 	repeated Result		result		= 8; // Query result meta-data. Only relevant in streams output by mvStore. Matches the specified ReturnType.
 	repeated Compound	compound	= 9; // A few PINs returned as a set.

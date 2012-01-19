@@ -21,6 +21,7 @@ namespace MVStoreKernel
  * convV flags
  */
 #define	CV_NOTRUNC	0x0001
+#define	CV_NODEREF	0x0002
 
 extern	MemAlloc *createMemAlloc(size_t,bool fMulti);
 extern	RC		copyV(const Value *from,ulong nv,Value *&to,MemAlloc *ma);

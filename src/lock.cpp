@@ -91,7 +91,7 @@ RC LockMgr::lock(LockType lt,PINEx& pe,ulong flags)
 		} while ((gl=gl->other)!=NULL);
 		while ((lh->grantedMask&mask)!=0) {
 			//if (lockNotification!=NULL && (rc=lockNotification->beforeWait(ses,pe.id,ILockNotification::LT_SHARED))!=RC_OK) ...
-			bool fDL=ses->releaseLatches()!=RC_OK; if (!fDL && !pe.pb.isNull()) pe.pb.release();
+			bool fDL=ses->releaseAllLatches()!=RC_OK; if (!fDL && !pe.pb.isNull()) pe.pb.release(ses);
 			if (fDL || ses->nLatched>0) {lh->release(this,ses->lockReq.sem); return RC_DEADLOCK;}	//  rollback???
 			lh->conflictMask|=lockConflictMatrix[lt]; ses->lockReq.lt=lt; ses->lockReq.rc=RC_REPEAT;
 			ses->lockReq.next=lh->waiting; lh->waiting=ses;
@@ -247,9 +247,9 @@ void LockStoreHdr::lockDaemon()
 	for (;;) {
 		TIMESTAMP ts1,ts2; getTimestamp(ts1);
 #ifdef _M_X64
-		for (SLIST_ENTRY **pse=NULL,*se=(SLIST_ENTRY*)(stores.HeaderX64.NextEntry<<4); se!=NULL; se=*pse) {
+		for (SLIST_ENTRY **pse=NULL,*se=(SLIST_ENTRY*)((stores.HeaderX64.HeaderType!=0?stores.HeaderX64.NextEntry:stores.Header8.NextEntry)<<4); se!=NULL; se=*pse) {
 #elif defined(_M_IA64)
-		for (SLIST_ENTRY **pse=NULL,*se=(SLIST_ENTRY*)(stores.Header16.NextEntry<<4); se!=NULL; se=*pse) {
+		for (SLIST_ENTRY **pse=NULL,*se=(SLIST_ENTRY*)((stores.Header16.HeaderType!=0?stores.Header16.NextEntry:stores.Header8.NextEntry)<<4); se!=NULL; se=*pse) {
 #else
 		for (SLIST_ENTRY **pse=NULL,*se=stores.Next.Next; se!=NULL; se=*pse) {
 #endif

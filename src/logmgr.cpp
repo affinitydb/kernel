@@ -8,11 +8,8 @@ Written by Mark Venguerov 2004 - 2010
 
 #include "session.h"
 #include "logmgr.h"
-#include "buffer.h"
 #include "fio.h"
-#include "utils.h"
 #include "startup.h"
-#include "txmgr.h"
 #include <stdio.h>
 #include <stdarg.h>
 
@@ -23,7 +20,7 @@ static int nLogOpen = 0;
 LogMgr::LogMgr(StoreCtx *c,size_t logBufS,bool fAL,const char *lDir) : ctx(c),sectorSize(getSectorSize()),lPage(c->fileMgr->getPageSize()),
 	logSegSize(max(ceil(c->theCB->logSegSize,sectorSize),(size_t)MINSEGSIZE)),bufLen(max(ceil(logBufS,sectorSize),sectorSize*4)),
 	logBufBeg(NULL),logBufEnd(NULL),ptrWrite(NULL),ptrInsert(NULL),ptrRead(NULL),maxLSN(c->theCB->logEnd),minLSN(c->theCB->logEnd),prevLSN(0),
-	writtenLSN(c->theCB->logEnd),wrapLSN(0),	fFull(false),fRecovery(false),fAnalizing(false),recFileSize(0),maxAllocated(0),prevTruncate(~0),
+	writtenLSN(c->theCB->logEnd),wrapLSN(0),fFull(false),fRecovery(false),fAnalizing(false),recFileSize(0),maxAllocated(0),prevTruncate(~0),
 	nRecordsSinceCheckpoint(0),newPage(NULL),currentLogFile(~0ul),logFile(INVALID_FILEID),nReadLogSegs(0),pcb(new(c) myaio),fArchive(fAL),
 	fReadFromCurrent(false),logDirectory(c->fileMgr->getDirString(lDir,true)),fInit(false),checkpointRQ(this),segAllocRQ(this)
 {
@@ -342,23 +339,22 @@ RC LogMgr::flushTo(LSN lsn,LSN *ret)
 	return RC_OK;
 }
 
-LogReadCtx::LogReadCtx(LogMgr *mgr,HEAP_TYPE allc) 
-	: logMgr(mgr),alloc(allc),currentLogSeg(~0ul),
-	fid(INVALID_FILEID),pb(NULL),ptr(NULL),len(0),fCheck(true),fLocked(false),xlrec(0),rbuf(NULL),lrec(0)
+LogReadCtx::LogReadCtx(LogMgr *mgr,Session *s) 
+	: logMgr(mgr),ses(s),currentLogSeg(~0ul),fid(INVALID_FILEID),ptr(NULL),len(0),fCheck(true),fLocked(false),xlrec(0),rbuf(NULL),lrec(0)
 {
 }
 
 LogReadCtx::~LogReadCtx()
 {
-	free(rbuf,alloc);
+	ses->free(rbuf);
 	if (fLocked) logMgr->bufferLock.unlock();
-	if (pb!=NULL) {pb->release(PGCTL_NOREG); pb=NULL;}
+	pb.release(ses);
 	closeFile();
 }
 
 void LogReadCtx::release()
 {
-	if (pb!=NULL) {pb->release(PGCTL_NOREG); pb=NULL;}
+	pb.release(ses);
 }
 
 void LogReadCtx::closeFile()
@@ -369,7 +365,7 @@ void LogReadCtx::closeFile()
 			PrevLogSeg &ps=logMgr->readLogSegs[i];
 			if (ps.logFile==currentLogSeg) {
 				if (--ps.nReads==0) {
-					if (pb!=NULL && FileIDFromPageID(pb->getPageID())==ps.fid) {pb->release(PGCTL_NOREG); pb=NULL;}
+					if (!pb.isNull() && FileIDFromPageID(pb->getPageID())==ps.fid) pb.release(ses);
 					if (ps.fid!=logMgr->logFile) logMgr->ctx->bufMgr->close(ps.fid);
 					if (--logMgr->nReadLogSegs>i) memmove(&ps,&ps+1,(logMgr->nReadLogSegs-i)*sizeof(PrevLogSeg));
 					logMgr->waitLogSeg.signal();
@@ -389,7 +385,7 @@ RC LogReadCtx::readChunk(LSN lsn,void *buf,size_t l)
 			if (!fLocked) {logMgr->lock.lock(RW_S_LOCK); fLocked=true;} fCheck=false;
 			assert(lsn+l<=logMgr->maxLSN || logMgr->fRecovery);
 			if (lsn>=logMgr->minLSN && lsn<logMgr->maxLSN) {
-				if (pb!=NULL) {pb->release(PGCTL_NOREG); pb=NULL;} closeFile(); fid=INVALID_FILEID; 
+				pb.release(ses); closeFile(); fid=INVALID_FILEID; 
 				if ((ptr=logMgr->ptrRead+ulong(lsn-logMgr->minLSN))>=logMgr->logBufEnd) ptr-=logMgr->bufLen;
 				len=ptr>=logMgr->ptrInsert?ulong(logMgr->logBufEnd-ptr):ulong(logMgr->ptrInsert-ptr);
 			} else if (logMgr->fAnalizing) {
@@ -412,7 +408,7 @@ RC LogReadCtx::readChunk(LSN lsn,void *buf,size_t l)
 				LSN writtenLSN(logMgr->writtenLSN); logMgr->lock.unlock(); fLocked=false;
 				ulong logSeg=logMgr->LSNToFileN(lsn); size_t offset=logMgr->LSNToFileOffset(lsn);
 				if (logSeg!=currentLogSeg) {
-					if (pb!=NULL) {pb->release(PGCTL_NOREG); pb=NULL;} closeFile();
+					pb.release(ses); closeFile();
 					MutexP lck(&logMgr->openFile); bool fFound=false;
 					for (int i=0; i<logMgr->nReadLogSegs; i++) {
 						PrevLogSeg &ps=logMgr->readLogSegs[i];
@@ -445,7 +441,7 @@ RC LogReadCtx::readChunk(LSN lsn,void *buf,size_t l)
 						logMgr->write();
 				}
 				PageID pid=PageIDFromPageNum(fid,ulong(offset/logMgr->lPage)); offset%=logMgr->lPage;
-				if ((pb==NULL || pb->getPageID()!=pid) && (pb=logMgr->ctx->bufMgr->getPage(pid,NULL,PGCTL_NOREG,pb))==NULL) {
+				if ((pb.isNull() || pb->getPageID()!=pid) && pb.getPage(pid,NULL,0,ses)==NULL) {
 					// cannot read
 					fCheck=true; return RC_EOF;
 				}
@@ -473,14 +469,13 @@ RC LogReadCtx::read(LSN& lsn)
 	if (rc==RC_OK && lbuf!=0) {
 		if (lbuf+sizeof(LogRec)>MAXLOGRECSIZE) rc=RC_CORRUPTED;
 		else if (lbuf>xlrec) {
-			rbuf = rbuf==NULL?(byte*)malloc(lbuf,alloc):(byte*)realloc(rbuf,lbuf,alloc);
-			if (rbuf==NULL) rc=RC_NORESOURCES; else xlrec=lbuf;
+			if ((rbuf=(byte*)ses->realloc(rbuf,lbuf))==NULL) rc=RC_NORESOURCES; else xlrec=lbuf;
 		}
 		if (rc==RC_OK) rc=readChunk(lsn+sizeof(LogRec),rbuf,lbuf);
 	}
 
 	if (fLocked) {logMgr->lock.unlock(); fLocked=false;}
-	if (pb!=NULL && !logMgr->fRecovery) {pb->release(PGCTL_NOREG); pb=NULL;}
+	if (!pb.isNull() && !logMgr->fRecovery) pb.release(ses);
 	fCheck=true;
 
 	if (rc==RC_OK) {

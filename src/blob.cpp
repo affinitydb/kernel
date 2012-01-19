@@ -140,33 +140,6 @@ void StreamX::destroyObj()
 	destroy();
 }
 
-namespace MVStoreKernel
-{
-	class StrTxDelete : public TxDelete
-	{
-		friend	class	StreamX;
-		PageAddr	start;
-		StoreCtx	*ctx;
-		StrTxDelete(const PageAddr& st,StoreCtx *ct) : start(st),ctx(ct) {}
-		RC deleteData() {
-			BlobReadTab::Find findBlob(ctx->bigMgr->blobReadTab,start);
-			BlobRead *blob = findBlob.findLock(RW_S_LOCK);
-			if (blob!=NULL) blob->fDelete=true;
-			findBlob.unlock();
-			return blob==NULL?ctx->queryMgr->deleteData(start):RC_OK;
-		}
-		void release() {
-			// ???
-		}
-	};
-};
-
-RC StreamX::deleteData(Session *ses)
-{
-	if (ses==NULL) return RC_NOSESSION; if (ses->inReadTx()) return RC_INTERNAL;
-	StrTxDelete *td=new(ses) StrTxDelete(start,ctx); if (td==NULL) return RC_NORESOURCES;
-	ses->addTxDelete(td); return RC_OK;
-}
 
 //---------------------------------------------------------------------------------------------------------
 
@@ -315,9 +288,8 @@ RC ECB::get(GO_DIR whence,ElementID ei,bool fRead)
 				rc=RC_NOTFOUND;
 				if (cPage!=INVALID_PAGEID) {
 					// check deletes on heap page!!!
-					pb=ctx->bufMgr->getPage(cPage,ctx->trpgMgr,fRead?0:PGCTL_XLOCK);
 					cPage=INVALID_PAGEID; SearchKey key((uint64_t)eid);
-					if (!pb.isNull() && (tp=(const TreePageMgr::TreePage*)pb->getPageBuf())->findKey(key,pos)) rc=RC_OK;
+					if (pb.getPage(cPage,ctx->trpgMgr,fRead?0:PGCTL_XLOCK)!=NULL && (tp=(const TreePageMgr::TreePage*)pb->getPageBuf())->findKey(key,pos)) rc=RC_OK;
 				}
 				if (rc!=RC_OK && (rc=get(GO_FINDBYID,eid,fRead))!=RC_OK) return rc;
 			}
@@ -325,8 +297,8 @@ RC ECB::get(GO_DIR whence,ElementID ei,bool fRead)
 			else {
 				do {
 					if (tp->info.sibling==INVALID_PAGEID) return RC_NOTFOUND;
-					pb=ctx->bufMgr->getPage(tp->info.sibling,ctx->trpgMgr,(fRead?PGCTL_COUPLE:PGCTL_XLOCK|PGCTL_COUPLE)|pb.uforce(),pb);
-					if (pb.isNull()) return RC_NOTFOUND; tp=(const TreePageMgr::TreePage*)pb->getPageBuf();
+					if (pb.getPage(tp->info.sibling,ctx->trpgMgr,fRead?PGCTL_COUPLE:PGCTL_XLOCK|PGCTL_COUPLE)==NULL) return RC_NOTFOUND;
+					tp=(const TreePageMgr::TreePage*)pb->getPageBuf();
 				} while (tp->info.nSearchKeys==0);
 				pos=0;
 			}
@@ -347,9 +319,8 @@ RC ECB::get(GO_DIR whence,ElementID ei,bool fRead)
 				rc=RC_NOTFOUND;
 				if (cPage!=INVALID_PAGEID) {
 					// check deletes on heap page!!!
-					pb=ctx->bufMgr->getPage(cPage,ctx->trpgMgr,fRead?0:PGCTL_XLOCK);
 					cPage=INVALID_PAGEID; SearchKey key((uint64_t)eid);
-					if (!pb.isNull() && (tp=(const TreePageMgr::TreePage*)pb->getPageBuf())->findKey(key,pos)) rc=RC_OK;
+					if (pb.getPage(cPage,ctx->trpgMgr,fRead?0:PGCTL_XLOCK)!=NULL && (tp=(const TreePageMgr::TreePage*)pb->getPageBuf())->findKey(key,pos)) rc=RC_OK;
 				}
 				if (rc!=RC_OK && (rc=get(GO_FINDBYID,eid,fRead))!=RC_OK) return rc;
 			}
@@ -377,7 +348,7 @@ RC ECB::get(GO_DIR whence,ElementID ei,bool fRead)
 	if (pb.isNull()) {
 		if (cPage!=INVALID_PAGEID) {
 			// check deletes on heap page!!!
-			pb=ctx->bufMgr->getPage(cPage,ctx->trpgMgr,fRead?0:PGCTL_XLOCK); cPage=INVALID_PAGEID;
+			pb.getPage(cPage,ctx->trpgMgr,fRead?0:PGCTL_XLOCK); cPage=INVALID_PAGEID;
 		}
 		if (pb.isNull()) pos=~0ul;
 	}
@@ -404,8 +375,8 @@ RC ECB::shift(ElementID ei,bool fPrev)
 		tp=(const TreePageMgr::TreePage*)pb->getPageBuf();
 	} else for (; ++pos>=tp->info.nSearchKeys; pos=0) {
 		if (tp->info.sibling==INVALID_PAGEID) return RC_NOTFOUND;
-		pb=ctx->bufMgr->getPage(tp->info.sibling,ctx->trpgMgr,pb.uforce()|PGCTL_XLOCK|PGCTL_COUPLE,pb);
-		if (!pb.isNull()) tp=(const TreePageMgr::TreePage*)pb->getPageBuf(); else return RC_NOTFOUND;
+		if (pb.getPage(tp->info.sibling,ctx->trpgMgr,PGCTL_XLOCK|PGCTL_COUPLE)==NULL) return RC_NOTFOUND;
+		tp=(const TreePageMgr::TreePage*)pb->getPageBuf();
 	}
 	if ((hdr=(const ElementDataHdr *)tp->findData(pos,lData))==NULL) return RC_NOTFOUND;
 	prevID=(hdr->flags&1)!=0?((uint32_t*)(hdr+1))[0]:STORE_COLLECTION_ID;
@@ -565,43 +536,6 @@ void Navigator::destroy()
 void Navigator::destroyObj()
 {
 	destroy();
-}
-
-namespace MVStoreKernel
-{
-	class NavTxDelete : public TxDelete, public TreeFreeData
-	{
-		friend	class	Navigator;
-		StoreCtx	*const ctx;
-		ulong		nPages;
-		PageID		pages[1];
-		void		*operator new(size_t s,ulong np) throw() {assert(np>0); return malloc(s+int(np-1)*sizeof(PageID),SES_HEAP);}
-		NavTxDelete(StoreCtx *ct,const HeapPageMgr::HeapExtCollection *coll) : ctx(ct),nPages(coll->nPages+1)
-			{pages[0]=coll->leftmost; for (ulong i=0; i<coll->nPages; i++) pages[i+1]=coll->pages[i].page;}
-		RC deleteData() {RC rc=RC_OK; for (ulong i=0; rc==RC_OK && i<nPages; i++) rc=Tree::drop(pages[i],ctx,this); return rc;}
-		RC freeData(const byte *data,StoreCtx *ctx) {
-			const ElementDataHdr *hdr=(const ElementDataHdr*)data;
-			if (!hdr->type.isLOB() || hdr->type.isCompact()) return RC_OK;
-			const byte *pData=(const byte*)(hdr+1)+hdr->shift; PageAddr addr;
-			if (hdr->type.getFormat()==HDF_LONG) {
-				memcpy(&addr.pageID,&((HLOB*)pData)->ref.pageID,sizeof(PageID)); addr.idx=((HLOB*)pData)->ref.idx;
-			} else {
-				HRefSSV href; memcpy(&href,pData,sizeof(HRefSSV)); addr.pageID=href.pageID; addr.idx=href.idx;
-			}
-			return ctx->queryMgr->deleteData(addr);
-		}
-		void release() {
-			// ???
-		}
-	};
-};
-
-RC Navigator::deleteData(Session *ses)
-{
-	if (ses==NULL) return RC_NOSESSION; if (ses->inReadTx()) return RC_INTERNAL;
-	NavTxDelete *td=new(ecb.coll->nPages+1) NavTxDelete(ctx,ecb.coll);
-	if (td==NULL) return RC_NORESOURCES;
-	ses->addTxDelete(td); return RC_OK;
 }
 
 TreeFactory *Navigator::getFactory() const
@@ -810,7 +744,7 @@ RC Collection::modify(ExprOp op,const Value *pv,ElementID epos,ElementID eid,Ses
 				} else {
 					HRefSSV href; memcpy(&href,pData,sizeof(HRefSSV)); addr.pageID=href.pageID; addr.idx=href.idx;
 				}
-				if ((rc=ctx->queryMgr->deleteData(addr))!=RC_OK) break;
+				if ((rc=ctx->queryMgr->deleteData(addr,ses))!=RC_OK) break;
 			}
 			if ((rc=ecb.unlink(first,last,true))==RC_OK) {
 				switch (rc=ctx->trpgMgr->remove(ecb,key,NULL,0)) {
@@ -942,7 +876,7 @@ PageID Collection::prevStartPage(PageID pid)
 RC Collection::addRootPage(const SearchKey& key,PageID& pageID,ulong level) 
 {
 	if (coll==NULL) return RC_NOTFOUND;
-	RC rc=RC_OK; PageID newRoot; PBlock *pb;
+	RC rc=RC_OK; PageID newRoot; PBlock *pb; Session *ses;
 	if (coll->leftmost==INVALID_PAGEID) {coll->anchor=coll->leftmost=pageID; fMod=true;}
 	else if (level<coll->level) {
 		// re-traverse from root etc.
@@ -963,16 +897,16 @@ RC Collection::addRootPage(const SearchKey& key,PageID& pageID,ulong level)
 			}
 			coll->pages[idx].key=(uint32_t)key.v.u; coll->pages[idx].page=pageID; coll->nPages++; fMod=true; rc=RC_FALSE;
 		}
-	} else if (!Session::getSession()->inWriteTx()) rc=RC_INTERNAL;
+	} else if (!(ses=Session::getSession())->inWriteTx()) rc=RC_INTERNAL;
 	else if ((rc=ctx->fsMgr->allocPages(1,&newRoot))==RC_OK) {
-		if ((pb=ctx->bufMgr->newPage(newRoot,ctx->trpgMgr))==NULL) rc=RC_NORESOURCES;
+		if ((pb=ctx->bufMgr->newPage(newRoot,ctx->trpgMgr,NULL,0,ses))==NULL) rc=RC_NORESOURCES;
 		else {
 			if (coll->nPages>0) {
 				// ???
 				rc=RC_INTERNAL;
 			} else if ((rc=ctx->trpgMgr->initPage(pb,Collection::collFormat,ushort(coll->level+1),&key,coll->leftmost,pageID))==RC_OK)
 				{pageID=coll->leftmost=newRoot; coll->nPages=0; coll->level++; fMod=true;}
-			pb->release();
+			pb->release(0,ses);
 		}
 	}
 	return rc;
@@ -1018,14 +952,14 @@ namespace MVStoreKernel
 class InitCollection : public Tree
 {
 	HeapPageMgr::HeapExtCollection&	coll;
-	TreeCtx				tctx;
-	const	ulong			maxPages;
-	const	bool			fForce;
-	const	bool			fOld;
-	byte					*buf;
-	size_t					lbuf;
-	size_t					threshold;
-	Session					*const ses;
+	TreeCtx			tctx;
+	const	ulong	maxPages;
+	const	bool	fForce;
+	const	bool	fOld;
+	byte			*buf;
+	size_t			lbuf;
+	size_t			threshold;
+	Session			*const ses;
 public:
 	InitCollection(HeapPageMgr::HeapExtCollection& cl,ulong mP,Session *ss,bool fF,bool fO)
 		: Tree(ss->getStore()),coll(cl),tctx(*this),maxPages(mP),fForce(fF),fOld(fO),buf(NULL),lbuf(0),ses(ss)
@@ -1038,7 +972,7 @@ public:
 			HeapPageMgr::HeapExtCollPage& pg=coll.pages[coll.nPages++]; pg.key=(uint32_t)key.v.u; pg.page=pageID; rc=RC_TRUE;
 		} else if (tctx.depth==TREE_MAX_DEPTH) rc=RC_NORESOURCES;
 		else if ((rc=ctx->fsMgr->allocPages(1,&newRoot))==RC_OK) {
-			PBlockP root(ctx->bufMgr->newPage(newRoot,ctx->trpgMgr));
+			PBlockP root(ctx->bufMgr->newPage(newRoot,ctx->trpgMgr,NULL,0,ses),QMGR_UFORCE);
 			if (root.isNull()) rc=RC_FULL;
 			else if (maxPages!=0) {
 				// ???
@@ -1059,7 +993,7 @@ public:
 				assert(coll.leftmost=INVALID_PAGEID && tctx.depth==0);
 				tctx.pb=ctx->fsMgr->getNewPage(ctx->trpgMgr); if (tctx.pb.isNull()) return RC_FULL;
 				if ((rc=ctx->trpgMgr->initPage(tctx.pb,Collection::collFormat,0,NULL,INVALID_PAGEID,INVALID_PAGEID))!=RC_OK)
-					{tctx.pb.release(); return rc;}
+					{tctx.pb.release(ses); return rc;}
 				coll.anchor=coll.leftmost=tctx.pb->getPageID();
 			}
 			if ((rc=ctx->trpgMgr->insert(tctx,key,buf,lval))==RC_OK) coll.nElements++;
@@ -1078,7 +1012,7 @@ public:
 	bool		lock(RW_LockType,bool fTry=false) const {return true;}
 	void		unlock() const {}
 	void		destroy() {}
-	void		release() {tctx.pb.release();}
+	void		release() {tctx.pb.release(ses);}
 };
 };
 
@@ -1143,6 +1077,27 @@ RC Collection::persist(const Value& v,HeapPageMgr::HeapExtCollection& collection
 	return rc;
 }
 
+RC Collection::CollFreeData::freeData(const byte *data,StoreCtx *ctx)
+{
+	const ElementDataHdr *hdr=(const ElementDataHdr*)data;
+	if (!hdr->type.isLOB() || hdr->type.isCompact()) return RC_OK;
+	const byte *pData=(const byte*)(hdr+1)+hdr->shift; PageAddr addr;
+	if (hdr->type.getFormat()==HDF_LONG) {
+		memcpy(&addr.pageID,&((HLOB*)pData)->ref.pageID,sizeof(PageID)); addr.idx=((HLOB*)pData)->ref.idx;
+	} else {
+		HRefSSV href; memcpy(&href,pData,sizeof(HRefSSV)); addr.pageID=href.pageID; addr.idx=href.idx;
+	}
+	return ctx->queryMgr->deleteData(addr);
+}
+
+RC Collection::purge(const HeapPageMgr::HeapExtCollection *hc,StoreCtx *ctx)
+{
+	// check in BlobTab
+	CollFreeData cfd; RC rc=hc->leftmost!=INVALID_PAGEID?Tree::drop(hc->leftmost,ctx,&cfd):RC_OK;
+	if (rc==RC_OK) for (unsigned i=0; i<hc->nPages; i++) if ((rc=Tree::drop(hc->pages[i].page,ctx,&cfd))!=RC_OK) break;
+	return rc;
+}
+
 //----------------------------------------------------------------------------------------------------
 
 CollFactory	CollFactory::factory;
@@ -1172,4 +1127,13 @@ BigMgr::BigMgr(StoreCtx *ct,ulong blobReadTabSize)
 : ctx(ct),blobReadTab(blobReadTabSize)
 {
 	ct->treeMgr->registerFactory(CollFactory::factory);
+}
+
+bool BigMgr::canBePurged(const PageAddr& addr)
+{
+	BlobReadTab::Find findBlob(ctx->bigMgr->blobReadTab,addr);
+	BlobRead *blob = findBlob.findLock(RW_S_LOCK);
+	if (blob!=NULL) blob->fDelete=true;
+	findBlob.unlock();
+	return blob==NULL;	// race cond?
 }

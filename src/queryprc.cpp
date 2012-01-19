@@ -86,21 +86,19 @@ RC Stmt::execute(ICursor **pResult,const Value *pars,unsigned nPars,unsigned nPr
 				Cursor *result=new(ses) Cursor(qop,nProcess,mode|md,vals,nVals,ses,sop,top!=NULL?top->stype:SEL_PINSET,txl>=TXI_REPEATABLE_READ);
 				if (result==NULL) {if (vals!=NULL) freeV(vals,nVals,ses); rc=RC_NORESOURCES;}
 				else if ((rc=result->connect())!=RC_OK) {result->destroy(); if (vals!=NULL) freeV(vals,nVals,ses);}
-				else {*pResult=result; if (qop!=NULL) {qop->release(); qop=NULL;}}
+				else {*pResult=result; qop=NULL;}
 			}
 		} else if (rc!=RC_EOF) {
-			PINEx qr(ses),*pqr=&qr; qop->connect(&pqr); TxSP tx(ses); if ((rc=tx.start(txl))!=RC_OK) return rc; ses->rlatch=qop;
+			PINEx qr(ses),*pqr=&qr; qop->connect(&pqr); TxSP tx(ses); if ((rc=tx.start(txl))!=RC_OK) return rc;
 			while (rc==RC_OK && (nProcess==~0u || cnt<nProcess) && (rc=qop->next())==RC_OK) {
 				assert(qr.pb.isNull() || qr.addr.defined());
-				if (qr.pb.isNull() || !qr.pb.isSet(PGCTL_NOREL)) qop->release();
 				if (sop!=STMT_UNDELETE && ((rc=ctx->queryMgr->checkLockAndACL(qr,sop==STMT_INSERT?TVO_READ:TVO_UPD,qop))==RC_NOACCESS || rc==RC_NOTFOUND)) rc=RC_OK;
 				else if (rc==RC_OK && (rc=ctx->queryMgr->apply(ses,sop,qr,values,nValues,mode|md,qop->getQCtx()->vals[QV_PARAMS]))==RC_OK) cnt++;
 				else if (rc==RC_NOACCESS || rc==RC_DELETED) rc=RC_OK;
 			}
 			if (rc==RC_EOF || rc==RC_OK) {rc=RC_OK; tx.ok();} else cnt=~0ULL;
-			ses->rlatch=NULL;
 		}
-		delete qop;
+		delete qop; ses->releaseAllLatches();
 		if ((ses->getTraceMode()&TRACE_SESSION_QUERIES)!=0) trace(ses,stmtOpName[op],rc,ulong(cnt),pars,nPars,values,nValues);
 		if (nProcessed!=NULL) *nProcessed=cnt; return rc;
 	} catch (RC rc) {return rc;} catch (...) {report(MSG_ERROR,"Exception in IStmt::execute()\n"); return RC_INTERNAL;}
@@ -123,7 +121,7 @@ RC Stmt::cmp(const Value& v,ExprOp op,unsigned flags/* pars??? */)
 			Value w; w.setU64(cnt); int c=MVStoreKernel::cmp(v,w,flags);
 			return op!=OP_IN?Expr::condRC(c,op):c==0?RC_TRUE:RC_FALSE;
 		}
-		PINEx qr(ses),*pqr=&qr; qop->connect(&pqr); ses->rlatch=qop; const bool fChecked=top->stype!=SEL_PINSET && top->stype!=SEL_PROJECTED && top->stype!=SEL_COMPOUND;
+		PINEx qr(ses),*pqr=&qr; qop->connect(&pqr); const bool fChecked=top->stype!=SEL_PINSET && top->stype!=SEL_PROJECTED && top->stype!=SEL_COMPOUND;
 		while ((rc=qop->next())==RC_OK) if (fChecked || (rc=ses->getStore()->queryMgr->checkLockAndACL(qr,TVO_READ,qop))!=RC_NOACCESS && rc!=RC_NOTFOUND && rc!=RC_DELETED) {
 			if (rc!=RC_OK) break;
 			if (top->stype==SEL_VALUE || top->stype==SEL_VALUESET) {
@@ -137,7 +135,6 @@ RC Stmt::cmp(const Value& v,ExprOp op,unsigned flags/* pars??? */)
 				if (top->stype==SEL_DERIVED || top->stype==SEL_CONST) {rc=RC_EOF; break;}
 			}
 		}
-		ses->rlatch=NULL;
 	}
 	delete qop; return rc!=RC_EOF?rc:op==OP_EQ||op==OP_IN?RC_FALSE:RC_TRUE;
 }
@@ -394,17 +391,6 @@ bool Stmt::isSatisfied(const IPIN *p,const Value *pars,unsigned nPars,unsigned l
 	return false;
 }
 
-bool Stmt::isSatisfied(const IPIN *const *pins,unsigned nPins,const Value *pars,unsigned nPars,unsigned long mode) const
-{
-	try {
-		if (nPins==1) return isSatisfied(pins[0],pars,nPars,mode);
-		Session *ses=Session::getSession(); if (ses==NULL||ses->getStore()->inShutdown()) return false;
-		TxGuard txg(ses); //PINEx cb(p->getPID(),(const PIN *)p); return checkConditions(cb,vars,pars,nPars,ses);
-		return false;	// niy
-	} catch (RC) {} catch (...) {report(MSG_ERROR,"Exception in IStmt::isSatisfied(IPIN **pins,...)\n");}
-	return false;
-}
-
 bool Stmt::checkConditions(PINEx *pex,const ValueV& pars,MemAlloc *ma,ulong start,bool fIgnore) const
 {
 	QVar *qv=top; if (qv==NULL) return true;
@@ -448,7 +434,6 @@ bool QueryPrc::test(PINEx *pex,ClassID classID,const ValueV& pars,bool fIgnore)
 
 Cursor::~Cursor()
 {
-	if (ses->rlatch==queryOp) ses->rlatch=NULL;
 	if (txcid!=NO_TXCID) ses->getStore()->txMgr->releaseSnapshot(txcid);
 	delete queryOp;
 	if (values!=NULL) freeV((Value*)values,nValues,ses);
@@ -480,16 +465,16 @@ uint64_t Cursor::getCount() const
 
 RC Cursor::skip()
 {
-	ulong ns=queryOp->getSkip(),c=0; StoreCtx *ctx=ses->getStore(); RC rc=RC_OK; ses->rlatch=queryOp;
+	ulong ns=queryOp->getSkip(),c=0; StoreCtx *ctx=ses->getStore(); RC rc=RC_OK;
 	while (c<ns && (rc=queryOp->next())==RC_OK)
 		if ((rc=ctx->queryMgr->checkLockAndACL(qr,TVO_READ,queryOp))!=RC_NOACCESS && rc!=RC_NOTFOUND)		// results?? lock multiple
 			if (rc==RC_OK) c++; else break;
-	queryOp->setSkip(ns-c); ses->rlatch=NULL; return rc;
+	queryOp->setSkip(ns-c); return rc;
 }
 
-RC Cursor::advance(bool fRet,bool *pRel)
+RC Cursor::advance(bool fRet)
 {
-	if (!fAdvance) {fAdvance=true; if (pRel!=NULL) *pRel=false; return RC_OK;} RC rc=RC_EOF;
+	if (!fAdvance) {fAdvance=true; return RC_OK;} RC rc=RC_EOF;
 	if (ses!=NULL && cnt<nReturn && queryOp!=NULL) {
 		if (ses->getStore()->inShutdown()) return RC_SHUTDOWN;
 		if (op!=STMT_QUERY && !tx.isStarted()) {if ((rc=tx.start())==RC_OK) tx.ok(); else return rc;}
@@ -499,13 +484,12 @@ RC Cursor::advance(bool fRet,bool *pRel)
 			// re-init & re-position
 		}
 		if (fSnapshot && txcid==NO_TXCID) if (ses->getTxState()==TX_NOTRAN) txcid=ses->getStore()->txMgr->assignSnapshot(); else fSnapshot=false;
-		TxGuard txg(ses); ses->resetAbortQ(); PageAddr extAddr; ses->rlatch=queryOp; bool fRel=true; 	//unsigned nout=0;
+		TxGuard txg(ses); ses->resetAbortQ(); PageAddr extAddr;								 	//unsigned nout=0;
 		if (ses->getIdentity()==STORE_OWNER || queryOp->getSkip()==0 || (rc=skip())==RC_OK) {	//??????
 			if (fProc && (stype==SEL_COUNT || stype==SEL_VALUE || stype==SEL_DERIVED || stype==SEL_CONST)) rc=RC_EOF;
 			else if (stype==SEL_COUNT) {rc=ses->getStore()->queryMgr->count(queryOp,cnt,~0UL); fProc=true;}
-			else for (TVOp tvo=op==STMT_INSERT||op==STMT_QUERY?TVO_READ:TVO_UPD; (rc=queryOp->next())==RC_OK; fRel=true,ses->rlatch=queryOp) {
+			else for (TVOp tvo=op==STMT_INSERT||op==STMT_QUERY?TVO_READ:TVO_UPD; (rc=queryOp->next())==RC_OK;) {
 				if (stype==SEL_CONST) {fProc=true; break;}
-				if (op!=STMT_QUERY && (qr.pb.isNull() || !qr.pb.isSet(PGCTL_NOREL))) {queryOp->release(); ses->rlatch=NULL; fRel=false;}		// results ???
 				if ((mode&MODE_DELETED)!=0 || stype!=SEL_PINSET && stype!=SEL_PROJECTED && stype!=SEL_COMPOUND || (rc=ses->getStore()->queryMgr->checkLockAndACL(qr,tvo,queryOp))!=RC_NOACCESS && rc!=RC_NOTFOUND) {
 					if (rc==RC_OK) {
 						PINEx qpin(ses),*pq=&qr;
@@ -533,9 +517,9 @@ RC Cursor::advance(bool fRet,bool *pRel)
 			}
 		}
 		if (rc!=RC_OK) {
-			if (fRel) queryOp->release(); if (rc!=RC_EOF) tx.resetOk(); 
+			if (rc!=RC_EOF) tx.resetOk(); 
 			if (txcid!=NO_TXCID) {ses->getStore()->txMgr->releaseSnapshot(txcid); txcid=NO_TXCID;}
-		} else if (pRel!=NULL) *pRel=fRel;
+		}
 	}
 	return rc;
 }
@@ -554,7 +538,7 @@ RC Cursor::extract(PIN *&pin,unsigned idx,bool fCopy)
 	else {
 		PINEx *pex=results!=NULL?results[idx]:pqr;
 		RC rc=pex->load((mode&(MODE_SSV_AS_STREAM|MODE_FORCED_SSV_AS_STREAM))|LOAD_SSV|(fCopy?LOAD_ENAV:0));
-		if (fCopy) pex->releaseCopy(); if (rc!=RC_OK) {pin=NULL; return rc;}
+		/*if (fCopy) pex->releaseCopy();*/ if (rc!=RC_OK) {pin=NULL; return rc;}
 		if (!fCopy) pin=pex;
 		else if ((pin=new(ses) PIN(ses,pex->id,pex->addr,pex->mode&~PIN_NO_FREE,NULL,0))==NULL) return RC_NORESOURCES;
 		else if (pex->properties!=NULL && pex->nProperties!=0) {
@@ -571,9 +555,8 @@ IPIN *Cursor::next()
 {
 	try {
 		PIN *pin=NULL; bool fRel=false; 
-		if (advance(true,&fRel)==RC_OK) extract(pin,0,true);
-		if (fRel) {queryOp->release(); ses->rlatch=NULL;}
-		return pin;
+		if (advance(true)==RC_OK) extract(pin,0,true);
+		ses->releaseAllLatches(); return pin;
 	} catch (RC) {} catch (...) {report(MSG_ERROR,"Exception in ICursor::next()\n");}
 	return NULL;
 }
@@ -581,10 +564,9 @@ IPIN *Cursor::next()
 RC Cursor::next(PID& pid)
 {
 	try {
-		bool fRel=false; RC rc=advance(false,&fRel); 
+		RC rc=advance(false); 
 		if (rc==RC_OK) rc=qr.getID(pid); else pid=PIN::defPID;
-		if (fRel) {queryOp->release(); ses->rlatch=NULL;}
-		return rc;
+		ses->releaseAllLatches(); return rc;
 	} catch (RC rc) {return rc;} catch (...) {report(MSG_ERROR,"Exception in ICursor::next(PID&)\n"); return RC_INTERNAL;}
 }
 
@@ -592,14 +574,13 @@ RC Cursor::next(IPIN *pins[],unsigned nPins,unsigned& nRet)
 {
 	try {
 		nRet=0; if (pins==NULL || nPins==0) return RC_INVPARAM;
-		bool fRel=false; RC rc=advance(true,&fRel);
+		RC rc=advance(true);
 		if (rc==RC_OK) {
 			PIN *pin; const unsigned nP=stype==SEL_COUNT?1:min(nPins,nResults);
 			for (unsigned i=0; i<nP; i++) if ((rc=extract(pin,i,true))==RC_OK) pins[i]=pin; else break;
 			if (rc==RC_OK) {cnt++; nRet=nP;}
 		}
-		if (fRel) {queryOp->release(); ses->rlatch=NULL;}
-		return rc;
+		ses->releaseAllLatches(); return rc;
 	} catch (RC rc) {return rc;} catch (...) {report(MSG_ERROR,"Exception in ICursor::next(IPIN *pins[]...)\n"); return RC_INTERNAL;}
 }
 
@@ -610,12 +591,12 @@ RC Cursor::rewind()
 		if (ses!=NULL && queryOp!=NULL) {
 			if (ses->getStore()->inShutdown()) return RC_SHUTDOWN;
 			if (!fProc || op!=STMT_QUERY && !tx.isStarted()) return RC_OK;
-			ses->rlatch=queryOp; if ((rc=queryOp->rewind())==RC_OK) {cnt=0; fProc=false;}
-			queryOp->release(); ses->rlatch=NULL;
+			if ((rc=queryOp->rewind())==RC_OK) {cnt=0; fProc=false;}
 			if (rc!=RC_OK) {
 				if (rc!=RC_EOF) tx.resetOk(); 
 				if (txcid!=NO_TXCID) {ses->getStore()->txMgr->releaseSnapshot(txcid); txcid=NO_TXCID;}
 			}
+			ses->releaseAllLatches();
 		}
 		return rc;
 	} catch (RC rc) {return rc;} catch (...) {report(MSG_ERROR,"Exception in ICursor::rwind()\n"); return RC_INTERNAL;}
@@ -633,7 +614,7 @@ const Value *CursorNav::navigate(GO_DIR dir,ElementID ei)
 	PID id;
 	if (curs!=NULL) switch (dir) {
 	default: break;
-	case GO_FINDBYID: if (ei==STORE_COLLECTION_ID) curs->release(); break;
+	case GO_FINDBYID: /*if (ei==STORE_COLLECTION_ID) curs->release();*/ break;			// ????
 	case GO_FIRST: if (curs->rewind()!=RC_OK) break;	// remove array if walking
 	case GO_NEXT:
 		// check walking ARRAY
@@ -692,24 +673,18 @@ void CursorNav::destroy()
 
 RC QueryPrc::getBody(PINEx& cb,TVOp tvo,ulong flags,VersionID vid)
 {
-	bool fRemote=false,fTry=true,fWrite=tvo!=TVO_READ; RC rc; PID id; IdentityID iid; cb.epr.flags&=~PINEX_ADDRSET;
+	RC rc; bool fRemote=false,fTry=true,fWrite=tvo!=TVO_READ; cb.epr.flags&=~PINEX_ADDRSET;
 	if (cb.id.pid==STORE_INVALID_PID && (rc=cb.unpack())!=RC_OK) return rc;
 	if (!cb.addr.defined()) {fTry=false; if (isRemote(cb.id)) fRemote=true; else if (!cb.addr.convert(cb.id.pid)) return RC_CORRUPTED;}
-	for (ulong fctl=(fWrite?PGCTL_ULOCK:0)|((flags&GB_SAFE)!=0?QMGR_TRY:0);;) {
-		if (!fRemote) {
-			PBlock *pb=cb.ses->getLatched(cb.addr.pageID);
-			if (pb==NULL || pb==cb.pb) cb.pb=ctx->bufMgr->getPage(cb.addr.pageID,ctx->heapMgr,fctl,!cb.pb.isSet(PGCTL_NOREL)?(PBlock*)cb.pb:(PBlock*)0);
-			else if (fWrite && !pb->isULocked() && !pb->isXLocked()) return RC_DEADLOCK;
-			else {cb.pb.release(); cb.pb=pb; cb.pb.set(PGCTL_NOREL);}
-		} else if ((rc=ctx->netMgr->getPage(cb.id,fctl,cb.addr.idx,cb.pb,cb.ses))!=RC_OK) return rc;
+	for (ulong fctl=PGCTL_RLATCH|(fWrite?PGCTL_ULOCK:0);;) {
+		if (!fRemote) cb.pb.getPage(cb.addr.pageID,ctx->heapMgr,fctl,cb.ses);
+		else if ((rc=ctx->netMgr->getPage(cb.id,fctl,cb.addr.idx,cb.pb,cb.ses))!=RC_OK) return rc;
 		else {fRemote=fTry=false; cb.addr.pageID=cb.pb->getPageID();}
 
-		if (cb.pb.isNull()) return (flags&GB_SAFE)!=0?RC_FALSE:RC_NOTFOUND;
+		if (cb.pb.isNull()) return RC_NOTFOUND;
 		if (fWrite && cb.pb->isULocked()) {fctl|=QMGR_UFORCE; cb.pb.set(QMGR_UFORCE);}
 		
-		cb.hp=(const HeapPageMgr::HeapPage *)cb.pb->getPageBuf();
-		cb.hpin=(const HeapPageMgr::HeapPIN *)cb.hp->getObject(cb.hp->getOffset(cb.addr.idx));
-		if (cb.hpin==NULL) {
+		if (cb.fill()==NULL) {
 			if (ctx->lockMgr->getTVers(cb,tvo)==RC_OK && cb.tv!=NULL) {
 				// deleted in uncommitted tx?
 			}
@@ -717,6 +692,7 @@ RC QueryPrc::getBody(PINEx& cb,TVOp tvo,ulong flags,VersionID vid)
 			if ((flags&GB_FORWARD)!=0) return RC_OK;
 			memcpy(&cb.addr,(const byte*)cb.hpin+sizeof(HeapPageMgr::HeapObjHeader),PageAddrSize); continue;
 		} else {
+			PID id; IdentityID iid;
 			if (cb.hpin->hdr.getType()!=HO_PIN) return RC_CORRUPTED;
 			if (!cb.hpin->getAddr(id)) {id.pid=OID(cb.addr); id.ident=STORE_OWNER;}
 			if (cb.id==id) {
@@ -736,7 +712,7 @@ RC QueryPrc::getBody(PINEx& cb,TVOp tvo,ulong flags,VersionID vid)
 				} else {
 					const ulong lck=tvo==TVO_READ?PINEX_LOCKED:PINEX_XLOCKED;
 					if ((cb.epr.flags&lck)==0) {
-						if ((rc=ctx->lockMgr->lock(tvo==TVO_READ?LOCK_SHARED:LOCK_EXCLUSIVE,cb))!=RC_OK) {cb.pb.release(); return rc;}
+						if ((rc=ctx->lockMgr->lock(tvo==TVO_READ?LOCK_SHARED:LOCK_EXCLUSIVE,cb))!=RC_OK) {cb.pb.release(cb.ses); return rc;}
 						cb.epr.flags|=lck|PINEX_LOCKED; if (cb.pb.isNull()) continue;
 					}
 					if ((flags&GB_DELETED)==0 && (cb.hpin->hdr.descr&HOH_DELETED)!=0) return RC_DELETED;
@@ -745,7 +721,7 @@ RC QueryPrc::getBody(PINEx& cb,TVOp tvo,ulong flags,VersionID vid)
 					//???continue???
 				}
 				if ((iid=cb.ses->getIdentity())!=STORE_OWNER) rc=checkACLs(cb,iid,tvo,flags);
-				if (rc!=RC_OK) {cb.pb.release(); return rc;} if (cb.pb.isNull()) continue;
+				if (rc!=RC_OK) {cb.pb.release(cb.ses); return rc;} if (cb.pb.isNull()) continue;
 				cb.mode&=~(MODE_DELETED|PIN_DELETED);
 				if (isRemote(id)) {
 					if ((dscr&HOH_REPLICATED)==0) cb.mode|=PIN_READONLY; else cb.mode=cb.mode&~PIN_READONLY|PIN_REPLICATED;
@@ -762,11 +738,11 @@ RC QueryPrc::getBody(PINEx& cb,TVOp tvo,ulong flags,VersionID vid)
 		}
 		if (!fTry) {
 			if (cb.hpin!=NULL && (!cb.addr.convert(cb.id.pid) || cb.ses->getExtAddr()!=cb.addr)) 
-				report(MSG_ERROR,"findPage: page %08X corruption\n",cb.hp->hdr.pageID);
+				report(MSG_ERROR,"findPage: page %08X corruption\n",cb.pb->getPageID());
 			return RC_NOTFOUND;
 		}
-		fTry=false;
 		if (isRemote(cb.id)) fRemote=true; else if (!cb.addr.convert(cb.id.pid)) return RC_CORRUPTED;
+		fTry=false;
 	}
 }
 
@@ -834,7 +810,7 @@ RC QueryPrc::checkACL(const Value& v,PINEx& cb,IdentityID iid,uint8_t mask,const
 		for (refTrc.next=rt; rt!=NULL; rt=rt->next) if (rt->id==v.refId->id && rt->pid==v.refId->pid)
 			if (rt->eid==STORE_COLLECTION_ID || v.type==VT_REFIDELT && rt->eid==v.refId->eid) return RC_NOACCESS;
 		refTrc.pid=pv.property=v.refId->pid; refTrc.eid=pv.eid=v.type==VT_REFIDELT?v.refId->eid:STORE_COLLECTION_ID;
-		refTrc.id=v.refId->id; ppv=&pv; i=1; rc=getRefValues(v.refId->id,ppv,i,0,cb);
+		refTrc.id=v.refId->id; ppv=&pv; i=1; rc=getRefSafe(v.refId->id,ppv,i,0,cb);
 		if (rc==RC_OK || rc==RC_REPEAT) {RC rc2=checkACL(pv,cb,iid,mask,&refTrc); freeV(pv); return rc2==RC_OK?rc:rc2;}
 		break;
 	case VT_ARRAY:
@@ -852,31 +828,26 @@ RC QueryPrc::checkACL(const Value& v,PINEx& cb,IdentityID iid,uint8_t mask,const
 	return fFalse?RC_FALSE:RC_NOACCESS;
 }
 
-RC QueryPrc::getRefValues(const PID& id,Value *&vals,ulong& nValues,ulong mode,PINEx& cb)
+RC QueryPrc::getRefSafe(const PID& id,Value *&vals,ulong& nValues,ulong mode,PINEx& cb)
 {
-	if (cb.pb.isNull()) return RC_INVPARAM;
-	PageAddr addr; RC rc=RC_OK; PBlockP pb; PBlock *pb2;
-	PageID pid=cb.pb->getPageID(); bool fU=cb.pb->isULocked();	// our ULock???
+	if (cb.pb.isNull()) return RC_INVPARAM; const bool fU=cb.pb->isULocked();
+	const PageID pid=cb.pb->getPageID(); PINEx cb2(cb.ses); RC rc=RC_OK;
 	if (isRemote(id)) {
-		if (ctx->netMgr->getPage(id,QMGR_TRY,addr.idx,pb,cb.ses)!=RC_OK) {
-			pb=cb.pb; if (cb.pb.isSet(PGCTL_NOREL)) pb.set(PGCTL_NOREL); cb.pb=NULL;
-			if ((rc=ctx->netMgr->getPage(id,fU?QMGR_UFORCE:0,addr.idx,pb,cb.ses))==RC_OK) rc=RC_REPEAT;
+		if (ctx->netMgr->getPage(id,QMGR_TRY,cb2.addr.idx,cb2.pb,cb2.ses)!=RC_OK) {
+			cb.pb.moveTo(cb2.pb); 
+			if ((rc=ctx->netMgr->getPage(id,fU?QMGR_UFORCE:0,cb2.addr.idx,cb2.pb,cb2.ses))==RC_OK) rc=RC_REPEAT;
 		}
-	} else if (!addr.convert(id.pid)) return RC_CORRUPTED;
-	else if (cb.ses!=NULL && (pb2=cb.ses->getLatched(addr.pageID))!=NULL) {pb=pb2; pb.set(PGCTL_NOREL);}
-	else if ((pb=ctx->bufMgr->getPage(addr.pageID,ctx->heapMgr,QMGR_TRY))==NULL) {
-		rc=(pb=ctx->bufMgr->getPage(addr.pageID,ctx->heapMgr,fU?QMGR_UFORCE:0,cb.pb))==NULL?RC_CORRUPTED:RC_REPEAT;
-		cb.pb=NULL;
+	} else if (!cb2.addr.convert(id.pid)) return RC_CORRUPTED;
+	else if (cb2.pb.getPage(cb2.addr.pageID,ctx->heapMgr,QMGR_TRY,cb2.ses)==NULL) {
+		rc=cb.pb.getPage(cb2.addr.pageID,ctx->heapMgr,PGCTL_RLATCH,cb.ses)==NULL?RC_CORRUPTED:RC_REPEAT; cb.pb.moveTo(cb2.pb);
 	}
-	if (rc==RC_OK||rc==RC_REPEAT) while (pb!=NULL) {
-		PINEx cb2(cb.ses,pb,addr,false); if (cb2.hpin==NULL) {rc=RC_NOTFOUND; break;}
+	if (rc==RC_OK||rc==RC_REPEAT) while (!cb2.pb.isNull()) {
+		if (cb2.fill()==NULL) {rc=RC_NOTFOUND; break;}
 		if (cb2.hpin->hdr.getType()==HO_FORWARD) {
-			memcpy(&addr,(const byte*)cb2.hpin+sizeof(HeapPageMgr::HeapObjHeader),PageAddrSize);
-			if (pb.isSet(PGCTL_NOREL)) pb=NULL;
-			if (cb.ses!=NULL && (pb2=cb.ses->getLatched(addr.pageID))!=NULL) {pb.release(); pb=pb2; pb.set(PGCTL_NOREL);}
-			else if ((pb=ctx->bufMgr->getPage(addr.pageID,ctx->heapMgr,QMGR_TRY,pb))==NULL) {
-				if (!cb.pb.isNull()) {if (!cb.pb.isSet(PGCTL_NOREL)) {pb.release(); pb=cb.pb;} cb.pb=NULL;}
-				rc=(pb=ctx->bufMgr->getPage(addr.pageID,ctx->heapMgr,fU?QMGR_UFORCE:0,pb))==NULL?RC_CORRUPTED:RC_REPEAT;
+			memcpy(&cb2.addr,(const byte*)cb2.hpin+sizeof(HeapPageMgr::HeapObjHeader),PageAddrSize);
+			if (cb2.pb.getPage(cb2.addr.pageID,ctx->heapMgr,QMGR_TRY,cb2.ses)==NULL) {
+				if (!cb.pb.isNull()) cb.pb.moveTo(cb2.pb);
+				rc=cb2.pb.getPage(cb2.addr.pageID,ctx->heapMgr,PGCTL_RLATCH,cb2.ses)==NULL?RC_CORRUPTED:RC_REPEAT;
 			}
 			continue;
 		}
@@ -890,7 +861,7 @@ RC QueryPrc::getRefValues(const PID& id,Value *&vals,ulong& nValues,ulong mode,P
 			if ((rc=loadV(vals[i],vals[i].property,cb2,mode,cb.ses,vals[i].eid))!=RC_OK) break;
 		break;
 	}
-	if (cb.pb.isNull()) {cb.pb=ctx->bufMgr->getPage(pid,ctx->heapMgr,fU?PGCTL_ULOCK:0,pb); pb=NULL;}
+	if (cb.pb.isNull()) {cb2.pb.getPage(pid,ctx->heapMgr,fU?PGCTL_ULOCK:0,cb2.ses); cb2.pb.moveTo(cb.pb);}
 	return rc;
 }
 
@@ -947,16 +918,23 @@ bool QueryPrc::checkCalcPropID(PropertyID pid)
 
 //---------------------------------------------------------------------------------------------------------------------
 
-PINEx::PINEx(Session *s,PBlock *p,const PageAddr &ad,bool fRel)
-	:	PIN(s,PIN::defPID,ad),pb(p,fRel?0:PGCTL_NOREL),hp((const HeapPageMgr::HeapPage*)p->getPageBuf()),hpin((const HeapPageMgr::HeapPIN *)hp->getObject(hp->getOffset(ad.idx))),tv(NULL)
+void PINEx::releaseLatches(PageID pid,PageMgr *mgr,bool)
 {
-	epr.flags=0; epr.lref=0; if (hpin!=NULL && !hpin->getAddr(const_cast<PID&>(id))) {const_cast<PID&>(id).pid=ad; const_cast<PID&>(id).ident=STORE_OWNER;}
+	if (!pb.isNull() && (pid==INVALID_PAGEID || mgr!=NULL && mgr->getPGID()==PGID_HEAP && pid<pb->getPageID())) {
+		if ((epr.flags&PINEX_RLOAD)!=0 && hpin!=NULL && properties==NULL) ses->getStore()->queryMgr->loadProps(this,0/*,flt,nFlt*/);	// LOAD_SSV ??? if failed?
+		hpin=NULL; pb.release(ses);
+	}
 }
 
-void PINEx::operator=(const PINEx& cb)
+void PINEx::checkNotHeld(PBlock *p)
 {
-	cleanup(); *this=cb.id; *this=cb.addr; epr.flags=cb.epr.flags; tv=cb.tv; epr.lref=0;
-	if (cb.properties==NULL) {pb=cb.pb; hp=cb.hp; hpin=cb.hpin;} else {properties=cb.properties; nProperties=cb.nProperties; mode|=PIN_NO_FREE;} 
+	assert(pb.isNull() || pb.isSet(PGCTL_INREL) || (PBlock*)pb!=p);
+}
+
+void PINEx::moveTo(PINEx& cb)
+{
+	cb.id=id; cb.addr=addr; cb.properties=properties; cb.nProperties=nProperties; cb.mode=mode; cb.stamp=stamp; pb.moveTo(cb.pb); cb.hpin=hpin; cb.epr=epr; cb.tv=tv;
+	id=PIN::defPID; addr=PageAddr::invAddr; properties=NULL; nProperties=0; mode=0; hpin=NULL; tv=NULL; epr.lref=0; epr.flags=0;
 }
 
 bool PINEx::defined(const PropertyID *pids,unsigned nP) const
@@ -1068,17 +1046,6 @@ RC PINEx::loadV(const PropertyID *pids,Value *res,unsigned nP) const
 	return rc;
 }
 #endif
-
-RC PINEx::releaseCopy(const PropertyID *flt,unsigned nFlt)
-{
-	RC rc=RC_OK;
-	if (!pb.isNull()) {
-		if (hpin!=NULL && properties==NULL) rc=ses->getStore()->queryMgr->loadProps(this,0,flt,nFlt);	// LOAD_SSV ???
-		pb.release(); hpin=NULL; hp=NULL;
-	}
-	return rc;
-}
-
 
 RC PINEx::unpack() const
 {

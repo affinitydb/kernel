@@ -271,7 +271,7 @@ namespace MVStore
 		VT_UINT,						/**< 32-bit unsigned integer */
 		VT_INT64,						/**< 64-bit signed integer */
 		VT_UINT64,						/**< 64-bit unsigned integer */
-		VT_DECIMAL,						/**< decimal number (for some SQL databases compatibility) */
+		VT_RESERVED2,						/**< decimal number (for some SQL databases compatibility) */
 		VT_FLOAT,						/**< 32-bit floating number */
 		VT_DOUBLE,						/**< 64-bit floating number */
 
@@ -286,7 +286,7 @@ namespace MVStore
 		VT_STRING,						/**< zero-ended string UTF-8*/
 		VT_BSTR,						/**< binary string */
 		VT_URL,							/**< URL string with special interpretation, UTF-8 */
-		VT_ENUM,						/**< an enumeration value 'by value' i.e. 32-bit unsigned integer */
+		VT_RESERVED1,						/**< an enumeration value 'by value' i.e. 32-bit unsigned integer */
 
 		VT_REF,							/**< a reference to another IPIN */
 		VT_REFID,						/**< a reference to another PIN by its PID */
@@ -702,10 +702,10 @@ namespace MVStore
 	class MV_EXP IExpr 
 	{
 	public:
-		virtual	RC		execute(Value& res,const Value *params=NULL,unsigned nParams=0) const = 0;
-		virtual	char	*toString(unsigned mode=0,const QName *qNames=NULL,unsigned nQNames=0) const = 0;
-		virtual IExpr	*clone() const = 0;
-		virtual	void	destroy() = 0;
+		virtual	RC			execute(Value& res,const Value *params=NULL,unsigned nParams=0) const = 0;
+		virtual	char		*toString(unsigned mode=0,const QName *qNames=NULL,unsigned nQNames=0) const = 0;
+		virtual IExpr		*clone() const = 0;
+		virtual	void		destroy() = 0;
 	};
 
 	class MV_EXP ICursor
@@ -757,7 +757,7 @@ namespace MVStore
 		PropertyID		pid;
 		ElementID		eid;
 		IExpr			*filter;
-		ClassID			cls;
+		ClassID			cid;
 		unsigned		rmin;
 		unsigned		rmax;
 		bool			fLast;
@@ -833,7 +833,6 @@ namespace MVStore
 		virtual	RC		analyze(char *&plan,const Value *pars=NULL,unsigned nPars=0,unsigned long md=0) const = 0;
 
 		virtual	bool	isSatisfied(const IPIN *pin,const Value *pars=NULL,unsigned nPars=0,unsigned long mode=0) const = 0;
-		virtual	bool	isSatisfied(const IPIN *const *pins,unsigned nPins,const Value *pars=NULL,unsigned nPars=0,unsigned long mode=0) const = 0;
 		virtual	char	*toString(unsigned mode=0,const QName *qNames=NULL,unsigned nQNames=0) const = 0;
 
 		virtual	IStmt	*clone(STMT_OP=STMT_OP_ALL) const = 0;

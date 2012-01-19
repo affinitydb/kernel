@@ -107,11 +107,6 @@ void QueryOp::reverse()
 	if (queryOp!=NULL) queryOp->reverse();
 }
 
-RC QueryOp::release()
-{
-	return queryOp!=NULL?queryOp->release():RC_OK;
-}
-
 RC QueryOp::getBody(PINEx& pe)
 {
 	RC rc; if ((pe.epr.flags&PINEX_ADDRSET)==0) pe=PageAddr::invAddr;
@@ -154,8 +149,8 @@ RC LoadOp::next(const PINEx *skip)
 	if ((state&QST_INIT)!=0) {state&=~QST_INIT; if (nSkip>0 && (rc=initSkip())!=RC_OK) return rc;}
 	for (; (rc=queryOp->next(skip))==RC_OK; skip=NULL) {
 		for (unsigned i=0; i<nResults; i++) {
-			results[i]->resetProps();
-			if (i!=0 && (rc=results[i-1]->releaseCopy(i-1<nProps?props[i-1].props:NULL,i-1<nProps?props[i-1].nProps:0))!=RC_OK || (rc=getBody(*results[i]))!=RC_OK || results[i]->isHidden()) 
+			results[i]->resetProps(); results[i]->epr.flags|=PINEX_RLOAD;
+			if ((rc=getBody(*results[i]))!=RC_OK || results[i]->isHidden()) 
 				{results[i]->cleanup(); if (rc==RC_OK || rc==RC_NOACCESS || rc==RC_REPEAT || rc==RC_DELETED) {rc=RC_FALSE; break;} else return rc;}	// cleanup all
 		}
 		if (rc!=RC_OK) continue;
@@ -237,10 +232,10 @@ RC PathOp::next(const PINEx *)
 	for (;;) {
 		if (pst==NULL) {
 			if ((rc=queryOp->next())!=RC_OK) {state|=QST_EOF; return rc;}
-			if ((rc=pex.getID(id))!=RC_OK || (rc=push(id))!=RC_OK) return rc;
+			if ((rc=pex.getID(id))!=RC_OK || (rc=push(id))!=RC_OK) return rc; 
 			pst->v[0].setError(path[0].pid);
 			if ((rc=getData(pex,&pst->v[0],1,NULL,path[0].eid))!=RC_OK) {state|=QST_EOF; return rc;}
-			pst->state=2; pst->vidx=0; if (fThrough) {if (res!=NULL) {*res=pex; save();} return RC_OK;}
+			pst->state=2; pst->vidx=0; if (fThrough) {if (res!=NULL) {pex.moveTo(*res); save();} return RC_OK;}
 		}
 		switch (pst->state) {
 		case 0:
@@ -250,7 +245,7 @@ RC PathOp::next(const PINEx *)
 				save(); /*printf("->\n");*/ return RC_OK;
 			}
 		case 1:
-			pst->state=2; //printf("%*s(%d,%d):"_LX_FM"\n",(pst->idx-1+pst->rcnt-1)*2,"",pst->idx,pst->rcnt,res->id.pid);
+			pst->state=2; //res->getID(id); printf("%*s(%d,%d):"_LX_FM"\n",(pst->idx-1+pst->rcnt-1)*2,"",pst->idx,pst->rcnt,id.pid);
 			if ((rc=getBody(*res))!=RC_OK || res->isHidden() || (rc=res->getID(id))!=RC_OK)
 				{res->cleanup(); if (rc==RC_OK || rc==RC_NOACCESS || rc==RC_REPEAT || rc==RC_DELETED) {pop(); continue;} else {state|=QST_EOF; return rc;}}
 			fOK=path[pst->idx-1].filter==NULL || Expr::condSatisfied((const Expr* const*)&path[pst->idx-1].filter,1,&res,1,qx->vals,QV_ALL,qx->ses);
@@ -308,16 +303,6 @@ RC PathOp::rewind()
 	RC rc=queryOp!=NULL?queryOp->rewind():RC_OK;
 	if (rc==RC_OK) state=state&~QST_EOF|QST_BOF;
 	return rc;
-}
-
-RC PathOp::release()
-{
-	for (PathState *ps=pst; ps!=NULL; ps=ps->next) {
-		if (ps->v[0].type==VT_COLLECTION) ps->v[0].nav->navigate(GO_FINDBYID,STORE_COLLECTION_ID);
-		if (ps->v[1].type==VT_COLLECTION) ps->v[1].nav->navigate(GO_FINDBYID,STORE_COLLECTION_ID);
-	}
-	// ???
-	return QueryOp::release();
 }
 
 void PathOp::print(SOutCtx& buf,int level) const

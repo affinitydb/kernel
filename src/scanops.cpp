@@ -24,98 +24,116 @@ using namespace MVStoreKernel;
 
 FullScan::~FullScan()
 {
+	if (it!=NULL) {
+		assert(stx!=NULL);
+		if (&it->getPageSet()!=&stx->defHeap) ((PageSet*)&it->getPageSet())->destroy();
+		qx->ses->free(it);
+	}
 }
 
-PBlock *FullScan::init(bool& fMyPage,bool fLast)
+PBlock *FullScan::init()
 {
-	PBlockP pDir; heapPageID=INVALID_PAGEID; const HeapDirMgr::HeapDirPage *hd; state&=~QST_INIT; PBlock *pb=NULL; fMyPage=true;
-	for (dirPageID=qx->ses->getStore()->theCB->getRoot(fClasses?fLast?MA_CLASSDIRLAST:MA_CLASSDIRFIRST:fLast?MA_HEAPDIRLAST:MA_HEAPDIRFIRST); dirPageID!=INVALID_PAGEID; ) {
-		pDir=qx->ses->getStore()->bufMgr->getPage(dirPageID,qx->ses->getStore()->hdirMgr,QMGR_SCAN,pDir); if (pDir.isNull()) {dirPageID=INVALID_PAGEID; break;}
-		hd=(const HeapDirMgr::HeapDirPage*)pDir->getPageBuf();
-		if (!fLast) {
-			for (idx=0; idx<hd->nSlots; ) {
-				heapPageID=((PageID*)(hd+1))[idx++]; slot=0;
-				if ((pb=qx->ses->getLatched(heapPageID))!=NULL) {fMyPage=false; pDir.release();}		// check ULocked/XLocked
-				else {
-					pb=qx->ses->getStore()->bufMgr->getPage(heapPageID,qx->ses->getStore()->heapMgr,(qflags&QO_FORUPDATE)!=0?PGCTL_ULOCK|QMGR_SCAN:QMGR_SCAN,pDir);
-					pDir=NULL; fMyPage=true;
-				}
-				if (pb!=NULL) for (const HeapPageMgr::HeapPage *hp=(const HeapPageMgr::HeapPage*)pb->getPageBuf(); slot<hp->nSlots; slot++) {
-					if (nSkip==0) return pb;
+	PBlockP pb; heapPageID=INVALID_PAGEID; const HeapDirMgr::HeapDirPage *hd; state&=~QST_INIT;
+	for (dirPageID=qx->ses->getStore()->theCB->getRoot(fClasses?MA_CLASSDIRFIRST:MA_HEAPDIRFIRST); dirPageID!=INVALID_PAGEID; ) {
+		if (pb.getPage(dirPageID,qx->ses->getStore()->hdirMgr,QMGR_SCAN,qx->ses)==NULL) {dirPageID=INVALID_PAGEID; break;}
+		hd=(const HeapDirMgr::HeapDirPage*)pb->getPageBuf();
+		for (idx=0; idx<hd->nSlots; ) {
+			heapPageID=((PageID*)(hd+1))[idx++]; slot=0;
+			if (pb.getPage(heapPageID,qx->ses->getStore()->heapMgr,(qflags&QO_FORUPDATE)!=0?PGCTL_ULOCK|QMGR_SCAN|PGCTL_RLATCH:QMGR_SCAN|PGCTL_RLATCH,qx->ses)!=NULL)
+				for (const HeapPageMgr::HeapPage *hp=(const HeapPageMgr::HeapPage*)pb->getPageBuf(); slot<hp->nSlots; slot++) {
+					if (nSkip==0) {PBlock *ret=pb; pb=NULL; return ret;}
 					const HeapPageMgr::HeapPIN *hpin=(const HeapPageMgr::HeapPIN *)hp->getObject(hp->getOffset(PageIdx(slot)));
-					if (hpin!=NULL && hpin->hdr.getType()==HO_PIN && (hpin->hdr.descr&mask)==mask>>16) --nSkip;
+					if (hpin==NULL) {
+						// DELETED???
+					} else if (hpin->hdr.getType()==HO_PIN && (hpin->hdr.descr&mask)==mask>>16) --nSkip;
 				}
-				pDir=qx->ses->getStore()->bufMgr->getPage(dirPageID,qx->ses->getStore()->hdirMgr,(qflags&QO_FORUPDATE)!=0?QMGR_UFORCE|QMGR_SCAN:QMGR_SCAN,fMyPage?pb:NULL); 
-				if (pDir.isNull()) {dirPageID=INVALID_PAGEID; state|=QST_BOF|QST_EOF; return NULL;} else hd=(const HeapDirMgr::HeapDirPage*)pDir->getPageBuf();
+			if (pb.getPage(dirPageID,qx->ses->getStore()->hdirMgr,QMGR_SCAN,qx->ses)==NULL) {dirPageID=INVALID_PAGEID; break;}
+			hd=(const HeapDirMgr::HeapDirPage*)pb->getPageBuf();
+		}
+		dirPageID=hd->next;
+	}
+	for (; stx!=NULL; stx=stx->next) if ((ulong)stx->defHeap!=0) {
+		// copy if not class && topmost stx
+		if ((it=new(qx->ses) PageSet::it(stx->defHeap))!=NULL) {
+			while ((heapPageID=(++*it))!=INVALID_PAGEID) {
+				if (pb.getPage(heapPageID,qx->ses->getStore()->heapMgr,(qflags&QO_FORUPDATE)!=0?PGCTL_ULOCK|QMGR_SCAN|PGCTL_RLATCH:QMGR_SCAN|PGCTL_RLATCH,qx->ses)!=NULL) {
+					slot=0;
+					for (const HeapPageMgr::HeapPage *hp=(const HeapPageMgr::HeapPage*)pb->getPageBuf(); slot<hp->nSlots; slot++) {
+						if (nSkip==0) {PBlock *ret=pb; pb=NULL; return ret;}
+						const HeapPageMgr::HeapPIN *hpin=(const HeapPageMgr::HeapPIN *)hp->getObject(hp->getOffset(PageIdx(slot)));
+						if (hpin==NULL) {
+							// DELETED???
+						} else if (hpin->hdr.getType()==HO_PIN && (hpin->hdr.descr&mask)==mask>>16) --nSkip;
+					}
+				}
 			}
-			dirPageID=hd->next;
-		} else {
-			//???
-			break;
+			if (&it->getPageSet()!=&stx->defHeap) ((PageSet*)&it->getPageSet())->destroy();
+			qx->ses->free(it); it=NULL;
 		}
 	}
-	if (fMyPage && pb!=NULL) pb->release((qflags&QO_FORUPDATE)!=0?QMGR_UFORCE:0);
 	state|=QST_BOF|QST_EOF; return NULL;
 }
 
 RC FullScan::next(const PINEx *)
 {
-	PBlock *pb=NULL; bool fMyPage=true; assert(res==NULL || res->ses==qx->ses);
-	if (res!=NULL && !res->pb.isNull() && res->pb->getPageID()==heapPageID) {pb=res->pb; fMyPage=!res->pb.isSet(PGCTL_NOREL); res->pb=NULL;}
-	res->cleanup(); RC rc; PBlockP pDir;
-	if (idx==~0u && (pb=init(fMyPage))==NULL) return RC_EOF;
-	for (;;) {
-		if ((rc=qx->ses->testAbortQ())!=RC_OK) return rc;
+	PBlock *pb=NULL; if ((state&QST_EOF)!=0 || (state&QST_INIT)!=0 && (pb=init())==NULL) return RC_EOF;
+	if (res!=NULL) {
+		if (pb==NULL && !res->pb.isNull() && res->pb->getPageID()==heapPageID) {pb=res->pb; res->pb=NULL;}
+		res->cleanup();  assert(res->ses==qx->ses);
+	}
+	RC rc; PBlockP pDir; 
+	for (const ulong flags=(qflags&QO_FORUPDATE)!=0?PGCTL_ULOCK|QMGR_UFORCE|QMGR_SCAN|PGCTL_RLATCH:QMGR_SCAN|PGCTL_RLATCH;;) {
+		if ((rc=qx->ses->testAbortQ())!=RC_OK) {if (pb!=NULL) pb->release((qflags&QO_FORUPDATE)!=0?QMGR_UFORCE:0,qx->ses); return rc;}
 		if (heapPageID==INVALID_PAGEID) {
-			if (dirPageID==INVALID_PAGEID) return RC_EOF;
-			if (pDir.isNull()||pDir->getPageID()!=dirPageID) pDir=qx->ses->getStore()->bufMgr->getPage(dirPageID,qx->ses->getStore()->hdirMgr,QMGR_SCAN,pDir);
+			if (dirPageID==INVALID_PAGEID) {
+				if (it!=NULL) {
+					if ((heapPageID=(++*it))!=INVALID_PAGEID) continue;
+					if (&it->getPageSet()!=&stx->defHeap) ((PageSet*)&it->getPageSet())->destroy();
+					qx->ses->free(it); it=NULL; stx=stx->next;
+				}
+				for (;;stx=stx->next) {
+					if (stx==NULL) {state|=QST_EOF; return RC_EOF;}
+					if ((ulong)stx->defHeap!=0) break;
+				}
+				// copy if not class && topmost stx
+				if ((it=new(qx->ses) PageSet::it(stx->defHeap))!=NULL) continue;
+				state|=QST_EOF; return RC_NORESOURCES;
+			}
+			if (pDir.isNull()||pDir->getPageID()!=dirPageID) pDir.getPage(dirPageID,qx->ses->getStore()->hdirMgr,QMGR_SCAN,qx->ses);
 			if (pDir.isNull()) {dirPageID=INVALID_PAGEID; return RC_CORRUPTED;}
 			const HeapDirMgr::HeapDirPage *hd=(const HeapDirMgr::HeapDirPage*)pDir->getPageBuf();
 			if (idx>=hd->nSlots) {dirPageID=hd->next; idx=0; continue;}
-			heapPageID=((PageID*)(hd+1))[idx++]; pDir.release(); slot=0;
+			heapPageID=((PageID*)(hd+1))[idx++]; pDir.release(qx->ses); slot=0;
 		}
-		if (pb==NULL || pb->getPageID()!=heapPageID) {
-			if (pb==NULL) {
-				if ((pb=qx->ses->getLatched(heapPageID))!=NULL) fMyPage=false;
-				else fMyPage=(pb=qx->ses->getStore()->bufMgr->getPage(heapPageID,qx->ses->getStore()->heapMgr,(qflags&QO_FORUPDATE)!=0?PGCTL_ULOCK|QMGR_UFORCE|QMGR_SCAN:QMGR_SCAN,pb))!=NULL;
-			} else if ((qflags&QO_FORUPDATE)!=0 && !pb->isULocked() && !pb->isXLocked()) pb=NULL;
-		}
-		if (pb!=NULL && slot<((const HeapPageMgr::HeapPage*)pb->getPageBuf())->nSlots) {
-			res->hp=(const HeapPageMgr::HeapPage *)pb->getPageBuf(); res->addr.pageID=res->hp->hdr.pageID;
-			while (slot<res->hp->nSlots) {
-				res->hpin=(const HeapPageMgr::HeapPIN *)res->hp->getObject(res->hp->getOffset(PageIdx(slot))); res->addr.idx=(PageIdx)slot++;
-				if (res->hpin==NULL) {
+		if (pb!=NULL && pb->getPageID()==heapPageID || (pb=qx->ses->getStore()->bufMgr->getPage(heapPageID,qx->ses->getStore()->heapMgr,flags,pb,qx->ses))!=NULL) {
+			for (res->addr.pageID=pb->getPageID(); slot<((HeapPageMgr::HeapPage*)pb->getPageBuf())->nSlots; ) {
+				res->addr.idx=(PageIdx)slot++; const HeapPageMgr::HeapPage *hp=(HeapPageMgr::HeapPage*)pb->getPageBuf();
+				const HeapPageMgr::HeapPIN *hpin=(const HeapPageMgr::HeapPIN *)hp->getObject(hp->getOffset(PageIdx(res->addr.idx)));
+				if (hpin==NULL) {
 					res->pb=(PBlock*)pb;
 					if (qx->ses->getStore()->lockMgr->getTVers(*res,(qflags&QO_FORUPDATE)!=0?TVO_UPD:TVO_READ)==RC_OK && res->tv!=NULL) {
 						// check deleted in uncommitted tx
 					}
 					res->pb=NULL;
-				} else if (res->hpin->hdr.getType()==HO_PIN) {
-					if (!res->hpin->getAddr(const_cast<PID&>(res->id))) {const_cast<PID&>(res->id).pid=res->addr; const_cast<PID&>(res->id).ident=STORE_OWNER;}
+				} else if (hpin->hdr.getType()==HO_PIN) {
+					if (!hpin->getAddr(const_cast<PID&>(res->id))) {const_cast<PID&>(res->id).pid=res->addr; const_cast<PID&>(res->id).ident=STORE_OWNER;}
 					if (!qx->ses->inWriteTx()) {
 						// check deleted before/inserted in uncommited
 					}
-					if ((res->hpin->hdr.descr&mask)==mask>>16) {res->pb=(PBlock*)pb; if (!fMyPage) res->pb.set(PGCTL_NOREL); res->epr.flags|=PINEX_ADDRSET; return RC_OK;}
+					if ((hpin->hdr.descr&mask)==mask>>16) {res->pb=(PBlock*)pb; res->hpin=hpin; res->epr.flags|=PINEX_ADDRSET; return RC_OK;}
 				}
 			}
+			pb->release((qflags&QO_FORUPDATE)!=0?QMGR_UFORCE:0,qx->ses); pb=NULL;
 		}
-		if (fMyPage && pb!=NULL) pb->release((qflags&QO_FORUPDATE)!=0?QMGR_UFORCE:0); heapPageID=INVALID_PAGEID; pb=NULL;
+		heapPageID=INVALID_PAGEID;
 	}
 }
 
 RC FullScan::rewind()
 {
-	idx=~0u; state=state&~QST_EOF|QST_BOF;
-	//???if (fMyPage && pb!=NULL) pb->release((qflags&QO_FORUPDATE)!=0?QMGR_UFORCE:0);
-	return RC_OK;
-}
-
-RC FullScan::release()
-{
-	if (res!=NULL && !res->pb.isNull()) {
-		res->pb.release();
-	}
-	return RC_OK;
+	if (it!=NULL) {if (&it->getPageSet()!=&stx->defHeap) ((PageSet*)&it->getPageSet())->destroy(); qx->ses->free(it);}
+	heapPageID=INVALID_PAGEID; dirPageID=qx->ses->getStore()->theCB->getRoot(fClasses?MA_CLASSDIRFIRST:MA_HEAPDIRFIRST); idx=0;
+	stx=&qx->ses->tx; state=state&~QST_EOF|QST_BOF; return RC_OK;
 }
 
 void FullScan::print(SOutCtx& buf,int level) const
@@ -175,11 +193,6 @@ RC ClassScan::count(uint64_t& cnt,ulong nAbort)
 	while (scan->nextValue(lData)!=NULL) if (++c>nAbort) return RC_TIMEOUT; else if ((rc=qx->ses->testAbortQ())!=RC_OK) return rc;
 	cnt=c; scan->destroy(); scan=NULL; state=QST_INIT; return RC_OK;
 #endif
-}
-
-RC ClassScan::release()
-{
-	if (scan!=NULL) scan->release(); return RC_OK;
 }
 
 void ClassScan::print(SOutCtx& buf,int level) const
@@ -329,11 +342,6 @@ RC IndexScan::loadData(PINEx& qr,Value *pv,unsigned nv,ElementID eid,bool fSort,
 	return scan->getKey().getValues(pv,nv,index.getIndexSegs(),index.getNSegs(),qx->ses,!fSort,ma);
 }
 
-RC IndexScan::release()
-{
-	if (scan!=NULL) scan->release(); return RC_OK;
-}
-
 void IndexScan::unique(bool f)
 {
 	if (f) qflags|=QO_UNIQUE; else {qflags&=~QO_UNIQUE; delete pids; pids=NULL;}
@@ -459,7 +467,6 @@ RC FTScan::next(const PINEx *skip)
 					} catch (RC&) {continue;}		// report???
 #endif
 				}
-				qs.scan->release();
 				if (er==NULL) {
 					rc=RC_EOF; qs.state|=QST_EOF;
 					if (current.type==VT_REFID && res!=NULL) {res->cleanup(); *res=current.id; /*res->flags=PINEX_COLLECTION;*/}
@@ -478,7 +485,7 @@ RC FTScan::next(const PINEx *skip)
 			} else if (cmp==0) qs.state|=QOS_ADV;
 		}
 	}
-	if (rc!=RC_OK) {state|=QST_EOF; release();}
+	if (rc!=RC_OK) state|=QST_EOF;
 	return rc;
 }
 
@@ -486,12 +493,6 @@ RC FTScan::rewind()
 {
 	// ???
 	state=state&~QST_EOF|QST_BOF;
-	return RC_OK;
-}
-
-RC FTScan::release()
-{
-	for (ulong i=0; i<nScans; i++) if (scans[i].scan!=NULL) scans[i].scan->release();
 	return RC_OK;
 }
 
@@ -521,7 +522,7 @@ RC PhraseFlt::next(const PINEx *skip)
 //	skip=current.type==VT_REFID?&current:(Value*)0;
 	for (ulong i=0,nOK=0; nOK<nScans; ) {
 		FTScanS& qs=scans[i]; res->cleanup(); if ((qs.state&QST_EOF)!=0) {rc=RC_EOF; break;}
-		if ((rc=qs.scan->next(skip))!=RC_OK) {qs.state|=QST_EOF; qs.scan->release(); break;}
+		if ((rc=qs.scan->next(skip))!=RC_OK) {qs.state|=QST_EOF; break;}
 		// compare PropertyID -> save it
 #if 0
 		if (current.type!=VT_REFID) {current.set(res->id); /*skip=&current;*/ nOK=1;}
@@ -529,9 +530,9 @@ RC PhraseFlt::next(const PINEx *skip)
 		else if (cmpPIDs(res->id,current.id)<0) continue;
 		else {current.id=res->id; nOK=1;}
 #endif
-		qs.scan->release(); i=(i+1)%nScans;
+		i=(i+1)%nScans;
 	}
-	if (rc!=RC_OK) {state|=QST_EOF; release();}
+	if (rc!=RC_OK) state|=QST_EOF;
 	else {
 		// readPIN
 		// check phrase in propid
@@ -543,12 +544,6 @@ RC PhraseFlt::rewind()
 {
 	// ???
 	state=state&~QST_EOF|QST_BOF;
-	return RC_OK;
-}
-
-RC PhraseFlt::release()
-{
-	for (ulong i=0; i<nScans; i++) scans[i].scan->release();
 	return RC_OK;
 }
 

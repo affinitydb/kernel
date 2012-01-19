@@ -79,7 +79,7 @@ protected:
 	RC get(T* &rsrc,KeyArg key,Info info,ulong flags=RW_S_LOCK,T *old=NULL) {
 		typename QEHash::Find findQE(hashTable,key); rsrc=NULL; Queue *pA=NULL;
 		if (old!=NULL) old->getQE()->lock.unlock((flags&QMGR_UFORCE)!=0);
-		QE *qe; QEHash *ht; RW_LockType lt=(RW_LockType)(flags&RW_MASK); bool fT1=false;
+		QE *qe,*qe2; QEHash *ht; RW_LockType lt=(RW_LockType)(flags&RW_MASK); bool fT1=false;
 		for (;;) {
 			if ((qe=findQE.findLock(RW_S_LOCK))==NULL) {findQE.unlock(); qe=findQE.findLock(RW_X_LOCK);}
 			if (qe==NULL) {
@@ -92,7 +92,7 @@ protected:
 					if (ctrl.T1.l+ctrl.B1.l!=ctrl.nElts) {
 						assert(ctrl.T1.l+ctrl.T2.l+ctrl.B1.l+ctrl.B2.l>=ctrl.nElts);
 						if (ctrl.T1.l+ctrl.T2.l+ctrl.B1.l+ctrl.B2.l==ctrl.nElts*2) {
-							bool fB1=true; QE *qe2=NULL;
+							bool fB1=true;
 							for (; (qe2=ctrl.B2.removeLast())!=NULL; ht->unlock(qe2)) {
 								assert(qe2->qid==_B2 && qe2->rsrc==NULL); ht=&((QMgr*)qe2->mgr)->hashTable; ht->lock(qe2,RW_X_LOCK);
 								if (qe2->fixCount==0) {ht->removeNoLock(qe2); ctrl.B2.l--; ctrl.freeQE.dealloc(qe2); fB1=false; break;}
@@ -102,18 +102,17 @@ protected:
 								if (qe2->fixCount==0) {ht->removeNoLock(qe2); ctrl.B1.l--; ctrl.freeQE.dealloc(qe2); break;}
 							}
 						}
-					} else if (ctrl.T1.l<ctrl.nElts) {
-						QE *qe2=ctrl.B1.removeLast(); assert(qe2!=NULL && qe2->qid==_B1 && qe2->rsrc==NULL);
-						ctrl.B1.l--; ((QMgr*)qe2->mgr)->hashTable.remove(qe2); assert(qe2->fixCount==0); ctrl.freeQE.dealloc(qe2);
-					} else 
-						fT1=true;
+					} else for (fT1=true; ctrl.T1.l<ctrl.nElts && (qe2=ctrl.B1.removeLast())!=NULL; ht->unlock(qe2)) {
+						assert(qe2->qid==_B1 && qe2->rsrc==NULL); ht=&((QMgr*)qe2->mgr)->hashTable; ht->lock(qe2,RW_X_LOCK);
+						if (qe2->fixCount==0) {ht->removeNoLock(qe2); ctrl.B1.l--; ctrl.freeQE.dealloc(qe2); fT1=false; break;}
+					}
 				}
 			} else {
 				bool fLoad=qe->rsrc==NULL; //assert(!fLoad || qe->fDiscard || qe->fixCount==0 || qe->fixCount==1 && qe->lock.isXLocked());
 				if ((flags&QMGR_NEW)!=0 && !fLoad && !qe->fDiscard) return RC_ALREADYEXISTS;
 				if (fLoad && (flags&QMGR_INMEM)!=0) return RC_NOTFOUND;
-				++qe->fixCount;
-				if ((flags&QMGR_TRY)!=0 && (!fLoad||qe->fixCount>1)) {
+				const long fc=++qe->fixCount;
+				if ((flags&QMGR_TRY)!=0 && (!fLoad||fc>1)) {
 					RC rc=qe->rc;
 					if (rc!=RC_OK) {assert(qe->fixCount>0); --qe->fixCount;}
 					else if (qe->lock.trylock(lt)) {rc=qe->rc; rsrc=qe->rsrc; assert(rsrc!=NULL);}
@@ -122,7 +121,7 @@ protected:
 					if (rc==RC_OK && qe->fDiscard) {rsrc=NULL; continue;}
 					return rc;
 				}
-				if (fLoad) if (qe->fixCount==1) qe->lock.lock(RW_X_LOCK); else fLoad=false;
+				if (fLoad) if (fc==1) qe->lock.lock(RW_X_LOCK); else fLoad=false;
 				findQE.unlock(); if (!fLoad) {qe->lock.lock(qe->rsrc!=NULL?qe->rsrc->lockType(lt):lt); assert(qe->rsrc!=NULL);}
 				if (qe->fDiscard) continue;
 				if (qe->rsrc!=NULL) {

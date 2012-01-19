@@ -98,18 +98,11 @@ RC NetMgr::remove(const PID& pid,PageAddr &addr)
 
 RC NetMgr::getPage(const PID& id,ulong flags,PageIdx& idx,PBlockP& pb,Session *ses)
 {
-	PID pid=id; RPIN *rp; RC rc=get(rp,pid,0,RW_S_LOCK); if (rc!=RC_OK) {pb.release(); return rc;}
-	if (!rp->addr.defined()) {release(rp); pb.release(); return rc;}
+	PID pid=id; RPIN *rp; RC rc=get(rp,pid,0,RW_S_LOCK); if (rc!=RC_OK) {pb.release(ses); return rc;}
+	if (!rp->addr.defined()) {release(rp); pb.release(ses); return rc;}
 	TIMESTAMP now; getTimestamp(now);
 	if (rp->expiration<now && net!=NULL && net->isOnline()) rp->refresh(NULL,ses);
-	PBlock *pb2=ses!=NULL?ses->getLatched(rp->addr.pageID):NULL;
-	if (pb2==NULL || pb2==pb) pb=ctx->bufMgr->getPage(rp->addr.pageID,ctx->heapMgr,flags,pb);
-	else {
-		if ((flags&PGCTL_XLOCK)!=0 && pb2->isULocked()) pb2->upgradeLock();
-		else if ((flags&(PGCTL_ULOCK|PGCTL_XLOCK))!=0 && !pb2->isULocked() && !pb2->isXLocked()) 
-			{release(rp); return RC_DEADLOCK;}
-		pb.release(); pb=pb2; pb.set(PGCTL_NOREL);
-	}
+	pb.getPage(rp->addr.pageID,ctx->heapMgr,flags|PGCTL_RLATCH,ses);
 	idx=rp->addr.idx; release(rp); return pb.isNull()?RC_CORRUPTED:RC_OK;
 }
 

@@ -40,7 +40,6 @@ RC MergeIDs::next(const PINEx *skip)
 			if ((qs.state&QOS_ADV)!=0) {
 				res->cleanup(); *res=PIN::defPID; last=~0u; qs.state&=~QOS_ADV;
 				while ((rc=qs.qop->next(skip))==RC_OK /*&& skip!=NULL && skip->epr.cmp(res->id,skip->id,qx->ses->getStore()->storeID)<0*/) break;
-				qs.qop->release();
 				if (rc!=RC_OK) {qs.state|=QST_EOF; if (rc==RC_EOF) continue; return rc;}
 				if (res->epr.lref==0 && (rc=res->pack())!=RC_OK) {res->cleanup(); *res=PIN::defPID; return rc;}
 				last=i; qs.epr=res->epr; qs.epr.flags&=PINEX_LOCKED|PINEX_XLOCKED|PINEX_ACL_CHKED|PINEX_EXTPID;
@@ -54,15 +53,15 @@ RC MergeIDs::next(const PINEx *skip)
 		PINEx skp(qx->ses); if (cur!=~0u && (skip==NULL || ops[cur].epr.cmp(skip->epr)<=0)) {skp.epr=ops[cur].epr; skip=&skp;}
 		for (ulong i=0,nOK=0,flags=0; nOK<nOps; ) {
 			QueryOpS& qs=ops[i]; int cmp; res->cleanup(); if ((qs.state&QST_EOF)!=0) {rc=RC_EOF; break;}
-			if ((rc=qs.qop->next(skip))!=RC_OK) {qs.state|=QST_EOF; qs.qop->release(); break;}
+			if ((rc=qs.qop->next(skip))!=RC_OK) {qs.state|=QST_EOF; break;}
 			if (res->epr.lref==0 && res->pack()!=RC_OK) continue;
 			if (cur==~0u||(cmp=res->epr.cmp(ops[cur].epr))>0) {cur=i; skp.epr=qs.epr=res->epr; skip=&skp; nOK=1;}
 			else if (cmp==0) {nOK++; flags|=res->epr.flags&(PINEX_LOCKED|PINEX_XLOCKED|PINEX_ACL_CHKED|PINEX_EXTPID); res->epr.flags|=flags;}
 			else continue;
-			qs.qop->release(); i=(i+1)%nOps;
+			i=(i+1)%nOps;
 		}
 	}
-	if (rc!=RC_OK) {state|=QST_EOF; release();}
+	if (rc!=RC_OK) state|=QST_EOF;
 	return rc;
 }
 
@@ -83,11 +82,6 @@ RC MergeIDs::loadData(PINEx& qr,Value *pv,unsigned nv,ElementID eid,bool fSort,M
 		}
 	}
 	return RC_NOTFOUND;
-}
-
-RC MergeIDs::release()
-{
-	RC rc=RC_OK; for (ulong i=0; i<nOps; i++) if ((rc=ops[i].qop->release())!=RC_OK) break; return rc;
 }
 
 void MergeIDs::print(SOutCtx& buf,int level) const
@@ -138,10 +132,10 @@ RC MergeOp::next(const PINEx *skip)
 	}
 	for (res->cleanup(),*res=saveID,res->epr=saveEPR;;) {
 		if ((state&QOS_ADVN)!=0) {
-			freeV(vals[0]); vals[0]=vals[2]; vals[2].setError(); *res=saveR; state&=~QOS_ADVN;
+			freeV(vals[0]); vals[0]=vals[2]; vals[2].setError(); saveR.moveTo(*res); state&=~QOS_ADVN;
 		} else if ((state&QOS_EOF1)!=0) return RC_EOF;	// if not right outer
 		else if ((state&QOS_ADV1)!=0) {
-			pR->release(); queryOp2->release(); fQ1=true;
+			/*pR->release();*/ fQ1=true;
 			freeV(vals[0]); vals[0].setError(propID1);
 			if ((rc=queryOp->next(skip))!=RC_OK) {
 				state=state&~QOS_ADV1|QOS_EOF1|QOS_EOF2; return rc;		// if not right outer
@@ -159,7 +153,7 @@ RC MergeOp::next(const PINEx *skip)
 		if ((state&QOS_EOF2)!=0) return op==QRY_EXCEPT?RC_OK:RC_EOF;	// if not left outer
 		if ((state&QOS_ADV2)!=0) {
 			assert((state&QOS_EOF1)==0);		//???
-			res->release(); queryOp->release(); fQ2=true;
+			/*res->release();*/ fQ2=true;
 			freeV(vals[1]); vals[1].setError(propID2);
 			if ((rc=queryOp2->next(skip))!=RC_OK) {
 				state=state&~QOS_ADV2|QOS_EOF2; if (rc!=RC_EOF) {state|=QOS_EOF1; return rc;}
@@ -179,7 +173,7 @@ RC MergeOp::next(const PINEx *skip)
 		if (c>0) state|=QOS_ADV2;
 		else if (c<0) {
 			if ((state&QOS_NEXT)==0) state|=QOS_ADV1;
-			else {freeV(vals[0]); vals[0]=vals[2]; vals[2].setError(); *res=saveR; state&=~QOS_NEXT;}
+			else {freeV(vals[0]); vals[0]=vals[2]; vals[2].setError(); saveR.moveTo(*res); state&=~QOS_NEXT;}
 			if (op==QRY_EXCEPT) {state&=~QST_BOF; return RC_OK;}
 		} else {
 			if ((qflags&QO_ALLSETS)==0) state|=(qflags&(QO_UNI1|QO_UNI2))==(QO_UNI1|QO_UNI2)?QOS_ADV1|QOS_ADV2:QOS_ADV1;
@@ -190,7 +184,7 @@ RC MergeOp::next(const PINEx *skip)
 			case 0:
 				state|=QOS_ADV2;
 				if ((state&QOS_NEXT)==0) {
-					queryOp2->release(); vals[2].setError(propID1);
+					vals[2].setError(propID1);
 					// res -> saveR, cleanup()
 					while ((rc=queryOp->next(skip))==RC_OK) {
 						if (propID1==PROP_SPEC_PINID) {
@@ -225,7 +219,7 @@ RC MergeOp::rewind()
 	vals[0].setError(); vals[1].setError(); vals[2].setError();
 	pR->cleanup(); saveR.cleanup();
 	RC rc=queryOp!=NULL?queryOp->rewind():RC_EOF;
-	if (rc==RC_OK) {queryOp->release(); rc=queryOp2!=NULL?queryOp2->rewind():RC_EOF;}
+	if (rc==RC_OK) rc=queryOp2!=NULL?queryOp2->rewind():RC_EOF;
 	state=rc==RC_OK?QST_BOF|QOS_ADV1|QOS_ADV2:QST_EOF|QOS_EOF1|QOS_EOF2;
 	return rc;
 }
@@ -236,14 +230,6 @@ RC MergeOp::loadData(PINEx& qr,Value *pv,unsigned nv,ElementID eid,bool fSort,Me
 		// return from vals[0] or vals[2] and, if required from vals[1]
 	}
 	return RC_NOTFOUND;
-}
-
-RC MergeOp::release()
-{
-	pR->release(); saveR.release(); RC rc;
-	if (queryOp!=NULL && (rc=queryOp->release())!=RC_OK) return rc;
-	if (queryOp2!=NULL && (rc=queryOp2->release())!=RC_OK) return rc;
-	return RC_OK;
 }
 
 void MergeOp::unique(bool f)
@@ -293,14 +279,6 @@ RC HashOp::next(const PINEx *skip)
 	return rc;
 }
 
-RC HashOp::release()
-{
-	RC rc;
-	if (queryOp!=NULL && (rc=queryOp->release())!=RC_OK) return rc;
-	if (queryOp2!=NULL && (rc=queryOp2->release())!=RC_OK) return rc;
-	return RC_OK;
-}
-
 void HashOp::print(SOutCtx& buf,int level) const
 {
 	buf.fill('\t',level); buf.append("lookup\n",7);
@@ -348,23 +326,21 @@ RC NestedLoop::next(const PINEx *skip)
 	if (res!=NULL) res->cleanup();
 	for (;;state|=QOS_ADV1) {
 		if ((state&QOS_ADV1)!=0) {
-			queryOp2->release(); state&=~QOS_ADV1;
+			state&=~QOS_ADV1;
 			if ((rc=queryOp->next())==RC_OK) {
 				//...
 				// rc=getData(*res,...);
 			}
-			if (rc!=RC_OK) {queryOp->release(); queryOp2->release(); state|=QST_EOF; return rc;}
+			if (rc!=RC_OK) {state|=QST_EOF; return rc;}
 			// locking
-			queryOp->release(); if (res!=NULL && (rc=res->releaseCopy())!=RC_OK) {state|=QST_EOF; return rc;}
-			if ((state&QST_BOF)!=0) state&=~QST_BOF; else if ((rc=queryOp2->rewind())!=RC_OK) {queryOp2->release(); state|=QST_EOF; return rc;}
+			if ((state&QST_BOF)!=0) state&=~QST_BOF; else if ((rc=queryOp2->rewind())!=RC_OK) {state|=QST_EOF; return rc;}
 		}
 		while ((rc=queryOp2->next())!=RC_EOF) {
 			if (rc==RC_OK) {
 				//...
 				//rc=getData()
 			}
-			if (rc!=RC_OK) {state|=QST_EOF; queryOp2->release(); return rc;}
-			PINEx *pp[2]={res,pR}; 
+			if (rc!=RC_OK) {state|=QST_EOF; return rc;} PINEx *pp[2]={res,pR}; 
 			if (conds==NULL || Expr::condSatisfied((const Expr* const*)(nConds>1?conds:&cond),nConds,pp,2,NULL,0,qx->ses)) return RC_OK;
 		}
 	}
@@ -376,14 +352,6 @@ RC NestedLoop::rewind()
 	if (queryOp!=NULL && (rc=queryOp->rewind())!=RC_OK) return rc;
 	if (queryOp2!=NULL && (rc=queryOp2->rewind())!=RC_OK) return rc;
 	state=rc==RC_OK?QST_BOF|QOS_ADV1|QOS_ADV2:QST_EOF|QOS_EOF1|QOS_EOF2;		//???
-	return RC_OK;
-}
-
-RC NestedLoop::release()
-{
-	RC rc;
-	if (queryOp!=NULL && (rc=queryOp->release())!=RC_OK) return rc;
-	if (queryOp2!=NULL && (rc=queryOp2->release())!=RC_OK) return rc;
 	return RC_OK;
 }
 

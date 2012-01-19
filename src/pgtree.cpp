@@ -585,7 +585,7 @@ RC TreePageMgr::update(PBlock *pb,size_t len,ulong info,const byte *rec,size_t l
 				return RC_CORRUPTED;
 			}
 			// unset dependency???
-			if (op==TRO_SPLIT && (flags&TXMGR_UNDO)!=0) {newp->release(PGCTL_DISCARD); ctx->logMgr->setNewPage(NULL);}
+			if (op==TRO_SPLIT && (flags&TXMGR_UNDO)!=0) {newp->release(PGCTL_DISCARD|QMGR_UFORCE); ctx->logMgr->setNewPage(NULL);}
 		}
 		if (!fSeq && tp->info.nEntries!=tp->info.nSearchKeys+(tp->info.sibling!=INVALID_PAGEID?1:0)) {
 			report(MSG_ERROR,"Invalid nEntries/nSearchKeys %d/%d after merge/split, page %08X\n",tp->info.nEntries,tp->info.nSearchKeys,tp->hdr.pageID);
@@ -606,8 +606,7 @@ RC TreePageMgr::update(PBlock *pb,size_t len,ulong info,const byte *rec,size_t l
 		assert(vp!=NULL);
 		if (newp==NULL) {
 			assert((flags&(TXMGR_RECV|TXMGR_UNDO))!=0);
-			newp=ctx->logMgr->setNewPage(ctx->bufMgr->newPage(tpa->root,this));
-			if (newp==NULL) return RC_NORESOURCES;
+			if ((newp=ctx->logMgr->setNewPage(ctx->bufMgr->newPage(tpa->root,this)))==NULL) return RC_NORESOURCES;
 		}
 		assert(newp->getPageID()==tpa->root);
 		tp2=(TreePage*)newp->getPageBuf(); tp2->info.fmt=tpa->fmt;
@@ -714,8 +713,7 @@ RC TreePageMgr::update(PBlock *pb,size_t len,ulong info,const byte *rec,size_t l
 		}
 		if (newp==NULL) {
 			assert((flags&(TXMGR_RECV|TXMGR_UNDO))!=0);
-			newp=ctx->logMgr->setNewPage(ctx->bufMgr->newPage(tpa->root,this)/*,true*/);
-			if (newp==NULL) return RC_NORESOURCES;
+			if ((newp=ctx->logMgr->setNewPage(ctx->bufMgr->newPage(tpa->root,this)/*,true*/))==NULL) return RC_NORESOURCES;
 		}
 
 		tp2=(TreePage*)newp->getPageBuf();
@@ -1438,7 +1436,7 @@ RC TreePageMgr::split(TreeCtx& tctx,const SearchKey *key,ulong& idx,ushort split
 	if ((pbn=ctx->bufMgr->newPage(tps->newSibling,this))==NULL) return RC_NORESOURCES;
 
 	if ((rc=ctx->txMgr->update(tctx.pb,this,TRO_SPLIT,(byte*)tps,lsib,0,pbn))!=RC_OK)
-		{pbn->release(PGCTL_DISCARD); return rc;}
+		{pbn->release(PGCTL_DISCARD|QMGR_UFORCE); return rc;}
 
 #ifdef TRACE_EMPTY_PAGES
 	if (tctx.mainKey!=NULL && tctx.depth>tctx.leaf) {
@@ -1452,7 +1450,7 @@ RC TreePageMgr::split(TreeCtx& tctx,const SearchKey *key,ulong& idx,ushort split
 	PageID newSibling=tps->newSibling;
 	if (tctx.depth!=0) {
 		PBlockP spb(tctx.pb); addNewPage(tctx,*key,newSibling,(tctx.tree->getMode()&TF_SPLITINTX)==0);
-		tctx.parent.release(); tctx.parent=tctx.pb; tctx.pb=spb; tctx.stack[++tctx.depth]=spb->getPageID();
+		tctx.pb.moveTo(tctx.parent); spb.moveTo(tctx.pb); tctx.stack[++tctx.depth]=tctx.pb->getPageID();
 	} else if (tctx.tree->addRootPage(*key,newSibling,level)==RC_OK) {
 		tctx.parent.release(); tctx.stack[0]=newSibling; tctx.stack[++tctx.depth]=tctx.pb->getPageID();
 	}
@@ -1479,13 +1477,13 @@ RC TreePageMgr::spawn(TreeCtx& tctx,size_t lInsert,ulong idx)
 	assert(tpm->root!=INVALID_PAGEID);
 	if ((pbn=ctx->bufMgr->newPage(tpm->root,this))==NULL) return RC_NORESOURCES;
 	if ((rc=ctx->txMgr->update(tctx.pb,this,idx<<TRO_SHIFT|TRO_SPAWN,(byte*)tpm,ls,0,pbn))!=RC_OK)
-		pbn->release(PGCTL_DISCARD); else {pbn->release(); tx.ok();}
+		pbn->release(PGCTL_DISCARD|QMGR_UFORCE); else {pbn->release(); tx.ok();}
 	return rc;
 }
 
 RC TreePageMgr::modSubTree(TreeCtx& tctx,const SearchKey& key,ulong kidx,const PagePtr *vp,const void *newV,ushort lNew,const void *oldV,ushort lOld,bool fMulti)
 {
-	RC rc=RC_OK; PBlockP spb(tctx.pb); tctx.parent.release(); tctx.parent=tctx.pb; tctx.pb=NULL;
+	RC rc=RC_OK; PBlockP spb(tctx.pb); tctx.pb.moveTo(tctx.parent);
 	tctx.mainKey=&key; tctx.index=kidx; memcpy(&tctx.vp,vp,sizeof(PagePtr)); assert(TreePage::isSubTree(tctx.vp));
 	tctx.stack[tctx.leaf=tctx.depth++]=spb->getPageID(); 
 	const IndexFormat ifmt=((TreePage*)spb->getPageBuf())->info.fmt; const bool fPR=ifmt.isPinRef();
@@ -1594,8 +1592,8 @@ RC TreePageMgr::modSubTree(TreeCtx& tctx,const SearchKey& key,ulong kidx,const P
 			const byte *next=fVM?TreePage::getK(pv,from):(const byte*)pv+lElt*from;
 			if (!tctx.parent.isNull() && tctx.parent->getPageID()!=spb->getPageID()) tctx.parent.release();
 			if (tctx.parent.isNull()) {tctx.parent=(PBlock*)spb; tctx.parent.set(PGCTL_NOREL);}
-			tctx.pb=ctx->bufMgr->getPage(sib,this,PGCTL_COUPLE|PGCTL_ULOCK|(tctx.pb.isSet(QMGR_UFORCE)?QMGR_UFORCE:0),tctx.pb); ++ctx->treeMgr->sibRead;
-			if (!tctx.pb.isNull()) {
+			++ctx->treeMgr->sibRead;
+			if (tctx.pb.getPage(sib,this,PGCTL_COUPLE|PGCTL_ULOCK)!=NULL) {
 				tp=(const TreePage*)tctx.pb->getPageBuf(); if (!tp->hasSibling()||tp->info.nEntries==0) continue; int cmp=0;
 				if (!tp->info.fmt.isRefKeyOnly()) {
 					const byte *pref=tp->info.lPrefix==0?(const byte*)0:fVM?(byte*)tp+((PagePtr*)&tp->info.prefix)->offset:(byte*)&tp->info.prefix;
@@ -1656,7 +1654,7 @@ RC TreePageMgr::modSubTree(TreeCtx& tctx,const SearchKey& key,ulong kidx,const P
 			if ((rc=tctx.findPageForUpdate(&key,true))==RC_OK) rc=insert(tctx,key,NULL,0);
 		}
 	}
-	tctx.pb.release(); tctx.pb=spb; tctx.depth=tctx.leaf; tctx.leaf=~0u; tctx.mainKey=NULL; return rc;
+	spb.moveTo(tctx.pb); tctx.depth=tctx.leaf; tctx.leaf=~0u; tctx.mainKey=NULL; return rc;
 }
 
 RC TreePageMgr::insertSubTree(TreeCtx &tctx,const void *value,ushort lValue,IndexFormat ifmt,ulong start,ulong end,ulong& pageCnt,PageID *pages,ushort *indcs,size_t xSz,ulong *pRes)
@@ -1709,7 +1707,7 @@ RC TreePageMgr::insertSubTree(TreeCtx &tctx,const void *value,ushort lValue,Inde
 																									lLast!=0?(TreePage*)tctx.pb->getPageBuf():(TreePage*)0);
 		ulong op=TRO_MULTIINS; assert(sizeof(TreePageMulti)+lData+lprefs[i]+lFact<=xbuf); double prev=0.;
 		tpm->fmt=subfmt; tpm->sibling=sibling; tpm->lPrefix=lprefs[i]; tpm->fLastR=0; tpm->lData=lData;
-		if (i>=nOldPages) {op=TRO_MULTINIT; pb=ctx->bufMgr->newPage(pages[i],this,pb); if (pb.isNull()) {rc=RC_NORESOURCES; break;}}
+		if (i>=nOldPages) {op=TRO_MULTINIT; if (pb.newPage(pages[i],this)==NULL) {rc=RC_NORESOURCES; break;}}
 		else {pb.release(); pb=(PBlock*)tctx.pb; pb.set(PGCTL_NOREL); tpm->fLastR=tp->hasSibling()&&pageCnt>nOldPages; prev=double(xSize-tp->info.freeSpaceLength)*100./xSize;}
 		if (tf!=NULL) {
 			byte *p=(byte*)buf+sizeof(TreePageMulti)+lData+lprefs[i]+lFact; tf->getParams(p-lFact+lk,*tctx.tree);
@@ -1875,10 +1873,10 @@ void TreePageMgr::addNewPage(TreeCtx& tctx,const SearchKey& key,PageID pid,bool 
 					tpm->fmt=ifmt; tctx.mainKey->serialize(tpm+1); PBlock *pbn; TxSP tx(Session::getSession());
 					if (tx.start()==RC_OK && ctx->fsMgr->allocPages(1,&tpm->root)==RC_OK && (pbn=ctx->bufMgr->newPage(tpm->root,ctx->trpgMgr))!=NULL) {
 						if (ctx->txMgr->update(tctx.pb,this,tctx.index<<TRO_SHIFT|TRO_SPAWN,(byte*)tpm,ls,0,pbn)!=RC_OK)
-							pbn->release(PGCTL_DISCARD);
+							pbn->release(PGCTL_DISCARD|QMGR_UFORCE);
 						else {
 							if (fTry && tp->findData(tctx.index,off,&pvp)!=NULL && pvp!=NULL) memcpy(&tctx.vp,pvp,sizeof(PagePtr));
-							assert(tctx.pb->isDependent()); tctx.parent=tctx.pb; tctx.pb=pbn;
+							assert(tctx.pb->isDependent()); tctx.pb.moveTo(tctx.parent); tctx.pb=pbn;
 							tctx.stack[++tctx.depth]=pbn->getPageID(); tctx.lvl2++;
 							if (insert(tctx,key,&pid,sizeof(PageID))==RC_OK) {tx.ok(); return;}
 						}
@@ -1945,11 +1943,9 @@ RC TreePageMgr::insert(TreeCtx& tctx,const SearchKey& key,const void *value,usho
 			lInsert+=tp->info.calcVarSize(key,lValue,prefixSize);
 			if (lValue>=0x8000 || lInsert+lExtra>ulong(tp->info.freeSpaceLength+tp->info.scatteredFreeSpace) && lValue>256) {
 				ulong pageCnt=0,lkeys=0; PageID pages[XSUBPAGES]; ushort indcs[XSUBPAGES]; tctx.mainKey=&key;
-				PBlockP spb(tctx.pb); tctx.parent.release(); tctx.parent=tctx.pb; 
-				tctx.pb=NULL; tctx.stack[tctx.leaf=tctx.depth++]=spb->getPageID();
+				PBlockP spb(tctx.pb); tctx.pb.moveTo(tctx.parent); tctx.stack[tctx.leaf=tctx.depth++]=spb->getPageID();
 				rc=insertSubTree(tctx,value,lValue,tp->info.fmt,0,nVals,pageCnt,pages,indcs,calcXSz((byte*)value,0,nVals));
-				tctx.pb.release(); tctx.pb=spb; tctx.parent.release();
-				tctx.depth=tctx.leaf; tctx.leaf=~0u; tctx.mainKey=NULL;
+				tctx.parent.release(); spb.moveTo(tctx.pb); tctx.depth=tctx.leaf; tctx.leaf=~0u; tctx.mainKey=NULL;
 				if (rc!=RC_OK) return rc; assert(pageCnt>0);
 				if (pageCnt>1) {
 					if (!fVM) lkeys=(pageCnt-1)*tp->info.fmt.dataLength();
@@ -2163,7 +2159,7 @@ RC TreePageMgr::remove(TreeCtx& tctx,const SearchKey& key,const void *value,usho
 				if (!tctx.pb.isNull()) tctx.stack[tctx.depth]=tctx.pb->getPageID();
 #endif
 			}
-			tctx.pb.release(); tctx.pb=spb; tctx.depth++;
+			spb.moveTo(tctx.pb); tctx.depth++;
 //			if (fPost) tctx.postPageOp(tps->newKey,tps->newSibling,true);
 //		} else if ((rc2=tctx.tree.removeRootPage(tctx.pb->getPageID(),tp->info.leftMost,0))==RC_OK) {		//???
 			// ???tctx.stack[0]=tps->newSibling; tctx.depth++;
@@ -2174,11 +2170,11 @@ RC TreePageMgr::remove(TreeCtx& tctx,const SearchKey& key,const void *value,usho
 
 RC TreePageMgr::merge(PBlock *left,PBlock *right,PBlock *par,Tree& tr,const SearchKey& key,ulong idx)
 {
-	if (right->isDependent()) {unchain(right,NULL); right->release(); return RC_FALSE;}
+	if (right->isDependent()) {unchain(right,NULL); right->release(QMGR_UFORCE); return RC_FALSE;}
 	const TreePage *ltp=(const TreePage*)left->getPageBuf(),*rtp=(const TreePage*)right->getPageBuf(),*ptp=(const TreePage*)par->getPageBuf();
 	assert(ltp->info.sibling==right->getPageID()&&ltp->info.nEntries==ltp->info.nSearchKeys+1);
 	ulong fSize=ltp->info.freeSpaceLength+ltp->info.scatteredFreeSpace+rtp->info.freeSpaceLength+rtp->info.scatteredFreeSpace;
-	ushort lPrefix=0,lKey=key.extLength(); PBlockP rpp(right);
+	ushort lPrefix=0,lKey=key.extLength(); PBlockP rpp(right,QMGR_UFORCE);
 	if (rtp->info.nEntries==0) lPrefix=ltp->info.nSearchKeys==1?ltp->calcPrefixSize(0,1):ltp->info.lPrefix;
 	else if (ltp->info.nEntries>1 && ltp->info.lPrefix>0) {
 		if (rtp->info.lPrefix>0) {
@@ -2231,7 +2227,7 @@ RC TreePageMgr::merge(PBlock *left,PBlock *right,PBlock *par,Tree& tr,const Sear
 			memcpy(p+sizeof(TreePageInfo)+ll,(byte*)rtp+rtp->info.freeSpace,lrec-sizeof(TreePageSplit)-lKey-sizeof(TreePageInfo)-ll);
 		}
 		rc=ctx->txMgr->update(left,this,TRO_MERGE,(byte*)tps,lrec,0,right); assert(!right->isDependent());
-		if (rc==RC_OK) {PageID pid=rtp->hdr.pageID; rpp=NULL; right->release(PGCTL_DISCARD); ctx->fsMgr->freePage(pid); mtx.ok();}
+		if (rc==RC_OK) {PageID pid=rtp->hdr.pageID; rpp=NULL; right->release(PGCTL_DISCARD|QMGR_UFORCE); ctx->fsMgr->freePage(pid); mtx.ok();}
 	}
 	return rc;
 }
@@ -2263,9 +2259,9 @@ RC TreePageMgr::drop(PBlock* &pb,TreeFreeData *dd)
 			memcpy(rec+sizeof(TreePageInfo)+ll,(byte*)tp+tp->info.freeSpace,lrec-sizeof(TreePageInfo)-ll);
 		}
 	}
-	PageID pid=pb->getPageID();
-	ctx->logMgr->insert(Session::getSession(),LR_DISCARD,TRO_DROP<<PGID_SHIFT|PGID_INDEX,pid,NULL,rec,lrec);
-	pb->release(PGCTL_DISCARD); pb=NULL; return ctx->fsMgr->freePage(pid);
+	PageID pid=pb->getPageID(); Session *ses=Session::getSession();
+	ctx->logMgr->insert(ses,LR_DISCARD,TRO_DROP<<PGID_SHIFT|PGID_INDEX,pid,NULL,rec,lrec);
+	pb->release(PGCTL_DISCARD|QMGR_UFORCE,ses); pb=NULL; return ctx->fsMgr->freePage(pid);
 }
 
 void TreePageMgr::initPage(byte *frame,size_t len,PageID pid)

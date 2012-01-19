@@ -154,16 +154,6 @@ struct ClassDscr : public ClassRef
 	ClassDscr(ClassID cid,ushort np,unsigned flags) : ClassRef(cid,np,0,flags),next(NULL),query(NULL),cidx(NULL),id(PIN::defPID),addr(PageAddr::invAddr) {}
 };
 
-class ClassDelTx : public TxDelete
-{
-	const	ClassID		cid;
-	Session	*const		ses;
-public:
-	ClassDelTx(ClassID id,Session *s) : cid(id),ses(s) {}
-	RC					deleteData();
-	void				release();
-};
-
 struct ClassResult
 {
 	MemAlloc			*const ma;

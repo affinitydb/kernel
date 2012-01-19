@@ -155,10 +155,8 @@ RC QueryPrc::loadSSVs(Value *values,unsigned nValues,unsigned mode,Session *ses,
 			if ((rc=loadSSVs(const_cast<Value*>(v.varray),v.length,mode,ses,ma))!=RC_OK) return rc;
 			v.flags&=~VF_SSV; break;
 		default:
-			const HRefSSV *href=(const HRefSSV *)&v.id; assert(v.type==VT_STREAM);
-			PBlockP pb(ses==NULL?(PBlock*)0:ses->getLatched(href->pageID));
-			if (!pb.isNull()) pb.set(PGCTL_NOREL);
-			else {pb=ctx->bufMgr->getPage(href->pageID,ctx->ssvMgr,0); if (pb.isNull()) {v.setError(v.property); return RC_NOTFOUND;}}
+			const HRefSSV *href=(const HRefSSV *)&v.id; assert(v.type==VT_STREAM||v.type==VT_STRUCT);
+			PBlockP pb(ctx->bufMgr->getPage(href->pageID,ctx->ssvMgr,0,NULL,ses),0); if (pb.isNull()) {v.setError(v.property); return RC_NOTFOUND;}
 			const HeapPageMgr::HeapPage *hp = (const HeapPageMgr::HeapPage *)pb->getPageBuf(); 
 			if ((rc=loadSSV(v,href->type.getType(),hp->getObject(hp->getOffset(href->idx)),mode,ma))!=RC_OK) return rc;
 			for (ulong j=i+1; j<nValues; j++) if ((values[j].flags&VF_SSV)!=0) {
@@ -211,7 +209,7 @@ RC QueryPrc::loadSSV(Value& v,ValueType ty,const HeapPageMgr::HeapObjHeader *hob
 
 RC QueryPrc::loadData(const PageAddr &addr,byte *&p,size_t &len,MemAlloc *ma)
 {
-	PBlockP pb(ctx->bufMgr->getPage(addr.pageID,ctx->ssvMgr,0)); if (pb.isNull()) return RC_NOTFOUND;
+	PBlockP pb(ctx->bufMgr->getPage(addr.pageID,ctx->ssvMgr),0); if (pb.isNull()) return RC_NOTFOUND;
 	const HeapPageMgr::HeapPage *hp = (const HeapPageMgr::HeapPage *)pb->getPageBuf();
 	const HeapPageMgr::HeapObjHeader *hobj=hp->getObject(hp->getOffset(addr.idx));
 	if (hobj==NULL || (hobj->descr&HOH_DELETED)!=0) return RC_NOTFOUND;
@@ -284,7 +282,7 @@ RC QueryPrc::loadVH(Value& v,const HeapPageMgr::HeapV *hprop,const PINEx& cb,ulo
 	HType ty=hprop->type; ushort offset=hprop->offset; PropertyID pid=hprop->getID(); PID id; Value val;
 	if (ty.getType()==VT_ARRAY) {
 		if (ty.getFormat()==HDF_LONG) {
-			const HeapPageMgr::HeapExtCollection *coll=(const HeapPageMgr::HeapExtCollection*)((byte*)cb.hp+hprop->offset);
+			const HeapPageMgr::HeapExtCollection *coll=(const HeapPageMgr::HeapExtCollection*)(cb.pb->getPageBuf()+hprop->offset);
 			if (eid!=STORE_COLLECTION_ID) {
 				Navigator nav(cb.addr,hprop->getID(),coll,mode,ma); RC rc;
 				if ((rc=nav.getElementByID(eid,val))!=RC_OK) {
@@ -304,7 +302,7 @@ RC QueryPrc::loadVH(Value& v,const HeapPageMgr::HeapV *hprop,const PINEx& cb,ulo
 			}
 			v.property=pid; return RC_OK;
 		}
-		const HeapPageMgr::HeapVV *coll=(const HeapPageMgr::HeapVV*)((byte*)cb.hp+offset);
+		const HeapPageMgr::HeapVV *coll=(const HeapPageMgr::HeapVV*)(cb.pb->getPageBuf()+offset);
 		if (eid==STORE_COLLECTION_ID) { 
 			if ((mode&LOAD_CARDINALITY)!=0) {v.set(unsigned(coll->cnt)); v.property=pid; return RC_OK;}
 			if (ty.getFormat()!=HDF_SHORT || coll->cnt>1) {
@@ -315,14 +313,14 @@ RC QueryPrc::loadVH(Value& v,const HeapPageMgr::HeapV *hprop,const PINEx& cb,ulo
 				for (i=j=0; i<v.length; i++) {
 					const HeapPageMgr::HeapV *elt=&coll->start[i]; ValueType vt;
 					if ((mode&LOAD_REF)==0 || (vt=elt->type.getType())==VT_REFID || vt==VT_STRUCT /*&& ??? */) {
-						if ((rc=loadS(const_cast<Value&>(v.varray[j]),elt->type,elt->offset,cb.hp,mode,ma,elt->getID()))!=RC_OK) break;
+						if ((rc=loadS(const_cast<Value&>(v.varray[j]),elt->type,elt->offset,(HeapPageMgr::HeapPage*)cb.pb->getPageBuf(),mode,ma,elt->getID()))!=RC_OK) break;
 						flg|=v.varray[j].flags&VF_SSV; const_cast<Value&>(v.varray[j]).property=STORE_INVALID_PROPID; j++;
 					}
 				}
 				if (rc==RC_OK && (flg&VF_SSV)!=0 && (mode&LOAD_SSV)!=0 && (rc=loadSSVs(const_cast<Value*>(v.varray),j,mode,Session::getSession(),al))==RC_OK) flg=0;
 				if (rc==RC_OK && (mode&LOAD_REF)!=0) {if ((v.length=j)==0) {al->free((void*)v.varray); v.setError();}}
 				else if (j<v.length||rc!=RC_OK) {
-					report(MSG_ERROR,"loadV: cannot load collection %08X, %08X:%04X\n",pid,cb.hp->hdr.pageID,cb.addr.idx);
+					report(MSG_ERROR,"loadV: cannot load collection %08X, %08X:%04X\n",pid,cb.pb->getPageID(),cb.addr.idx);
 					while (j--!=0) freeV(const_cast<Value&>(v.varray[j]));
 					al->free(const_cast<Value*>(v.varray)); v.setError(pid);
 					return rc==RC_OK?RC_CORRUPTED:rc;
@@ -341,7 +339,7 @@ RC QueryPrc::loadVH(Value& v,const HeapPageMgr::HeapV *hprop,const PINEx& cb,ulo
 	if (eid==STORE_COLLECTION_ID||eid==STORE_FIRST_ELEMENT)
 		eid=cb.hpin->hasRemoteID() && (hprop->type.flags&META_PROP_LOCAL)==0 && cb.hpin->getAddr(id)?HeapPageMgr::getPrefix(id):ctx->getPrefix();
 	if ((mode&LOAD_REF)!=0 && ty.getType()!=VT_REFID && ty.getType()!=VT_STRUCT /* || ???*/) {v.setError(pid); return RC_OK;}
-	RC rc=loadS(v,ty,offset,cb.hp,mode,ma,eid); v.property=pid; return rc;
+	RC rc=loadS(v,ty,offset,(HeapPageMgr::HeapPage*)cb.pb->getPageBuf(),mode,ma,eid); v.property=pid; return rc;
 }
 
 RC QueryPrc::loadS(Value& v,HType vt,PageOff offset,const HeapPageMgr::HeapPage *hp,ulong mode,MemAlloc *ma,ulong eid)
@@ -386,7 +384,7 @@ RC QueryPrc::loadS(Value& v,HType vt,PageOff offset,const HeapPageMgr::HeapPage 
 			memcpy(p,pData,v.length); p[v.length]=0; v.str=p; v.flags=ma->getAType();
 		}
 		break;
-	case VT_ENUM:
+	case VT_RESERVED1:
 		// ???
 		break;
 	case VT_INT:

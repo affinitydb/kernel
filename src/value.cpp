@@ -25,7 +25,7 @@ RC MVStoreKernel::copyV0(Value &v,MemAlloc *ma)
 		ulong i; RC rc; Value w; size_t ll; assert(ma!=NULL);
 		switch (v.type) {
 		default: break;
-		case VT_STRING: case VT_BSTR: case VT_URL: case VT_DECIMAL:
+		case VT_STRING: case VT_BSTR: case VT_URL: case VT_RESERVED2:
 			if (v.str==NULL) break;
 			ll=v.length+(v.type==VT_BSTR?0:1);
 			if ((w.bstr=(byte*)ma->malloc(ll))==NULL) {v.type=VT_ERROR; return RC_NORESOURCES;}
@@ -95,7 +95,7 @@ bool MVStoreKernel::operator==(const Value& lhs, const Value& rhs)
 	if (lhs.length!=rhs.length) return false;
 	switch (lhs.type) {
 	default: break;
-	case VT_STRING: case VT_BSTR: case VT_URL: case VT_DECIMAL: return memcmp(lhs.bstr,rhs.bstr,lhs.length)==0;
+	case VT_STRING: case VT_BSTR: case VT_URL: case VT_RESERVED2: return memcmp(lhs.bstr,rhs.bstr,lhs.length)==0;
 	case VT_INT: case VT_UINT: case VT_URIID: case VT_IDENTITY: return lhs.ui==rhs.ui;
 	case VT_INT64: case VT_UINT64: case VT_DATETIME: case VT_INTERVAL: return lhs.ui64==rhs.ui64;
 	case VT_FLOAT: return lhs.f==rhs.f && lhs.qval.units==rhs.qval.units;
@@ -175,8 +175,8 @@ size_t MVStoreKernel::serSize(const Value& v,bool full)
 	case VT_STMT: l=((Stmt*)v.stmt)->serSize(); l+=1+mv_len32(l); break;
 
 	case VT_EXPRTREE:
-	case VT_ENUM:
-	case VT_DECIMAL:
+	case VT_RESERVED1:
+	case VT_RESERVED2:
 		return 0;		// niy
 	}
 	if (full) {i=mv_enc32zz(v.eid); l+=2+mv_len32(i)+mv_len32(v.property);}
@@ -244,8 +244,8 @@ byte *MVStoreKernel::serialize(const Value& v,byte *buf,bool full)
 		if (v.stmt!=NULL) {l=(uint32_t)((Stmt*)v.stmt)->serSize(); mv_enc32(buf,l); buf=((Stmt*)v.stmt)->serialize(buf);}
 		break;
 	case VT_EXPRTREE:
-	case VT_ENUM:
-	case VT_DECIMAL:
+	case VT_RESERVED1:
+	case VT_RESERVED2:
 		//???
 		break;		// niy
 	}
@@ -353,8 +353,8 @@ RC MVStoreKernel::deserialize(Value& val,const byte *&buf,const byte *const ebuf
 		CHECK_dec32(buf,val.length,ebuf);
 		if ((rc=Stmt::deserialize(qry,buf,buf+val.length,ma))!=RC_OK) return rc;
 		val.stmt=qry; val.flags=ma->getAType(); break;
-	case VT_ENUM:
-	case VT_DECIMAL:
+	case VT_RESERVED1:
+	case VT_RESERVED2:
 		return RC_CORRUPTED;	// niy
 	}
 	if (full) {
@@ -471,7 +471,7 @@ RC MVStoreKernel::convV(const Value& src,Value& dst,ValueType type,MemAlloc *ma,
 	for (const Value *ps=&src;;) {if (ps->type==type) {
 noconv:
 		if (ps!=&dst) {if ((rc=copyV(*ps,dst,ma))!=RC_OK) {dst.setError(src.property); return rc;}}
-	} else if (isRef((ValueType)ps->type) && type!=VT_URL && !isRef(type)) {
+	} else if ((mode&CV_NODEREF)==0 && isRef((ValueType)ps->type) && type!=VT_URL && !isRef(type)) {
 		if ((rc=derefValue(*ps,dst,Session::getSession()))!=RC_OK) return rc;
 		ps=&dst; continue;
 	} else {
@@ -594,8 +594,8 @@ noconv:
 			case VT_CURRENT:		//????
 				if ((p=(char*)ma->malloc(sizeof(TIMESTAMP)))==NULL) return RC_NORESOURCES;
 				getTimestamp(*(TIMESTAMP*)p); dst.set((unsigned char*)p,sizeof(TIMESTAMP)); dst.flags=ma->getAType(); break;
-			case VT_ENUM:
-			case VT_DECIMAL:
+			case VT_RESERVED1:
+			case VT_RESERVED2:
 				return RC_INTERNAL;
 			case VT_STRUCT:
 				//???
