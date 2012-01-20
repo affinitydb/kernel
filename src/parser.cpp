@@ -2843,22 +2843,24 @@ Stmt *SInCtx::parseStmt(bool fNested)
 
 RC SInCtx::exec(const Value *params,unsigned nParams,char **result,uint64_t *nProcessed,unsigned nProcess,unsigned nSkip)
 {
-	SOutCtx out(ses); assert(ses!=NULL); unsigned fMany=false;
+	SOutCtx out(ses); assert(ses!=NULL); unsigned fBrkIns=false; uint64_t cnt=0;
 	for (TLx lx=lex();;lx=lex()) {
 		if (lx==LX_EOE) break; if (lx!=LX_LPR && lx!=LX_KEYW) throw SY_SYNTAX;
-		nextLex=lx; uint64_t cnt=0; SynErr sy=SY_ALL; RC rc=RC_OK; Stmt *stmt; ICursor *ir=NULL;
+		nextLex=lx; uint64_t c; SynErr sy=SY_ALL; RC rc=RC_OK; Stmt *stmt; ICursor *ir=NULL;
 		if ((stmt=parseStmt())!=NULL) {
+			if (cnt!=0 && stmt->getOp()<STMT_START_TX) {
+				if (!fBrkIns) {fBrkIns=true; if (!out.insert("[",1,0)) throw RC_NORESOURCES;}
+				if (!out.append(",\n",2)) throw RC_NORESOURCES;
+			}
 			if ((rc=stmt->execute(result!=NULL?&ir:NULL,params,nParams,nProcess,nSkip,0/*mode???*/))==RC_OK && ir!=NULL)
-				{if ((rc=out.renderJSON((Cursor*)ir,cnt))==RC_EOF) rc=RC_OK; ir->destroy();}
+				{if ((rc=out.renderJSON((Cursor*)ir,c))==RC_EOF) rc=RC_OK; cnt+=c; ir->destroy();}
 			stmt->destroy();
 		}
 		if (nProcessed!=NULL) *nProcessed=cnt;
 		if (sy!=SY_ALL) throw sy; if (rc!=RC_OK) throw rc;
 		if (lex()!=LX_SEMI) break;
-		if (!fMany) {fMany=true; if (!out.insert("[",1,0)) throw RC_NORESOURCES;}
-		if (!out.append(",\n",2)) throw RC_NORESOURCES;
 	}
-	if (!out.append(fMany?"]\n":"\n",fMany?2:1)) throw RC_NORESOURCES;
+	if (cnt!=0 && !out.append(fBrkIns?"]\n":"\n",fBrkIns?2:1)) throw RC_NORESOURCES;
 	return result==NULL||(*result=(char*)out)!=NULL?RC_OK:RC_NORESOURCES;
 }
 
