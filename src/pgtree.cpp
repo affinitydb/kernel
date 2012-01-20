@@ -92,7 +92,7 @@ RC TreePageMgr::update(PBlock *pb,size_t len,ulong info,const byte *rec,size_t l
 					ushort extraSize=tp->info.extraEltSize(newPrefSize);
 					if (extraSize==0) {
 						tp->info.lPrefix=newPrefSize;
-						if (tp->info.fmt.isPrefNumKey()) tp->info.prefix&=~0ULL<<(sizeof(uint64_t)-newPrefSize)*8;
+						if (tp->info.fmt.isPrefNumKey()) tp->info.prefix=newPrefSize==0?0:tp->info.prefix&~0ULL<<(sizeof(uint64_t)-newPrefSize)*8;
 					} else if (ulong(extraSize)*tp->info.nEntries>ulong(tp->info.freeSpaceLength+tp->info.scatteredFreeSpace)) {
 						report(MSG_ERROR,"TreePageMgr::update insert: insufficient space, newPrefSize=%d, page %08X\n",newPrefSize,tp->hdr.pageID);
 						return RC_PAGEFULL;
@@ -2519,7 +2519,7 @@ bool TreePageMgr::TreePage::findKey(const SearchKey& skey,ulong& pos) const
 			else {pos=(ulong)(skey.v.u-info.prefix); return true;}
 		} else switch (skey.type) {
 		case KT_UINT:
-			if (((skey.v.u^info.prefix)&~0ULL<<(sizeof(uint64_t)-info.lPrefix)*8)!=0) pos=skey.v.u<info.prefix?0:nEnt;
+			if (info.lPrefix!=0 && ((skey.v.u^info.prefix)&~0ULL<<(sizeof(uint64_t)-info.lPrefix)*8)!=0) pos=skey.v.u<info.prefix?0:nEnt;
 			else switch (info.lPrefix) {
 			default: assert(0);
 			case 0: return fFixed?findNumKey(skey.v.u,nEnt,pos):findNumKeyVar(skey.v.u,nEnt,pos);
@@ -2530,7 +2530,7 @@ bool TreePageMgr::TreePage::findKey(const SearchKey& skey,ulong& pos) const
 			}
 			break;
 		case KT_INT:
-			if (((skey.v.u^info.prefix)&~0ULL<<(sizeof(uint64_t)-info.lPrefix)*8)!=0) {
+			if (info.lPrefix!=0 && ((skey.v.u^info.prefix)&~0ULL<<(sizeof(uint64_t)-info.lPrefix)*8)!=0) {
 				// check neg in 0 prefix
 				pos=skey.v.i<(int64_t)info.prefix?0:nEnt;
 			} else switch (info.lPrefix) {

@@ -145,7 +145,7 @@ class IndexScan : public QueryOp
 	const	ulong		nRanges;
 	Value				*vals;
 	void				initInfo();
-	RC					init(bool=true);
+	RC					init();
 	RC					setScan(ulong=0);
 	void				printKey(const SearchKey& key,SOutCtx& buf,const char *def,size_t ldef) const;
 public:

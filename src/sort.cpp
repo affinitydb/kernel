@@ -742,7 +742,8 @@ void Sort::esCleanup()
 
 RC Sort::next(const PINEx *skip)
 {
-	if (res!=NULL) {res->cleanup(); *res=PIN::defPID;} RC rc=RC_OK;
+	if (res!=NULL) {res->cleanup(); *res=PIN::defPID;} if ((state&QST_EOF)!=0) return RC_EOF;
+	RC rc=RC_OK;
 	if ((state&QST_INIT)!=0) {
 		state&=~QST_INIT; assert(memUsed==0 && nAllPins==0 && pins==NULL && esRuns==NULL);
 //		size_t minMem=qx->ses->getStore()->fileMgr->getPageSize()*4;
@@ -750,7 +751,8 @@ RC Sort::next(const PINEx *skip)
 		if ((rc=sort())!=RC_OK||(rc=qx->ses->testAbortQ())!=RC_OK) {state|=QST_EOF|QST_BOF; return rc;}
 		state|=nAllPins<=1?QST_EOF|QST_BOF:QST_BOF; idx=0; if (nAllPins==0) return RC_EOF;
 		if (nSkip!=0) {
-			if (nSkip>=nAllPins) {nSkip-=(ulong)nAllPins; idx=nAllPins-1; state|=QST_EOF; return RC_EOF;}
+			if (nSkip+1>=nAllPins) state|=QST_EOF;
+			if (nSkip>=nAllPins) {nSkip-=(ulong)nAllPins; idx=nAllPins-1; return RC_EOF;}
 			if (pins!=NULL) idx=nSkip;
 			else {
 				PINEx dm(qx->ses); assert(esFile!=NULL);
@@ -760,10 +762,10 @@ RC Sort::next(const PINEx *skip)
 				}
 			}
 		}
-	} else if (nAllPins==0) return RC_EOF;
-	else {
-		if ((state&QST_EOF)!=0) return RC_EOF;
-		if (++idx+1<nAllPins && skip!=NULL) {
+	} else {
+		assert(idx<nAllPins);
+		if (++idx+1>=nAllPins) state|=QST_EOF;
+		else if (skip!=NULL) {
 			if (esRuns!=NULL) {
 				// ???
 #if 0
@@ -775,7 +777,6 @@ RC Sort::next(const PINEx *skip)
 				//???
 			}
 		}
-		if (idx+1>=nAllPins) state|=QST_EOF;
 	}
 	if (pins!=NULL) {
 		const EncPINRef *ep=pins[idx];

@@ -254,13 +254,12 @@ RC IndexScan::setScan(ulong idx)
 	return scan!=NULL?RC_OK:RC_NORESOURCES;
 }
 
-RC IndexScan::init(bool fF)
+RC IndexScan::init()
 {
-	RC rc=setScan(fF?0:nRanges-1);
-	if (rc==RC_OK) while (nSkip>0 && (rc=scan->skip(nSkip,!fF))!=RC_OK) {
+	RC rc=setScan(0);
+	if (rc==RC_OK) while (nSkip>0 && (rc=scan->skip(nSkip))!=RC_OK) {
 		scan->destroy(); scan=NULL;
-		if (rc!=RC_EOF || nRanges==0 || fF && ++rangeIdx>=nRanges || !fF && rangeIdx--==0
-				|| (rc=setScan(rangeIdx))!=RC_OK) {state|=fF?QST_EOF:QST_BOF; return rc;}
+		if (rc!=RC_EOF || nRanges==0 || ++rangeIdx>=nRanges || (rc=setScan(rangeIdx))!=RC_OK) {state|=QST_EOF; return rc;}
 	}
 	return rc==RC_OK?qx->ses->testAbortQ():rc;
 }
