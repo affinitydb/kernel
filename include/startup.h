@@ -11,14 +11,15 @@ Written by Mark Venguerov 2004 - 2010
 
 #include "mvstore.h"
 
-#define	MVSTOREPREFIX				"mv"
-#define MVSTOREDIR					"mvstore"
-#define	DATAFILESUFFIX				".store"
+#define	MVSTOREPREFIX				"chaos"
+#define MVSTOREDIR					"chaosdb"
+#define	DATAFILESUFFIX				".db"
 #define	LOGFILESUFFIX				".txlog"
 #define	MASTERFILESUFFIX			".master"
+#define	HOME_ENV					"CHAOSDB_HOME"
 
-#define	STORE_STD_URI_PREFIX		"http://mvstore.eng.vmware.com/builtin/"
-#define	STORE_STD_QPREFIX			"mv:"
+#define	STORE_STD_URI_PREFIX		"http://www.chaosdb.org/builtin/"
+#define	STORE_STD_QPREFIX			"ks:"
 
 #define	DEFAULT_MAX_FILES			300
 #define	DEFAULT_BLOCK_NUM			~0u

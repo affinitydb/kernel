@@ -51,7 +51,7 @@ static void setDirectory(FileMgr *fio, const char *dir,StoreCtx *ctx)
 {
 	if (dir!=NULL && *dir!='\0') {fio->setDirectory(dir); return;}
 
-	const char *homeDir=getenv("HOME");
+	const char *homeDir=getenv(HOME_ENV); if (homeDir==NULL) homeDir=getenv("HOME");
 	if (homeDir!=NULL && *homeDir!='\0') {
 		char *dir=(char*)ctx->malloc(strlen(homeDir)+1+sizeof(MVSTOREDIR)+1);
 		if (dir!=NULL) {
@@ -103,7 +103,7 @@ RC openStore(const StartupParameters& params,MVStoreCtx &cctx)
 	StoreCtx *ctx=NULL; RC rc=testEnv(); if (rc!=RC_OK) return rc;
 	try {
 		RequestQueue::startThreads(); initReport(); cctx=NULL;
-		report(MSG_NOTICE,"MVStore startup - version %d.%02d\n",STORE_VERSION/100,STORE_VERSION%100);
+		report(MSG_NOTICE,"ChaosDB startup - version %d.%02d\n",STORE_VERSION/100,STORE_VERSION%100);
 
 		if ((ctx=StoreCtx::createCtx(params.mode))==NULL) return RC_NORESOURCES;
 
@@ -155,10 +155,10 @@ RC openStore(const StartupParameters& params,MVStoreCtx &cctx)
 		if (rc!=RC_OK||ctx->theCB->state==SST_INIT) {
 			switch (rc) {
 			case RC_OK: report(MSG_WARNING,"Previous store initialization not finished\n"); rc=RC_NOTFOUND; break;
-			case RC_VERSION: report(MSG_WARNING,"Invalid vesrion of MVStore in directory %.512s\n",fio->getDirectory()); break;
-			case RC_CORRUPTED: report(MSG_WARNING,"Corrupted or encrypted MVStore found in directory %.512s\n",fio->getDirectory()); break;
-			case RC_NOTFOUND: report(MSG_WARNING,"MVStore not found in directory %.512s\n",fio->getDirectory()); break;
-			default: report(MSG_WARNING,"Cannot open MVStore in directory %.512s(%d)\n",fio->getDirectory(),rc); break;
+			case RC_VERSION: report(MSG_WARNING,"Invalid vesrion of ChaosDB in directory %.512s\n",fio->getDirectory()); break;
+			case RC_CORRUPTED: report(MSG_WARNING,"Corrupted or encrypted ChaosDB found in directory %.512s\n",fio->getDirectory()); break;
+			case RC_NOTFOUND: report(MSG_WARNING,"ChaosDB not found in directory %.512s\n",fio->getDirectory()); break;
+			default: report(MSG_WARNING,"Cannot open ChaosDB in directory %.512s(%d)\n",fio->getDirectory(),rc); break;
 			}
 			throw rc;
 		}
@@ -208,7 +208,7 @@ RC openStore(const StartupParameters& params,MVStoreCtx &cctx)
 
 		bool fRecv=ctx->theCB->state!=SST_SHUTDOWN_COMPLETE && ctx->theCB->state!=SST_READ_ONLY;
 		if (fRecv || (params.mode&STARTUP_ROLLFORWARD)!=0) {
-			report(MSG_NOTICE,fRecv ? "MVStore hasn't been properly shut down\n    automatic recovery in progress...\n" :
+			report(MSG_NOTICE,fRecv ? "ChaosDB hasn't been properly shut down\n    automatic recovery in progress...\n" :
 																					"Rollforward in progress...\n");
 			Session *ses=Session::createSession(ctx); if (ses!=NULL) ses->setIdentity(STORE_OWNER,true);
 			if ((rc=ctx->logMgr->recover(ses,(params.mode&STARTUP_ROLLFORWARD)!=0))==RC_OK && (rc=ctx->classMgr->restoreXPropID(ses))==RC_OK) 
@@ -225,7 +225,7 @@ RC openStore(const StartupParameters& params,MVStoreCtx &cctx)
 		if ((params.mode&STARTUP_TOUCH_FILE)!=0 || ctx->logMgr->isInit())
 			{ctx->theCB->state=ctx->logMgr->isInit()?SST_LOGGING:SST_READ_ONLY; rc=ctx->theCB->update(ctx);}
 
-		if (rc==RC_OK || fForce) report(MSG_NOTICE,"MVStore running\n");
+		if (rc==RC_OK || fForce) report(MSG_NOTICE,"ChaosDB running\n");
 		if (rc==RC_OK) {ctx->setState(SSTATE_OPEN); cctx=ctx;}
 		return rc;
 	} catch (RC rc2) {
@@ -335,7 +335,7 @@ RC createStore(const StoreCreationParameters& create,const StartupParameters& pa
 
 		ctx->theCB->state=SST_LOGGING;
 		if ((rc=ctx->theCB->update(ctx))==RC_OK || (params.mode&STARTUP_FORCE_OPEN)!=0) {
-			report(MSG_NOTICE,"MVStore running\n"); rc=RC_OK;
+			report(MSG_NOTICE,"ChaosDB running\n"); rc=RC_OK;
 			if (pLoad!=NULL) {
 				Session *ses=Session::createSession(ctx);
 				if (ses==NULL) {*pLoad=NULL; rc=RC_NORESOURCES;}
@@ -433,7 +433,7 @@ RC shutdownStore(MVStoreCtx ctx)
 			if (cas(&ctx->state,st,st|SSTATE_IN_SHUTDOWN)) break;
 		}
 
-		report(MSG_NOTICE,"MVStore shutdown in progress\n");
+		report(MSG_NOTICE,"ChaosDB shutdown in progress\n");
 
 		Session::terminateSession(); RC rc;
 
@@ -492,7 +492,7 @@ RC shutdownStore(MVStoreCtx ctx)
 
 		delete ctx;
 
-		report(MSG_NOTICE,"MVStore shutdown complete\n");
+		report(MSG_NOTICE,"ChaosDB shutdown complete\n");
 	// if last one ->
 		closeReport();
 	

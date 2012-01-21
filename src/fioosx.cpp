@@ -562,7 +562,7 @@ bool FileIOOSX::asyncIOEnabled() const
 	return (flagsFS&FS_DIRECT)!=0;
 }
 
-#define TESTFILENAME	"mvstore.tst"
+#define TESTFILENAME	"chaosdb.tst"
 
 void FileIOOSX::setFlagsFS()
 {

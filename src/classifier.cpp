@@ -720,7 +720,7 @@ RC Classifier::classifyAll(PIN *const *pins,unsigned nPINs,Session *ses,bool fDr
 									(ci.il=new(ci.sa) IndexList(*ci.sa,ci.ity))==NULL)) {rc=RC_NORESOURCES; break;}
 								if ((rc=freeSpace(cctx,ci.il->nodeSize()+(ci.ity>=KT_BIN&&ci.ity<KT_ALL?0x1000:0)))!=RC_OK) break;
 								SearchKey key; assert(ci.sa!=NULL && ci.il!=NULL);
-								if ((rc=key.toKey(vals,nSegs,ci.cd->cidx->indexSegs,-1,ses,ci.sa))==RC_TYPE) rc=RC_OK;
+								if ((rc=key.toKey(vals,nSegs,ci.cd->cidx->indexSegs,-1,ses,ci.sa))==RC_TYPE||rc==RC_SYNTAX) rc=RC_OK;
 								else if (rc==RC_OK) {
 									IndexValue v,*pi=NULL; v.key=key.v; v.buf=NULL; v.lx=0;
 									if (ci.il->add(v,&pi)==SLO_ERROR) return RC_NORESOURCES; assert(pi!=NULL);

@@ -2169,7 +2169,7 @@ QVarID SInCtx::parseQuery(Stmt*& res,bool fNested)
 		case KW_INTERSECT: type=QRY_INTERSECT; break;
 		}
 		if (type!=QRY_ALL_SETOP && (lx=lex())==LX_KEYW) {
-			if (v.op==KW_DISTINCT) dt=(lx=lex())==KW_VALUES?DT_DISTINCT_VALUES:(nextLex=lx,DT_DISTINCT); else if (v.op==KW_ALL) dt=DT_ALL; else nextLex=lx;
+			if (v.op==KW_DISTINCT) dt=(lx=lex())==LX_KEYW && v.op==KW_VALUES?DT_DISTINCT_VALUES:(nextLex=lx,DT_DISTINCT); else if (v.op==KW_ALL) dt=DT_ALL; else nextLex=lx;
 		} else if (lx!=LX_EOE) nextLex=lx;
 		if (type!=QRY_INTERSECT) for (OpD op;;) {
 			if (ops.isEmpty()) {
@@ -2196,7 +2196,7 @@ QVarID SInCtx::parseSelect(Stmt* stmt,bool fMod)
 	RC rc=RC_OK; TLx lx=lex(); assert(stmt!=NULL);
 	QVarID var=INVALID_QVAR_ID; DistinctType dt=DT_DEFAULT; DynArray<Value> outs(ma); QVarRef qr; qr.var=NULL;
 	if (!fMod) {
-		if (lx==LX_KEYW) {if (v.op==KW_ALL) {dt=DT_ALL; lx=lex();} else if (v.op==KW_DISTINCT) dt=(lx=lex())==KW_VALUES?(lx=lex(),DT_DISTINCT_VALUES):DT_DISTINCT;}
+		if (lx==LX_KEYW) {if (v.op==KW_ALL) {dt=DT_ALL; lx=lex();} else if (v.op==KW_DISTINCT) dt=(lx=lex())==LX_KEYW && v.op==KW_VALUES?(lx=lex(),DT_DISTINCT_VALUES):DT_DISTINCT;}
 		if (lx==OP_MUL) {
 			lx=lex();	// check next keyword -> 
 		} else if (lx!=LX_KEYW) {
@@ -2416,11 +2416,11 @@ QVarID SInCtx::parseClasses(Stmt *stmt,bool fColon)
 			do {
 				Value w;
 				switch (lx=lex()) {
-				case OP_MUL: w.setError(); break;		// how to distinguish from NULL?
+				case OP_MUL: w.setError(); break;
 				case LX_KEYW: if (v.op==KW_NULL) {w.setError(); break;}
 				default: nextLex=lx; parse(w); break;
 				}
-				if (w.type==VT_EXPRTREE || w.type==VT_VARREF && (w.refV.flags&VAR_TYPE_MASK)==0) {sy=SY_MISCON; break;}
+				if (w.type==VT_EXPRTREE || w.type==VT_VARREF && (w.refV.flags&VAR_TYPE_MASK)!=VAR_PARAM) {sy=SY_MISCON; break;}
 				if (cs.nParams>=xP) {
 					cs.params=(Value*)ses->realloc((Value*)cs.params,(xP+=xP==0?16:xP)*sizeof(Value));
 					if (cs.params==NULL) {rc=RC_NORESOURCES; break;}
