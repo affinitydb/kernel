@@ -1002,7 +1002,7 @@ public:
 	}
 	TreeFactory *getFactory() const {return NULL;}
 	IndexFormat	indexFormat() const {return Collection::collFormat;}
-	ulong		getMode() const {return TF_SPLITINTX;}
+	ulong		getMode() const {return TF_SPLITINTX|TF_NOPOST;}
 	PageID		startPage(const SearchKey*,int& level,bool,bool) {level=-1; return INVALID_PAGEID;}
 	PageID		prevStartPage(PageID) {return INVALID_PAGEID;}
 	RC			removeRootPage(PageID page,PageID leftmost,ulong level) {return RC_INTERNAL;}

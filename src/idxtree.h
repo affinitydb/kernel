@@ -151,6 +151,7 @@ struct CheckTreeReport
 
 #define	TF_WITHDEL		0x0001
 #define	TF_SPLITINTX	0x0002
+#define	TF_NOPOST		0x0004
 
 class IMultiKey
 {

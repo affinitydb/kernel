@@ -39,12 +39,15 @@ extern	RC		streamToValue(IStream *str,Value& val,MemAlloc*);
 extern	int		cmpNoConv(const Value&,const Value&,ulong u);
 extern	int		cmpConv(const Value&,const Value&,ulong u);
 extern	bool	testStrNum(const char *s,size_t l,Value& res);
-extern	RC		convV(const Value& src,Value& dst,ValueType type,MemAlloc *ma,unsigned mode=0);
+extern	RC		convV(const Value& src,Value& dst,ushort type,MemAlloc *ma,unsigned mode=0);
 extern	RC		derefValue(const Value& src,Value& dst,Session *ses);
 extern	RC		convURL(const Value& src,Value& dst,HEAP_TYPE alloc);
+extern	RC		convUnits(QualifiedValue& q, Units u);
 extern	bool	compatible(QualifiedValue&,QualifiedValue&);
 extern	bool	compatibleMulDiv(Value&,uint16_t units,bool fDiv);
 extern	Units	getUnits(const char *suffix,size_t l);
+extern	const char *getUnitName(Units u);
+extern	const char *getLongUnitName(Units u);
 extern	void	freeV(Value *v,ulong nv,MemAlloc*);
 extern	void	freeV0(Value& v);
 __forceinline	void freeV(Value& v) {if ((v.flags&HEAP_TYPE_MASK)!=NO_HEAP) freeV0(v);}
@@ -132,7 +135,7 @@ class PIN : public IPIN
 	uint32_t			nProperties;
 	uint32_t			mode;
 	mutable	PageAddr	addr;
-	PIN					*nextPIN;
+	PIN					*sibling;
 	union {
 		uint32_t		stamp;
 		size_t			length;
@@ -140,7 +143,7 @@ class PIN : public IPIN
 
 public:
 	PIN(Session *s,const PID& i,const PageAddr& a,ulong md=0,Value *vals=NULL,ulong nvals=0)
-		: ses(s),id(i),properties(vals),nProperties(nvals),mode(md),addr(a),nextPIN(NULL) {length=0;}
+		: ses(s),id(i),properties(vals),nProperties(nvals),mode(md),addr(a),sibling(NULL) {length=0;}
 	virtual		~PIN();
 	const PID&	getPID() const;
 	bool		isLocal() const;
@@ -157,12 +160,14 @@ public:
 	uint32_t	getNumberOfProperties() const;
 	const Value	*getValueByIndex(unsigned idx) const;
 	const Value	*getValue(PropertyID pid) const;
+	IPIN		*getSibling() const;
 	char		*getURI() const;
 	uint32_t	getStamp() const;
 	RC			getPINValue(Value& res) const;
 	RC			getPINValue(Value& res,Session *ses) const;
 	bool		testClassMembership(ClassID,const Value *params=NULL,unsigned nParams=0) const;
 	bool		defined(const PropertyID *pids,unsigned nProps) const;
+	RC			isMemberOf(ClassID *&clss,unsigned& nclss);
 	IPIN		*clone(const Value *overwriteValues=NULL,unsigned nOverwriteValues=0,unsigned mode=0);
 	IPIN		*project(const PropertyID *properties,unsigned nProperties,const PropertyID *newProps=NULL,unsigned mode=0);
 	RC			modify(const Value *values,unsigned nValues,unsigned mode,const ElementID *eids,unsigned*);
@@ -178,6 +183,7 @@ public:
 	Session		*getSes() const {return ses;}
 	void		operator delete(void *p) {if (((PIN*)p)->ses!=NULL) ((PIN*)p)->ses->free(p);/* else ???*/}
 	RC			modify(const Value *pv,ulong epos,ulong eid,ulong flags,Session *ses);
+	void		setProps(const Value *pv,unsigned nv) {properties=(Value*)pv; nProperties=nv;}
 	const PageAddr& getAddr() const {return addr;}
 	__forceinline const Value *findProperty(PropertyID pid) const {return BIN<Value,PropertyID,ValCmp>::find(pid,properties,nProperties);}
 	ElementID	getPrefix(StoreCtx *ctx) const {return id.pid==STORE_INVALID_PID||id.ident==STORE_INVALID_IDENTITY?ctx->getPrefix():StoreCtx::genPrefix(ushort(id.pid>>48));}
@@ -288,6 +294,7 @@ public:
 	RC			getValues(Value *vals,unsigned nVals,const PID& id);
 	RC			getValue(Value& res,const PID& id,PropertyID,ElementID=STORE_COLLECTION_ID);
 	RC			getValue(Value& res,const PID& id);
+	RC			getPINClasses(ClassID *&clss,unsigned& nclss,const PID& id);
 	bool		isCached(const PID& id);
 	IPIN		*createUncommittedPIN(Value *values=NULL,unsigned nValues=0,unsigned mode=0,const PID *original=NULL);
 	RC			createPIN(PID& res,const Value values[],unsigned nValues,unsigned mode=0,const AllocCtrl* =NULL);

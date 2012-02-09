@@ -226,8 +226,7 @@ LSN LogMgr::insert(Session *ses,LRType type,ulong extra,PageID pid,const LSN *un
 
 	const void *pChunk=&logRec; size_t lChunk=sizeof(LogRec),lTotal=sizeof(LogRec)+lData; RC rc; bool fWrap=false;
 	for (;;) {
-		size_t available=ptrInsert<ptrWrite?ptrWrite-ptrInsert:
-						ptrInsert>ptrWrite||!fFull?logBufEnd-ptrInsert:0;
+		size_t available=ptrInsert<ptrWrite?ptrWrite-ptrInsert:ptrInsert>ptrWrite||!fFull?logBufEnd-ptrInsert:0;
 		if (available>0) {
 			size_t l=available<lChunk?available:lChunk; assert(ptrRead>=ptrInsert);
 			if (fWrap && ptrInsert==logBufBeg) wrapLSN=saveMaxLSN;
@@ -246,9 +245,7 @@ LSN LogMgr::insert(Session *ses,LRType type,ulong extra,PageID pid,const LSN *un
 			if ((lChunk-=l)==0) {pChunk=pData; lChunk=lData;} else pChunk=(byte*)pChunk+l;
 			if (!fFull) continue;
 		}
-		if ((rc=write())!=RC_OK) {
-			// ???
-		}
+		if ((rc=write())!=RC_OK) {ctx->theCB->state=SST_NO_SHUTDOWN; break;}
 		if (ses!=NULL && writtenLSN>=saveMaxLSN) ses->flushLSN=saveMaxLSN;
 		++nOverflow;
 	}

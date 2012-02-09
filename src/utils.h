@@ -66,6 +66,16 @@ __forceinline int pop8(unsigned char x)
 	return x + (x>>4) & 0x0f; 
 }
 
+template<typename T> __forceinline int cmp3(T x,T y)
+{
+	return (x>y)-(x<y);
+}
+
+template<typename T> __forceinline int sign(T x)
+{
+	return (x>0)-(x<0);
+}
+
 #ifndef LLONG_MAX
 #define	LLONG_MAX	9223372036854775807LL
 #endif
@@ -184,8 +194,6 @@ __forceinline uint32_t mv_rev(uint32_t u) {return mv_rot(u,8)&0x00FF00FF|mv_rot(
 #define	mv_enc64zz(a)	((a)<<1^int64_t(a)>>63)
 #define	mv_dec32zz(a)	int32_t(uint32_t(a)>>1^-int32_t((a)&1))
 #define	mv_dec64zz(a)	int64_t(uint64_t(a)>>1^-int64_t((a)&1))
-
-template<typename T> __forceinline int cmp3(T x,T y) {return (x>y)-(x<y);}
 
 template<typename T> class DefCmp
 {
@@ -795,10 +803,10 @@ public:
 	DynArray(MemAlloc *m) : ma(m),ts(tbuf),nTs(0),xTs(initSize) {}
 	~DynArray() {if (ts!=tbuf) ma->free(ts);}
 	RC operator+=(T t) {return nTs>=xTs && !expand() ? RC_NORESOURCES : (ts[nTs++]=t,RC_OK);}
-	RC operator-=(unsigned idx) {if (idx>=nTs) return RC_INVPARAM; if (idx+1<nTs) memcpy(ts+idx,ts+idx+1,(nTs-idx-1)*sizeof(T)); --nTs; return RC_OK;}
+	RC operator-=(unsigned idx) {if (idx>=nTs) return RC_INVPARAM; if (idx+1<nTs) memmove(ts+idx,ts+idx+1,(nTs-idx-1)*sizeof(T)); --nTs; return RC_OK;}
 	T* pop() {return nTs!=0?&ts[--nTs]:NULL;}
 	T& add() {return nTs>=xTs && !expand() ? *(T*)0 : ts[nTs++];}
-	T* get(uint32_t& n) {T *pt=NULL; if ((n=nTs)!=0) {if ((pt=ts)!=tbuf) ts=tbuf; else if ((pt=new(ma) T[nTs])!=NULL) memcpy(pt,ts,nTs*sizeof(T));} return pt;}
+	T* get(uint32_t& n) {T *pt=NULL; if ((n=nTs)!=0) {if ((pt=ts)!=tbuf) ts=tbuf; else if ((pt=new(ma) T[nTs])!=NULL) memcpy(pt,ts,nTs*sizeof(T)); nTs=0;} return pt;}
 	operator const T* () const {return ts;}
 	operator unsigned () const {return nTs;}
 	void clear() {if (ts!=tbuf) {ma->free(ts); ts=tbuf;} nTs=0; xTs=initSize;}

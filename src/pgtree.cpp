@@ -339,7 +339,7 @@ RC TreePageMgr::update(PBlock *pb,size_t len,ulong info,const byte *rec,size_t l
 		}
 		if (newData->len<=oldData->len) {
 			if (newData->len>0) memcpy(ptr+tpe->shift,rec+newData->offset,newData->len);
-			if (ulong(tpe->shift+oldData->len)<l) memcpy(ptr+tpe->shift+newData->len,ptr+tpe->shift+oldData->len,l-tpe->shift-oldData->len);
+			if (ulong(tpe->shift+oldData->len)<l) memmove(ptr+tpe->shift+newData->len,ptr+tpe->shift+oldData->len,l-tpe->shift-oldData->len);
 			tp->info.scatteredFreeSpace+=oldData->len-newData->len; if (vp!=NULL) vp->len-=oldData->len-newData->len;
 			break;
 		}
@@ -366,9 +366,9 @@ RC TreePageMgr::update(PBlock *pb,size_t len,ulong info,const byte *rec,size_t l
 			tp->findData(idx,ll,(const PagePtr**)&vp); assert(vp!=NULL && ulong(l+lElt)<=tp->info.freeSpaceLength);
 		}
 		vp->len=l+lElt; vp->offset=tp->info.freeSpace-=vp->len; tp->info.freeSpaceLength-=vp->len;
-		if (tpe->shift>0) memcpy((byte*)tp+tp->info.freeSpace,ptr,tpe->shift);
+		if (tpe->shift>0) memmove((byte*)tp+tp->info.freeSpace,ptr,tpe->shift);
 		memcpy((byte*)tp+tp->info.freeSpace+tpe->shift,rec+newData->offset,newData->len);
-		if (tpe->shift+oldData->len<l) memcpy((byte*)tp+tp->info.freeSpace+tpe->shift+newData->len,ptr+tpe->shift+oldData->len,l-tpe->shift-oldData->len);
+		if (tpe->shift+oldData->len<l) memmove((byte*)tp+tp->info.freeSpace+tpe->shift+newData->len,ptr+tpe->shift+oldData->len,l-tpe->shift-oldData->len);
 		if (fFree) free(ptr,SES_HEAP);
 		break;
 	case TRO_INIT:
@@ -896,7 +896,7 @@ RC TreePageMgr::update(PBlock *pb,size_t len,ulong info,const byte *rec,size_t l
 					for (ulong j=tp->info.nEntries; --j>=idx;) p[j]-=ushort(l+L_SHT*nd);
 					for (long k=(long)idx; --k>=0;) p[k]-=ushort(L_SHT*nd);
 				} else {
-					if (idx2<tp->info.nEntries) memcpy((byte*)(tp+1)+idx*l1,(byte*)(tp+1)+idx2*l1,(tp->info.nEntries-idx2)*l1);
+					if (idx2<tp->info.nEntries) memmove((byte*)(tp+1)+idx*l1,(byte*)(tp+1)+idx2*l1,(tp->info.nEntries-idx2)*l1);
 					l=ushort(l1*(idx2-idx));
 				}
 				tp->info.nEntries-=ushort(idx2-idx); tp->info.nSearchKeys-=ushort(idx2-idx); tp->info.freeSpaceLength+=l;
@@ -1091,7 +1091,7 @@ void TreePageMgr::TreePage::deleteValues(ushort l,PagePtr *vp,ushort off,bool fV
 			vp->len-=l; info.scatteredFreeSpace+=l;
 		}
 	} else if ((vp->len-=l)!=0) {
-		if (vp->len>off) memcpy(ptr,ptr+l,vp->len-off);
+		if (vp->len>off) memmove(ptr,ptr+l,vp->len-off);
 		info.scatteredFreeSpace+=l;
 	} else if (vp->offset!=info.freeSpace) info.scatteredFreeSpace+=l;
 	else {info.freeSpace+=l; info.freeSpaceLength+=l;}
@@ -1141,7 +1141,7 @@ RC TreePageMgr::TreePage::adjustCount(byte *ptr,PagePtr *vp,ulong idx,const byte
 		else if (vp->len>=256) {
 			int k=nKeys((const byte*)this+vp->offset),dk=(k+1)*(L_SHT-1); byte *to=(byte*)this+vp->offset,*from=to;
 			for (int j=0; j<=k; ++j,from+=L_SHT,++to) {ushort sh=_u16(from); *to=byte(sh-dk+(sh>sht?dl:0));}
-			memcpy((byte*)this+vp->offset+k+1,(byte*)this+vp->offset+(k+1)*L_SHT,vp->len-(k+1)*L_SHT+dl);
+			memmove((byte*)this+vp->offset+k+1,(byte*)this+vp->offset+(k+1)*L_SHT,vp->len-(k+1)*L_SHT+dl);
 			info.scatteredFreeSpace+=dk; dl-=dk;
 		} else {
 			byte *to=(byte*)this+vp->offset,*from=to; int k=*to,dk=k*(L_SHT-1);
@@ -1265,6 +1265,7 @@ RC TreePageMgr::undo(ulong info,const byte *rec,size_t lrec,PageID pid)
 				op=TRO_UPDATE; oldV=rec+sizeof(uint16_t); ol=*(uint16_t*)rec;
 				newV=oldV+ol; nl=ushort(lrec-ol-sizeof(uint16_t)-rec[lrec-3]);
 				break;
+			case TRO_UPDATE: op=TRO_INSERT;
 			case TRO_INSERT: case TRO_DELETE:
 				tpm=(const TreePageModify*)rec; if ((tpm->oldData.len|tpm->newData.len)!=0) return RC_CORRUPTED;
 				newV=(byte*)(tpm+1); nl=SearchKey::keyLenP(newV); if (op==TRO_DELETE) {oldV=newV; ol=nl; newV=NULL; nl=0;}
@@ -1990,7 +1991,7 @@ RC TreePageMgr::insert(TreeCtx& tctx,const SearchKey& key,const void *value,usho
 	}
 
 	ulong spaceLeft=tp->info.freeSpaceLength+tp->info.scatteredFreeSpace;
-	if (lInsert+lExtra>spaceLeft || idx==tp->info.nEntries && lInsert+lExtra+lKey>=spaceLeft) {
+	if (lInsert+lExtra>spaceLeft || tp->info.nEntries!=0 && idx==tp->info.nEntries && lInsert+lExtra+lKey>=spaceLeft) {
 		bool fSplit=true;
 		if (tp->info.nSearchKeys==1 && !tp->info.fmt.isUnique()) {
 			const PagePtr *pp=(const PagePtr*)((byte*)(tp+1)+tp->info.keyLength());

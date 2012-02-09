@@ -161,9 +161,10 @@ PBlock *BufMgr::newPage(PageID pid,PageMgr *pageMgr,PBlock *old,ulong flags,Sess
 	return pb;
 }
 
-RC BufMgr::flushAll(bool fWait)
+RC BufMgr::flushAll(uint64_t timeout)
 {
-	myaio **pcbs; RC rc=RC_OK; int cnt,ncbs;
+	if (ctx->theCB->state==SST_NO_SHUTDOWN) return RC_OK;
+	myaio **pcbs; RC rc=RC_OK; int cnt,ncbs; TIMESTAMP start,current; getTimestamp(start);
 	if (dirtyCount!=0) {
 		if ((pcbs=(myaio**)ctx->malloc((ncbs=dirtyCount)*sizeof(myaio*)))==NULL) return RC_NORESOURCES;
 		do {
@@ -180,13 +181,23 @@ RC BufMgr::flushAll(bool fWait)
 						if (rc!=RC_OK) endSave(pb); else {pb->fillaio(LIO_WRITE,NULL); pcbs[cnt++]=pb->aio;}
 					}
 				}
-			pageLock.unlock(); if (cnt==0) break;
-			if (flushLSN.isNull() || (rc=ctx->logMgr->flushTo(flushLSN))==RC_OK) rc=ctx->fileMgr->listIO(LIO_WAIT,cnt,pcbs);
-			for (int i=0; i<cnt; i++) pcbs[i]->aio_pb->writeResult(rc);
+			pageLock.unlock(); 
+			if (cnt!=0) {
+				if (flushLSN.isNull() || (rc=ctx->logMgr->flushTo(flushLSN))==RC_OK) rc=ctx->fileMgr->listIO(LIO_WAIT,cnt,pcbs);
+				for (int i=0; i<cnt; i++) pcbs[i]->aio_pb->writeResult(rc);
+			} else {
+				getTimestamp(current);
+				if (current-start>timeout) return RC_TIMEOUT;
+				if (asyncWriteCount!=0) threadYield();
+			}
 		} while (rc==RC_OK && dirtyCount!=0);
 		ctx->free(pcbs);
 	}
-	if (fWait) while (asyncWriteCount+asyncReadCount!=0) threadYield();	// check timeout too!
+	while (asyncWriteCount+asyncReadCount!=0) {
+		getTimestamp(current);
+		if (current-start>timeout) return RC_TIMEOUT;
+		threadYield();
+	}
 	return rc;
 }
 
@@ -248,12 +259,12 @@ LogDirtyPages *BufMgr::getDirtyPageInfo(LSN old,LSN& redo,PageID *asyncPages,ulo
 			assert(cnt<dirtyCount);
 			if ((ldp->pages[cnt].redo=pb->redoLSN)<redo) redo=pb->redoLSN;
 			ldp->pages[cnt].pageID=pb->pageID; cnt++;
-			if (!pb->isDependent() && pb->redoLSN<=old && (flushLSN!=NULL && nAsyncPages<maxAsyncPages||pb->redoLSN<flushLSN[nAsyncPages-1])) {
+			if (flushLSN!=NULL && !pb->isDependent() && pb->redoLSN<=old && (nAsyncPages<maxAsyncPages||pb->redoLSN<flushLSN[nAsyncPages-1])) {
 				ulong n=nAsyncPages,base=0,k=0;
 				while (n!=0) {
 					LSN lsn=flushLSN[(k=n>>1)+base];
 					if (lsn>pb->redoLSN || lsn==pb->redoLSN && asyncPages[k+base]<pb->pageID) n=k; 
-					else {base+=k+1; n-=k+1;}
+					else {base+=k+1; n-=k+1; k=0;}
 				}
 				if ((k+=base)<nAsyncPages && (n=nAsyncPages<maxAsyncPages?nAsyncPages-k:nAsyncPages-k-1)>0) {
 					memmove(&asyncPages[k+1],&asyncPages[k],n*sizeof(PageID));
@@ -289,8 +300,8 @@ void BufMgr::writeAsyncPages(const PageID *asyncPages,ulong nAsyncPages)
 	if (cnt>0) {
 		if (!flushLSN.isNull() && (rc=ctx->logMgr->flushTo(flushLSN))!=RC_OK)
 			for (ulong i=0; i<cnt; i++) {--asyncWriteCount; pcbs[i]->aio_pb->writeResult(rc);}
-		else
-			ctx->fileMgr->listIO(LIO_NOWAIT,cnt,pcbs);
+		 else 
+			 ctx->fileMgr->listIO(LIO_NOWAIT,cnt,pcbs);
 	}
 }
 

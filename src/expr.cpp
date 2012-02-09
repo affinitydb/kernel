@@ -176,7 +176,6 @@ RC ExprCompileCtx::result(Expr *&res)
 	res->hdr.lExpr=sizeof(ExprHdr)+res->hdr.lProps+lCode; return RC_OK;
 }
 
-
 RC ExprCompileCtx::compileNode(const ExprTree *node,ulong flg)
 {
 	unsigned i,j; RC rc; byte *p; uint32_t lbl; const Value *pv; Value w;
@@ -225,6 +224,8 @@ RC ExprCompileCtx::compileNode(const ExprTree *node,ulong flg)
 	case OP_RSHIFT:
 		if ((node->flags&UNSIGNED_OP)!=0) {f|=CND_UNS; l++;}
 		break;
+	case OP_STRUCT: case OP_PIN: 
+		flg|=CV_PROP; break;
 	case OP_PATH:
 		return RC_INTERNAL;
 		pHdr->hdr.flags|=EXPR_PATH;
@@ -344,6 +345,7 @@ RC ExprCompileCtx::compileValue(const Value& v,ulong flg) {
 	case VT_EXPRTREE: return compileNode((const ExprTree*)v.exprt);
 	case VT_VARREF:
 		if ((pdx=v.refV.flags&VAR_TYPE_MASK)!=0) {
+			assert(v.refV.flags!=0xFFFF);
 			if (pdx==VAR_PARAM) pHdr->hdr.flags|=EXPR_PARAMS;
 			if ((pdx=(pdx>>13)-1)<4 && v.refV.refN<0x3F) {
 				if ((p=alloc(2))!=NULL) {p[0]=OP_PARAM|fc; p[1]=byte(v.refV.refN|pdx<<6);} else return RC_NORESOURCES;
@@ -389,6 +391,14 @@ RC ExprCompileCtx::compileValue(const Value& v,ulong flg) {
 	default:
 		if ((l=(uint32_t)MVStoreKernel::serSize(v))==0) return RC_TYPE; if ((p=alloc(l+1))==NULL) return RC_NORESOURCES;
 		*p=OP_CON|fc; MVStoreKernel::serialize(v,p+1); break;
+	}
+	if ((flg&CV_PROP)!=0) {
+		if (v.property==STORE_INVALID_PROPID) return RC_INTERNAL;
+		if ((rc=addExtRef(v.property,0,PROP_OPTIONAL|PROP_NO_LOAD,pdx))!=RC_OK) return rc;
+		fc=v.meta!=0?0x80:0; const bool fExt=pdx>0x3F; l=fExt?5:2;
+		if ((p=alloc(l+(fc!=0?1:0)))==NULL) return RC_NORESOURCES; p[0]=OP_SETPROP|fc;
+		if (!fExt) p[1]=byte(pdx); else {p[1]=0xFF; p[2]=0; p[3]=byte(pdx); p[4]=byte(pdx>>8);}
+		if (fc!=0) p[l]=v.meta;
 	}
 	if (++lStack>pHdr->hdr.lStack) pHdr->hdr.lStack=lStack; return RC_OK;
 }
@@ -522,11 +532,13 @@ RC Expr::decompile(ExprTree*&res,Session *ses) const
 			top++; break;
 		case OP_VAR: case OP_PROP: case OP_ELT:
 			if (top>=end) {rc=RC_NORESOURCES; break;}
+		case OP_SETPROP:
 			idx=*codePtr++;
 			if (op==OP_VAR) l=STORE_INVALID_PROPID;
 			else {
 				if (idx!=0xFF) {l=idx&0x3F; idx>>=6;} else {idx=codePtr[0]; l=codePtr[1]|codePtr[2]<<8; codePtr+=3;}
 				getExtRefs((ushort)idx,pids,nPids); if (l<nPids) l=pids[l]&STORE_MAX_URIID; else {rc=RC_CORRUPTED; break;}
+				if (op==OP_SETPROP) {if (top>stack) {top[-1].property=l; if (ff) top[-1].meta=*codePtr++;} else rc=RC_CORRUPTED; break;}
 			}
 			top->setVarRef((byte)idx,l); if (op==OP_ELT) {ElementID eid; mv_dec32(codePtr,eid); top->eid=mv_dec32zz(eid);}
 			if (ff) {if ((exp=new(1,ses) ExprTree(OP_COUNT,1,0,0,top,ses))!=NULL) top->set(exp); else rc=RC_NORESOURCES;}
@@ -1055,8 +1067,8 @@ RC ExprTree::forceExpr(Value& v,Session *ses,bool fCopyV)
 
 RC ExprTree::normalizeArray(Value *vals,unsigned nvals,Value& res,MemAlloc *ma,StoreCtx *ctx)
 {
-	unsigned firstExpr=~0u,nExpr=0; bool fNested=false; unsigned cnt=nvals;
-	RC rc; Value *pv=new(ma) Value[cnt]; if (pv==NULL) return RC_NORESOURCES;
+	unsigned nExpr=0; bool fNested=false; unsigned cnt=nvals; RC rc;
+	Value *pv=new(ma) Value[cnt]; if (pv==NULL) return RC_NORESOURCES;
 	ElementID prefix=ctx!=NULL?ctx->getPrefix():0; const HEAP_TYPE ht=ma!=NULL?ma->getAType():NO_HEAP;
 	memcpy(pv,vals,nvals*sizeof(Value));
 	for (unsigned start=0;;) {
@@ -1066,7 +1078,7 @@ RC ExprTree::normalizeArray(Value *vals,unsigned nvals,Value& res,MemAlloc *ma,S
 			default: pv[i].eid=prefix+i; break;
 			case VT_ARRAY: extra+=pv[i].length-1; if (s0==~0u) s0=i; continue;
 			case VT_COLLECTION: extra+=pv[i].nav->count()-1; if (s0==~0u) s0=i; continue;
-			case VT_EXPRTREE: case VT_VARREF: case VT_CURRENT: if (i<firstExpr) firstExpr=i; nExpr++; break;
+			case VT_EXPRTREE: case VT_VARREF: case VT_CURRENT: nExpr++; break;
 			}
 			if (ma!=NULL && (pv[i].flags&HEAP_TYPE_MASK)!=ht && (rc=copyV(pv[i],pv[i],ma))!=RC_OK) return rc;	// cleanup
 		}
@@ -1097,7 +1109,31 @@ RC ExprTree::normalizeArray(Value *vals,unsigned nvals,Value& res,MemAlloc *ma,S
 	return RC_OK;
 }
 
-
+RC ExprTree::normalizeStruct(Value *vals,unsigned nvals,Value &res,MemAlloc *ma)
+{
+	unsigned nExpr=0; RC rc; const HEAP_TYPE ht=ma!=NULL?ma->getAType():NO_HEAP;
+	Value *pv=new(ma) Value[nvals]; if (pv==NULL) return RC_NORESOURCES;
+	memcpy(pv,vals,nvals*sizeof(Value));
+	// sort by property, check repeating properties
+	for (unsigned i=0; i<nvals; i++) {
+		switch (pv[i].type) {
+		default: break;
+		case VT_EXPRTREE: case VT_VARREF: case VT_CURRENT: nExpr++; break;
+		}
+		if (ma!=NULL && (pv[i].flags&HEAP_TYPE_MASK)!=ht && (rc=copyV(pv[i],pv[i],ma))!=RC_OK) return rc;	// cleanup
+	}
+	if (nExpr==0) res.set(pv,nvals);
+	else {
+		// vref?
+		ExprTree *et=NULL;
+		if (nvals>=256) {
+			//... split to OP_ARRAYs
+		} else if ((et=new(nvals,ma) ExprTree(OP_STRUCT,(ushort)nvals,0,0,pv,ma))==NULL) {freeV(pv,nvals,ma); return RC_NORESOURCES;}
+		res.set(et);
+	}
+	res.flags=ma->getAType();
+	return RC_OK;
+}
 
 ExprTree::ExprTree(ExprOp o,ushort no,ushort vr,ulong f,const Value *ops,MemAlloc *m) 
 	: ma(m),op(o),nops(no),vrefs(vr),flags((ushort)f)

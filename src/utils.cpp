@@ -1397,7 +1397,7 @@ RC PageSet::add(PageID from,PageID to)
 			assert(prev>=chunks||next<end);
 			if ((pc=prev+1)<next) {
 				for (PageSetChunk *p=pc; p<next; p++) {assert(nPages>=p->npg); nPages-=p->npg; if (p->bmp!=NULL) ma->free(p->bmp);}
-				if (next<end) memcpy(pc,next,(byte*)end-(byte*)next); nChunks-=ulong(next-pc); next=pc;
+				if (next<end) memmove(pc,next,(byte*)end-(byte*)next); nChunks-=ulong(next-pc); next=pc;
 			}
 			assert(prev+1==next);
 			if (prev>=chunks) {
@@ -1420,7 +1420,7 @@ RC PageSet::add(PageID from,PageID to)
 							if (next->bmp==NULL) {
 								ulong overlap=prev->to>=next->from?prev->to-next->from+1:0;
 								prev->npg+=next->npg-overlap; nPages-=overlap; prev->to=next->to;
-								if (next+1<end) memcpy(next,next+1,(byte*)end-(byte*)(next+1));
+								if (next+1<end) memmove(next,next+1,(byte*)end-(byte*)(next+1));
 								nChunks--;
 							} else {
 								assert(0 && "PageSet::add 2");
@@ -1501,7 +1501,7 @@ RC PageSet::operator-=(PageID pid)
 		else {
 			if (ch.to==ch.from) {
 				if (ch.bmp!=NULL) ma->free(ch.bmp);
-				if (base+k<--nChunks) memcpy(&ch,&ch+1,(nChunks-base-k)*sizeof(PageSetChunk));
+				if (base+k<--nChunks) memmove(&ch,&ch+1,(nChunks-base-k)*sizeof(PageSetChunk));
 			} else if (ch.bmp==NULL) {
 				if (ch.from==pid) {ch.from++; ch.npg--;} 
 				else if (ch.to==pid) {ch.to--; ch.npg--;}
@@ -1533,7 +1533,7 @@ RC PageSet::operator-=(PageID pid)
 					ulong idx=0,end=ch.to/SZ_BMP-ch.from/SZ_BMP;
 					for (ch.bmp[0]&=~(1<<pid%SZ_BMP); ch.bmp[idx]==0; idx++) assert(idx+1<=end);
 					ch.from=ch.from-ch.from%SZ_BMP+idx*SZ_BMP+ntz(ch.bmp[idx]);
-					if (idx>0) memcpy(&ch.bmp[0],&ch.bmp[idx],(end-idx+1)*sizeof(uint32_t));
+					if (idx>0) memmove(&ch.bmp[0],&ch.bmp[idx],(end-idx+1)*sizeof(uint32_t));
 					if (idx>10) ch.bmp=(uint32_t*)ma->realloc(ch.bmp,(end-idx+1)*sizeof(uint32_t));
 				}
 			} else if ((ch.bmp[pid/SZ_BMP-ch.from/SZ_BMP]&1<<pid%SZ_BMP)!=0) {

@@ -88,6 +88,7 @@ public:
 			++nStores;
 	}
 	~StoreCtx();
+	void						operator delete(void *p);
 	static	StoreCtx			*createCtx(ulong,bool fNew=false);
 	static	StoreCtx			*get() {return (StoreCtx*)storeTls.get();}
 	void						set() {storeTls.set(this);}
@@ -173,7 +174,7 @@ public:
 
 enum PurgeType
 {
-	TXP_PIN, TXP_IDS, TXP_SSV
+	TXP_PIN, TXP_SSV
 };
 
 struct TxPurge

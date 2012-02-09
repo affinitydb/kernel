@@ -393,74 +393,84 @@ RC FileIOOSX::growFile(FileID file, off64_t newSize)
 
 RC FileIOOSX::listIO(int mode,int nent,iodesc* const* pcbs)
 {
-	lock.lock(RW_S_LOCK); int i; RC rc=RC_OK;
-	aiocb64 **adescs=(aiocb64**)alloca(sizeof(aiocb64*)*nent); if (adescs==NULL) {lock.unlock(); return RC_NORESOURCES;}
-	for (i=0; i<nent; i++) if (pcbs[i]!=NULL && pcbs[i]->aio_lio_opcode!=LIO_NOP) {
-		assert(pcbs[i]->aio_nbytes>0);
-		assert(pcbs[i]->aio_buf!=NULL);
-		FileID fid = pcbs[i]->aio_fildes;
-		pcbs[i]->aio_rc = RC_OK;
-		adescs[i]=(aiocb64*)freeAio64.alloc(sizeof(aiocb64)); if (adescs[i]==NULL){lock.unlock();return RC_NORESOURCES;}
-		memset(adescs[i],0,sizeof(aiocb64));
-		if (fid>=xSlotTab || !slotTab[fid].isOpen()) {rc=pcbs[i]->aio_rc=RC_INVPARAM; adescs[i]->aio_lio_opcode=LIO_NOP;}
-		else if (pcbs[i]->aio_lio_opcode==LIO_READ && (off64_t)(pcbs[i]->aio_nbytes+pcbs[i]->aio_offset)>slotTab[fid].fileSize
-			&& (off64_t)(pcbs[i]->aio_nbytes+pcbs[i]->aio_offset)>(slotTab[fid].fileSize=getFileSz(slotTab[fid].osFile))) {
-             /*linux doesn't fail for reads beyond EOF*/
-			rc=pcbs[i]->aio_rc=RC_EOF; adescs[i]->aio_lio_opcode=LIO_NOP;
-		} else { 
-		    adescs[i]->aio_fildes = slotTab[fid].osFile; 
-			adescs[i]->aio_lio_opcode=pcbs[i]->aio_lio_opcode;
-			if ((off64_t)(pcbs[i]->aio_nbytes+pcbs[i]->aio_offset)>slotTab[fid].fileSize) slotTab[fid].fSize=false;
-		}
+	lock.lock(RW_S_LOCK); int i; RC rc=RC_OK; aiocb64 **adescs=NULL;
+	try {
+		if ((adescs=(aiocb64**)alloca(sizeof(aiocb64*)*nent))==NULL) {lock.unlock(); throw RC_NORESOURCES;}
+		memset(adescs,0,sizeof(aiocb64*)*nent);
+		for (i=0; i<nent; i++) if (pcbs[i]!=NULL && pcbs[i]->aio_lio_opcode!=LIO_NOP) {
+			assert(pcbs[i]->aio_nbytes>0);
+			assert(pcbs[i]->aio_buf!=NULL);
+			FileID fid = pcbs[i]->aio_fildes;
+			pcbs[i]->aio_rc = RC_OK;
+			adescs[i]=(aiocb64*)freeAio64.alloc(sizeof(aiocb64)); if (adescs[i]==NULL){lock.unlock(); throw RC_NORESOURCES;}
+			memset(adescs[i],0,sizeof(aiocb64));
+			if (fid>=xSlotTab || !slotTab[fid].isOpen()) {rc=pcbs[i]->aio_rc=RC_INVPARAM; adescs[i]->aio_lio_opcode=LIO_NOP;}
+			else if (pcbs[i]->aio_lio_opcode==LIO_READ && (off64_t)(pcbs[i]->aio_nbytes+pcbs[i]->aio_offset)>slotTab[fid].fileSize
+				&& (off64_t)(pcbs[i]->aio_nbytes+pcbs[i]->aio_offset)>(slotTab[fid].fileSize=getFileSz(slotTab[fid].osFile))) {
+	             /*linux doesn't fail for reads beyond EOF*/
+				rc=pcbs[i]->aio_rc=RC_EOF; adescs[i]->aio_lio_opcode=LIO_NOP;
+			} else { 
+				adescs[i]->aio_fildes = slotTab[fid].osFile; 
+				adescs[i]->aio_lio_opcode=pcbs[i]->aio_lio_opcode;
+				if ((off64_t)(pcbs[i]->aio_nbytes+pcbs[i]->aio_offset)>slotTab[fid].fileSize) slotTab[fid].fSize=false;
+			}
         
-        adescs[i]->aio_nbytes=pcbs[i]->aio_nbytes;
-		adescs[i]->aio_buf=pcbs[i]->aio_buf;
-		adescs[i]->aio_offset=pcbs[i]->aio_offset;        
-        // cout << "\n!!!DEBUG===> FileIOOSX::listIO :: prepare aio bytes: " << adescs[i]->aio_nbytes << " mode: " << mode << "\n";
-        if (mode==LIO_WAIT)
-		    adescs[i]->aio_sigevent.sigev_notify = SIGEV_NONE;
-		else{
-           // cout << "\n!!!DEBUG===> FileIOOSX::listIO :: prepare Async sig! \n";
-            adescs[i]->aio_sigevent.sigev_notify			= SIGEV_SIGNAL;
-            adescs[i]->aio_sigevent.sigev_signo			    = SIGPIAIO;
-            adescs[i]->aio_sigevent.sigev_value.sival_ptr	= (void *)pcbs[i];
-            pcbs[i]->aio_ptr[pcbs[i]->aio_ptrpos++]	        = adescs[i];      //aiocb64*...
-            pcbs[i]->aio_ptr[pcbs[i]->aio_ptrpos++]	        = this;
+	        adescs[i]->aio_nbytes=pcbs[i]->aio_nbytes;
+			adescs[i]->aio_buf=pcbs[i]->aio_buf;
+			adescs[i]->aio_offset=pcbs[i]->aio_offset;        
+	        // cout << "\n!!!DEBUG===> FileIOOSX::listIO :: prepare aio bytes: " << adescs[i]->aio_nbytes << " mode: " << mode << "\n";
+		    if (mode==LIO_WAIT)
+			    adescs[i]->aio_sigevent.sigev_notify = SIGEV_NONE;
+			else{
+		       // cout << "\n!!!DEBUG===> FileIOOSX::listIO :: prepare Async sig! \n";
+			    adescs[i]->aio_sigevent.sigev_notify			= SIGEV_SIGNAL;
+				adescs[i]->aio_sigevent.sigev_signo			    = SIGPIAIO;
+	            adescs[i]->aio_sigevent.sigev_value.sival_ptr	= (void *)pcbs[i];
+		        pcbs[i]->aio_ptr[pcbs[i]->aio_ptrpos++]	        = adescs[i];      //aiocb64*...
+			    pcbs[i]->aio_ptr[pcbs[i]->aio_ptrpos++]	        = this;
             
-            adescs[i]->aio_sigevent.sigev_notify_attributes = NULL;
-        }
+				adescs[i]->aio_sigevent.sigev_notify_attributes = NULL;
+	        }
 
 #if defined(_POSIX_PRIORITIZED_IO) && defined(_POSIX_PRIORITY_SCHEDULING)
-//TODO?		if (mode==LIO_NOWAIT) adescs[i]->aio_reqprio=AIO_PRIO_DELTA_MAX;
+//TODO?			if (mode==LIO_NOWAIT) adescs[i]->aio_reqprio=AIO_PRIO_DELTA_MAX;
 #endif
-	}
-	lock.unlock();
+		}
+		lock.unlock();
 
-    sigset_t omask; 
+		sigset_t omask; 
     
-	if (mode==LIO_WAIT) pthread_sigmask(SIG_BLOCK,&sigSIO,&omask);
+		if (mode==LIO_WAIT) pthread_sigmask(SIG_BLOCK,&sigSIO,&omask);
 
-	for (i=0; i<nent; i++) if (pcbs[i]!=NULL && adescs[i]!=NULL) {
+		for (i=0; i<nent; i++) if (pcbs[i]!=NULL && adescs[i]!=NULL) {
         
-        if (adescs[i]->aio_lio_opcode==LIO_NOP) {asyncIOCallback(pcbs[i]); freeAio64.dealloc(adescs[i]); adescs[i]=NULL; continue;}
+			if (adescs[i]->aio_lio_opcode==LIO_NOP) {asyncIOCallback(pcbs[i]); freeAio64.dealloc(adescs[i]); adescs[i]=NULL; continue;}
         
-        if (mode==LIO_WAIT) {
+	        if (mode==LIO_WAIT) {
+        
+	            if( !(--FileIOOSX::lioAQueue.aioCnt)) //returns 0, if AIO_LIMIT_MAX is reached...
+						threadYield(); 
+				rc = aio_listIO(mode, &adescs[i], 1); //will return after physical IO is done
+				++FileIOOSX::lioAQueue.aioCnt;
             
-            if( !(--FileIOOSX::lioAQueue.aioCnt)) //returns 0, if AIO_LIMIT_MAX is reached...
-					threadYield(); 
-			rc = aio_listIO(mode, &adescs[i], 1); //will return after physical IO is done
-            ++FileIOOSX::lioAQueue.aioCnt;
+	            if( RC_OK != rc) return rc;
             
-            if( RC_OK != rc) return rc;
-            
-        }else if ( mode == LIO_NOWAIT) {
-           // Remembering the pointer for later processing within AsyncReqQ::asyncOSXFinalize(...)
-           // OSX specific since the later cannot provide the aio pointer within signal context.
-		   // OSX allows only the limitted number of aio(s), submitted at the same time to the kernel;
-		   // The ring queue below is taking care about that
-           FileIOOSX::lioAQueue.add((void *)pcbs[i]);
-		 }
-    }
+		    }else if ( mode == LIO_NOWAIT) {
+				// Remembering the pointer for later processing within AsyncReqQ::asyncOSXFinalize(...)
+				// OSX specific since the later cannot provide the aio pointer within signal context.
+				// OSX allows only the limitted number of aio(s), submitted at the same time to the kernel;
+				// The ring queue below is taking care about that
+	           FileIOOSX::lioAQueue.add((void *)pcbs[i]);
+			 }
+		}
+	} catch (RC rc2) {
+		rc=rc2;
+		for (i=0; i<nent; i++) {
+			pcbs[i]->aio_rc=rc2;
+			if (mode!=LIO_WAIT) asyncIOCallback(pcbs[i]);
+			if (adescs!=NULL && adescs[i]!=NULL) freeAio64.dealloc(adescs[i]);
+		}
+	}
     return rc;
 }
 /*

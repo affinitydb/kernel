@@ -259,13 +259,12 @@ RC Stmt::addOutputNoCopy(QVarID var,Value *os,unsigned nO)
 	if (!fGroup && qv->nOuts==0 && nO==1 && os[0].type==VT_EXPRTREE && ((ExprTree*)os[0].exprt)->op==OP_COUNT && ((ExprTree*)os[0].exprt)->operands[0].type==VT_ANY) {
 		qv->stype=SEL_COUNT; freeV(os[0]);
 	} else {
-		qv->outs[qv->nOuts].vals=os; qv->outs[qv->nOuts].nValues=nO; ++qv->nOuts;
 		unsigned nConst=0,nAgg=0,nVRef=0; StoreCtx *ctx=NULL;
 		for (unsigned i=0; i<nO; i++) {
-			Value &vv=os[i]; RC rc;
+			Value &vv=os[i]; RC rc; assert(vv.type!=VT_VARREF || vv.refV.flags!=0xFFFF);
 			if (vv.type==VT_EXPRTREE) {
 				ExprTree *et=(ExprTree*)vv.exprt; Expr *exp;
-				if (et->op==OP_CAST && et->operands[0].type==VT_VARREF) {vv=et->operands[0]; vv.refV.type=(byte)et->operands[1].ui; ma->free(et);}
+				if (et->op==OP_CAST && et->operands[0].type==VT_VARREF) {vv=et->operands[0]; vv.refV.type=(ushort)et->operands[1].ui; ma->free(et);}
 				else if (et->nops==1 && et->op<OP_ALL && (SInCtx::opDscr[et->op].flags&_A)!=0 && qv->aggrs.nValues<256) {
 					if ((qv->aggrs.vals=(Value*)ma->realloc((Value*)qv->aggrs.vals,(qv->aggrs.nValues+1)*sizeof(Value)))==NULL) return RC_NORESOURCES;
 					Value &to=((Value*)qv->aggrs.vals)[qv->aggrs.nValues];
@@ -291,6 +290,7 @@ RC Stmt::addOutputNoCopy(QVarID var,Value *os,unsigned nO)
 			qsort(os,nO,sizeof(Value),cmpPropIDs);
 			for (unsigned i=1; i<nO; i++) if (os[i-1].property==os[i].property) return RC_INVPARAM;
 		}
+		qv->outs[qv->nOuts].vals=os; qv->outs[qv->nOuts].nValues=nO; ++qv->nOuts;
 		if (qv->nOuts>1) qv->stype=SEL_COMP_DERIVED;	// SEL_COMPOUND?
 		else if (nConst==nO) qv->stype=SEL_CONST;
 		else if (nAgg==nO) qv->stype=fGroup?nO==1?SEL_VALUESET:SEL_DERIVEDSET:nO==1?SEL_VALUE:SEL_DERIVED;
@@ -385,7 +385,7 @@ RC Stmt::setJoinProperties(QVarID var,const PropertyID *props,unsigned nProps)
 {
 	try {
 		// shutdown ???
-		QVar *qv=findVar(var); if (qv==NULL) return RC_NOTFOUND; if (qv->type>QRY_OUTERJOIN) return RC_INVOP;
+		QVar *qv=findVar(var); if (qv==NULL) return RC_NOTFOUND; if (qv->type>QRY_FULL_OUTER_JOIN) return RC_INVOP;
 		JoinVar *jv=(JoinVar*)qv; if (jv->nVars!=2) return RC_INVOP; CondEJ *ej;
 		for (unsigned i=nProps; i--!=0; ) {
 			if ((ej=new(ma) CondEJ(props[i],props[i],0))==NULL) return RC_NORESOURCES;
@@ -839,7 +839,7 @@ RC Stmt::connectVars()
 {
 	SetOpVar *sv; JoinVar *jv; unsigned i; QVar *qv;
 	for (qv=vars; qv!=NULL; qv=qv->next) switch (qv->type) {
-	case QRY_JOIN: case QRY_LEFTJOIN: case QRY_RIGHTJOIN: case QRY_OUTERJOIN:
+	case QRY_SEMIJOIN: case QRY_JOIN: case QRY_LEFT_OUTER_JOIN: case QRY_RIGHT_OUTER_JOIN: case QRY_FULL_OUTER_JOIN:
 		for (i=0,jv=(JoinVar*)qv; i<jv->nVars; i++) {
 			QVar *q=jv->vars[i].var=findVar(jv->vars[i].varID);
 			if (q==NULL || q->fHasParent) return RC_CORRUPTED;
@@ -1014,7 +1014,7 @@ RC QVar::deserialize(const byte *&buf,const byte *const ebuf,MemAlloc *ma,QVar *
 	switch (type) {
 	default: return RC_CORRUPTED;
 	case QRY_SIMPLE: rc=SimpleVar::deserialize(buf,ebuf,id,ma,res); break;
-	case QRY_JOIN: case QRY_LEFTJOIN: case QRY_RIGHTJOIN: case QRY_OUTERJOIN:
+	case QRY_SEMIJOIN: case QRY_JOIN: case QRY_LEFT_OUTER_JOIN: case QRY_RIGHT_OUTER_JOIN: case QRY_FULL_OUTER_JOIN:
 		rc=JoinVar::deserialize(buf,ebuf,id,type,ma,res); break;
 	case QRY_UNION: case QRY_EXCEPT: case QRY_INTERSECT:
 		rc=SetOpVar::deserialize(buf,ebuf,id,type,ma,res); break;

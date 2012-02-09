@@ -115,11 +115,21 @@ const static struct UnitDscr
 	{"dF",					"degrees Fahrenheit",	0x37787777,		0.5555555555556,	255.3722222}, 
 };
 
+RC MVStoreKernel::convUnits(QualifiedValue& q, Units u)
+{
+	if (q.units!=u && q.units!=Un_NDIM) {
+		const UnitDscr& pd1=unitDscrs[q.units],&pd2=unitDscrs[u];
+		if (pd1.dims!=pd2.dims) return RC_TYPE;
+		q.d=(q.d*pd1.factor+pd1.shift-pd2.shift)/pd2.factor;
+	}
+	q.units=u; return RC_OK;
+}
+
 bool MVStoreKernel::compatible(QualifiedValue& q1, QualifiedValue& q2)
 {
 	if (q1.units==q2.units || q1.units==Un_NDIM || q2.units==Un_NDIM) return true;
-	if (q1.units>=Un_ALL || q2.units>=Un_ALL || unitDscrs[q1.units].dims!=unitDscrs[q2.units].dims) return false;
-	const UnitDscr& pd1=unitDscrs[q1.units],&pd2=unitDscrs[q2.units];
+	if (q1.units>=Un_ALL || q2.units>=Un_ALL) return false;
+	const UnitDscr& pd1=unitDscrs[q1.units],&pd2=unitDscrs[q2.units]; if (pd1.dims!=pd2.dims) return false;
 	if (pd1.factor==1. && pd1.shift==0.) {q2.d=q2.d*pd2.factor+pd2.shift; q2.units=q1.units;}
 	else if (pd2.factor==1.) {q1.d=q1.d*pd1.factor+pd1.shift-pd2.shift; q1.units=q2.units;}
 	else {q2.d=(q2.d*pd2.factor+pd2.shift-pd1.shift)/pd1.factor; q2.units=q1.units;}
@@ -153,4 +163,14 @@ Units MVStoreKernel::getUnits(const char *suffix,size_t l)
 	if (suffix!=NULL && l!=0) for (unsigned i=1; i<sizeof(unitDscrs)/sizeof(unitDscrs[0]); i++)
 		if (!strncmp(unitDscrs[i].shortName,suffix,l) && unitDscrs[i].shortName[l]=='\0') return (Units)i;
 	return Un_NDIM;
+}
+
+const char *MVStoreKernel::getUnitName(Units u)
+{
+	return u<Un_ALL?unitDscrs[u].shortName:(char*)0;
+}
+
+const char *MVStoreKernel::getLongUnitName(Units u)
+{
+	return u<Un_ALL?unitDscrs[u].longName:(char*)0;
 }

@@ -60,7 +60,7 @@ RC QueryPrc::commitPINs(Session *ses,PIN *const *pins,unsigned nPins,unsigned mo
 	if (pins==NULL || nPins==0) return RC_OK; if (ses==NULL) return RC_NOSESSION;
 	if (ctx->isServerLocked() || ses->inReadTx()) return RC_READTX;
 	if (ses->getIdentity()!=STORE_OWNER && !ses->mayInsert()) return RC_NOACCESS;
-	ctx->classMgr->initClasses(ses); unsigned nClassPINs=0; if (actrl==NULL) actrl=ses->allocCtrl;
+	unsigned nClassPINs=0; if (actrl==NULL) actrl=ses->allocCtrl;
 	TxSP tx(ses); PBlockP pb; const HeapPageMgr::HeapPage *hp; RC rc=RC_OK;
 	size_t totalSize=0,lmin=size_t(~0ULL),lmax=0; ulong cnt=0,j; unsigned i; PIN *pin; byte *buf;
 	const size_t xSize=HeapPageMgr::contentSize(ctx->bufMgr->getPageSize())-sizeof(PageOff);
@@ -130,7 +130,8 @@ RC QueryPrc::commitPINs(Session *ses,PIN *const *pins,unsigned nPins,unsigned mo
 					if ((rc=convV(*pv,*pv,VT_STMT,ses))!=RC_OK) goto finish;
 					pv->property=PROP_SPEC_PREDICATE;
 				} else if (pv->type!=VT_STMT||pv->stmt==NULL) {rc=RC_TYPE; goto finish;}
-				if ((qry=(Stmt*)pv->stmt)->op!=STMT_QUERY || qry->top==NULL || (qry->mode&QRY_CPARAMS)!=0) {rc=RC_INVPARAM; goto finish;}
+				if ((qry=(Stmt*)pv->stmt)->op!=STMT_QUERY || qry->top==NULL || qry->top->getType()!=QRY_SIMPLE || (qry->mode&(QRY_CPARAMS|QRY_PATH))!=0)	// UNION/INTERSECT/EXCEPT ??? -> condSatisfied
+					{rc=RC_INVPARAM; goto finish;}
 				if ((pin->mode&(PIN_HIDDEN|PIN_DELETED))==0) {
 					if ((cv=pin->findProperty(PROP_SPEC_CLASS_INFO))!=NULL) {
 						if (cv->type!=VT_UINT && cv->type!=VT_INT) {rc=RC_TYPE; goto finish;}
@@ -151,7 +152,7 @@ RC QueryPrc::commitPINs(Session *ses,PIN *const *pins,unsigned nPins,unsigned mo
 			switch (pv->type) {
 			default: break;
 			case VT_EXPR: case VT_STMT: if ((pv->meta&META_PROP_EVAL)==0) break;
-			case VT_VARREF:
+			case VT_VARREF: case VT_EXPRTREE:
 				if ((rc=eval(ses,pv,*pv,NULL,0,&params,1,ses,true))!=RC_OK) goto finish; //pin->PINex
 				pv->property=pid; break;
 			}
@@ -159,7 +160,7 @@ RC QueryPrc::commitPINs(Session *ses,PIN *const *pins,unsigned nPins,unsigned mo
 				INav *nav=NULL;
 				if (pv->type==VT_ARRAY) cv=pv->varray;
 				else if ((nav=pv->nav)==NULL || (cv=nav->navigate(GO_FIRST))==NULL) {
-					if (j<--pin->nProperties) memcpy(pv,pv+1,(pin->nProperties-j)*sizeof(Value));
+					if (j<--pin->nProperties) memmove(pv,pv+1,(pin->nProperties-j)*sizeof(Value));
 					if (pin->nProperties==0) break; else {--j; continue;}
 				}
 				pv->eid=STORE_COLLECTION_ID; unsigned k=0;
@@ -258,7 +259,7 @@ RC QueryPrc::commitPINs(Session *ses,PIN *const *pins,unsigned nPins,unsigned mo
 			pin->addr.pageID=pg->pid; pin->addr.idx=pg->idx++;
 		}
 		if ((pg->lPins+=ceil(pin->length,HP_ALIGN))>xbuf) xbuf=pg->lPins;
-		pin->nextPIN=pg->pins; pg->pins=pin; pin->mode|=COMMIT_ALLOCATED;
+		pin->sibling=pg->pins; pg->pins=pin; pin->mode|=COMMIT_ALLOCATED;
 	}
 	assert(pages!=NULL);
 	if (pages->next==NULL) ses->setAtomic();
@@ -268,12 +269,12 @@ RC QueryPrc::commitPINs(Session *ses,PIN *const *pins,unsigned nPins,unsigned mo
 			if (pg!=pages) {*ppg=pg->next; pg->next=pages; pages=pg;}
 			const HeapPageMgr::HeapPage *hp=(const HeapPageMgr::HeapPage *)pb->getPageBuf();
 			pg->pid=pb->getPageID(); pg->flags&=~PGF_NEW; --nNewPages; pin=pg->pins;
-			if ((pg->idx=hp->freeSlots)!=0) for (pg->flags|=PGF_SLOTS; pin!=NULL; pin=pin->nextPIN) {
+			if ((pg->idx=hp->freeSlots)!=0) for (pg->flags|=PGF_SLOTS; pin!=NULL; pin=pin->sibling) {
 				pin->addr.pageID=pg->pid; pin->addr.idx=pg->idx>>1;
 				// add locks
 				if ((pg->idx=(*hp)[pin->addr.idx])==0xFFFF) break;
 			}
-			for (pg->idx=hp->nSlots; pin!=0; pin=pin->nextPIN) {
+			for (pg->idx=hp->nSlots; pin!=0; pin=pin->sibling) {
 				pin->addr.pageID=pg->pid; pin->addr.idx=pg->idx++;
 				// add locks
 			}
@@ -289,7 +290,7 @@ RC QueryPrc::commitPINs(Session *ses,PIN *const *pins,unsigned nPins,unsigned mo
 			goto finish;
 		}
 		for (AllocPage *pg=pages; pg!=NULL && i<nNewPages; pg=pg->next) if ((pg->flags&PGF_NEW)!=0)
-			{pg->pid=pids[i++]; for (pin=pg->pins; pin!=NULL; pin=pin->nextPIN) pin->addr.pageID=pg->pid;}
+			{pg->pid=pids[i++]; for (pin=pg->pins; pin!=NULL; pin=pin->sibling) pin->addr.pageID=pg->pid;}
 		mem.truncate(mrk);
 	}
 
@@ -307,7 +308,7 @@ RC QueryPrc::commitPINs(Session *ses,PIN *const *pins,unsigned nPins,unsigned mo
 			if (pb.isNull()) {rc=ses->isRestore()?RC_NOTFOUND:RC_NORESOURCES; break;}
 		}
 		hp=(HeapPageMgr::HeapPage *)pb->getPageBuf(); size_t lrec=0; PageIdx prevIdx=0,startIdx=0;
-		for (pin=pg->pins; pin!=NULL; pin=pin->nextPIN) {
+		for (pin=pg->pins; pin!=NULL; pin=pin->sibling) {
 			assert(pin->addr.pageID==pb->getPageID() && (pin->mode&COMMIT_ALLOCATED)!=0);
 			if ((pin->mode&COMMIT_FORCED)!=0) {
 				if (!pin->addr.convert(pin->id.pid)) {rc=RC_INVPARAM; goto finish;}
@@ -324,6 +325,7 @@ RC QueryPrc::commitPINs(Session *ses,PIN *const *pins,unsigned nPins,unsigned mo
 
 			HeapPageMgr::HeapPIN *hpin=(HeapPageMgr::HeapPIN*)pbuf; hpin->hdr.descr=HO_PIN; nInserted++;
 			hpin->nProps=ushort(pin->nProperties); hpin->lExtra=hpin->fmtExtra=0;
+			if ((mode&MODE_TEMP_ID)!=0) hpin->hdr.descr|=HOH_TEMP_ID;
 			if ((pin->mode&PIN_HIDDEN)!=0) hpin->hdr.descr|=HOH_NOREPLICATION|HOH_NOINDEX|HOH_HIDDEN;
 			else {
 				if ((pin->mode&PIN_NO_REPLICATION)!=0) hpin->hdr.descr|=HOH_NOREPLICATION;
@@ -603,8 +605,7 @@ RC QueryPrc::estimateLength(const Value& v,size_t& res,ulong mode,size_t thresho
 			res=(v.flags&VF_SSV)==0?l+(l>0xff?2:1):l>len?sizeof(HLOB):sizeof(HRefSSV);
 		}
 		break;
-	case VT_EXPRTREE:
-		//????
+	case VT_EXPRTREE: return RC_INTERNAL;
 	case VT_EXPR:
 		if (v.expr==NULL) return RC_INVPARAM;
 		len=((Expr*)v.expr)->serSize(); res=len<=threshold?len:(v.flags|=VF_SSV,
@@ -827,8 +828,7 @@ RC QueryPrc::persistValue(const Value& v,ushort& sht,HType& vt,ushort& offs,byte
 			offs=ushort(v.ui); vt.setType(VT_UINT,HDF_COMPACT); return RC_OK;
 		}
 		break;
-	case VT_EXPRTREE:
-		// compile ???
+	case VT_EXPRTREE: return RC_INTERNAL;
 	case VT_EXPR: case VT_STMT:
 		ll=ty==VT_EXPR?((Expr*)v.expr)->serSize():((Stmt*)v.stmt)->serSize();
 		if ((v.flags&VF_SSV)!=0) {
@@ -871,8 +871,8 @@ RC QueryPrc::persistData(IStream *stream,const byte *str,size_t lstr,PageAddr& a
 			((HeapPageMgr::HeapObjHeader*)buf)->length=ushort(lstr)+sizeof(HeapPageMgr::HeapObjHeader);
 			try {
 				memcpy(buf+sizeof(HeapPageMgr::HeapObjHeader),str,lstr);
-				len64=lstr; addr.pageID=pb->getPageID(); addr.idx=hp->nSlots;
-				rc=ctx->txMgr->update(pb,ctx->ssvMgr,(ulong)hp->nSlots<<HPOP_SHIFT|HPOP_INSERT,buf,l);
+				len64=lstr; addr.pageID=pb->getPageID(); addr.idx=hp->freeSlots!=0?hp->freeSlots>>1:hp->nSlots;
+				rc=ctx->txMgr->update(pb,ctx->ssvMgr,(ulong)addr.idx<<HPOP_SHIFT|HPOP_INSERT,buf,l);
 			} catch (RC rc2) {rc=rc2;} catch (...) {rc=RC_INVPARAM;}
 			ses->free(buf);
 		}
@@ -895,7 +895,8 @@ RC QueryPrc::persistData(IStream *stream,const byte *str,size_t lstr,PageAddr& a
 			} catch (RC rc2) {rc=rc2; break;} catch (...) {rc=RC_INVPARAM; break;} 
 			if (left>0 && stream!=NULL) try {size_t l=stream->read(p,left); left-=l; len64+=l;}
 			catch (RC rc2) {rc=rc2; break;} catch (...) {rc=RC_INVPARAM; break;}
-			hl->hdr.length=ushort(xSize-left); PageIdx idx=hp->nSlots; size_t lpiece=ceil(hl->hdr.length,HP_ALIGN);
+			hl->hdr.length=ushort(xSize-left); size_t lpiece=ceil(hl->hdr.length,HP_ALIGN);
+			PageIdx idx=hp->freeSlots!=0?hp->freeSlots>>1:hp->nSlots;
 			if (left!=0) {next=NULL; memcpy(hl->next,lastAddr!=NULL?lastAddr:&PageAddr::invAddr,PageAddrSize);}
 			else if ((next=ctx->ssvMgr->getNewPage(lpiece,ses,fNew))==NULL) {rc=RC_FULL; break;}
 			else {PageAddr nxt={next->getPageID(),0}; memcpy(hl->next,&nxt,PageAddrSize);}

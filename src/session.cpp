@@ -32,10 +32,13 @@ Session	*Session::createSession(StoreCtx *ctx)
 		if (sc!=0 && (ctx->mode&STARTUP_SINGLE_SESSION)!=0) return NULL;
 		else if (cas(&ctx->sesCnt,sc,sc+1)) break;
 	if ((ma=createMemAlloc(SESSION_START_MEM,false))!=NULL) {
-		if (ctx!=NULL) ctx->set(); ses=new(ma) Session(ctx,ma); sessionTls.set(ses);
-//		byte buf[sizeof(TIMESTAMP)+sizeof(ulong)]; getTimestamp(*(TIMESTAMP*)buf);
-//		memcpy(buf+sizeof(TIMESTAMP),&ses->identity,sizeof(ulong));
-//		ses->sesLSN = ctx->logMgr->insert(ses,LR_SESSION,0,INVALID_PAGEID,buf,sizeof(buf));
+		if (ctx!=NULL) ctx->set(); 
+		if ((ses=new(ma) Session(ctx,ma))!=NULL) {
+			sessionTls.set(ses);
+//			byte buf[sizeof(TIMESTAMP)+sizeof(ulong)]; getTimestamp(*(TIMESTAMP*)buf);
+//			memcpy(buf+sizeof(TIMESTAMP),&ses->identity,sizeof(ulong));
+//			ses->sesLSN = ctx->logMgr->insert(ses,LR_SESSION,0,INVALID_PAGEID,buf,sizeof(buf));
+		}
 	}
 	return ses;
 }
@@ -148,7 +151,7 @@ bool Session::unlatch(PBlock *pb,ulong mode)
 			if ((mode&QMGR_UFORCE)!=0) pb->downgradeLock(RW_S_LOCK);
 			return false;
 		}
-		if (lp<&latched[--nLatched]) memcpy(lp,lp+1,(byte*)&latched[nLatched]-(byte*)lp);
+		if (lp<&latched[--nLatched]) memmove(lp,lp+1,(byte*)&latched[nLatched]-(byte*)lp);
 #ifdef _DEBUG
 		for (DLList *lh=latchHolderList.next; lh!=&latchHolderList; lh=lh->next) ((LatchHolder*)lh)->checkNotHeld(pb);
 #endif
@@ -335,9 +338,9 @@ void SubTx::cleanup()
 
 RC SubTx::queueForPurge(const PageAddr& addr,PurgeType pt,const void *data)
 {
-	TxPurge prg={addr.pageID,0,NULL},*tp=NULL; RC rc=txPurge.add(prg,&tp); uint32_t flg=pt==TXP_SSV?0x80000000:pt==TXP_IDS?0x40000000:0;
+	TxPurge prg={addr.pageID,0,NULL},*tp=NULL; RC rc=txPurge.add(prg,&tp); uint32_t flg=pt==TXP_SSV?0x80000000:0;
 	if (rc==RC_FALSE) {
-		if (data!=NULL || (tp->range&0xC0000000)!=flg || tp->range==uint32_t(~0u)) return RC_CORRUPTED;	// report error
+		if (data!=NULL || (tp->range&0x80000000)!=flg || tp->range==uint32_t(~0u)) return RC_CORRUPTED;	// report error
 		ushort idx=addr.idx/(sizeof(uint32_t)*8),l=tp->range>>16&0x3fff; assert(tp->bmp!=NULL);
 		if (idx<ushort(tp->range)) {
 			ushort d=ushort(tp->range)-idx;
@@ -366,7 +369,7 @@ RC SubTx::queueForPurge(const PageAddr& addr,PurgeType pt,const void *data)
 
 RC TxPurge::purge(Session *ses)
 {
-	return ses->getStore()->queryMgr->purge(pageID,range&0xFFFF,range>>16&0x3FFF,bmp,(range&0x80000000)!=0?TXP_SSV:(range&0x40000000)!=0?TXP_IDS:TXP_PIN,ses);
+	return ses->getStore()->queryMgr->purge(pageID,range&0xFFFF,range>>16&0x3FFF,bmp,(range&0x80000000)!=0?TXP_SSV:TXP_PIN,ses);
 }
 
 RC TxPurge::Cmp::merge(TxPurge& dst,TxPurge& src,MemAlloc *ma)
@@ -381,20 +384,13 @@ RC TxPurge::Cmp::merge(TxPurge& dst,TxPurge& src,MemAlloc *ma)
 		else {memset(dst.bmp+di-ds,0,(ss-di)*sizeof(uint32_t)); memcpy(dst.bmp+ss-ds,src.bmp,(si-ss)*sizeof(uint32_t));}
 	}
 	for (unsigned i=ss,end=min(si,di); i<end; i++) dst.bmp[i-ds]|=src.bmp[i-ss];
-	ma->free(src.bmp); src.bmp=NULL; dst.range=(dst.range&0xC0000000)|(max(di,si)-ds)<<16|ds; return RC_OK;
+	ma->free(src.bmp); src.bmp=NULL; dst.range=(dst.range&0x80000000)|(max(di,si)-ds)<<16|ds; return RC_OK;
 }
 
 TxGuard::~TxGuard()
 {
 	assert(ses!=NULL);
 	if (ses->getTxState()==TX_ABORTING) ses->ctx->txMgr->abortTx(ses,true);
-}
-
-StoreCtx *StoreCtx::createCtx(ulong f,bool fNew)
-{
-	StoreCtx *ctx=new(SERVER_HEAP) StoreCtx(f);
-	if (ctx!=NULL) {ctx->mem=createMemAlloc(fNew?STORE_NEW_MEM:STORE_START_MEM,true); storeTls.set(ctx);}
-	return ctx;
 }
 
 bool StoreCtx::isInit() const

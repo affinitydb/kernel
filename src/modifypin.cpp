@@ -126,7 +126,6 @@ RC QueryPrc::modifyPIN(Session *ses,const PID& id,const Value *v,unsigned nv,PIN
 
 	if (ses==NULL) return RC_NOSESSION; if (ses->isRestore()) return RC_OTHER;
 	if (ctx->isServerLocked()) return RC_READONLY; if (ses->inReadTx()) return RC_READTX;
-	if (pcb==NULL) ctx->classMgr->initClasses(ses);
 	
 	PINEx cb(ses,id); RC rc=RC_OK; TxSP tx(ses); if ((rc=tx.start(TXI_DEFAULT,TX_ATOMIC))!=RC_OK) return rc;
 

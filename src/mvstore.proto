@@ -116,16 +116,16 @@ enum PINFlags{
 
 enum MetaProps {
 	META_PART			= 128;			// Property is a reference to a PIN which is a part of this one.
-	META_FIXEDVERSION	= 64;			// Property references a fixed version of a PIN (for ref properties).
+	META_NOFTINDEX		= 128;			// This property is not to be FT indexed/searched.
+	META_EVAL			= 128;			// Evaluate IExpr/IStmt in commitPINs/modifyPIN.
 	META_SSTORAGE		= 64;			// Store this property separately from the PIN body (for string, stream and collection property types).
+	META_RACCESS		= 64;			// [Future.] A stream should be optimized for random access.
 	META_NONOTIFICATION	= 32;			// This property doesn't generate notifications when modified.
-	META_NOFTINDEX		= 16;			// This property is not to be FT indexed/searched.
-	META_NONSERIALIZABLE = 8;			// Property is nonserializable (e.g. PROP_SPEC_CLASSID).
+	META_INHERIT		= 16;			// Inherited property of a class (equiv. to a method if VT_EXPR or to a static member).
 	META_IFEXIST		= 8;			// In modify/transform - apply modification if property exists, otherwise - ignore.
 	META_IFNOTEXIST		= 4;			// In modify/transform - apply modification (OP_SET or OP_ADD) if property doesn't exist, otherwise - ignore.
 	META_DERIVED		= 4;			// This property was calculated from other properties in transform rather than stored with the pin.
-	META_RACCESS		= 2;			// [Future.] A stream should be optimized for random access.
-	META_STOPWORDS		= 1;			// Filter stop words in FT indexing.
+	META_STOPWORDS		= 2;			// Filter stop words in FT indexing.
 }
 
 enum ACLPermissions {
@@ -143,11 +143,11 @@ enum ClassFlags {
 
 // PathSQL statements (query,insert,update,delete) and individual PIN modification operations can return information with various level of details.
 enum ReturnType {
-	RT_PINS			= 0; // Specifies that a query will return entire MVStream::PIN object(s) (see definition below).
-	RT_COUNT		= 1; // Specifies that a query will return a simple count.
-	RT_PIDS			= 2; // Specifies that a query will return MVStream::PIN object(s) containing only MVStream::PIN::id field.
-	RT_SRCPINS		= 3; // Like RT_PINS, but VT_EXPR and VT_QUERY are converted to string form.
-	RT_VALUES		= 4; // Specifies that a query will return Value object(s).
+	RT_PINS			= 1; // Specifies that a query will return entire MVStream::PIN object(s) (see definition below).
+	RT_COUNT		= 2; // Specifies that a query will return a simple count.
+	RT_PIDS			= 3; // Specifies that a query will return MVStream::PIN object(s) containing only MVStream::PIN::id field.
+	RT_SRCPINS		= 4; // Like RT_PINS, but VT_EXPR and VT_QUERY are converted to string form.
+	RT_VALUES		= 5; // Specifies that a query will return Value object(s).
 }
 
 // Every PIN holds a globally unique ID.
@@ -256,7 +256,7 @@ message Value {
 		required uint32 length = 3; // Specifies how many characters/bytes should be deleted from the original string, before insertion. Can be 0.
 		optional uint64 offset = 4; // Specifies the offset at which StrEdit::length should be deleted, and StrEdit::str/StrEdit::bstr should be inserted.
 	}
-	// For ranges and collections.
+	// For structs, collections and ranges.
 	message VArray {
 		optional uint32	l = 1; // Specifies the number of elements in the collection.
 		repeated Value	v = 2; // Each element is a Value.

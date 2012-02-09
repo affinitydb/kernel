@@ -118,7 +118,7 @@ RC Expr::eval(const Expr *const *exprs,ulong nExp,Value& result,PINEx **vars,ulo
 			if ((u=*codePtr++)<nVars && vars[u]->load()==RC_OK) {if (ff) top->set(1u); else top->set((PIN*)vars[u]);}
 			else if (ff) top->set(0u); else {top->setError(); if (cntCatch==0) rc=RC_NOTFOUND;}
 			top++; break;
-		case OP_PROP: case OP_ELT:
+		case OP_PROP: case OP_ELT: case OP_SETPROP:
 			if ((u=*codePtr++)!=0xff) vd=&vds[vdx=u>>6],u&=0x3f;
 			else {
 				if ((vdx=codePtr[0])>=nVars) {/*...*/}
@@ -136,7 +136,9 @@ RC Expr::eval(const Expr *const *exprs,ulong nExp,Value& result,PINEx **vars,ulo
 					vd->fLoaded=true;
 				}
 			}
-			if (!vd->fLoaded) {
+			if (op==OP_SETPROP) {
+				top[-1].property=vd->props[u]&STORE_MAX_URIID; if (ff) top[-1].meta=*codePtr++;
+			} else if (!vd->fLoaded) {
 				if (op==OP_ELT) {mv_dec32(codePtr,eid); eid=mv_dec32zz(eid);} else eid=STORE_COLLECTION_ID;
 				if ((rc=vars[vdx]->getValue(vd->props[u],*top,ff?LOAD_CARDINALITY|LOAD_SSV:LOAD_SSV,NULL,eid))!=RC_OK)
 					{if (cntCatch!=0 && rc==RC_NOTFOUND) {top->setError(); rc=RC_OK;}}
@@ -790,7 +792,7 @@ RC Expr::calc(ExprOp op,Value& arg,const Value *moreArgs,int nargs,unsigned flag
 			else for (; end-p>=lstr; p+=lstr) if (memcmp(p,s,lstr)!=0) break;
 			if (p!=arg.str) {
 				arg.length=uint32_t(end-p);
-				if ((arg.flags&HEAP_TYPE_MASK)==NO_HEAP) arg.str=p; else memcpy((char*)arg.str,p,arg.length);
+				if ((arg.flags&HEAP_TYPE_MASK)==NO_HEAP) arg.str=p; else memmove((char*)arg.str,p,arg.length);
 			}
 		}
 		if ((start&1)==0) {
@@ -1068,8 +1070,7 @@ RC Expr::calc(ExprOp op,Value& arg,const Value *moreArgs,int nargs,unsigned flag
 			if (moreArgs->type!=VT_UINT && moreArgs->type!=VT_INT) return RC_TYPE;		// conv???
 			flags=moreArgs->ui;
 		}
-		if (flags<=VT_ERROR||flags>=VT_ALL) return RC_INVPARAM;
-		if (arg.type!=moreArgs->ui) rc=convV(arg,arg,(ValueType)flags,ma);
+		if ((rc=convV(arg,arg,flags,ma))!=RC_OK) return rc;
 		break;
 	case OP_RANGE:
 		if (arg.type!=(arg2=moreArgs)->type && arg.type!=VT_ANY && arg2->type!=VT_ANY) {
@@ -1086,6 +1087,25 @@ RC Expr::calc(ExprOp op,Value& arg,const Value *moreArgs,int nargs,unsigned flag
 		if ((ses=Session::getSession())==NULL) return RC_NOSESSION;
 		if ((rc=ExprTree::normalizeArray(&arg,nargs,val,ses,ses->getStore()))!=RC_OK) return rc;
 		if (val.type==VT_EXPRTREE) {freeV(val); return RC_TYPE;}
+		arg=val; break;
+	case OP_STRUCT: case OP_PIN:
+		if ((ses=Session::getSession())==NULL) return RC_NOSESSION;
+		if (nargs==1) switch (arg.type) {
+		case VT_REF:
+		case VT_REFID:
+		case VT_STRUCT:
+		case VT_ARRAY:
+		case VT_COLLECTION:
+			//???
+			break;
+		}
+		if ((rc=ExprTree::normalizeStruct(&arg,nargs,val,ses))!=RC_OK) return rc;
+		if (val.type==VT_EXPRTREE) {freeV(val); return RC_TYPE;}
+		assert(val.type==VT_STRUCT);
+		if (op==OP_PIN) {
+			PIN *pin=new(ses) PIN(ses,PIN::defPID,PageAddr::invAddr,0,(Value*)val.varray,val.length);
+			if (pin!=NULL) {val.set(pin); val.flags=SES_HEAP;} else return RC_NORESOURCES;
+		}
 		arg=val; break;
 	case OP_EDIT:
 		assert(arg.type!=VT_STREAM);
@@ -1149,6 +1169,25 @@ RC Expr::calc(ExprOp op,Value& arg,const Value *moreArgs,int nargs,unsigned flag
 		}
 		if ((ses=Session::getSession())==NULL) return RC_NOSESSION;
 		{ValueV vv(moreArgs,nargs-1); if ((rc=ses->getStore()->queryMgr->eval(ses,&arg,arg,vars,nVars,&vv,1,ses,false))!=RC_OK) return rc;}
+		break;
+	case OP_MEMBERSHIP:
+		if (arg.type==VT_REFID) {
+			PINEx pex(Session::getSession(),arg.id);
+			if ((rc=pex.getSes()->getStore()->queryMgr->getBody(pex))!=RC_OK) return rc;
+			// load
+		} else if (arg.type==VT_REF) {
+#if 0
+			if ((((PIN*)arg.pin)->mode&(PIN_HIDDEN|PIN_NO_INDEX))==0) {
+				ses=((PIN*)arg.pin)->getSes(); ClassResult clr(ses,ses->getStore()); PINEx pex((PIN*)arg.pin);
+				if ((rc=ses->getStore()->classMgr->classify(&pex,clr))!=RC_OK) return rc;
+				if (clr.nClasses!=0) {
+					if ((clss=new(ses) ClassID[clr.nClasses])==NULL) return RC_NORESOURCES;
+					for (unsigned i=0; i<clr.nClasses; i++) clss[i]=clr.classes[i]->cid;
+					nclss=clr.nClasses;
+				}
+			}
+#endif
+		} else return RC_TYPE;
 		break;
 	default:
 		return RC_INTERNAL;
@@ -1216,7 +1255,7 @@ RC AggAcc::result(Value& res)
 				if (vc==NULL) {freeV(pv,i,ma); return RC_CORRUPTED;}
 				if ((rc=copyV(*(const Value*)vc,pv[cnt+i*2],ma))!=RC_OK) return rc;	// cleanup?
 				pv[cnt+i*2+1].setU64(uint64_t(vc->property)<<32|vc->eid); pv[cnt+i*2+1].setPropID(PROP_SPEC_VALUE);
-				pv[cnt+i*2].setPropID(PROP_SPEC_KEY); pv[i].setStruct(&pv[cnt+i*2],2);
+				pv[cnt+i*2].setPropID(PROP_SPEC_KEY); pv[i].setStruct(&pv[cnt+i*2],2); pv[i].eid=i;
 			}
 			res.set(pv,cnt); res.flags=ma->getAType(); hist->~Histogram(); ma->free(hist); hist=NULL;}	// cleanup!!!
 			break;

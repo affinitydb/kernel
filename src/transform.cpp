@@ -201,11 +201,13 @@ RC TransOp::next(const PINEx *)
 				aggregate: rc=Expr::calcAgg(op,*to,NULL,1,0,qx->ses); md|=PIN_DERIVED; break;
 				}
 				if (rc==RC_OK && ty!=VT_ANY && ty!=to->type) {
-					if (to->type==VT_ARRAY) for (ulong k=0; k<to->length; k++) if (to->varray[k].type!=ty) {
-						//if (to!=&w) {
-							//copy
-						//}
-						if ((rc=convV(to->varray[k],*(Value*)&to->varray[k],ty,qx->ses))!=RC_OK) break;
+					if (to->type==VT_ARRAY) for (ulong k=0; k<to->length; k++) {
+						if (to->varray[k].type!=ty) {
+							//if (to!=&w) {
+								//copy
+							//}
+							if ((rc=convV(to->varray[k],*(Value*)&to->varray[k],ty,qx->ses))!=RC_OK) break;
+						}
 					} else if (to->type==VT_COLLECTION) {
 						((Navigator*)to->nav)->setType(ty);
 					} else if ((rc=convV(*to,*to,ty,qx->ses))!=RC_OK) continue;

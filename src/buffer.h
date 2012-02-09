@@ -164,7 +164,7 @@ public:
 	~BufMgr();
 	void *operator new(size_t s,StoreCtx *ctx);
 	RC					init();
-	RC					flushAll(bool fWait=true);
+	RC					flushAll(uint64_t timeout);
 	size_t				getPageSize() const {return lPage;}
 	PBlock*				newPage(PageID pid,PageMgr*,PBlock *old=NULL,ulong flags=0,Session *ses=NULL);
 	PBlock*				getPage(PageID pid,PageMgr*,ulong flags=0,PBlock *old=NULL,Session *ses=NULL);

@@ -209,6 +209,7 @@ public:
 	friend	class	Cursor;
 	friend	class	Navigator;
 	friend	class	PINEx;
+	friend	class	SessionX;
 	friend	struct	TxPurge;
 	friend	class	FTIndexMgr;
 	friend	struct	ModData;

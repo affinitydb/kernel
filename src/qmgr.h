@@ -111,8 +111,8 @@ protected:
 				bool fLoad=qe->rsrc==NULL; //assert(!fLoad || qe->fDiscard || qe->fixCount==0 || qe->fixCount==1 && qe->lock.isXLocked());
 				if ((flags&QMGR_NEW)!=0 && !fLoad && !qe->fDiscard) return RC_ALREADYEXISTS;
 				if (fLoad && (flags&QMGR_INMEM)!=0) return RC_NOTFOUND;
-				const long fc=++qe->fixCount;
-				if ((flags&QMGR_TRY)!=0 && (!fLoad||fc>1)) {
+				++qe->fixCount;
+				if ((flags&QMGR_TRY)!=0 && !fLoad) {
 					RC rc=qe->rc;
 					if (rc!=RC_OK) {assert(qe->fixCount>0); --qe->fixCount;}
 					else if (qe->lock.trylock(lt)) {rc=qe->rc; rsrc=qe->rsrc; assert(rsrc!=NULL);}
@@ -121,10 +121,11 @@ protected:
 					if (rc==RC_OK && qe->fDiscard) {rsrc=NULL; continue;}
 					return rc;
 				}
-				if (fLoad) if (fc==1) qe->lock.lock(RW_X_LOCK); else fLoad=false;
-				findQE.unlock(); if (!fLoad) {qe->lock.lock(qe->rsrc!=NULL?qe->rsrc->lockType(lt):lt); assert(qe->rsrc!=NULL);}
+				findQE.unlock(); assert(fLoad||qe->rsrc!=NULL);
+				qe->lock.lock(fLoad?RW_X_LOCK:qe->rsrc->lockType(lt));
 				if (qe->fDiscard) continue;
 				if (qe->rsrc!=NULL) {
+					if (fLoad && (lt=qe->rsrc->lockType(lt))!=RW_X_LOCK) qe->lock.downgradelock(lt);
 					if (old!=NULL) release(old,old->getQE());
 					if (qe->rc==RC_OK) rsrc=qe->rsrc; 
 					return qe->rc;

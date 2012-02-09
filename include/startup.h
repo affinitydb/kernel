@@ -11,15 +11,15 @@ Written by Mark Venguerov 2004 - 2010
 
 #include "mvstore.h"
 
-#define	MVSTOREPREFIX				"chaos"
-#define MVSTOREDIR					"chaosdb"
+#define	MVSTOREPREFIX				"affinity"
+#define MVSTOREDIR					"affinity"
 #define	DATAFILESUFFIX				".db"
 #define	LOGFILESUFFIX				".txlog"
 #define	MASTERFILESUFFIX			".master"
-#define	HOME_ENV					"CHAOSDB_HOME"
+#define	HOME_ENV					"AFFINITY_HOME"
 
-#define	STORE_STD_URI_PREFIX		"http://www.chaosdb.org/builtin/"
-#define	STORE_STD_QPREFIX			"ks:"
+#define	STORE_STD_URI_PREFIX		"http://www.affinitydb.org/builtin/"
+#define	STORE_STD_QPREFIX			"afy:"
 
 #define	DEFAULT_MAX_FILES			300
 #define	DEFAULT_BLOCK_NUM			~0u

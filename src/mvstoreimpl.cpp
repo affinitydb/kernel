@@ -132,6 +132,11 @@ const Value	*PIN::getValue(PropertyID pid) const
 	return pid==PROP_SPEC_URI?(const Value*)0:BIN<Value,PropertyID,ValCmp>::find(pid,properties,nProperties);
 }
 
+IPIN *PIN::getSibling() const
+{
+	return sibling;
+}
+
 char *PIN::getURI() const
 {
 	try {
@@ -501,6 +506,23 @@ bool PIN::defined(const PropertyID *pids,unsigned nProps) const
 		return true;
 	} catch (RC) {} catch (...) {report(MSG_ERROR,"Exception in IPIN::defined()\n");}
 	return false;
+}
+
+RC PIN::isMemberOf(ClassID *&clss,unsigned& nclss)
+{
+	try {
+		clss=NULL; nclss=0; if (id.pid==STORE_INVALID_PID) return RC_INVPARAM;
+		if ((mode&(PIN_HIDDEN|PIN_NO_INDEX))==0) {
+			ClassResult clr(ses,ses->getStore()); PINEx pex(this);
+			RC rc=ses->getStore()->classMgr->classify(&pex,clr); if (rc!=RC_OK) return rc;
+			if (clr.nClasses!=0) {
+				if ((clss=new(ses) ClassID[clr.nClasses])==NULL) return RC_NORESOURCES;
+				for (unsigned i=0; i<clr.nClasses; i++) clss[i]=clr.classes[i]->cid;
+				nclss=clr.nClasses;
+			}
+		}
+		return RC_OK;
+	} catch (RC rc) {return rc;} catch (...) {report(MSG_ERROR,"Exception in IPIN::isMemberOf()\n"); return RC_INTERNAL;}
 }
 
 PIN *PIN::getPIN(const PID& id,VersionID vid,Session *ses,ulong mode)
@@ -1029,7 +1051,7 @@ IPIN *SessionX::getPINByURI(const char *uri,unsigned md)
 RC SessionX::getValues(Value *pv,unsigned nv,const PID& id)
 {
 	try {
-		assert(ses==Session::getSession());
+		assert(ses==Session::getSession()); if (id.pid==STORE_INVALID_PID) return RC_INVPARAM;
 		StoreCtx *ctx=ses->getStore(); if (ctx->inShutdown()) return RC_SHUTDOWN;
 		TxGuard txg(ses); PageAddr addr; if (addr.convert(OID(id.pid))) ses->setExtAddr(addr);
 		RC rc=ctx->queryMgr->loadValues(pv,nv,id,ses,LOAD_EXT_ADDR|LOAD_ENAV);
@@ -1041,7 +1063,7 @@ RC SessionX::getValues(Value *pv,unsigned nv,const PID& id)
 RC SessionX::getValue(Value& res,const PID& id,PropertyID pid,ElementID eid)
 {
 	try {
-		assert(ses==Session::getSession());
+		assert(ses==Session::getSession()); if (id.pid==STORE_INVALID_PID) return RC_INVPARAM;
 		StoreCtx *ctx=ses->getStore(); if (ctx->inShutdown()) return RC_SHUTDOWN;
 		TxGuard txg(ses); PageAddr addr; if (addr.convert(OID(id.pid))) ses->setExtAddr(addr);
 		RC rc=ctx->queryMgr->loadValue(ses,id,pid,eid,res,LOAD_EXT_ADDR|LOAD_ENAV);
@@ -1053,13 +1075,30 @@ RC SessionX::getValue(Value& res,const PID& id,PropertyID pid,ElementID eid)
 RC SessionX::getValue(Value& res,const PID& id)
 {
 	try {
-		assert(ses==Session::getSession());
+		assert(ses==Session::getSession()); if (id.pid==STORE_INVALID_PID) return RC_INVPARAM;
 		StoreCtx *ctx=ses->getStore(); if (ctx->inShutdown()) return RC_SHUTDOWN;
 		TxGuard txg(ses); PageAddr addr; if (addr.convert(OID(id.pid))) ses->setExtAddr(addr);
 		RC rc=ctx->queryMgr->getPINValue(id,res,LOAD_EXT_ADDR|LOAD_ENAV,ses);
 		ses->setExtAddr(PageAddr::invAddr); return rc;
 	} catch (RC rc) {return rc;}
 	catch (...) {report(MSG_ERROR,"Exception in ISession::getValue(PID="_LX_FM",IdentityID=%08X)\n",id.pid,id.ident); return RC_INTERNAL;}
+}
+
+RC SessionX::getPINClasses(ClassID *&clss,unsigned& nclss,const PID& id)
+{
+	try {
+		clss=NULL; nclss=0; assert(ses==Session::getSession());
+		if (id.pid==STORE_INVALID_PID) return RC_INVPARAM;
+		StoreCtx *ctx=ses->getStore(); if (ctx->inShutdown()) return RC_SHUTDOWN;
+		TxGuard txg(ses); ClassResult clr(ses,ses->getStore()); PINEx pex(ses,id); pex.epr.flags|=PINEX_EXTPID; RC rc;
+		if ((rc=ses->getStore()->queryMgr->getBody(pex))==RC_OK && (pex.mode&(PIN_HIDDEN|PIN_NO_INDEX))==0)
+			if ((rc=ses->getStore()->classMgr->classify(&pex,clr))==RC_OK && clr.nClasses!=0) {
+				if ((clss=new(ses) ClassID[clr.nClasses])==NULL) rc=RC_NORESOURCES;
+				else {nclss=clr.nClasses; for (unsigned i=0; i<clr.nClasses; i++) clss[i]=clr.classes[i]->cid;}
+			}
+		return rc;
+	} catch (RC rc) {return rc;}
+	catch (...) {report(MSG_ERROR,"Exception in ISession::getPINClasses(PID="_LX_FM",IdentityID=%08X)\n",id.pid,id.ident); return RC_INTERNAL;}
 }
 
 bool SessionX::isCached(const PID& id)
@@ -1099,8 +1138,7 @@ RC SessionX::enableClassNotifications(ClassID cid,unsigned notifications)
 	try {
 		assert(ses==Session::getSession());
 		StoreCtx *ctx=ses->getStore(); if (ctx->inShutdown()) return RC_SHUTDOWN;
-		Class *cls=NULL; ctx->classMgr->initClasses(ses);
-		if ((cls=ctx->classMgr->getClass(cid))==NULL) return RC_NOTFOUND;
+		Class *cls=ctx->classMgr->getClass(cid); if (cls==NULL) return RC_NOTFOUND;
 		RC rc=ctx->classMgr->enable(ses,cls,notifications); cls->release(); return rc;
 	} catch (RC rc) {return rc;} catch (...) {report(MSG_ERROR,"Exception in ISession::enableClassNotifications()\n"); return RC_INTERNAL;}
 }
@@ -1313,6 +1351,7 @@ ISession *ISession::startSession(MVStoreCtx ctx,const char *ident,const char *pw
 	try {
 		if (ctx==NULL||ctx->inShutdown()||ctx->theCB->state==SST_RESTORE) return NULL;
 		Session *s=Session::createSession(ctx); if (s==NULL) return NULL;
+		if (!ctx->classMgr->isInit()) {s->setIdentity(STORE_OWNER,true); ctx->classMgr->initClasses(s); s->setIdentity(STORE_INVALID_IDENTITY,false);}
 		SessionX *ses=new(s) SessionX(s);
 		if (ses!=NULL && !ses->login(ident,pwd)) {ses->terminate(); ses=NULL;}
 		return ses;

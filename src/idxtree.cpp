@@ -116,6 +116,7 @@ TreeRQ::~TreeRQ()
 }
 
 RC TreeRQ::post(const TreeCtx& tctx,Tree::TreeOp op,PageID pid,const SearchKey *key,PBlock *pb,ushort idx) {
+	if ((tctx.tree->getMode()&TF_NOPOST)!=0) return RC_OK;
 	StoreCtx *ctx=tctx.tree->getStoreCtx(); TreeMgr *mgr=ctx->treeMgr;
 	if (mgr->ptrt!=NULL) {
 		TreeRQ *req=mgr->ptrt->findLock(pid);
@@ -406,8 +407,8 @@ RC Tree::edit(const SearchKey& key,const void *newValue,ushort lNewValue,ushort 
 	TreeCtx tctx(*this); RC rc=tctx.findPageForUpdate(&key); if (rc!=RC_OK) return rc;
 	const TreePageMgr::TreePage *tp=(const TreePageMgr::TreePage*)tctx.pb->getPageBuf();
 	const byte *pData; ushort lData;
-	if (lOld>0 && tp->info.fmt.isUnique() && (pData=(const byte*)tp->getValue(key,lData))!=NULL 
-		&& sht+lOld<=lData) memcpy(pOld,pData+sht,lOld);
+	if (lOld>0 && tp->info.fmt.isUnique() && (pData=(const byte*)tp->getValue(key,lData))!=NULL && sht+lOld<=lData)
+		memcpy(pOld,pData+sht,lOld);
 	return ctx->trpgMgr->edit(tctx,key,newValue,lNewValue,lOld,sht);
 }
 

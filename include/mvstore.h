@@ -123,8 +123,8 @@ namespace MVStore
 	#define	MODE_READONLY				0x00040000	/**< for STMT_START_TX - start r/o transaction */
 	#define	MODE_COPY_VALUES			0x00080000	/**< used in createUncommittedPIN() and IStmt::execute() to copy Values (parameters, query expressions, etc.) passed rather than assume ownership */
 	#define	MODE_FORCE_EIDS				0x00100000	/**< used only in replication */
-	#define	MODE_PURGE_IDS				0x00100000	/**< in deletePINs(): purge pins and reuse their slots on pages (so their IDs are not unique) */
 	#define	MODE_PART					0x00100000	/**< in nested insert: create a part */
+	#define	MODE_TEMP_ID				0x00200000	/**< in commitPINs(): create a pin with a temporary (reusable, non-unique) id */
 	#define	MODE_CHECK_STAMP			0x00200000	/**< forces stamp check before modification; if stamp changed the op is aborted and RC_REPEAT is returned */
 	#define	MODE_HOLD_RESULT			0x00200000	/**< for IStmt::execute(): don't close result set on transaction commit/rollback */
 	#define	MODE_ALL_WORDS				0x00400000	/**< all words must be present in FT condition */
@@ -362,6 +362,8 @@ namespace MVStore
 		OP_LAST_MODOP=OP_CAST,
 		OP_RANGE,
 		OP_ARRAY,
+		OP_STRUCT,
+		OP_PIN,
 		OP_COUNT,
 		OP_LENGTH,
 		OP_POSITION,
@@ -377,6 +379,7 @@ namespace MVStore
 		OP_STDDEV_SAMP,
 		OP_HISTOGRAM,
 		OP_COALESCE,
+		OP_MEMBERSHIP,
 		OP_PATH,
 		OP_FIRST_BOOLEAN,
 		OP_EQ=OP_FIRST_BOOLEAN,
@@ -486,7 +489,7 @@ namespace MVStore
 	struct RefV
 	{
 		unsigned	char	refN;
-		unsigned	char	type;
+		unsigned	short	type;
 		unsigned	short	flags;
 		PropertyID			id;
 	};
@@ -644,6 +647,7 @@ namespace MVStore
 		virtual	uint32_t	getNumberOfProperties() const = 0;
 		virtual	const Value	*getValueByIndex(unsigned idx) const = 0;
 		virtual	const Value	*getValue(PropertyID pid) const = 0;
+		virtual	IPIN		*getSibling() const = 0;
 
 		virtual	RC			getPINValue(Value& res) const = 0;
 		virtual uint32_t	getStamp() const = 0;
@@ -651,6 +655,7 @@ namespace MVStore
 
 		virtual	bool		testClassMembership(ClassID,const Value *params=NULL,unsigned nParams=0) const = 0;
 		virtual	bool		defined(const PropertyID *pids,unsigned nProps) const = 0;
+		virtual	RC			isMemberOf(ClassID *&clss,unsigned& nclss) = 0;
 
 		virtual	RC			refresh(bool fNet=true) = 0;
 		virtual	IPIN		*clone(const Value *overwriteValues=NULL,unsigned nOverwriteValues=0,unsigned mode=0) = 0;
@@ -711,9 +716,9 @@ namespace MVStore
 	class MV_EXP ICursor
 	{
 	public:
-		virtual	IPIN		*next() = 0;
+		virtual	RC			next(Value &ret) = 0;
 		virtual	RC			next(PID&) = 0;
-		virtual	RC			next(IPIN *pins[],unsigned nPins,unsigned& nRet) = 0;
+		virtual	IPIN		*next() = 0;					// obsolete
 		virtual	RC			rewind() = 0;
 		virtual	uint64_t	getCount() const = 0;
 		virtual	void		destroy() = 0;
@@ -740,7 +745,7 @@ namespace MVStore
 
 	enum QUERY_SETOP
 	{
-		QRY_JOIN, QRY_LEFTJOIN, QRY_RIGHTJOIN, QRY_OUTERJOIN, QRY_UNION, QRY_EXCEPT, QRY_INTERSECT, QRY_ALL_SETOP
+		QRY_SEMIJOIN, QRY_JOIN, QRY_LEFT_OUTER_JOIN, QRY_RIGHT_OUTER_JOIN, QRY_FULL_OUTER_JOIN, QRY_UNION, QRY_EXCEPT, QRY_INTERSECT, QRY_ALL_SETOP
 	};
 
 	#define	CLASS_PARAM_REF		0x80000000
@@ -787,7 +792,7 @@ namespace MVStore
 	
 	enum DistinctType
 	{
-		DT_DEFAULT, DT_ALL, DT_DISTINCT, DT_DISTINCT_VALUES
+		DT_DEFAULT, DT_ALL, DT_DISTINCT
 	};
 
 	class IStmtCallback
@@ -804,8 +809,8 @@ namespace MVStore
 		virtual QVarID	addVariable(IStmt *qry) = 0;
 		virtual	QVarID	setOp(QVarID leftVar,QVarID rightVar,QUERY_SETOP) = 0;
 		virtual	QVarID	setOp(const QVarID *vars,unsigned nVars,QUERY_SETOP) = 0;
-		virtual	QVarID	join(QVarID leftVar,QVarID rightVar,IExprTree *cond=NULL,QUERY_SETOP=QRY_JOIN,PropertyID=STORE_INVALID_PROPID) = 0;
-		virtual	QVarID	join(const QVarID *vars,unsigned nVars,IExprTree *cond=NULL,QUERY_SETOP=QRY_JOIN,PropertyID=STORE_INVALID_PROPID) = 0;
+		virtual	QVarID	join(QVarID leftVar,QVarID rightVar,IExprTree *cond=NULL,QUERY_SETOP=QRY_SEMIJOIN,PropertyID=STORE_INVALID_PROPID) = 0;
+		virtual	QVarID	join(const QVarID *vars,unsigned nVars,IExprTree *cond=NULL,QUERY_SETOP=QRY_SEMIJOIN,PropertyID=STORE_INVALID_PROPID) = 0;
 		virtual	RC		setName(QVarID var,const char *name) = 0;
 		virtual	RC		setDistinct(QVarID var,DistinctType) = 0;
 		virtual	RC		addOutput(QVarID var,const Value *dscr,unsigned nDscr) = 0;
@@ -958,6 +963,7 @@ namespace MVStore
 		virtual	RC			getValues(Value *vals,unsigned nVals,const PID& id) = 0;
 		virtual	RC			getValue(Value& res,const PID& id,PropertyID,ElementID=STORE_COLLECTION_ID) = 0;
 		virtual	RC			getValue(Value& res,const PID& id) = 0;
+		virtual	RC			getPINClasses(ClassID *&clss,unsigned& nclss,const PID& id) = 0;
 		virtual	bool		isCached(const PID& id) = 0;
 		virtual	RC			createPIN(PID& res,const Value values[],unsigned nValues,unsigned mode=0,const AllocCtrl* =NULL) = 0;
 		virtual	IPIN		*createUncommittedPIN(Value* values=0,unsigned nValues=0,unsigned mode=0,const PID *original=NULL) = 0;

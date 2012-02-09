@@ -233,8 +233,8 @@ public:
 	QVarID	addVariable(IStmt *qry);
 	QVarID	setOp(QVarID leftVar,QVarID rightVar,QUERY_SETOP);
 	QVarID	setOp(const QVarID *vars,unsigned nVars,QUERY_SETOP);
-	QVarID	join(QVarID leftVar,QVarID rightVar,IExprTree *cond=NULL,QUERY_SETOP=QRY_JOIN,PropertyID=STORE_INVALID_PROPID);
-	QVarID	join(const QVarID *vars,unsigned nVars,IExprTree *cond=NULL,QUERY_SETOP=QRY_JOIN,PropertyID=STORE_INVALID_PROPID);
+	QVarID	join(QVarID leftVar,QVarID rightVar,IExprTree *cond=NULL,QUERY_SETOP=QRY_SEMIJOIN,PropertyID=STORE_INVALID_PROPID);
+	QVarID	join(const QVarID *vars,unsigned nVars,IExprTree *cond=NULL,QUERY_SETOP=QRY_SEMIJOIN,PropertyID=STORE_INVALID_PROPID);
 	RC		setName(QVarID var,const char *name);
 	RC		setDistinct(QVarID var,DistinctType dt);
 	RC		addOutput(QVarID var,const Value *dscr,unsigned nDscr);
@@ -319,26 +319,25 @@ class Cursor : public ICursor
 	bool				fAdvance;
 	void	operator	delete(void *p) {if (p!=NULL) ((Cursor*)p)->ses->free(p);}
 	RC					skip();
+	RC					advance(bool fRet=true);
+	void				getPID(PID &id) {qr.getID(id);}
+	RC					extract(PIN *&,unsigned idx=0,bool fCopy=false);
 public:
 	Cursor(QueryOp *qop,uint64_t nRet,ulong md,const Value *vals,unsigned nV,Session *s,STMT_OP sop=STMT_QUERY,SelectType ste=SEL_PINSET,bool fSS=false)
 		: queryOp(qop),ses(s),nReturn(nRet),values(vals),nValues(nV),mode(md),stype(ste),op(sop),results(NULL),nResults(0),qr(s),pqr(&qr),
 		txid(INVALID_TXID),txcid(NO_TXCID),cnt(0),tx(s),fSnapshot(fSS),fProc(false),fAdvance(true) {}
 	virtual				~Cursor();
-	IPIN				*next();
+	RC					next(Value&);
 	RC					next(PID&);
-	RC					next(IPIN *pins[],unsigned nPins,unsigned& nRet);
+	IPIN				*next();
 	RC					rewind();
 	uint64_t			getCount() const;
 	void				destroy();
 
 	RC					connect();
-	RC					advance(bool fRet=true);
-	void				getPID(PID &id) {qr.getID(id);}
-	RC					extract(PIN *&,unsigned idx=0,bool fCopy=false);
-	PINEx				**getResults(unsigned& nRes) const {nRes=nResults; return results!=NULL?results:(PINEx**)&pqr;}
-	bool				isCount() const {return stype==SEL_COUNT;}
+	SelectType			selectType() const {return stype;}
+	Session				*getSession() const {return ses;}
 	friend	class		CursorNav;
-	friend	class		QueryPrc;
 };
 
 enum CNavRet	{CNR_PID, CNR_VALUE, CNR_PIN};

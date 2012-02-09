@@ -188,115 +188,125 @@ RC FileIOLinux::growFile(FileID file, off64_t newSize)
 
 RC FileIOLinux::listIO(int mode,int nent,iodesc* const* pcbs)
 {
-	lock.lock(RW_S_LOCK); int i; RC rc=RC_OK;
-	aiocb64 **adescs=(aiocb64**)alloca(sizeof(aiocb64*)*nent); if (adescs==NULL) {lock.unlock(); return RC_NORESOURCES;}
-	for (i=0; i<nent; i++) if (pcbs[i]!=NULL && pcbs[i]->aio_lio_opcode!=LIO_NOP) {
-		assert(pcbs[i]->aio_nbytes>0);
-		assert(pcbs[i]->aio_buf!=NULL);
-		FileID fid = pcbs[i]->aio_fildes;
-		pcbs[i]->aio_rc = RC_OK;
-		adescs[i]=(aiocb64*)freeAio64.alloc(sizeof(aiocb64)); if (adescs[i]==NULL){lock.unlock();return RC_NORESOURCES;}
-		memset(adescs[i],0,sizeof(aiocb64));
-		if (fid>=xSlotTab || !slotTab[fid].isOpen()) {rc=pcbs[i]->aio_rc=RC_INVPARAM; adescs[i]->aio_lio_opcode=LIO_NOP;}
-		else if (pcbs[i]->aio_lio_opcode==LIO_READ && (off64_t)(pcbs[i]->aio_nbytes+pcbs[i]->aio_offset)>slotTab[fid].fileSize
-			&& (off64_t)(pcbs[i]->aio_nbytes+pcbs[i]->aio_offset)>(slotTab[fid].fileSize=getFileSz(slotTab[fid].osFile))) {
-             /*linux doesn't fail for reads beyond EOF*/
-			rc=pcbs[i]->aio_rc=RC_EOF; adescs[i]->aio_lio_opcode=LIO_NOP;
-		} else { 
-		    adescs[i]->aio_fildes = slotTab[fid].osFile; 
-			adescs[i]->aio_lio_opcode=pcbs[i]->aio_lio_opcode;
-			if ((off64_t)(pcbs[i]->aio_nbytes+pcbs[i]->aio_offset)>slotTab[fid].fileSize) slotTab[fid].fSize=false;
-		}
-		adescs[i]->aio_sigevent.sigev_notify = SIGEV_NONE;
-		adescs[i]->aio_nbytes=pcbs[i]->aio_nbytes;
-		adescs[i]->aio_buf=pcbs[i]->aio_buf;
-		adescs[i]->aio_offset=pcbs[i]->aio_offset;
-#if defined(_POSIX_PRIORITIZED_IO) && defined(_POSIX_PRIORITY_SCHEDULING)
-		if (mode==LIO_NOWAIT) adescs[i]->aio_reqprio=AIO_PRIO_DELTA_MAX;
-#endif
-	}
-	lock.unlock();
-#ifdef SYNC_IO
-	if (mode==LIO_WAIT) {
-	  	for (int i=0; i<nent; i++) {
-			aiocb64 &aio=*(adescs[i]); int result; RC rcop=RC_OK;
-			if (aio.aio_lio_opcode==LIO_NOP) continue;
-			do {
-				result=0;
-				if (aio.aio_lio_opcode==LIO_WRITE) {
-					if ((size_t)pwrite64(aio.aio_fildes,(const void *)aio.aio_buf,aio.aio_nbytes,aio.aio_offset)!=aio.aio_nbytes)
-						result=errno;
-				} else if (aio.aio_lio_opcode==LIO_READ) {
-					if ((size_t)pread64(aio.aio_fildes,(void *)aio.aio_buf,aio.aio_nbytes,aio.aio_offset)!=aio.aio_nbytes)
-						result=errno;
-				}
-				if (result==0) {rcop=RC_OK;} else {rcop=convCode(result);}
-			} while(result==EINTR);	// Try again for interrupts (e.g. gdb attach)
-			if (rcop!=RC_OK) rc=rcop; //Overall failure if any fail. aio_rc has individual success status.
-			pcbs[i]->aio_rc=rcop;
-			if (result==0 && pcbs[i]->aio_bFlush){
-			   if (result==0&&(flagsFS&FS_DIRECT)==0&&pcbs[i]->aio_bFlush){
-			       fdatasync(aio.aio_fildes);
-				};
+	lock.lock(RW_S_LOCK); int i; RC rc=RC_OK; aiocb64 **adescs=NULL;
+	try {
+		if ((adescs=(aiocb64**)alloca(sizeof(aiocb64*)*nent))==NULL) {lock.unlock(); throw RC_NORESOURCES;}
+		memset(adescs,0,sizeof(aiocb64*)*nent);
+		for (i=0; i<nent; i++) if (pcbs[i]!=NULL && pcbs[i]->aio_lio_opcode!=LIO_NOP) {
+			assert(pcbs[i]->aio_nbytes>0);
+			assert(pcbs[i]->aio_buf!=NULL);
+			FileID fid = pcbs[i]->aio_fildes;
+			pcbs[i]->aio_rc = RC_OK;
+			adescs[i]=(aiocb64*)freeAio64.alloc(sizeof(aiocb64)); if (adescs[i]==NULL){lock.unlock(); throw RC_NORESOURCES;}
+			memset(adescs[i],0,sizeof(aiocb64));
+			if (fid>=xSlotTab || !slotTab[fid].isOpen()) {rc=pcbs[i]->aio_rc=RC_INVPARAM; adescs[i]->aio_lio_opcode=LIO_NOP;}
+			else if (pcbs[i]->aio_lio_opcode==LIO_READ && (off64_t)(pcbs[i]->aio_nbytes+pcbs[i]->aio_offset)>slotTab[fid].fileSize
+				&& (off64_t)(pcbs[i]->aio_nbytes+pcbs[i]->aio_offset)>(slotTab[fid].fileSize=getFileSz(slotTab[fid].osFile))) {
+	             /*linux doesn't fail for reads beyond EOF*/
+				rc=pcbs[i]->aio_rc=RC_EOF; adescs[i]->aio_lio_opcode=LIO_NOP;
+			} else { 
+				adescs[i]->aio_fildes = slotTab[fid].osFile; 
+				adescs[i]->aio_lio_opcode=pcbs[i]->aio_lio_opcode;
+				if ((off64_t)(pcbs[i]->aio_nbytes+pcbs[i]->aio_offset)>slotTab[fid].fileSize) slotTab[fid].fSize=false;
 			}
-			freeAio64.dealloc(adescs[i]);
-		}				
-	} else
-#else
-	mv_sync_io sync; sigset_t omask; 
-	if (mode==LIO_WAIT) pthread_sigmask(SIG_BLOCK,&sigSIO,&omask);
+			adescs[i]->aio_sigevent.sigev_notify = SIGEV_NONE;
+			adescs[i]->aio_nbytes=pcbs[i]->aio_nbytes;
+			adescs[i]->aio_buf=pcbs[i]->aio_buf;
+			adescs[i]->aio_offset=pcbs[i]->aio_offset;
+#if defined(_POSIX_PRIORITIZED_IO) && defined(_POSIX_PRIORITY_SCHEDULING)
+			if (mode==LIO_NOWAIT) adescs[i]->aio_reqprio=AIO_PRIO_DELTA_MAX;
 #endif
-	for (i=0; i<nent; i++) if (pcbs[i]!=NULL && adescs[i]!=NULL) {
-		if (adescs[i]->aio_lio_opcode==LIO_NOP) {asyncIOCallback(pcbs[i]); freeAio64.dealloc(adescs[i]); adescs[i]=NULL; continue;}
-		aiocb64 &aio=*(adescs[i]);
-#ifndef SYNC_IO
+		}
+		lock.unlock();
+#ifdef SYNC_IO
 		if (mode==LIO_WAIT) {
-	        aio.aio_sigevent.sigev_notify			 = SIGEV_SIGNAL;
-			aio.aio_sigevent.sigev_signo			 = SIGPISIO;
-			aio.aio_sigevent.sigev_value.sival_ptr	 = &sync;
-			aio.aio_sigevent.sigev_notify_function   = (void(*)(union sigval))0;
-			aio.aio_sigevent.sigev_notify_attributes = NULL;
-			++sync.cnt;
-		} else {
+		  	for (int i=0; i<nent; i++) {
+				aiocb64 &aio=*(adescs[i]); int result; RC rcop=RC_OK;
+				if (aio.aio_lio_opcode==LIO_NOP) continue;
+				do {
+					result=0;
+					if (aio.aio_lio_opcode==LIO_WRITE) {
+						if ((size_t)pwrite64(aio.aio_fildes,(const void *)aio.aio_buf,aio.aio_nbytes,aio.aio_offset)!=aio.aio_nbytes)
+							result=errno;
+					} else if (aio.aio_lio_opcode==LIO_READ) {
+						if ((size_t)pread64(aio.aio_fildes,(void *)aio.aio_buf,aio.aio_nbytes,aio.aio_offset)!=aio.aio_nbytes)
+							result=errno;
+					}
+					if (result==0) {rcop=RC_OK;} else {rcop=convCode(result);}
+				} while(result==EINTR);	// Try again for interrupts (e.g. gdb attach)
+				if (rcop!=RC_OK) rc=rcop; //Overall failure if any fail. aio_rc has individual success status.
+				pcbs[i]->aio_rc=rcop;
+				if (result==0 && pcbs[i]->aio_bFlush) {
+					if (result==0&&(flagsFS&FS_DIRECT)==0&&pcbs[i]->aio_bFlush) {
+				       fdatasync(aio.aio_fildes);
+					}
+				}
+				freeAio64.dealloc(adescs[i]);
+			}				
+		} else
+#else
+		mv_sync_io sync; sigset_t omask; 
+		if (mode==LIO_WAIT) pthread_sigmask(SIG_BLOCK,&sigSIO,&omask);
+#endif
+		for (i=0; i<nent; i++) if (pcbs[i]!=NULL && adescs[i]!=NULL) {
+			if (adescs[i]->aio_lio_opcode==LIO_NOP) {asyncIOCallback(pcbs[i]); freeAio64.dealloc(adescs[i]); adescs[i]=NULL; continue;}
+			aiocb64 &aio=*(adescs[i]);
+#ifndef SYNC_IO
+			if (mode==LIO_WAIT) {
+		        aio.aio_sigevent.sigev_notify			 = SIGEV_SIGNAL;
+				aio.aio_sigevent.sigev_signo			 = SIGPISIO;
+				aio.aio_sigevent.sigev_value.sival_ptr	 = &sync;
+				aio.aio_sigevent.sigev_notify_function   = (void(*)(union sigval))0;
+				aio.aio_sigevent.sigev_notify_attributes = NULL;
+				++sync.cnt;
+			} else {
 #endif
 #ifdef STORE_AIO_THREAD
-		aio.aio_sigevent.sigev_notify			 = SIGEV_THREAD;
-		aio.aio_sigevent.sigev_notify_function	 = FileIOLinux::_asyncIOCompletion;
-		aio.aio_sigevent.sigev_notify_attributes = NULL;
-		aio.aio_sigevent.sigev_value.sival_ptr	 = pcbs[i];
+				aio.aio_sigevent.sigev_notify			 = SIGEV_THREAD;
+				aio.aio_sigevent.sigev_notify_function	 = FileIOLinux::_asyncIOCompletion;
+				aio.aio_sigevent.sigev_notify_attributes = NULL;
+				aio.aio_sigevent.sigev_value.sival_ptr	 = pcbs[i];
 #else
-        aio.aio_sigevent.sigev_notify			 = SIGEV_SIGNAL;
-		aio.aio_sigevent.sigev_signo			 = SIGPIAIO;
-		aio.aio_sigevent.sigev_value.sival_ptr	 = pcbs[i];
-		aio.aio_sigevent.sigev_notify_function   = (void(*)(union sigval))0;
-		aio.aio_sigevent.sigev_notify_attributes = NULL;
+		        aio.aio_sigevent.sigev_notify			 = SIGEV_SIGNAL;
+				aio.aio_sigevent.sigev_signo			 = SIGPIAIO;
+				aio.aio_sigevent.sigev_value.sival_ptr	 = pcbs[i];
+				aio.aio_sigevent.sigev_notify_function   = (void(*)(union sigval))0;
+				aio.aio_sigevent.sigev_notify_attributes = NULL;
 #endif
-		pcbs[i]->aio_ptr[pcbs[i]->aio_ptrpos++]	 = adescs[i];
-		pcbs[i]->aio_ptr[pcbs[i]->aio_ptrpos++]	 = this;
+				pcbs[i]->aio_ptr[pcbs[i]->aio_ptrpos++]	 = adescs[i];
+				pcbs[i]->aio_ptr[pcbs[i]->aio_ptrpos++]	 = this;
 #ifndef SYNC_IO
-		}
+			}
 #endif
-		assert(pcbs[i]->aio_ptrpos<=FIO_MAX_PLUGIN_CHAIN);  
+			assert(pcbs[i]->aio_ptrpos<=FIO_MAX_PLUGIN_CHAIN);  
 
-		if ((aio.aio_lio_opcode==LIO_WRITE?aio_write64(&aio):aio_read64(&aio))!=0) {
-			rc=pcbs[i]->aio_rc=convCode(errno);
+			if ((aio.aio_lio_opcode==LIO_WRITE?aio_write64(&aio):aio_read64(&aio))!=0) {
+				rc=pcbs[i]->aio_rc=convCode(errno);
 #ifndef SYNC_IO
-			if (mode==LIO_WAIT) --sync.cnt; else
+				if (mode==LIO_WAIT) --sync.cnt; else
 #endif
-			{pcbs[i]->aio_ptrpos-=2; asyncIOCallback(pcbs[i]);}
-			freeAio64.dealloc(adescs[i]);
+				{pcbs[i]->aio_ptrpos-=2; asyncIOCallback(pcbs[i]);}
+				freeAio64.dealloc(adescs[i]);
+			}
+		}
+#ifndef SYNC_IO
+		if (mode==LIO_WAIT) {
+			pthread_mutex_lock(&sync.lock);
+			while (sync.cnt>0) pthread_cond_wait(&sync.wait,&sync.lock);
+			pthread_mutex_unlock(&sync.lock);
+			pthread_sigmask(SIG_SETMASK,&omask,0);
+			if (rc==RC_OK) rc=convCode(sync.errNo);
+			for (i=0; i<nent; i++) if (adescs[i]!=NULL) freeAio64.dealloc(adescs[i]);
+		}
+#endif
+	} catch (RC rc2) {
+		rc=rc2;
+		for (i=0; i<nent; i++) {
+			pcbs[i]->aio_rc=rc2;
+			if (mode!=LIO_WAIT) asyncIOCallback(pcbs[i]);
+			if (adescs!=NULL && adescs[i]!=NULL) freeAio64.dealloc(adescs[i]);
 		}
 	}
-#ifndef SYNC_IO
-	if (mode==LIO_WAIT) {
-		pthread_mutex_lock(&sync.lock);
-		while (sync.cnt>0) pthread_cond_wait(&sync.wait,&sync.lock);
-		pthread_mutex_unlock(&sync.lock);
-		pthread_sigmask(SIG_SETMASK,&omask,0);
-		if (rc==RC_OK) rc=convCode(sync.errNo);
-		for (i=0; i<nent; i++) if (adescs[i]!=NULL) freeAio64.dealloc(adescs[i]);
-	}
-#endif
 	return rc;
 }
 

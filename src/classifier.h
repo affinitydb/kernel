@@ -312,6 +312,7 @@ class Classifier : public ClassHash, public TreeFactory, public TreeConnect
 	volatile long		xPropID;
 public:
 	Classifier(StoreCtx *ct,ulong timeout,ulong hashSize=DEFAULT_CLASS_HASH_SIZE,ulong cacheSize=DEFAULT_CLASS_CACHE_SIZE);
+	bool				isInit() const {return fInit;}
 	RC					initStoreMaps(Session *ses);
 	RC					restoreXPropID(Session *ses);
 	RC					classify(PINEx *pin,ClassResult& res);

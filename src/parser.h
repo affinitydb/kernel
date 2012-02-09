@@ -227,7 +227,7 @@ private:
 	TLx		parseOrderOrGroup(Stmt *stmt,QVarID var,Value *os=NULL,unsigned nO=0);
 	ExprTree *parseCondition(const union QVarRef *vars,unsigned nVars);
 	RC		splitWhere(Stmt *stmt,QVar *qv,ExprTree *pe);
-	RC		resolveVars(QVarRef *qv,Value &vv,Value *par=NULL);
+	void	resolveVars(QVarRef *qv,Value &vv,Value *par=NULL);
 	RC		replaceGroupExprs(Value& v,const OrderSeg *segs,unsigned nSegs);
 	QVarID	findVar(const Value& v,const union QVarRef *vars,unsigned nVars) const;
 	struct	FreeV	{static void free(Value& v) {freeV(v);}};

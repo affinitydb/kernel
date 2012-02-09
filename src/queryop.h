@@ -26,7 +26,7 @@ namespace MVStoreKernel
 #define	QO_IDSORT		0x00000010
 #define	QO_REVERSIBLE	0x00000020
 #define	QO_FORUPDATE	0x00000040
-#define	QO_ALLSETS		0x00000080
+#define	QO_SEMIJOIN		0x00000080
 #define	QO_CLASS		0x00000100
 #define	QO_ALLPROPS		0x00000200
 #define	QO_DELETED		0x00000400
@@ -252,13 +252,9 @@ class MergeOp : public QueryOp
 	const	PropertyID	propID1;
 	const	PropertyID	propID2;
 	const	QUERY_SETOP	op;
-	ulong				mstate;
 	ulong				didx;
 	Value				vals[3];
-	PID					saveID;
-	EncPINRef			saveEPR;
 	PINEx				pexR;
-	PINEx				saveR;
 	PINEx				*pR;
 	class	PIDStore	*pids;
 

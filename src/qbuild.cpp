@@ -52,18 +52,18 @@ RC QBuildCtx::process(QueryOp *&qop)
 			qop=q;
 		}
 		break;
+#if 0
 	case DT_DISTINCT_VALUES:
 		if (propsReq.nPls!=0 || (qop->qflags&QO_UNIQUE)==0) {
 			// calc total number -> nProps
-#if 0
 			OrderSegQ *os=(OrderSegQ*)alloca(nPropsReq*sizeof(OrderSegQ));
 			if (os==NULL) {delete qop; qop=NULL; return RC_NORESOURCES;}
 			for (unsigned i=0; i<nPropsReq; i++) {os[i].expr=NULL; os[i].flags=0; os[i].aggop=OP_ALL; os[i].lPref=0; os[i].pid=propsReq[i];}
 			QueryOp *q=new(ses,0,nPropsReq) Sort(qop,os,nPropsReq,flg|QO_VUNIQUE,0,NULL,0);
 			if (q!=NULL) qop=q; else {delete qop; qop=NULL; return RC_NORESOURCES;}
-#endif
 		}
 		break;
+#endif
 	case DT_ALL:
 		qop->unique(false); break;
 	}
@@ -114,7 +114,7 @@ RC SetOpVar::build(class QBuildCtx& qctx,class QueryOp *&q) const
 RC JoinVar::build(class QBuildCtx& qctx,class QueryOp *&q) const
 {
 	q=NULL;	RC rc=RC_OK; const ulong nqs0=qctx.nqs;
-	assert(type==QRY_JOIN||type==QRY_LEFTJOIN||type==QRY_RIGHTJOIN||type==QRY_OUTERJOIN);
+	assert(type==QRY_SEMIJOIN||type==QRY_JOIN||type==QRY_LEFT_OUTER_JOIN||type==QRY_RIGHT_OUTER_JOIN||type==QRY_FULL_OUTER_JOIN);
 	const bool fTrans=groupBy!=NULL && nGroupBy!=0 || outs!=NULL && nOuts!=0;
 	if (fTrans) {
 		// merge props
@@ -431,7 +431,8 @@ RC QBuildCtx::mergeN(QueryOp *&res,QueryOp **o,unsigned no,bool fOr)
 RC QBuildCtx::merge2(QueryOp *&res,QueryOp **qs,const CondEJ *cej,QUERY_SETOP qo)
 {
 	res=NULL; if (qs[0]==NULL || qs[1]==NULL) return RC_EOF;
-	ulong fUni=0; RC rc; OrderSegQ os; os.flags=0; os.var=0; os.aggop=OP_ALL; os.lPref=0; assert(qo!=QRY_UNION && qo!=QRY_INTERSECT);
+	ulong fUni=qo==QRY_SEMIJOIN||qo==QRY_EXCEPT?QO_SEMIJOIN:0; RC rc;
+	OrderSegQ os; os.flags=0; os.var=0; os.aggop=OP_ALL; os.lPref=0; assert(qo!=QRY_UNION && qo!=QRY_INTERSECT);
 	if ((qs[0]->sort==NULL || qs[0]->sort[0].pid!=cej->propID1 || (qs[0]->sort[0].flags&ORD_DESC)!=0) && (cej->propID1!=PROP_SPEC_PINID||(qs[0]->qflags&QO_IDSORT)==0)) {
 		os.pid=cej->propID1; if ((rc=sort(qs[0],&os,1,NULL,true))!=RC_OK) {delete qs[0]; delete qs[1]; return rc;}
 	} else if (cej->propID1!=PROP_SPEC_PINID) qs[0]->unique(false);

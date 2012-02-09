@@ -39,6 +39,7 @@ RC manageStores(const char *cmd,size_t lcmd,MVStoreCtx &store,IMapDir *id,const 
 {
 	try {
 		store=NULL; if (cmd==NULL || lcmd==0) return RC_INVPARAM;
+		if (ce!=NULL) {memset(ce,0,sizeof(CompilationError)); ce->msg="";}
 		RequestQueue::startThreads(); initReport(); SInCtx::initKW();
 		SInCtx in(NULL,cmd,lcmd,NULL,0,SQ_SQL,NULL);		//??? ma!!!
 		try {in.parseManage(id,store,sp); return RC_OK;}
@@ -449,8 +450,10 @@ RC shutdownStore(MVStoreCtx ctx)
 
 		ctx->netMgr->close();		//make all close() -> RC
 		ctx->fsMgr->close();
-		RequestQueue::removeStore(*ctx,10000);				// ??? timeout
-		if ((rc=ctx->bufMgr->flushAll())!=RC_OK) return rc;
+		RequestQueue::removeStore(*ctx,10000);						// ??? timeout
+		if (ctx->bufMgr->flushAll(60000000)!=RC_OK) {				// timeout 1 minute (for slow ext. memory)
+			ctx->theCB->state=SST_NO_SHUTDOWN;
+		}
 
 		if ((ctx->mode&STARTUP_PRINT_STATS)!=0) {
 			Session *ses=Session::createSession(ctx); if (ses!=NULL) ses->setIdentity(STORE_OWNER,true);
@@ -528,4 +531,16 @@ StoreCtx::~StoreCtx()
 	storeTls.set(NULL);
 	if (m!=NULL) m->release();
 	--nStores;
+}
+
+StoreCtx *StoreCtx::createCtx(ulong f,bool fNew)
+{
+	StoreCtx *ctx=new(SERVER_HEAP) StoreCtx(f);
+	if (ctx!=NULL) {ctx->mem=createMemAlloc(fNew?STORE_NEW_MEM:STORE_START_MEM,true); storeTls.set(ctx);}
+	return ctx;
+}
+
+void StoreCtx::operator delete(void *p)
+{
+	MVStoreKernel::free(p,SERVER_HEAP);
 }

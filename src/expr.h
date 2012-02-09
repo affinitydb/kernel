@@ -46,6 +46,7 @@ namespace MVStoreKernel
 #define	OP_IN1			0x78
 #define OP_CURRENT		0x77
 #define	OP_CONID		0x76
+#define	OP_SETPROP		0x75
 
 #define	CND_SORT		0x80000000
 #define	CND_EQ			0x40000000
@@ -184,7 +185,8 @@ public:
 	static	RC		node(Value&,Session*,ExprOp,unsigned,const Value *,ulong);
 	static	RC		forceExpr(Value&,Session *ses,bool fCopy=false);
 	static	RC		normalizeArray(Value *vals,unsigned nvals,Value& res,MemAlloc *ma,StoreCtx *ctx);
-	static	ushort	vRefs(const Value& v) {return v.type==VT_VARREF&&(v.refV.flags&VAR_TYPE_MASK)==0?v.refV.refN<<8|v.refV.refN:v.type==VT_EXPRTREE?((ExprTree*)v.exprt)->vrefs:NO_VREFS;}
+	static	RC		normalizeStruct(Value *vals,unsigned nvals,Value& res,MemAlloc *ma);
+	static	ushort	vRefs(const Value& v) {return v.type==VT_VARREF&&(v.refV.flags==0xFFFF||(v.refV.flags&VAR_TYPE_MASK)==0)?v.refV.refN<<8|v.refV.refN:v.type==VT_EXPRTREE?((ExprTree*)v.exprt)->vrefs:NO_VREFS;}
 	static	void	vRefs(ushort& vr1,ushort vr2) {if (vr1==NO_VREFS||vr2==MANY_VREFS) vr1=vr2; else if (vr1!=vr2&&vr1!=MANY_VREFS&&vr2!=NO_VREFS) mergeVRefs(vr1,vr2);}
 	static	void	mergeVRefs(ushort& vr1,ushort vr2);
 	void			mapVRefs(byte from,byte to);
@@ -199,6 +201,7 @@ public:
 #define	CV_CARD		0x0001
 #define	CV_REF		0x0002
 #define	CV_OPT		0x0004
+#define	CV_PROP		0x0008
 
 class ExprCompileCtx {
 	MemAlloc	*const	ma;

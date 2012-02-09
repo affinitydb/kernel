@@ -401,12 +401,12 @@ RC ClassPropIndex::classify(const ClassRefT *cr,PINEx *pin,ClassResult& res)
 
 RC Classifier::enable(Session *ses,Class *cls,ulong notifications)
 {
-	initClasses(ses); MutexP lck(&lock); return add(ses,cls->getID(),cls->getQuery(),cls->getFlags(),notifications);
+	MutexP lck(&lock); return add(ses,cls->getID(),cls->getQuery(),cls->getFlags(),notifications);
 }
 
 void Classifier::disable(Session *ses,Class *cls,ulong notifications)
 {
-	//initClasses(ses); MutexP lck(&lock); classIndex.remove(cls,notifications);
+	//MutexP lck(&lock); classIndex.remove(cls,notifications);
 }
 
 RC Classifier::indexFormat(ulong vt,IndexFormat& fmt) const
@@ -464,7 +464,7 @@ namespace MVStoreKernel
 			}
 		}
 		void			*operator new(size_t s,ulong nSegs,Session *ses) {return ses->malloc(s+int(nSegs-1)*sizeof(IndexSeg));}
-		ulong			getMode() const {return TF_SPLITINTX;}
+		ulong			getMode() const {return TF_SPLITINTX|TF_NOPOST;}
 		TreeFactory		*getFactory() const {return NULL;}
 		IndexFormat		indexFormat() const {return fmt;}
 		bool			lock(RW_LockType,bool fTry=false) const {return true;}

@@ -24,13 +24,11 @@ RC QueryPrc::deletePINs(Session *ses,const PIN *const *pins,const PID *pids,unsi
 	if (pins==NULL&&pids==NULL || nPins==0) return RC_OK;
 	if (ses==NULL) return RC_NOSESSION; if (ses->isRestore()) return RC_OTHER;
 	if (ctx->isServerLocked()) return RC_READONLY; if (ses->inReadTx()) return RC_READTX;
-	ClassResult clr(ses,ctx); if (pcb==NULL) ctx->classMgr->initClasses(ses);
-	TxSP tx(ses); RC rc=tx.start(TXI_DEFAULT,nPins==1?TX_ATOMIC:0); if (rc!=RC_OK) return rc; 
+	ClassResult clr(ses,ctx); TxSP tx(ses); RC rc=tx.start(TXI_DEFAULT,nPins==1?TX_ATOMIC:0); if (rc!=RC_OK) return rc; 
 	bool fRepSes=ses->isReplication(); PINEx cb(ses); if (pcb!=NULL && pcb->pb.isNull()) pcb=NULL;
 	const size_t threshold=ceil(size_t((HeapPageMgr::contentSize(ctx->bufMgr->getPageSize())-sizeof(PageOff))*(1.-(ses->allocCtrl!=NULL?ses->allocCtrl->pctPageFree:ctx->theCB->pctFree))),HP_ALIGN);
-	DynOArray<PID> parts(ses); Value *vals=NULL; unsigned nvals=0; Value *SSVs=NULL; unsigned nSSVs=0,xSSVs=0;
-	const ulong flgs=(mode&(MODE_DELETED|MODE_PURGE|MODE_PURGE_IDS))!=0?GB_DELETED|GB_FORWARD:GB_FORWARD; const bool fPurge=(mode&(MODE_PURGE|MODE_PURGE_IDS))!=0; 
-	const ulong hop=(mode&MODE_PURGE_IDS)!=0?HPOP_PURGE_IDS:fPurge?HPOP_PURGE:HPOP_DELETE; SubAlloc sft(ses);
+	DynOArray<PID> parts(ses); Value *vals=NULL; unsigned nvals=0; DynArray<Value> SSVs(ses); SubAlloc sft(ses);
+	const ulong flgs=(mode&(MODE_DELETED|MODE_PURGE))!=0?GB_DELETED|GB_FORWARD:GB_FORWARD; const bool fPurge=(mode&MODE_PURGE)!=0; 
 
 	try {
 		for (unsigned np=0; np<nPins; pcb=NULL,parts.clear()) {
@@ -42,7 +40,7 @@ RC QueryPrc::deletePINs(Session *ses,const PIN *const *pins,const PID *pids,unsi
 				if (pcb->pb.isNull() && (rc=getBody(*pcb,TVO_UPD,flgs))!=RC_OK) throw rc;
 				if (pcb->hpin->hdr.getType()==HO_FORWARD) {
 					memcpy(fwdbuf,pcb->hpin,sizeof(fwdbuf)); if (!fwd.defined()) fwd=pcb->addr;
-					if ((rc=ctx->txMgr->update(pcb->pb,ctx->heapMgr,(ulong)pcb->addr.idx<<HPOP_SHIFT|hop,fwdbuf,sizeof(fwdbuf)))!=RC_OK) throw rc;
+					if ((rc=ctx->txMgr->update(pcb->pb,ctx->heapMgr,(ulong)pcb->addr.idx<<HPOP_SHIFT|(fPurge?HPOP_PURGE:HPOP_DELETE),fwdbuf,sizeof(fwdbuf)))!=RC_OK) throw rc;
 					if (fPurge)	ctx->heapMgr->reuse(pcb->pb,ses,threshold,true); memcpy(&cb.addr,fwdbuf+sizeof(HeapPageMgr::HeapObjHeader),PageAddrSize);
 					if (cb.addr.defined()) {pcb=&cb; cb.pb.release(ses); cb.mode|=PINEX_ADDRSET; continue;}
 				} else if (pcb->hpin->isMigrated()) {
@@ -67,7 +65,7 @@ RC QueryPrc::deletePINs(Session *ses,const PIN *const *pins,const PID *pids,unsi
 					fti.docID=v.id; assert(v.type==VT_REFID);
 				}
 			}
-			const bool fNotify=(pinDescr&HOH_HIDDEN)==0 && notification!=NULL && ((clr.notif&CLASS_NOTIFY_DELETE)!=0 || (pinDescr&HOH_NOTIFICATION)!=0);
+			const bool fNotify=(pinDescr&HOH_HIDDEN)==0 && notification!=NULL && ((clr.notif&CLASS_NOTIFY_DELETE)!=0 || (pinDescr&HOH_NOTIFICATION)!=0); bool fSSV=false;
 			if (nProps!=0) {
 				if (fNotify) {
 					if ((vals=(Value*)ses->malloc((nvals=nProps)*(sizeof(Value)+sizeof(IStoreNotification::NotificationData))))==NULL) throw RC_NORESOURCES;
@@ -77,8 +75,7 @@ RC QueryPrc::deletePINs(Session *ses,const PIN *const *pins,const PID *pids,unsi
 					const bool fFT=ftl!=NULL && (hprop->type.flags&META_PROP_NOFTINDEX)==0; Value *pv=&v; HeapDataFmt hfmt; PageAddr daddr;
 					if (fNotify) {
 						if ((rc=loadVH(vals[i],hprop,*pcb,0,ses))!=RC_OK) throw rc;
-						ndata[i].propID=hprop->getID(); ndata[i].eid=vals[i].eid; ndata[i].epos=STORE_COLLECTION_ID;
-						ndata[i].newValue=NULL; ndata[i].oldValue=pv=&vals[i];
+						ndata[i].propID=hprop->getID(); ndata[i].eid=vals[i].eid; ndata[i].epos=STORE_COLLECTION_ID; ndata[i].newValue=NULL; ndata[i].oldValue=pv=&vals[i];
 					}
 					switch (hprop->type.getType()) {
 					default: break;
@@ -99,8 +96,10 @@ RC QueryPrc::deletePINs(Session *ses,const PIN *const *pins,const PID *pids,unsi
 								memcpy(&daddr.pageID,&((HRefSSV*)pData)->pageID,sizeof(PageID)); daddr.idx=((HRefSSV*)pData)->idx; 
 								if ((rc=ses->queueForPurge(daddr))!=RC_OK) throw rc;
 							}
-							if (fFT && ((HRefSSV*)pData)->type.getType()==VT_STRING) {
-								// add to SSVs
+							if (fNotify) fSSV=true;
+							else if (fFT && ((HRefSSV*)pData)->type.getType()==VT_STRING) {
+								if ((rc=loadS(v,hprop->type,hprop->offset,hp,0,NULL))!=RC_OK) throw rc;
+								v.setPropID(hprop->getPropID()); fSSV=true; if ((rc=SSVs+=v)!=RC_OK) throw rc;
 							}
 						}
 						break;
@@ -120,13 +119,10 @@ RC QueryPrc::deletePINs(Session *ses,const PIN *const *pins,const PID *pids,unsi
 								} else if (j==0) cv=pv; else break;
 								if ((cv->flags&VF_SSV)!=0) {
 									const HRefSSV *href=(const HRefSSV *)&cv->id; assert(cv->type==VT_STREAM||cv->type==VT_STRUCT); 
-									if (fPurge && pv->type!=VT_COLLECTION) {
-										PageAddr ad; memcpy(&ad.pageID,&href->pageID,sizeof(PageID)); ad.idx=href->idx;
-										if ((rc=ses->queueForPurge(ad))!=RC_OK) throw rc;
-									}
-									if (fFT && href->type.getType()==VT_STRING) {
-										//...
-									}
+									if (fPurge && pv->type!=VT_COLLECTION)
+										{memcpy(&daddr.pageID,&href->pageID,sizeof(PageID)); daddr.idx=href->idx; if ((rc=ses->queueForPurge(daddr))!=RC_OK) throw rc;}
+									if (fNotify) fSSV=true;
+									else if (fFT && href->type.getType()==VT_STRING) {fSSV=true; v=*cv; v.setPropID(hprop->getPropID()); if ((rc=SSVs+=v)!=RC_OK) throw rc;}
 								} else switch (cv->type) {
 								case VT_STRING: 
 									if (fFT) {
@@ -143,27 +139,37 @@ RC QueryPrc::deletePINs(Session *ses,const PIN *const *pins,const PID *pids,unsi
 						break;
 					case VT_STRUCT:
 						// PROP_SPEC_REF & META_PROP_PART
+						// VT_STRING fields for fFT
 						//???
 						break;
 					}
 				}
 			}
 
-			if ((rc=fPurge?ses->queueForPurge(pcb->addr,(mode&MODE_PURGE_IDS)!=0?TXP_IDS:TXP_PIN):
-				ctx->txMgr->update(pcb->pb,ctx->heapMgr,(ulong)pcb->addr.idx<<HPOP_SHIFT|hop))!=RC_OK) throw rc;
+			if ((rc=fPurge?ses->queueForPurge(pcb->addr,TXP_PIN):
+				ctx->txMgr->update(pcb->pb,ctx->heapMgr,(ulong)pcb->addr.idx<<HPOP_SHIFT|(fPurge?HPOP_PURGE:HPOP_DELETE)))!=RC_OK) throw rc;
 
 			if ((pinDescr&(HOH_HIDDEN|HOH_NOINDEX|HOH_DELETED))==0 && ((rc=ctx->classMgr->classify(pcb,clr))!=RC_OK || clr.nClasses>0 &&
 					(rc=ctx->classMgr->index(ses,pcb,clr,!fPurge?CI_SDELETE:(pinDescr&HOH_DELETED)==0?CI_DELETE:CI_PURGE))!=RC_OK)) throw rc;
 			if (pcb==&cb) {pcb->pb.release(ses); pcb=NULL;}
 
-			if (nSSVs!=0 && (fNotify || ftl!=NULL)) {
-				if ((rc=loadSSVs(SSVs,nSSVs,0,ses,ses))!=RC_OK) throw rc;
-				if (ftl!=NULL) {
-					//...
+			if (fSSV) {
+				const Value *pv=vals; unsigned nv=nvals; if (!fNotify) {pv=SSVs; nvals=SSVs; assert(nvals!=0);}
+				if ((rc=loadSSVs((Value*)pv,nv,0,ses,ses))==RC_OK && ftl!=NULL) {
+					for (uint32_t i=0,j; rc==RC_OK && i<nv; i++) if ((pv[i].meta&META_PROP_NOFTINDEX)==0) switch (pv[i].type) {
+					case VT_STRING:
+						fti.propID=pv[i].property; fti.oldV=&pv[i];
+						rc=ctx->ftMgr->index(fti,ftl,IX_OFT,(pv[i].meta&META_PROP_STOPWORDS)!=0?FTMODE_STOPWORDS:0,ses); break;
+					case VT_ARRAY:
+						for (j=0; rc==RC_OK && j<pv[i].length; j++) if (pv[i].varray[j].type==VT_STRING) {
+							fti.propID=pv[i].property; fti.oldV=&pv[i].varray[j]; 
+							rc=ctx->ftMgr->index(fti,ftl,IX_OFT,(pv[i].meta&META_PROP_STOPWORDS)!=0?FTMODE_STOPWORDS:0,ses);
+						}
+						break;
+					}
 				}
-				if (fNotify) {
-					//...
-				}
+				if (!fNotify) {for (unsigned i=0; i<nv; i++) freeV(*(Value*)&pv[i]); SSVs.clear();}
+				if (rc!=RC_OK) throw rc;
 			}
 			if ((pinDescr&(HOH_HIDDEN|HOH_NOINDEX|HOH_DELETED))==0) {
 				if (cid!=STORE_INVALID_CLASSID && (rc=ctx->classMgr->remove(cid,ses))!=RC_OK) throw rc;	// queue for removal at commit
@@ -195,7 +201,7 @@ RC QueryPrc::deletePINs(Session *ses,const PIN *const *pins,const PID *pids,unsi
 				cb=fwd;
 				if (cb.pb.getPage(fwd.pageID,ctx->heapMgr,PGCTL_XLOCK|PGCTL_RLATCH,ses)==NULL) break;
 				if (cb.fill()==NULL || cb.hpin->hdr.getType()!=HO_FORWARD) break; memcpy(fwdbuf,cb.hpin,sizeof(fwdbuf));
-				if ((rc=ctx->txMgr->update(cb.pb,ctx->heapMgr,(ulong)fwd.idx<<HPOP_SHIFT|hop,fwdbuf,sizeof(fwdbuf)))!=RC_OK) throw rc;
+				if ((rc=ctx->txMgr->update(cb.pb,ctx->heapMgr,(ulong)fwd.idx<<HPOP_SHIFT|(fPurge?HPOP_PURGE:HPOP_DELETE),fwdbuf,sizeof(fwdbuf)))!=RC_OK) throw rc;
 				if (fPurge)	ctx->heapMgr->reuse(cb.pb,ses,threshold,true);
 				memcpy(&fwd,fwdbuf+sizeof(HeapPageMgr::HeapObjHeader),sizeof(PageAddr));
 			} while (fwd!=deleted);
@@ -203,7 +209,6 @@ RC QueryPrc::deletePINs(Session *ses,const PIN *const *pins,const PID *pids,unsi
 		cb.pb.release(ses); tx.ok();
 	} catch (RC rc2) {rc=rc2;}
 	if (vals!=NULL) freeV(vals,nvals,ses);
-	if (SSVs!=NULL) freeV(SSVs,nSSVs,ses);
 	return rc;
 }
 
@@ -211,7 +216,7 @@ RC QueryPrc::purge(PageID pageID,unsigned start,unsigned len,const uint32_t *bmp
 {
 	if (start==0xFFFF) return Collection::purge((const HeapPageMgr::HeapExtCollection *)bmp,ctx);
 
-	PageAddr addr={pageID,INVALID_INDEX}; RC rc=RC_OK; PBlockP pb; const ulong hop=pt==TXP_IDS?HPOP_PURGE_IDS:HPOP_PURGE;
+	PageAddr addr={pageID,INVALID_INDEX}; RC rc=RC_OK; PBlockP pb;
 	if (pb.getPage(pageID,pt==TXP_SSV?(PageMgr*)ctx->ssvMgr:(PageMgr*)ctx->heapMgr,PGCTL_XLOCK|PGCTL_RLATCH,ses)==NULL) return RC_NOTFOUND;
 	const HeapPageMgr::HeapPage *hp=(const HeapPageMgr::HeapPage*)pb->getPageBuf();
 	for (unsigned j=0; rc==RC_OK && j<len; j++) for (uint32_t w=bmp[j],c=0; w!=0; ++c,w>>=1) if ((w&1)!=0) {
@@ -221,7 +226,7 @@ RC QueryPrc::purge(PageID pageID,unsigned start,unsigned len,const uint32_t *bmp
 			// report error
 		} else if (pt!=TXP_SSV) {
 			byte *body=NULL; size_t lBody=0; if ((rc=((HeapPageMgr::HeapPIN*)hobj)->serialize(body,lBody,hp,ses))!=RC_OK) break;
-			rc=ctx->txMgr->update(pb,ctx->heapMgr,(ulong)addr.idx<<HPOP_SHIFT|hop,body,lBody); ses->free(body); if (rc!=RC_OK) break;
+			rc=ctx->txMgr->update(pb,ctx->heapMgr,(ulong)addr.idx<<HPOP_SHIFT|HPOP_PURGE,body,lBody); ses->free(body); if (rc!=RC_OK) break;
 		} else if ((hobj->getType()!=HO_BLOB || ctx->bigMgr->canBePurged(addr)) && (rc=deleteData(addr,ses,&pb))!=RC_OK) break;
 	}
 	if (rc==RC_OK && pt!=TXP_SSV) {

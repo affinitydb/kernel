@@ -138,7 +138,7 @@ size_t MVStoreKernel::serSize(const Value& v,bool full)
 	size_t l=1; uint32_t i; uint64_t u64; const Value *pv;
 	switch (v.type) {
 	default: l=0; break;
-	case VT_ERROR: break;
+	case VT_ANY: if (!full) l++; break;
 	case VT_STREAM: u64=v.stream.is->length(); l+=1+mv_len64(u64)+(size_t)u64; break;
 	case VT_STRING: case VT_URL: l+=mv_len32(v.length+1)+v.length+1; break;
 	case VT_BSTR: l+=mv_len32(v.length)+v.length; break;
@@ -157,7 +157,7 @@ size_t MVStoreKernel::serSize(const Value& v,bool full)
 	case VT_REFIDELT: l+=serSize(v.refId->id)+mv_len32(v.refId->pid)+mv_len32(v.refId->eid); break;
 	case VT_RANGE: l+=serSize(v.range[0])+serSize(v.range[1]); break;
 	case VT_VARREF:
-		l=6; if (v.length!=0) {l+=mv_len32(v.refV.id); if (v.eid!=STORE_COLLECTION_ID) l+=mv_len32(v.eid);}
+		l=7; if (v.length!=0) {l+=mv_len32(v.refV.id); if (v.eid!=STORE_COLLECTION_ID) l+=mv_len32(v.eid);}
 		break;
 	case VT_ARRAY:
 		l+=mv_len32(v.length);
@@ -195,7 +195,7 @@ byte *MVStoreKernel::serialize(const Value& v,byte *buf,bool full)
 	unsigned i; uint32_t l; const Value *pv; uint64_t u64;
 	switch (v.type) {
 	default:
-	case VT_ERROR: break;
+	case VT_ANY: if (!full) *buf++=v.meta; break;
 	case VT_STREAM:
 		*buf++=v.stream.is->dataType(); u64=v.stream.is->length();
 		mv_enc64(buf,u64); buf+=v.stream.is->read(buf,(size_t)u64);
@@ -221,7 +221,8 @@ byte *MVStoreKernel::serialize(const Value& v,byte *buf,bool full)
 	case VT_REFIDPROP: buf=serialize(v.refId->id,buf); mv_enc32(buf,v.refId->pid); break;
 	case VT_REFIDELT:  buf=serialize(v.refId->id,buf); mv_enc32(buf,v.refId->pid); mv_enc32(buf,v.refId->eid); break;
 	case VT_VARREF:
-		*buf++=v.refV.refN; *buf++=v.length; *buf++=v.refV.type|(v.length!=0&&v.eid!=STORE_COLLECTION_ID?0x80:0); 
+		*buf++=v.refV.refN; *buf++=v.length|(v.eid!=STORE_COLLECTION_ID?0x80:0); 
+		*buf++=byte(v.refV.type>>8); *buf++=byte(v.refV.type);
 		*buf++=byte(v.refV.flags>>8); *buf++=byte(v.refV.flags);
 		if (v.length!=0) {mv_enc32(buf,v.refV.id); if (v.eid!=STORE_COLLECTION_ID) mv_enc32(buf,v.eid);}
 		break;
@@ -268,7 +269,7 @@ RC MVStoreKernel::deserialize(Value& val,const byte *&buf,const byte *const ebuf
 	val.property=STORE_INVALID_PROPID; val.eid=STORE_COLLECTION_ID;
 	switch (val.type) {
 	default: return RC_CORRUPTED;
-	case VT_ERROR: break;
+	case VT_ANY: if (!full) {if (buf>=ebuf) return RC_CORRUPTED; val.meta=*buf++;} break;
 	case VT_STREAM:
 		if (buf+1>ebuf) return RC_CORRUPTED;
 		val.type=*buf++; CHECK_dec64(buf,u64,ebuf);
@@ -311,13 +312,11 @@ RC MVStoreKernel::deserialize(Value& val,const byte *&buf,const byte *const ebuf
 		if (val.type==VT_REFIDELT) CHECK_dec32(buf,rv->eid,ebuf);
 		val.length=1; break;
 	case VT_VARREF:
-		if (ebuf-buf<5) return RC_CORRUPTED;
-		val.refV.refN=buf[0]; val.length=buf[1]; val.refV.type=buf[2];
-		val.refV.flags=buf[3]<<8|buf[4]; buf+=5;
+		if (ebuf-buf<6) return RC_CORRUPTED;
+		val.refV.refN=buf[0]; val.length=buf[1]; val.refV.type=buf[2]<<8|buf[3]; val.refV.flags=buf[4]<<8|buf[5]; buf+=6;
 		if (val.length!=0) {
-			if (val.length>1) return RC_CORRUPTED;
-			CHECK_dec32(buf,val.refV.id,ebuf);
-			if ((val.refV.type&0x80)!=0) {val.refV.type&=0x7f; CHECK_dec32(buf,val.eid,ebuf);}
+			bool fE=(val.length&0x80)!=0; if ((val.length&=0x7F)!=1) return RC_CORRUPTED;
+			CHECK_dec32(buf,val.refV.id,ebuf); if (fE) {CHECK_dec32(buf,val.eid,ebuf);}
 		}
 		break;
 	case VT_CURRENT:
@@ -421,9 +420,9 @@ int MVStoreKernel::cmpNoConv(const Value& arg,const Value& arg2,ulong u)
 		if (arg.str==NULL||arg.length==0) return arg2.str==NULL||arg2.length==0?0:-1;
 		if (arg2.str==NULL||arg2.length==0) return 1;
 		len=arg.length<=arg2.length?arg.length:arg2.length;
-		c=arg.type==VT_BSTR||(u&(CND_EQ|CND_NE))!=0&&(u&CND_NCASE)==0?memcmp(arg.bstr,arg2.bstr,len):
-					(u&CND_NCASE)!=0?strncasecmp(arg.str,arg2.str,len):strncmp(arg.str,arg2.str,len);
-		return c<0?-1:c>0?1:cmp3(arg.length,arg2.length);
+		c=sign(arg.type==VT_BSTR||(u&(CND_EQ|CND_NE))!=0&&(u&CND_NCASE)==0?memcmp(arg.bstr,arg2.bstr,len):
+					(u&CND_NCASE)!=0?strncasecmp(arg.str,arg2.str,len):strncmp(arg.str,arg2.str,len));
+		return c!=0?c:cmp3(arg.length,arg2.length);
 	case VT_REF: return (u&CND_SORT)!=0?cmpPIDs(arg.pin->getPID(),arg2.pin->getPID()):arg.pin->getPID()==arg2.pin->getPID()?0:(u&CND_NE)!=0?-1:-2;
 	case VT_REFPROP: return arg.ref.pin->getPID()==arg2.ref.pin->getPID()&&arg.ref.pid==arg.ref.pid?0:(u&CND_NE)!=0?-1:-2;								// CND_SORT
 	case VT_REFELT: return arg.ref.pin->getPID()==arg2.ref.pin->getPID()&&arg.ref.pid==arg.ref.pid&&arg.ref.eid==arg2.ref.eid?0:(u&CND_NE)!=0?-1:-2;	// CND_SORT
@@ -458,25 +457,32 @@ int MVStoreKernel::cmpConv(const Value& arg,const Value& arg2,ulong u)
 		int cmp=cmpNoConv(*pv1,*pv2,u); return fRev?-cmp:cmp;
 	}
 	if (isString((ValueType)arg.type) && isString((ValueType)arg2.type)) {
-		int c=memcmp(arg.bstr,arg2.bstr,min(arg.length,arg2.length)); return c==0?cmp3(arg.length,arg2.length):c;
+		int c=sign(memcmp(arg.bstr,arg2.bstr,min(arg.length,arg2.length))); return c==0?cmp3(arg.length,arg2.length):c;
 	} else {
 		//???
 	}
 	return cmp3(arg.type,arg2.type);
 }
 
-RC MVStoreKernel::convV(const Value& src,Value& dst,ValueType type,MemAlloc *ma,unsigned mode)
+RC MVStoreKernel::convV(const Value& src,Value& dst,ushort type,MemAlloc *ma,unsigned mode)
 {
 	int l; char buf[256],*p; Value w; RC rc; TIMESTAMP ts; int64_t itv; URI *uri; Identity *ident; IdentityID iid; uint32_t ui;
 	for (const Value *ps=&src;;) {if (ps->type==type) {
 noconv:
 		if (ps!=&dst) {if ((rc=copyV(*ps,dst,ma))!=RC_OK) {dst.setError(src.property); return rc;}}
-	} else if ((mode&CV_NODEREF)==0 && isRef((ValueType)ps->type) && type!=VT_URL && !isRef(type)) {
+	} else if (type>=VT_ALL) {
+		if (((type&0xFF)!=VT_DOUBLE && (type&0xFF)!=VT_FLOAT || (type>>8)>=Un_ALL)) return RC_INVPARAM;
+		if (src.type==VT_DOUBLE || src.type==VT_FLOAT) {dst=src; if (dst.type==VT_FLOAT) {dst.d=dst.f; dst.type=VT_DOUBLE;}}
+		else if ((rc=convV(src,dst,VT_DOUBLE,ma,mode))!=RC_OK) return rc;
+		if ((rc=convUnits(dst.qval,(Units)(type>>8)))!=RC_OK) return rc;
+		if ((type&0xFF)==VT_FLOAT) {dst.f=(float)dst.d; dst.type=VT_FLOAT;}
+		return RC_OK;
+	} else if ((mode&CV_NODEREF)==0 && isRef((ValueType)ps->type) && type!=VT_URL && !isRef((ValueType)type)) {
 		if ((rc=derefValue(*ps,dst,Session::getSession()))!=RC_OK) return rc;
 		ps=&dst; continue;
 	} else {
 		if (ps!=&dst) {dst.eid=ps->eid; dst.flags=NO_HEAP;}
-		if ((mode&CV_NOTRUNC)!=0 && isInteger(type)) switch (src.type) {
+		if ((mode&CV_NOTRUNC)!=0 && isInteger((ValueType)type)) switch (src.type) {
 		case VT_FLOAT: if (::floor(src.f)!=src.f) return RC_TYPE; break;
 		case VT_DOUBLE: if (::floor(src.d)!=src.d) return RC_TYPE; break;
 		}
@@ -827,7 +833,7 @@ noconv:
 			return RC_TYPE;
 		}
 	}
-	dst.type=type;
+	dst.type=(ValueType)type;
 	return RC_OK;}
 }
 
