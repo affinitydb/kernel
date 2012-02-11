@@ -1005,44 +1005,50 @@ RC SOutCtx::renderPID(const PID& id,bool fJ) {
 	return RC_OK;
 }
 
-RC SOutCtx::renderValue(const Value& v,bool fJ) {
+RC SOutCtx::renderValue(const Value& v,JRType jr) {
 	RC rc=RC_OK; unsigned long u; Identity *ident; const char *s; size_t l; const Value *cv; int ll; const QVar *qv; Value vv;
-	if (fJ && v.type>VT_DOUBLE && !isString((ValueType)v.type) && v.type!=VT_ARRAY && v.type!=VT_COLLECTION && v.type!=VT_STRUCT && v.type!=VT_REFID) {
-		if ((rc=convV(v,vv,VT_STRING,ses,CV_NODEREF))==RC_OK) {rc=renderValue(vv,true); freeV(vv);}
-	} else switch (v.type) {
+	if (jr!=JR_NO) {
+		if (v.type>VT_DOUBLE && !isString((ValueType)v.type) && v.type!=VT_ARRAY && v.type!=VT_COLLECTION && v.type!=VT_STRUCT && v.type!=VT_REFID)
+			{if ((rc=convV(v,vv,VT_STRING,ses,CV_NODEREF))==RC_OK) {vv.setPropID(v.property); rc=renderValue(vv,jr); freeV(vv);} return rc;}
+		if (jr==JR_EID) {l=sprintf(cbuf,"\"%d\": ",v.eid); if (!append(cbuf,l)) return RC_NORESOURCES;}
+		else if (!append("\"",1)) return RC_NORESOURCES;
+		else if ((rc=renderName(v.property!=STORE_INVALID_PROPID?v.property:PROP_SPEC_VALUE,NULL,NULL,true))!=RC_OK) return rc;
+		else if (!append("\": ",3)) return RC_NORESOURCES;
+	}
+	switch (v.type) {
 	case VT_ANY: if (!append(NULL_S,sizeof(NULL_S)-1)) return RC_NORESOURCES; break;
-	case VT_URL: if (!fJ && !append("U",1)) return RC_NORESOURCES;
+	case VT_URL: if (jr==JR_NO && !append("U",1)) return RC_NORESOURCES;
 	case VT_STRING:
-		if (!append(fJ?"\"":"'",1)) return RC_NORESOURCES;
+		if (!append(jr!=JR_NO?"\"":"'",1)) return RC_NORESOURCES;
 		if (v.length!=0) {
 			s=v.str; l=v.length;
-			if (fJ && (memchr(s,'\n',l)!=NULL||memchr(s,'\t',l)!=NULL)) for (size_t i=0; i<l; ++i,++s) {
+			if (jr!=JR_NO && (memchr(s,'\n',l)!=NULL||memchr(s,'\t',l)!=NULL)) for (size_t i=0; i<l; ++i,++s) {
 				const char *p; size_t ll;
 				if (*s=='\n') p="\\n",ll=2; else if (*s=='\n') p="\\t",ll=2; else if (*s=='"') p="\\\"",ll=2; else p=s,ll=1;
 				if (!append(p,ll)) return RC_NORESOURCES;
 			} else do {
-				const char *p=(char*)memchr(s,fJ?'"':'\'',l);
+				const char *p=(char*)memchr(s,jr!=JR_NO?'"':'\'',l);
 				if (p==NULL) {if (!append(s,l)) return RC_NORESOURCES; break;}
 				if (p>s) {size_t ls=p-s; if (!append(s,ls)) return RC_NORESOURCES; s=p; l-=ls;}
-				if (!append(fJ?"\\\"":"''",2)) return RC_NORESOURCES;
+				if (!append(jr!=JR_NO?"\\\"":"''",2)) return RC_NORESOURCES;
 			} while ((++s,--l)!=0);
 		}
-		if (!append(fJ?"\"":"'",1)) return RC_NORESOURCES;
+		if (!append(jr!=JR_NO?"\"":"'",1)) return RC_NORESOURCES;
 		break;
 	case VT_BSTR:
-		if (fJ && !append("\"",1) || !append("X'",2)) return RC_NORESOURCES;
+		if (jr!=JR_NO && !append("\"",1) || !append("X'",2)) return RC_NORESOURCES;
 		for (u=0; u<v.length; u++) {sprintf(cbuf,"%02X",v.bstr[u]); if (!append(cbuf,2)) return RC_NORESOURCES;}
-		if (!append("'",1) || fJ && !append("\"",1)) return RC_NORESOURCES;
+		if (!append("'",1) || jr!=JR_NO && !append("\"",1)) return RC_NORESOURCES;
 		break;
 	case VT_STREAM:
 		//???
 		break;
 	case VT_INT: l=sprintf(cbuf,"%d",v.i); if (!append(cbuf,l)) return RC_NORESOURCES; break;
-	case VT_UINT: l=sprintf(cbuf,"%u%c",v.ui,fJ?' ':'u'); if (!append(cbuf,l)) return RC_NORESOURCES; break;
+	case VT_UINT: l=sprintf(cbuf,"%u%c",v.ui,jr!=JR_NO?' ':'u'); if (!append(cbuf,l)) return RC_NORESOURCES; break;
 	case VT_INT64: 
 		l=sprintf(cbuf,_LD_FM,v.i64); if (!append(cbuf,l)) return RC_NORESOURCES; break;
 	case VT_UINT64:
-		l=sprintf(cbuf,_LU_FM"%c",v.ui64,fJ?' ':'U'); if (!append(cbuf,l)) return RC_NORESOURCES;
+		l=sprintf(cbuf,_LU_FM"%c",v.ui64,jr!=JR_NO?' ':'U'); if (!append(cbuf,l)) return RC_NORESOURCES;
 		break;
 	case VT_DATETIME:
 		if (!append(TIMESTAMP_S" '", sizeof(TIMESTAMP_S)+1)) return RC_NORESOURCES;
@@ -1055,7 +1061,7 @@ RC SOutCtx::renderValue(const Value& v,bool fJ) {
 		if (!append(cbuf,ll) || !append("'",1)) return RC_NORESOURCES;
 		break;
 	case VT_BOOL: if (!append(v.b?TRUE_S:FALSE_S,v.b?sizeof(TRUE_S)-1:sizeof(FALSE_S)-1)) return RC_NORESOURCES; break;
-	case VT_FLOAT: l=sprintf(cbuf,"%g%c",v.f,fJ?' ':'f'); if (!append(cbuf,l)) return RC_NORESOURCES; break;
+	case VT_FLOAT: l=sprintf(cbuf,"%g%c",v.f,jr!=JR_NO?' ':'f'); if (!append(cbuf,l)) return RC_NORESOURCES; break;
 	case VT_DOUBLE: l=sprintf(cbuf,"%g",v.d); if (!append(cbuf,l)) return RC_NORESOURCES; break;
 	case VT_CURRENT:
 		switch (v.i) {
@@ -1068,8 +1074,7 @@ RC SOutCtx::renderValue(const Value& v,bool fJ) {
 	case VT_ARRAY:
 		if (!append("{",1)) return RC_NORESOURCES;
 		for (u=0; u<v.length; u++) {
-			if (fJ) {l=sprintf(cbuf,"\"%d\": ",v.varray[u].eid); if (!append(cbuf,l)) return RC_NORESOURCES;}
-			if ((rc=renderValue(v.varray[u],fJ))!=RC_OK) break;
+			if ((rc=renderValue(v.varray[u],jr!=JR_NO?JR_EID:JR_NO))!=RC_OK) break;
 			if (!append(u+1==v.length?"}":",",1)) return RC_NORESOURCES;
 		}
 		break;
@@ -1077,8 +1082,7 @@ RC SOutCtx::renderValue(const Value& v,bool fJ) {
 		if (!append("{",1)) return RC_NORESOURCES;
 		for (cv=v.nav->navigate(GO_FIRST),u=0; cv!=NULL; cv=v.nav->navigate(GO_NEXT),++u) {
 			if (u!=0 && !append(",",1)) return RC_NORESOURCES;
-			if (fJ) {l=sprintf(cbuf,"\"%d\": ",cv->eid); if (!append(cbuf,l)) return RC_NORESOURCES;}
-			if ((rc=renderValue(*cv,fJ))!=RC_OK) break;
+			if ((rc=renderValue(*cv,jr!=JR_NO?JR_EID:JR_NO))!=RC_OK) break;
 		}
 		v.nav->navigate(GO_FINDBYID,STORE_COLLECTION_ID);
 		if (!append("}",1)) return RC_NORESOURCES;
@@ -1086,10 +1090,11 @@ RC SOutCtx::renderValue(const Value& v,bool fJ) {
 	case VT_STRUCT:
 		if (!append("{",1)) return RC_NORESOURCES;
 		for (u=0; u<v.length; u++) {
-			if (fJ && !append("\"",1)) return RC_NORESOURCES;
-			if ((rc=renderName(v.varray[u].property))!=RC_OK) return rc;
-			if (fJ) {if (!append("\": ",3)) return RC_NORESOURCES;} else if (!append("=",1)) return RC_NORESOURCES; 
-			if ((rc=renderValue(v.varray[u],fJ))!=RC_OK) break;
+			if (jr==JR_NO) {
+				if ((rc=renderName(v.varray[u].property))!=RC_OK) return rc;
+				if (!append("=",1)) return RC_NORESOURCES;
+			}
+			if ((rc=renderValue(v.varray[u],jr!=JR_NO?JR_PROP:JR_NO))!=RC_OK) break;
 			if (!append(u+1==v.length?"}":",",1)) return RC_NORESOURCES;
 		}
 		break;
@@ -1112,7 +1117,7 @@ RC SOutCtx::renderValue(const Value& v,bool fJ) {
 		}
 		break;
 	case VT_REFID:
-		rc=renderPID(v.id,fJ); break;
+		rc=renderPID(v.id,jr!=JR_NO); break;
 	case VT_REFIDPROP:
 	case VT_REFIDELT:
 		if ((rc=renderPID(v.refId->id))!=RC_OK) break;
@@ -1218,32 +1223,40 @@ RC SOutCtx::renderJSON(Cursor *cr,uint64_t& cnt)
 {
 	RC rc=RC_OK; cnt=0; size_t l=1; cbuf[0]='['; Value ret;
 	while (rc==RC_OK && (rc=((Cursor*)cr)->next(ret))==RC_OK) {
-		const Value *props; unsigned nProps; bool fPID=false;
+		const Value *props; unsigned nProps; IPIN *next=NULL; bool fMany=false;
 		switch (ret.type) {
 		case VT_REF:
-			l+=sprintf(cbuf+l,"{\"id\":\""_LX_FM"\"",ret.pin->getPID().pid); fPID=true;
-			props=ret.pin->getValueByIndex(0); nProps=ret.pin->getNumberOfProperties(); goto render_props;
+			if ((next=ret.pin->getSibling())!=NULL) {cbuf[l++]='['; fMany=true;}
+			l+=sprintf(cbuf+l,"{\"id\":\""_LX_FM"\"",ret.pin->getPID().pid);
+			props=ret.pin->getValueByIndex(0); nProps=ret.pin->getNumberOfProperties();
+			if (props!=NULL && nProps!=0) {cbuf[l]=','; cbuf[l+1]=' '; l+=2;}
+			goto render_props;
 		case VT_STRUCT:
-			//if (nRes>1) cbuf[l++]='[';
 			cbuf[l++]='{'; props=ret.varray; nProps=ret.length;
 		render_props:
 			if (!append(cbuf,l)) rc=RC_NORESOURCES;
 			else for (unsigned i=0; i<nProps; ++i,++props) if (props->property!=STORE_INVALID_PROPID) {
-				if (!fPID) {if (append("\"",1)) fPID=true; else {rc=RC_NORESOURCES; break;}}
-				else if (!append(", \"",3)) {rc=RC_NORESOURCES; break;}
-				if ((rc=renderName(props->property,NULL,NULL,true))!=RC_OK) break;
-				if (!append("\": ",3)) {rc=RC_NORESOURCES; break;}
-				if ((rc=renderValue(*props,true))!=RC_OK) break;
+				if ((rc=renderValue(*props,JR_PROP))!=RC_OK) break;
+				if (i+1<nProps && !append(", ",2)) {rc=RC_NORESOURCES; break;}
 			}
-			if (rc==RC_OK && !append("}",1)) rc=RC_NORESOURCES; else {cbuf[0]=','; l=1;}
-			//nRes>1
+			if (rc==RC_OK && !append("}",1)) rc=RC_NORESOURCES;
+			else if (next!=NULL) {
+				l=sprintf(cbuf,",{\"id\":\""_LX_FM"\"",next->getPID().pid);
+				props=next->getValueByIndex(0); nProps=next->getNumberOfProperties();
+				if (props!=NULL && nProps!=0) {cbuf[l]=','; cbuf[l+1]=' '; l+=2;}
+				next=next->getSibling(); goto render_props;
+			}
 			break;
 		default:
-			rc=!append(cbuf,l)?RC_NORESOURCES:renderValue(ret,true); break;
+			cbuf[l++]='{'; 
+			if (!append(cbuf,l) || (rc=renderValue(ret,JR_PROP))==RC_OK && !append("}",1)) rc=RC_NORESOURCES;
+			break;
 		}
+		if (fMany && !append("]",1)) rc=RC_NORESOURCES;
 		freeV(ret); cnt++; cbuf[0]=','; cbuf[1]='\n'; l=2;
 	}
-	if (rc==RC_EOF) rc=RC_OK; return rc!=RC_OK||cnt==0||append("]",1)?rc:RC_NORESOURCES;
+	if (rc==RC_EOF) rc=RC_OK;
+	return rc!=RC_OK||cnt==0||append("]",1)?rc:RC_NORESOURCES;
 }
 
 //----------------------------------------------------------------------------------------------------------------

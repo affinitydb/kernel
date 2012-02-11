@@ -55,6 +55,11 @@ class QVar;
 #define	SOM_STD_PREFIX	0x0010
 #define	SOM_BASE_USED	0x0020
 
+enum JRType
+{
+	JR_NO, JR_PROP, JR_EID
+};
+
 class SOutCtx
 {
 	Session	*const		ses;
@@ -76,7 +81,7 @@ public:
 	Session	*getSession() const {return ses;}
 	RC		renderName(uint32_t id,const char *prefix=NULL,const QVar *qv=NULL,bool fQ=false,bool fEsc=true);
 	RC		renderPID(const PID& id,bool fJSon=false);
-	RC		renderValue(const Value& v,bool fJson=false);
+	RC		renderValue(const Value& v,JRType jr=JR_NO);
 	RC		renderVarName(const QVar *qv);
 	RC		renderRep(unsigned rm,unsigned rx);
 	RC		renderPath(const struct PathSeg& ps);
