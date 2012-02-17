@@ -1009,7 +1009,7 @@ RC SOutCtx::renderValue(const Value& v,JRType jr) {
 	RC rc=RC_OK; unsigned long u; Identity *ident; const char *s; size_t l; const Value *cv; int ll; const QVar *qv; Value vv;
 	if (jr!=JR_NO) {
 		if (v.type>VT_DOUBLE && !isString((ValueType)v.type) && v.type!=VT_ARRAY && v.type!=VT_COLLECTION && v.type!=VT_STRUCT && v.type!=VT_REFID)
-			{if ((rc=convV(v,vv,VT_STRING,ses,CV_NODEREF))==RC_OK) {vv.setPropID(v.property); rc=renderValue(vv,jr); freeV(vv);} return rc;}
+			{if ((rc=convV(v,vv,VT_STRING,ses,CV_NODEREF))==RC_OK) {vv.setPropID(v.property); vv.eid=v.eid; rc=renderValue(vv,jr); freeV(vv);} return rc;}
 		if (jr==JR_EID) {l=sprintf(cbuf,"\"%d\": ",v.eid); if (!append(cbuf,l)) return RC_NORESOURCES;}
 		else if (!append("\"",1)) return RC_NORESOURCES;
 		else if ((rc=renderName(v.property!=STORE_INVALID_PROPID?v.property:PROP_SPEC_VALUE,NULL,NULL,true))!=RC_OK) return rc;

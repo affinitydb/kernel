@@ -174,11 +174,6 @@ RC	FileMgr::listIO(int mode,int nent,myaio* const* pcbs,bool fSync)
 	return rc;
 }
 
-bool FileMgr::asyncIOEnabled() const
-{
-	return pio->asyncIOEnabled();
-}
-
 void FileMgr::asyncIOCompletionCallback(IStoreIO::iodesc *aiodesc)
 {
 	assert(aiodesc->aio_ptrpos==1);

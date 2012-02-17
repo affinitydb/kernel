@@ -14,7 +14,6 @@ Written by Mark Venguerov, Andrew Skowronski, Michael Andronov 2004 - 2010
 #include "sync.h"
 
 #define INVALID_FD (-1)
-#define	FS_DIRECT			0x0001
 
 #include <aio.h>
 typedef union sigval sigval_t;
@@ -136,7 +135,6 @@ namespace MVStoreKernel
 		mutable RWLock		lock;
 		FileDescLinux		*slotTab;
 		int					xSlotTab;
-		ulong				flagsFS;
 		
     public:
         
@@ -163,7 +161,6 @@ namespace MVStoreKernel
 		RC		listIO(int mode,int nent,iodesc* const* pcbs);
         RC      aio_listIO( int mode, aiocb **adescs, int nent);
         
-		bool	asyncIOEnabled() const ;
 		RC		deleteFile(const char *fname);
 		void	deleteLogFiles(ulong maxFile,const char *lDir,bool fArchived);
 		void	destroy() { this->~FileIOOSX(); }
@@ -173,7 +170,6 @@ namespace MVStoreKernel
 		friend	class IOCompletionRequest;
         
 	private:
-		void	setFlagsFS();
 		void	deleteLogFiles(const char * mask,ulong maxFile,const char *lDir,bool fArchived);
 
     public:

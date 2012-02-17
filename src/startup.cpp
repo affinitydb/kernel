@@ -104,7 +104,7 @@ RC openStore(const StartupParameters& params,MVStoreCtx &cctx)
 	StoreCtx *ctx=NULL; RC rc=testEnv(); if (rc!=RC_OK) return rc;
 	try {
 		RequestQueue::startThreads(); initReport(); cctx=NULL;
-		report(MSG_NOTICE,"ChaosDB startup - version %d.%02d\n",STORE_VERSION/100,STORE_VERSION%100);
+		report(MSG_NOTICE,"Affinity startup - version %d.%02d\n",STORE_VERSION/100,STORE_VERSION%100);
 
 		if ((ctx=StoreCtx::createCtx(params.mode))==NULL) return RC_NORESOURCES;
 
@@ -156,10 +156,10 @@ RC openStore(const StartupParameters& params,MVStoreCtx &cctx)
 		if (rc!=RC_OK||ctx->theCB->state==SST_INIT) {
 			switch (rc) {
 			case RC_OK: report(MSG_WARNING,"Previous store initialization not finished\n"); rc=RC_NOTFOUND; break;
-			case RC_VERSION: report(MSG_WARNING,"Invalid vesrion of ChaosDB in directory %.512s\n",fio->getDirectory()); break;
-			case RC_CORRUPTED: report(MSG_WARNING,"Corrupted or encrypted ChaosDB found in directory %.512s\n",fio->getDirectory()); break;
-			case RC_NOTFOUND: report(MSG_WARNING,"ChaosDB not found in directory %.512s\n",fio->getDirectory()); break;
-			default: report(MSG_WARNING,"Cannot open ChaosDB in directory %.512s(%d)\n",fio->getDirectory(),rc); break;
+			case RC_VERSION: report(MSG_WARNING,"Invalid vesrion of Affinity in directory %.512s\n",fio->getDirectory()); break;
+			case RC_CORRUPTED: report(MSG_WARNING,"Corrupted or encrypted Affinity found in directory %.512s\n",fio->getDirectory()); break;
+			case RC_NOTFOUND: report(MSG_WARNING,"Affinity not found in directory %.512s\n",fio->getDirectory()); break;
+			default: report(MSG_WARNING,"Cannot open Affinity in directory %.512s(%d)\n",fio->getDirectory(),rc); break;
 			}
 			throw rc;
 		}
@@ -209,7 +209,7 @@ RC openStore(const StartupParameters& params,MVStoreCtx &cctx)
 
 		bool fRecv=ctx->theCB->state!=SST_SHUTDOWN_COMPLETE && ctx->theCB->state!=SST_READ_ONLY;
 		if (fRecv || (params.mode&STARTUP_ROLLFORWARD)!=0) {
-			report(MSG_NOTICE,fRecv ? "ChaosDB hasn't been properly shut down\n    automatic recovery in progress...\n" :
+			report(MSG_NOTICE,fRecv ? "Affinity hasn't been properly shut down\n    automatic recovery in progress...\n" :
 																					"Rollforward in progress...\n");
 			Session *ses=Session::createSession(ctx); if (ses!=NULL) ses->setIdentity(STORE_OWNER,true);
 			if ((rc=ctx->logMgr->recover(ses,(params.mode&STARTUP_ROLLFORWARD)!=0))==RC_OK && (rc=ctx->classMgr->restoreXPropID(ses))==RC_OK) 
@@ -226,7 +226,7 @@ RC openStore(const StartupParameters& params,MVStoreCtx &cctx)
 		if ((params.mode&STARTUP_TOUCH_FILE)!=0 || ctx->logMgr->isInit())
 			{ctx->theCB->state=ctx->logMgr->isInit()?SST_LOGGING:SST_READ_ONLY; rc=ctx->theCB->update(ctx);}
 
-		if (rc==RC_OK || fForce) report(MSG_NOTICE,"ChaosDB running\n");
+		if (rc==RC_OK || fForce) report(MSG_NOTICE,"Affinity running\n");
 		if (rc==RC_OK) {ctx->setState(SSTATE_OPEN); cctx=ctx;}
 		return rc;
 	} catch (RC rc2) {
@@ -336,7 +336,7 @@ RC createStore(const StoreCreationParameters& create,const StartupParameters& pa
 
 		ctx->theCB->state=SST_LOGGING;
 		if ((rc=ctx->theCB->update(ctx))==RC_OK || (params.mode&STARTUP_FORCE_OPEN)!=0) {
-			report(MSG_NOTICE,"ChaosDB running\n"); rc=RC_OK;
+			report(MSG_NOTICE,"Affinity running\n"); rc=RC_OK;
 			if (pLoad!=NULL) {
 				Session *ses=Session::createSession(ctx);
 				if (ses==NULL) {*pLoad=NULL; rc=RC_NORESOURCES;}
@@ -434,7 +434,7 @@ RC shutdownStore(MVStoreCtx ctx)
 			if (cas(&ctx->state,st,st|SSTATE_IN_SHUTDOWN)) break;
 		}
 
-		report(MSG_NOTICE,"ChaosDB shutdown in progress\n");
+		report(MSG_NOTICE,"Affinity shutdown in progress\n");
 
 		Session::terminateSession(); RC rc;
 
@@ -486,16 +486,17 @@ RC shutdownStore(MVStoreCtx ctx)
 		HeapPageMgr::savePartial(ctx->heapMgr,ctx->ssvMgr);
 		ctx->theCB->xPropID=ctx->classMgr->getXPropID();
 
+		bool fDelLog=false;
 		if (ctx->theCB->state!=SST_SHUTDOWN_COMPLETE && ctx->theCB->state!=SST_NO_SHUTDOWN)
-			{ctx->theCB->state=SST_SHUTDOWN_COMPLETE; if ((rc=ctx->theCB->update(ctx))!=RC_OK) return rc;}
+			{ctx->theCB->state=SST_SHUTDOWN_COMPLETE; if ((rc=ctx->theCB->update(ctx))!=RC_OK) return rc; fDelLog=true;}
 
 		ctx->theCB->close(ctx);
 
-		ctx->logMgr->deleteLogs();
+		if (fDelLog) ctx->logMgr->deleteLogs();
 
 		delete ctx;
 
-		report(MSG_NOTICE,"ChaosDB shutdown complete\n");
+		report(MSG_NOTICE,"Affinity shutdown complete\n");
 	// if last one ->
 		closeReport();
 	

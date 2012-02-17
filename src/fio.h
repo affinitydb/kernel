@@ -62,7 +62,6 @@ public:
 	RC		truncate(FileID fid,off64_t size);
 	RC		allocateExtent(FileID fid,ulong nPages,off64_t& addr);
 	void	deleteLogFiles(ulong maxFile,const char *lDir,bool fArchived=true);
-	bool	asyncIOEnabled() const;
 	char	*getDirString(const char *d,bool fRel=false);
 	static RC	moveStore(const char *from,const char *to,IStoreIO *pio=NULL);
 	static RC	deleteStore(const char *path,IStoreIO *pio=NULL);

@@ -83,7 +83,6 @@ namespace MVStoreKernel
 		void	closeAll(FileID start);
 		RC      growFile(FileID file, off64_t newSize);
 		RC		listIO(int mode,int nent,iodesc* const* pcbs);
-		bool	asyncIOEnabled() const { return true; }
 		RC		deleteFile(const char *fname);
 		void	deleteLogFiles(ulong maxFile,const char *lDir,bool fArchived);
 		void	destroy() { this->~FileIOWin(); }

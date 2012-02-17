@@ -34,9 +34,8 @@ struct mv_sync_io
 
 static sigset_t sigSIO;
 
-FileIOLinux::FileIOLinux() : slotTab(NULL),xSlotTab(FIO_MAX_OPENFILES),flagsFS(0),asyncIOCallback(NULL)
+FileIOLinux::FileIOLinux() : slotTab(NULL),xSlotTab(FIO_MAX_OPENFILES),asyncIOCallback(NULL)
 {
-	setFlagsFS();
 	slotTab = (FileDescLinux*)malloc(sizeof(FileDescLinux)*xSlotTab,STORE_HEAP); 
 	if (slotTab!=NULL){ for (int i=0;i<xSlotTab;i++){ slotTab[i].init();}}
 	sigemptyset(&sigSIO); sigaddset(&sigSIO,SIGPISIO);
@@ -107,7 +106,7 @@ RC FileIOLinux::open(FileID& fid,const char *fname,const char *dir,ulong flags)
 	
 	char fullbuf[PATH_MAX+1]; 
 	const static struct flock flck={F_WRLCK,SEEK_SET,0,0,0};
-	fd = open64(fname,((flagsFS&FS_DIRECT)!=0&&(flags&FIO_TEMP)==0?O_DIRECT:0)|O_RDWR|(flags&(FIO_TEMP|FIO_CREATE)?flags&FIO_NEW?O_CREAT|O_EXCL|O_TRUNC:O_CREAT:0),S_IRUSR|S_IWUSR|S_IRGRP);
+	fd = open64(fname,((flags&FIO_TEMP)==0?O_DIRECT:0)|O_RDWR|(flags&(FIO_TEMP|FIO_CREATE)?flags&FIO_NEW?O_CREAT|O_EXCL|O_TRUNC:O_CREAT:0),S_IRUSR|S_IWUSR|S_IRGRP);
 
 
 	if (fd==INVALID_FD || fcntl(fd,F_SETLK,(struct flock*)&flck)!=0) rc=convCode(errno);
@@ -236,11 +235,13 @@ RC FileIOLinux::listIO(int mode,int nent,iodesc* const* pcbs)
 				} while(result==EINTR);	// Try again for interrupts (e.g. gdb attach)
 				if (rcop!=RC_OK) rc=rcop; //Overall failure if any fail. aio_rc has individual success status.
 				pcbs[i]->aio_rc=rcop;
+#if 0
 				if (result==0 && pcbs[i]->aio_bFlush) {
 					if (result==0&&(flagsFS&FS_DIRECT)==0&&pcbs[i]->aio_bFlush) {
 				       fdatasync(aio.aio_fildes);
 					}
 				}
+#endif
 				freeAio64.dealloc(adescs[i]);
 			}				
 		} else
@@ -361,29 +362,6 @@ void FileIOLinux::_asyncSIOCompletion(int sig, siginfo_t *info, void *uap)
 }
 };
 #endif
-
-bool FileIOLinux::asyncIOEnabled() const
-{	
-	return (flagsFS&FS_DIRECT)!=0;
-}
-
-#define TESTFILENAME	"chaosdb.tst"
-
-void FileIOLinux::setFlagsFS()
-{
-	flagsFS = 0;
-#if defined(O_DIRECT) && O_DIRECT!=0
-	byte *buf=(byte*)allocAligned(0x1000,0x1000);
-	int fd = ::open64(TESTFILENAME,O_DIRECT|O_RDWR|O_CREAT|O_TRUNC,S_IRUSR|S_IWUSR);
-	if (fd<0) report(MSG_DEBUG,"Cannot open "TESTFILENAME"\n");
-	else {
-		if (pwrite64(fd,buf,0x1000,0)==0x1000) flagsFS|=FS_DIRECT;
-		else report(MSG_INFO,"O_DIRECT failed, continue with fdatasync()\n");
-		::close(fd); ::unlink(TESTFILENAME); 
-	}
-	freeAligned(buf);
-#endif
-}
 
 RC FileIOLinux::deleteFile(const char *fname)
 {

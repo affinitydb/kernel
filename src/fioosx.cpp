@@ -243,9 +243,8 @@ void * AsyncReqQ::asyncOSXFinalize(void *pp)
 }
 
 
-FileIOOSX::FileIOOSX() : slotTab(NULL),xSlotTab(FIO_MAX_OPENFILES),flagsFS(0),asyncIOCallback(NULL)
+FileIOOSX::FileIOOSX() : slotTab(NULL),xSlotTab(FIO_MAX_OPENFILES),asyncIOCallback(NULL)
 {
-	setFlagsFS();
 	slotTab = (FileDescLinux*)malloc(sizeof(FileDescLinux)*xSlotTab,STORE_HEAP); 
 	if (slotTab!=NULL){ for (int i=0;i<xSlotTab;i++){ slotTab[i].init();}}
 	sigemptyset(&sigSIO); sigaddset(&sigSIO,SIGPISIO);
@@ -309,7 +308,7 @@ RC FileIOOSX::open(FileID& fid,const char *fname,const char *dir,ulong flags)
 	char fullbuf[PATH_MAX+1]; 
 
 	static struct flock flck; flck.l_type=F_WRLCK; flck.l_whence=SEEK_SET;
-	int f_flags = (flagsFS&FS_DIRECT)!=0 && (flags&FIO_TEMP)==0?0:0 |O_RDWR |(flags&(FIO_TEMP|FIO_CREATE)?flags&FIO_NEW?O_CREAT|O_EXCL|O_TRUNC:O_CREAT:0); 
+	int f_flags = (flags&FIO_TEMP)==0?0:0 |O_RDWR |(flags&(FIO_TEMP|FIO_CREATE)?flags&FIO_NEW?O_CREAT|O_EXCL|O_TRUNC:O_CREAT:0); 
 	fd = ::open64(fname, f_flags, S_IRUSR|S_IWUSR|S_IRGRP );
 	//The following line - setting F_NOCACHE - is similar to `O_DIRECT`...
 	if(fd==INVALID_FD || fcntl(fd, F_NOCACHE, 1) != 0)	rc=convCode(errno);
@@ -565,29 +564,6 @@ RC FileIOOSX::aio_listIO( int mode, aiocb64 **adescs, int nent){
 			break;
 	}
   }
-}
-
-bool FileIOOSX::asyncIOEnabled() const
-{	
-	return (flagsFS&FS_DIRECT)!=0;
-}
-
-#define TESTFILENAME	"chaosdb.tst"
-
-void FileIOOSX::setFlagsFS()
-{
-	flagsFS = 0;
-#if defined(O_DIRECT) && O_DIRECT!=0
-	byte *buf=(byte*)allocAligned(0x1000,0x1000);
-	int fd = ::open64(TESTFILENAME,O_DIRECT|O_RDWR|O_CREAT|O_TRUNC,S_IRUSR|S_IWUSR);
-	if (fd<0) report(MSG_DEBUG,"Cannot open "TESTFILENAME"\n");
-	else {
-		if (pwrite64(fd,buf,0x1000,0)==0x1000) flagsFS|=FS_DIRECT;
-		else report(MSG_INFO,"O_DIRECT failed, continue with fdatasync()\n");
-		::close(fd); ::unlink(TESTFILENAME); 
-	}
-	freeAligned(buf);
-#endif
 }
 
 RC FileIOOSX::deleteFile(const char *fname)

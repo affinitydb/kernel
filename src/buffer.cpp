@@ -219,7 +219,7 @@ RC BufMgr::close(FileID fid,bool fAll)
 
 void BufMgr::prefetch(const PageID *pages,int nPages,PageMgr *pageMgr,PageMgr *const *mgrs)
 {
-	if (pages==NULL || nPages==0 || !ctx->fileMgr->asyncIOEnabled()) return;
+	if (pages==NULL || nPages==0) return;
 	myaio **pcbs=(myaio**)malloc(nPages*sizeof(myaio*),SES_HEAP); if (pcbs==NULL) return;
 	
 	int cnt=0; PBlock *pb=NULL;

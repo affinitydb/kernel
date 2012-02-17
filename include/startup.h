@@ -12,7 +12,7 @@ Written by Mark Venguerov 2004 - 2010
 #include "mvstore.h"
 
 #define	MVSTOREPREFIX				"affinity"
-#define MVSTOREDIR					"affinity"
+#define MVSTOREDIR					"affinitydb"
 #define	DATAFILESUFFIX				".db"
 #define	LOGFILESUFFIX				".txlog"
 #define	MASTERFILESUFFIX			".master"

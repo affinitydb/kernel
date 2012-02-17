@@ -158,7 +158,6 @@ public:
 
 	/*! Test whether the implementation supports asynchronous I/O
 	*/
-	virtual bool	asyncIOEnabled() const=0;
 
 	/*!Remove a file.  It is expected that the file is not opened and correct permissions are available
 	\param file to delete
