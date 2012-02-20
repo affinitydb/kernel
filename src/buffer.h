@@ -37,7 +37,7 @@ Written by Mark Venguerov 2004 - 2010
 #define	FLUSH_CHAIN_THR		12
 #define	MIN_BUFFERS			8
 
-namespace MVStoreKernel
+namespace AfyKernel
 {
 
 class Session;

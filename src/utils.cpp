@@ -12,10 +12,10 @@ Written by Mark Venguerov 2004 - 2010
 #include <math.h>
 #include "utils.h"
 #include "session.h"
-#include "mvstoreimpl.h"
+#include "affinityimpl.h"
 
-using namespace	MVStore;
-using namespace MVStoreKernel;
+using namespace	AfyDB;
+using namespace AfyKernel;
 
 CRC32 CRC32::_CRC;
 
@@ -1047,7 +1047,7 @@ const ushort UTF8::spacerng[] =
 
 const ulong UTF8::nspacerng = sizeof(spacerng)/(sizeof(spacerng[0])*2);
 
-char *MVStoreKernel::forceCaseUTF8(const char *str,size_t ilen,uint32_t& olen,MemAlloc *ma,char *extBuf,bool fUpper)
+char *AfyKernel::forceCaseUTF8(const char *str,size_t ilen,uint32_t& olen,MemAlloc *ma,char *extBuf,bool fUpper)
 {
 	const byte *in=(byte*)str,*end=in+(extBuf==NULL||ilen<olen?ilen:olen); byte ch;
 	const byte mch=fUpper?'a':'A',nch='Z'-'A';
@@ -1076,7 +1076,7 @@ char *MVStoreKernel::forceCaseUTF8(const char *str,size_t ilen,uint32_t& olen,Me
 #define	TN_NEXP	0x0008
 #define	TN_FLT	0x0010
 
-RC MVStoreKernel::strToNum(const char *str,size_t lstr,Value& res,const char **pend,bool fInt)
+RC AfyKernel::strToNum(const char *str,size_t lstr,Value& res,const char **pend,bool fInt)
 {
 	try {
 		ulong flags=0; int exp=0,dpos=0; byte ch; const char *const end=str+lstr; Units units=Un_NDIM;
@@ -1196,7 +1196,7 @@ RC MVStoreKernel::strToNum(const char *str,size_t lstr,Value& res,const char **p
 	} catch (RC rc) {return rc;} catch (...) {return RC_SYNTAX;}		// ???
 }
 
-RC MVStoreKernel::strToTimestamp(const char *p,size_t l,TIMESTAMP& res)
+RC AfyKernel::strToTimestamp(const char *p,size_t l,TIMESTAMP& res)
 {
 	DateTime dt; memset(&dt,0,sizeof(dt));
 	if (l<10 || !isD(p[0]) || !isD(p[1]) || !isD(p[2]) || !isD(p[3]) || p[4]!='-'
@@ -1224,7 +1224,7 @@ RC MVStoreKernel::strToTimestamp(const char *p,size_t l,TIMESTAMP& res)
 	return convDateTime(NULL,dt,res);
 }
 
-RC MVStoreKernel::strToInterval(const char *p,size_t l,int64_t& res)
+RC AfyKernel::strToInterval(const char *p,size_t l,int64_t& res)
 {
 	if (p==NULL || l==0) return RC_INVPARAM;
 	const char *const end=p+l; int64_t v; int i; bool fNeg=false;
@@ -1252,7 +1252,7 @@ RC MVStoreKernel::strToInterval(const char *p,size_t l,int64_t& res)
 	res=fNeg?-v:v; return RC_OK;
 }
 
-RC MVStoreKernel::convDateTime(Session *ses,TIMESTAMP ts,char *buf,int& l,bool fUTC)
+RC AfyKernel::convDateTime(Session *ses,TIMESTAMP ts,char *buf,int& l,bool fUTC)
 {
 	RC rc; DateTime dt;
 	if ((rc=convDateTime(ses,ts,dt,fUTC))!=RC_OK) return rc;
@@ -1261,7 +1261,7 @@ RC MVStoreKernel::convDateTime(Session *ses,TIMESTAMP ts,char *buf,int& l,bool f
 	return RC_OK;
 }
 
-RC MVStoreKernel::convInterval(int64_t it,char *buf,int& l)
+RC AfyKernel::convInterval(int64_t it,char *buf,int& l)
 {
 	const bool fNeg=it<0; if (fNeg) it=-it;
 	l=sprintf(buf,"%s"INTERVALFORMAT,fNeg?"-":"",(int)(it/3600000000LL),(int)(it/60000000)%60,(int)(it/1000000)%60);
@@ -1269,7 +1269,7 @@ RC MVStoreKernel::convInterval(int64_t it,char *buf,int& l)
 	return RC_OK;
 }
 
-RC MVStoreKernel::convDateTime(Session *ses,TIMESTAMP dt,DateTime& dts,bool fUTC)
+RC AfyKernel::convDateTime(Session *ses,TIMESTAMP dt,DateTime& dts,bool fUTC)
 {
 	dt-=TS_DELTA; if (!fUTC && ses!=NULL) dt-=ses->tzShift;
 	dts.microseconds	= (uint32_t)(dt%1000000ul);
@@ -1298,7 +1298,7 @@ RC MVStoreKernel::convDateTime(Session *ses,TIMESTAMP dt,DateTime& dts,bool fUTC
 	return RC_OK;
 }
 
-RC MVStoreKernel::convDateTime(Session *ses,const DateTime& dts,uint64_t& dt,bool fUTC)
+RC AfyKernel::convDateTime(Session *ses,const DateTime& dts,uint64_t& dt,bool fUTC)
 {
 #ifdef WIN32
 	ULARGE_INTEGER ul; FILETIME ft; SYSTEMTIME st;
@@ -1329,7 +1329,7 @@ RC MVStoreKernel::convDateTime(Session *ses,const DateTime& dts,uint64_t& dt,boo
 	return RC_OK;
 }
 
-RC MVStoreKernel::getDTPart(TIMESTAMP dt,unsigned& res,int part)
+RC AfyKernel::getDTPart(TIMESTAMP dt,unsigned& res,int part)
 {
 	dt-=TS_DELTA; if (part==0) {res=dt%1000000; return RC_OK;}
 #ifdef WIN32
@@ -1383,7 +1383,7 @@ RC PageSet::add(PageID from,PageID to)
 						assert(npg>=pc->npg); ma->free(pc->bmp); pc->bmp=NULL; nPages+=npg-pc->npg; pc->npg=npg;
 					} else for (ulong idx0=from/SZ_BMP-pc->from/SZ_BMP,end=to/SZ_BMP-pc->from/SZ_BMP,idx=idx0; idx<=end; idx++) {
 						ulong mask=idx==end?(1<<(to%SZ_BMP+1))-1:~0u; if (idx==idx0) mask&=~((1<<from%SZ_BMP)-1);
-						ulong d=MVStoreKernel::pop((pc->bmp[idx]^mask)&mask); pc->bmp[idx]|=mask; pc->npg+=d; nPages+=d;
+						ulong d=AfyKernel::pop((pc->bmp[idx]^mask)&mask); pc->bmp[idx]|=mask; pc->npg+=d; nPages+=d;
 					}
 				}
 #ifdef _DEBUG
@@ -1591,7 +1591,7 @@ void PageSet::test() const
 		assert(ch.to>=ch.from);
 		if (ch.bmp!=NULL) {
 			ulong cnt2=0; assert(ch.to>ch.from);
-			for (ulong i=0,j=ch.to/SZ_BMP-ch.from/SZ_BMP; i<=j; i++) cnt2+=MVStoreKernel::pop(ch.bmp[i]);
+			for (ulong i=0,j=ch.to/SZ_BMP-ch.from/SZ_BMP; i<=j; i++) cnt2+=AfyKernel::pop(ch.bmp[i]);
 			assert(cnt2==ch.npg);
 		} else assert(ch.npg==ch.to-ch.from+1);
 		if (i!=0) assert(chunks[i-1].to<ch.from);

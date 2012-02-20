@@ -14,7 +14,7 @@ Written by Mark Venguerov and Andrew Skowronski 2004 - 2010
 #include "blob.h"
 #include "fio.h"
 
-using namespace MVStoreKernel;
+using namespace AfyKernel;
 
 Sort::Sort(QueryOp *qop,const OrderSegQ *os,unsigned nsgs,ulong qf,unsigned nP,const PropList *pids,unsigned nPids)
 : QueryOp(qop,qf),nPreSorted(nP),fRepeat(false),pinMem(qx->ses),nAllPins(0),idx(0),pins(NULL),lPins(0),esFile(NULL),esRuns(NULL),esOutRun(NULL),nIns(0),curRun(~0u),
@@ -117,7 +117,7 @@ int Sort::cmp(const EncPINRef *p1,const EncPINRef *p2) const
 				const Value *pp1=&pv1[index[k]],*pp2=&pv2[index[k]];
 				if (pp1->type==VT_ERROR) {if (pp2->type!=VT_ERROR) return (u&ORD_NULLS_BEFORE)!=0?-1:1;}
 				else if (pp2->type==VT_ERROR) return (u&ORD_NULLS_BEFORE)!=0?1:-1;
-				else if ((ret=MVStoreKernel::cmp(*pp1,*pp2,(u&ORD_NCASE)!=0?CND_NCASE|CND_SORT:CND_SORT))!=0) return (u&ORD_DESC)!=0?-ret:ret;
+				else if ((ret=AfyKernel::cmp(*pp1,*pp2,(u&ORD_NCASE)!=0?CND_NCASE|CND_SORT:CND_SORT))!=0) return (u&ORD_DESC)!=0?-ret:ret;
 			}
 		}
 		if ((qflags&QO_VUNIQUE)!=0) fRepeat=true;
@@ -166,7 +166,7 @@ void Sort::quickSort(ulong nPins)
 	}
 }
 
-namespace MVStoreKernel
+namespace AfyKernel
 {
 	struct ArrayVal {ArrayVal *prev; INav *nav; Value *vals; unsigned length,idx,vidx; ushort lPref;};
 };
@@ -302,7 +302,7 @@ RC Sort::sort(ulong nAbort)
 	return rc;
 }
 
-namespace MVStoreKernel
+namespace AfyKernel
 {
 
 typedef	uint32_t		RunID;
@@ -493,10 +493,10 @@ public:
 		size_t pinlen=lHdr,pageLen=esFile->pageLen();
 		if (nValues!=0) {
 			const Value *pv=getValues(ep);
-			for (ulong i=0; i<nValues; i++,pv++) pinlen+=MVStoreKernel::serSize(*pv);
+			for (ulong i=0; i<nValues; i++,pv++) pinlen+=AfyKernel::serSize(*pv);
 		}
-		size_t oldLen=mv_len32(pinlen); pinlen+=oldLen;
-		size_t newLen=mv_len32(pinlen); pinlen+=newLen-oldLen;
+		size_t oldLen=afy_len32(pinlen); pinlen+=oldLen;
+		size_t newLen=afy_len32(pinlen); pinlen+=newLen-oldLen;
 
 		if (pinlen+pagePos>pageLen) {
 			if (hdr->nItems==0) {report(MSG_ERROR,"Single sort key too large (%u) for external sort\n",pinlen); return RC_NORESOURCES;}
@@ -512,7 +512,7 @@ public:
 		}
 
 		// serialize pin
-		byte *ps=page+pagePos; mv_enc32(ps,pinlen);
+		byte *ps=page+pagePos; afy_enc32(ps,pinlen);
 #if defined(__x86_64__) || defined(IA64) || defined(_M_X64) || defined(_M_IA64)
 		if ((((ptrdiff_t)ep)&1)!=0) {
 			*(uint16_t*)ps=0; ps[sizeof(uint16_t)]=byte((ptrdiff_t)ep)>>1; memcpy(ps+sizeof(uint16_t)+1,(byte*)&ep+1,ps[sizeof(uint16_t)]);
@@ -523,7 +523,7 @@ public:
 		// Values 
 		if (nValues!=0) {
 			const Value *pv=getValues(ep);
-			for (ulong i=0; i<nValues; i++,pv++) ps=MVStoreKernel::serialize(*pv,ps);
+			for (ulong i=0; i<nValues; i++,pv++) ps=AfyKernel::serialize(*pv,ps);
 		}
 
 		hdr->nItems++; nRunPins++; pagePos=ulong(ps-page);
@@ -626,7 +626,7 @@ public:
 		assert(page!=NULL);
 		assert((ulong)(pos-page)<esFile->pageLen());
 
-		const byte *end=pos; size_t len; mv_dec32(pos,len); end+=len; assert((ulong)(end-page)<=esFile->pageLen());
+		const byte *end=pos; size_t len; afy_dec32(pos,len); end+=len; assert((ulong)(end-page)<=esFile->pageLen());
 		const EncPINRef *hdr=(const EncPINRef *)pos; pos+=sizeof(uint16_t)+1+hdr->lref; assert((ulong)(pos-page)<=esFile->pageLen());
 
 #if defined(__x86_64__) || defined(IA64) || defined(_M_X64) || defined(_M_IA64)
@@ -637,7 +637,7 @@ public:
 			ep=(EncPINRef*)buf; memcpy(ep,hdr,sizeof(uint16_t)+1+hdr->lref);
 			Value *pv=(Value*)getValues(ep);
 			for (unsigned i=0; i<sort->nValues; i++,pv++)
-				if ((rc=MVStoreKernel::deserialize(*pv,pos,end,sort->qx->ses,false))!=RC_OK) break;
+				if ((rc=AfyKernel::deserialize(*pv,pos,end,sort->qx->ses,false))!=RC_OK) break;
 		}
 		pos=end; remItems--;
 		return rc==RC_OK;

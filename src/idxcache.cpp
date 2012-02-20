@@ -11,9 +11,9 @@ Written by Mark Venguerov 2004 - 2010
 #include "pgtree.h"
 #include "fio.h"
 
-using namespace MVStoreKernel;
+using namespace AfyKernel;
 
-namespace MVStoreKernel
+namespace AfyKernel
 {
 
 struct ExtFile

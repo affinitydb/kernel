@@ -13,7 +13,7 @@ Written by Mark Venguerov 2004 - 2010
 #include "fsmgr.h"
 #include "fio.h"
 
-using namespace MVStoreKernel;
+using namespace AfyKernel;
 
 const static char *LR_Tab[LR_ALL] =
 {

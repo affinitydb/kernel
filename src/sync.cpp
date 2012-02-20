@@ -9,7 +9,7 @@ Written by Mark Venguerov 2004 - 2010
 #include "sync.h"
 #include "session.h"
 
-using namespace MVStoreKernel;
+using namespace AfyKernel;
 
 SpinC SpinC::SC;
 

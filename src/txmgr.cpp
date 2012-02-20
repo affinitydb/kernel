@@ -15,8 +15,8 @@ Written by Mark Venguerov 2004 - 2010
 #include "fsmgr.h"
 #include "classifier.h"
 
-using namespace MVStore;
-using namespace MVStoreKernel;
+using namespace AfyDB;
+using namespace AfyKernel;
 
 TxMgr::TxMgr(StoreCtx *cx,TXID startTXID,IStoreNotification *notItf,ulong xSnap) 
 	: ctx(cx),notification(notItf),nextTXID(startTXID),nActive(0),lastTXCID(0),snapshots(NULL),nSS(0),xSS(xSnap)

@@ -2,7 +2,7 @@ IF(CMAKE_SYSTEM_NAME MATCHES Windows)
 	cmake_minimum_required(VERSION 2.8)
 ENDIF(CMAKE_SYSTEM_NAME MATCHES Windows)
 
-message ( "Processing mvstore kernel/src ...")
+message ( "Processing Affinity kernel/src ...")
 message ( "processor: "  ${CMAKE_SYSTEM_PROCESSOR})
 message ( "Project dir: " ${PROJECT_SOURCE_DIR})
 
@@ -36,7 +36,7 @@ INCLUDE_DIRECTORIES( "../include" "./" "../protobuf/src")
 
 #setting the name of the output library
 #since tha all applications name, it is moved `root` CMakeLists.txt...
-#SET(KERNEL_TARGET_NAME "mvstore")
+#SET(KERNEL_TARGET_NAME "affinity")
 
 #setting the output directory for the library
 SET(LIBRARY_OUTPUT_PATH "${PROJECT_SOURCE_DIR}/lib")
@@ -140,7 +140,7 @@ FILE(GLOB KERNEL_SRCS  "*.cpp")
 # uncommented   -> headers and sources in the same directory...
 #source_group(src FILES ${KERNEL_SRCS} FILES ${KERNEL_SRCS_H} )
   
-#adding the build target - mvstore dynamic library...
+#adding the build target - affinity dynamic library...
 add_library (${KERNEL_TARGET_NAME} SHARED ${KERNEL_SRCS_H} ${KERNEL_SRCS})
 
 #it is possible to have no source files the first time cmake is running... 
@@ -149,7 +149,7 @@ add_library (${KERNEL_TARGET_NAME} SHARED ${KERNEL_SRCS_H} ${KERNEL_SRCS})
 SET_TARGET_PROPERTIES(${KERNEL_TARGET_NAME} PROPERTIES LINKER_LANGUAGE CXX)
 
 IF(CMAKE_SYSTEM_NAME MATCHES Linux)
-#since mvstore library on Linux is using librt,  the line below is essential...
+#since affinity library on Linux is using librt,  the line below is essential...
 target_link_libraries (${KERNEL_TARGET_NAME} "rt")
 ENDIF(CMAKE_SYSTEM_NAME MATCHES Linux)
 

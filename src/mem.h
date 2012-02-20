@@ -10,7 +10,7 @@ Written by Mark Venguerov 2010
 
 #include "types.h"
 
-namespace MVStoreKernel
+namespace AfyKernel
 {
 
 class ObjDealloc
@@ -52,7 +52,7 @@ protected:
 	byte			*expand(size_t s);
 public:
 	SubAlloc(MemAlloc *pr,size_t lbuf=SA_DEFAULT_SIZE,byte *buf=NULL,bool fZ=false) : extents(NULL),ptr(buf),extentLeft(lbuf),chain(NULL),fZero(fZ),parent(pr) {
-		if (ptr==NULL && (extents=(SubExt*)(parent!=NULL?parent->malloc(lbuf+sizeof(SubExt)):MVStoreKernel::malloc(lbuf+sizeof(SubExt),SES_HEAP)))!=NULL) 
+		if (ptr==NULL && (extents=(SubExt*)(parent!=NULL?parent->malloc(lbuf+sizeof(SubExt)):AfyKernel::malloc(lbuf+sizeof(SubExt),SES_HEAP)))!=NULL) 
 			{ptr=(byte*)(extents+1); extents->next=NULL; extents->size=lbuf+sizeof(SubExt);}
 		if (fZ && ptr!=NULL) memset(ptr,0,extentLeft);
 	}
@@ -74,7 +74,7 @@ public:
 		if (sht>ptrdiff_t(sizeof(T)) || se->next==NULL) {
 			ptr-=sizeof(T); extentLeft+=sizeof(T);
 		} else {
-			extents=se->next; parent?parent->free(se):MVStoreKernel::free(se,SES_HEAP);
+			extents=se->next; parent?parent->free(se):AfyKernel::free(se,SES_HEAP);
 			extentLeft=(extents->size-sizeof(SubExt))%sizeof(T); ptr=(byte*)extents+extents->size-extentLeft;
 		}
 		return true;

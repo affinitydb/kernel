@@ -16,7 +16,7 @@ Written by Mark Venguerov 2004 - 2010
 
 class IStoreNotification;
 
-namespace MVStoreKernel
+namespace AfyKernel
 {
 /**
  * getBody() flags

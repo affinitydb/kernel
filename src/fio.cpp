@@ -12,7 +12,7 @@ Written by Mark Venguerov and Andrew Skowronski 2004 - 2010
 #include <limits.h>
 #include <stdio.h>
 
-using namespace MVStoreKernel;
+using namespace AfyKernel;
 
 FileMgr::FileMgr(StoreCtx *ct,int /*maxOpenFiles*/,IStoreIO *i_o) 
 : dir(NULL),ctx(ct),pio(i_o),bDefaultIO(false)
@@ -127,10 +127,10 @@ RC FileMgr::deleteStore(const char *path0,IStoreIO *io)
 			&& path[l-1]!='\\'
 #endif
 		;
-		if ((path=(char*)::malloc(l+1+sizeof(MVSTOREPREFIX DATAFILESUFFIX)))==NULL) return RC_NORESOURCES;
+		if ((path=(char*)::malloc(l+1+sizeof(STOREPREFIX DATAFILESUFFIX)))==NULL) return RC_NORESOURCES;
 		memcpy((char*)path,path0,l); if (fDel) ((char*)path)[l++]='/'; fDelP=true;
-		memcpy((char*)path+l,MVSTOREPREFIX DATAFILESUFFIX,sizeof(MVSTOREPREFIX DATAFILESUFFIX));
-	} else path=MVSTOREPREFIX DATAFILESUFFIX;
+		memcpy((char*)path+l,STOREPREFIX DATAFILESUFFIX,sizeof(STOREPREFIX DATAFILESUFFIX));
+	} else path=STOREPREFIX DATAFILESUFFIX;
 	bool fRelease=false;
 	if (io==NULL) {if ((io=getStoreIO())==NULL) {if (fDelP) ::free((char*)path); return RC_NORESOURCES;} fRelease=true;}
 	RC rc=io->deleteFile(path); if (rc==RC_OK) io->deleteLogFiles(~0ul,path0,false);

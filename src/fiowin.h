@@ -14,7 +14,7 @@ Written by Mark Venguerov and Andrew Skowronski 2004 - 2010
 #include "storeio.h"
 #include "sync.h"
 
-namespace MVStoreKernel
+namespace AfyKernel
 {
 	struct FileDescWin
 	{

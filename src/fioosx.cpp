@@ -37,7 +37,7 @@ Written by Mark Venguerov, Andrew Skowronski, Michael Andronov 2004 - 2010
 #define fdatasync(x) fsync(x)
 #endif
 
-using namespace MVStoreKernel;
+using namespace AfyKernel;
 		
 FreeQ<> FileIOOSX::freeAio64;
 
@@ -45,7 +45,7 @@ FreeQ<> FileIOOSX::freeAio64;
 FreeQ<> AsyncReqQ::lioReqs;
 AsyncReqQ FileIOOSX::lioAQueue; //track for outstanding I/O(s).
  
-namespace MVStoreKernel
+namespace AfyKernel
 {
 
   
@@ -283,8 +283,8 @@ RC FileIOOSX::open(FileID& fid,const char *fname,const char *dir,ulong flags)
 
 	bool fdel = false;
 	if ((flags&FIO_TEMP)!=0) {
-		char *p=(char*)malloc((dir!=NULL?strlen(dir):2)+sizeof(MVSTOREPREFIX)+6+1,STORE_HEAP); 
-		if (p==NULL) return RC_NORESOURCES; strcpy(p,dir!=NULL?dir:"./"); strcat(p,MVSTOREPREFIX);
+		char *p=(char*)malloc((dir!=NULL?strlen(dir):2)+sizeof(STOREPREFIX)+6+1,STORE_HEAP); 
+		if (p==NULL) return RC_NORESOURCES; strcpy(p,dir!=NULL?dir:"./"); strcat(p,STOREPREFIX);
 		fname=p; p+=strlen(p); memset(p,'X',6); p[6]='\0'; p=mktemp((char*)fname);
 		if (p==NULL||*p=='\0') {free((char*)fname,STORE_HEAP); return RC_NORESOURCES;}
 		fdel=true;
@@ -307,13 +307,13 @@ RC FileIOOSX::open(FileID& fid,const char *fname,const char *dir,ulong flags)
 	
 	char fullbuf[PATH_MAX+1]; 
 
-	static struct flock flck; flck.l_type=F_WRLCK; flck.l_whence=SEEK_SET;
-	int f_flags = (flags&FIO_TEMP)==0?0:0 |O_RDWR |(flags&(FIO_TEMP|FIO_CREATE)?flags&FIO_NEW?O_CREAT|O_EXCL|O_TRUNC:O_CREAT:0); 
-	fd = ::open64(fname, f_flags, S_IRUSR|S_IWUSR|S_IRGRP );
+	static struct flock flck; flck.l_type=F_WRLCK; flck.l_whence=SEEK_SET;	
+	fd = ::open64(fname, (O_RDWR|(flags&(FIO_TEMP|FIO_CREATE)?flags&FIO_NEW?O_CREAT|O_EXCL|O_TRUNC:O_CREAT:0)), S_IRUSR|S_IWUSR|S_IRGRP );
+	
 	//The following line - setting F_NOCACHE - is similar to `O_DIRECT`...
-	if(fd==INVALID_FD || fcntl(fd, F_NOCACHE, 1) != 0)	rc=convCode(errno);
+	if(((flags&FIO_TEMP)==0) && (fd==INVALID_FD || fcntl(fd, F_NOCACHE, 1) != 0))	rc=convCode(errno);
 
-	if (fd==INVALID_FD || fcntl(fd,F_SETLK,(struct flock*)&flck)!=0) rc=convCode(errno);
+	if(fd==INVALID_FD || fcntl(fd,F_SETLK,(struct flock*)&flck)!=0) rc=convCode(errno);
 	else {
 		fileSize=getFileSz(fd);
 		char *p=realpath(fname,fullbuf); 
@@ -578,7 +578,7 @@ RC FileIOOSX::deleteFile(const char *fname)
 
 void FileIOOSX::deleteLogFiles(ulong maxFile,const char *lDir,bool fArchived)
 {
-	deleteLogFiles(MVSTOREPREFIX"*"LOGFILESUFFIX,maxFile,lDir,fArchived);
+	deleteLogFiles(LOGPREFIX"*"LOGFILESUFFIX,maxFile,lDir,fArchived);
 }
 
 void FileIOOSX::deleteLogFiles(const char *mask,ulong maxFile,const char *lDir,bool fArchived)
@@ -591,7 +591,7 @@ void FileIOOSX::deleteLogFiles(const char *mask,ulong maxFile,const char *lDir,b
 			if (fArchived) {
 				// ???
 			}
-			else if (maxFile==~0ul || strtoul(ep->d_name+sizeof(MVSTOREPREFIX),&end,16)<=maxFile) {	// 1 more than prefix size (for 'A' or 'B')
+			else if (maxFile==~0ul || strtoul(ep->d_name+sizeof(LOGPREFIX),&end,16)<=maxFile) {	// 1 more than prefix size (for 'A' or 'B')
 				strcpy(buf,lDir!=NULL?lDir:"./"); strcat(buf,ep->d_name); unlink(buf);
 			}
 		}

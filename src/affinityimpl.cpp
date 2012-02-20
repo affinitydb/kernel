@@ -6,7 +6,7 @@ Written by Mark Venguerov 2004 - 2010
 
 **************************************************************************************/
 
-#include "mvstore.h"
+#include "affinity.h"
 #include "txmgr.h"
 #include "classifier.h"
 #include "queryprc.h"
@@ -17,7 +17,7 @@ Written by Mark Venguerov 2004 - 2010
 #include "parser.h"
 #include <string.h>
 
-using namespace MVStoreKernel;
+using namespace AfyKernel;
 
 const PID PIN::defPID = {STORE_INVALID_PID,STORE_INVALID_IDENTITY};
 
@@ -821,7 +821,7 @@ Value *PIN::normalize(const Value *pv,uint32_t& nv,ulong f,ElementID prefix,MemA
 					memcpy(vals,pv2->type==VT_ARRAY?pv2->varray:pv2,ll*sizeof(Value));
 					if (fEID) for (ulong k=0; k<ll; k++) vals[k].eid=eid++;
 					if (!fCV && pv2->type==VT_ARRAY && (pv2->flags&HEAP_TYPE_MASK)!=NO_HEAP) 
-						{MVStoreKernel::free(const_cast<Value*>(pv2->varray),(HEAP_TYPE)(pv2->flags&HEAP_TYPE_MASK)); pv2->flags=NO_HEAP;}
+						{AfyKernel::free(const_cast<Value*>(pv2->varray),(HEAP_TYPE)(pv2->flags&HEAP_TYPE_MASK)); pv2->flags=NO_HEAP;}
 				} else for (ulong j=0; j<ll; j++) if (copyV(pv2->type==VT_ARRAY?pv2->varray[j]:*pv2,vals[j],ma)!=RC_OK) {
 					//...free
 					return NULL;
@@ -1258,13 +1258,13 @@ void SessionX::setTimeZone(int64_t tzShift)
 RC SessionX::convDateTime(uint64_t dt,DateTime& dts,bool fUTC) const
 {
 	assert(ses==Session::getSession());
-	return MVStoreKernel::convDateTime(ses,dt,dts,fUTC);
+	return AfyKernel::convDateTime(ses,dt,dts,fUTC);
 }
 
 RC SessionX::convDateTime(const DateTime& dts,uint64_t& dt,bool fUTC) const
 {
 	assert(ses==Session::getSession());
-	return MVStoreKernel::convDateTime(ses,dts,dt,fUTC);
+	return AfyKernel::convDateTime(ses,dts,dt,fUTC);
 }
 
 RC SessionX::setStopWordTable(const char **words,uint32_t nWords,PropertyID pid,bool fOverwriteDefault,bool fSessionOnly)
@@ -1346,7 +1346,7 @@ RC SessionX::detachFromCurrentThread()
 	return this!=NULL && ses!=NULL ? ses->detach() : RC_INVPARAM;
 }
 
-ISession *ISession::startSession(MVStoreCtx ctx,const char *ident,const char *pwd)
+ISession *ISession::startSession(AfyDBCtx ctx,const char *ident,const char *pwd)
 {
 	try {
 		if (ctx==NULL||ctx->inShutdown()||ctx->theCB->state==SST_RESTORE) return NULL;

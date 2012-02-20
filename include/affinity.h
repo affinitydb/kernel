@@ -9,11 +9,11 @@ Written by Mark Venguerov 2004 - 2010
 #ifndef _STORE_H_
 #define _STORE_H_
 
-#undef MV_EXP
+#undef AFY_EXP
 #ifndef _MSC_VER
-#define MV_EXP
+#define AFY_EXP
 #else
-#define MV_EXP	_declspec(dllexport)
+#define AFY_EXP	_declspec(dllexport)
 #endif
 #include <stdint.h>
 #include <stddef.h>
@@ -23,21 +23,21 @@ Written by Mark Venguerov 2004 - 2010
 #include "rc.h"
 #include "units.h"
 
-using namespace MVStoreRC;
+using namespace AfyRC;
 
-namespace MVStoreKernel {class StoreCtx;}
+namespace AfyKernel {class StoreCtx;}
 
-typedef MVStoreKernel::StoreCtx *MVStoreCtx;
+typedef AfyKernel::StoreCtx *AfyDBCtx;
 
 /**
- * Namespace to encapsulate the public interface of mvstore.
+ * Namespace to encapsulate the public interface of Affinity.
  * Overview:
  *  ISession represents a client's connection to the store.
  *  IPIN represents a PIN, i.e. a node of information.
  *  Through its ISession, a client can create, query, modify and delete PINs, control transactions, set session parameters, etc.
  *  Through IPIN, one can create, query, modify and delete properties or clone the PIN optionally overwriting properties.
  */
-namespace MVStore 
+namespace AfyDB 
 {
 	typedef	uint32_t					IdentityID;	/**< Identity ID - used to represent the identity in this store */
 	typedef	uint32_t					URIID;		/**< URI ID - used to represent a URI in this store */
@@ -47,69 +47,69 @@ namespace MVStore
 	typedef	uint32_t					VersionID;	/**< Version number */
 
 	#define	STORE_INVALID_PID			0ULL
-	#define	STORE_INVALID_PROPID		(~MVStore::PropertyID(0))	
-	#define	STORE_INVALID_IDENTITY		(~MVStore::IdentityID(0))	
-	#define	STORE_INVALID_CLASSID		(~MVStore::ClassID(0))	
-	#define	STORE_CURRENT_VERSION		(~MVStore::VersionID(0))	
-	#define	STORE_MAX_URIID				MVStore::URIID(0x1FFFFFFF)		/**< Maximum value for URIID */
+	#define	STORE_INVALID_PROPID		(~AfyDB::PropertyID(0))	
+	#define	STORE_INVALID_IDENTITY		(~AfyDB::IdentityID(0))	
+	#define	STORE_INVALID_CLASSID		(~AfyDB::ClassID(0))	
+	#define	STORE_CURRENT_VERSION		(~AfyDB::VersionID(0))	
+	#define	STORE_MAX_URIID				AfyDB::URIID(0x1FFFFFFF)		/**< Maximum value for URIID */
 
 	/**
 	 * special identity ID
 	 */
-	#define	STORE_OWNER					MVStore::IdentityID(0)			/**< The owner of the store always has IdentityID equals to 0 */
+	#define	STORE_OWNER					AfyDB::IdentityID(0)			/**< The owner of the store always has IdentityID equals to 0 */
 
 
 	/**
 	 * special property and class IDs
 	 */
-	#define	STORE_CLASS_OF_CLASSES		MVStore::ClassID(0)				/**< Fixed ID of the class of all classes in the store */
-	#define	PROP_SPEC_PINID				MVStore::PropertyID(1)			/**< PIN id as PIN's property, immutable */
-	#define	PROP_SPEC_DOCUMENT			MVStore::PropertyID(2)			/**< document PIN this PIN is a part of */
-	#define	PROP_SPEC_PARENT			MVStore::PropertyID(3)			/**< parent (whole) PIN */
-	#define	PROP_SPEC_VALUE				MVStore::PropertyID(4)			/**< value of the PIN (can be an expression using other properties */
-	#define	PROP_SPEC_CREATED			MVStore::PropertyID(5)			/**< PIN creation timestamp, immutable */
-	#define	PROP_SPEC_CREATEDBY			MVStore::PropertyID(6)			/**< identity created the PIN, immutable */
-	#define	PROP_SPEC_UPDATED			MVStore::PropertyID(7)			/**< timestamp of the latest PIN modification, updated automatically */
-	#define	PROP_SPEC_UPDATEDBY			MVStore::PropertyID(8)			/**< identity of the latest PIN modification, updated automatically */
-	#define	PROP_SPEC_ACL				MVStore::PropertyID(9)			/**< ACL - can be a collection and contain references to other PINs */
-	#define	PROP_SPEC_URI				MVStore::PropertyID(10)			/**< External (RDF) URI of a pin, class or relation */
-	#define	PROP_SPEC_STAMP				MVStore::PropertyID(11)			/**< stamp (unsigned integer) of the latest modification, updated automatically */
-	#define	PROP_SPEC_CLASSID			MVStore::PropertyID(12)			/**< classID of the class represented by this pin (VT_CLASSID) */
-	#define PROP_SPEC_PREDICATE			MVStore::PropertyID(13)			/**< predicate of a class or relations (VT_STMT) */
-	#define	PROP_SPEC_NINSTANCES		MVStore::PropertyID(14)			/**< number of instances of a given class currently in the store */
-	#define	PROP_SPEC_NDINSTANCES		MVStore::PropertyID(15)			/**< number of soft-deleted instances of a given class currently in the store */
-	#define	PROP_SPEC_SUBCLASSES		MVStore::PropertyID(16)			/**< collection of classes which are specializations of this class */
-	#define	PROP_SPEC_SUPERCLASSES		MVStore::PropertyID(17)			/**< collection of classes which are abstractions of this class */
-	#define PROP_SPEC_CLASS_INFO		MVStore::PropertyID(18)			/**< bit flags describing the class (VT_UINT) */
-	#define PROP_SPEC_INDEX_INFO		MVStore::PropertyID(19)			/**< Family index information */
-	#define PROP_SPEC_PROPERTIES		MVStore::PropertyID(20)			/**< Properties refered by the class */
-	#define	PROP_SPEC_JOIN_TRIGGER		MVStore::PropertyID(21)			/**< Triggers associated with class events */
-	#define	PROP_SPEC_UPDATE_TRIGGER	MVStore::PropertyID(22)			/**< Triggers associated with class events */
-	#define	PROP_SPEC_LEAVE_TRIGGER		MVStore::PropertyID(23)			/**< Triggers associated with class events */
-	#define	PROP_SPEC_REFID				MVStore::PropertyID(24)			/**< Future implementation */
-	#define	PROP_SPEC_KEY				MVStore::PropertyID(25)			/**< Future implementation */
-	#define	PROP_SPEC_VERSION			MVStore::PropertyID(26)			/**< Chain of versions */
-	#define	PROP_SPEC_WEIGHT			MVStore::PropertyID(27)			/**< Future implementation */
-	#define	PROP_SPEC_PROTOTYPE			MVStore::PropertyID(28)			/**< JavaScript-like inheritance */
-	#define	PROP_SPEC_WINDOW			MVStore::PropertyID(29)			/**< Stream windowing control (size of class-related window) */
+	#define	STORE_CLASS_OF_CLASSES		AfyDB::ClassID(0)				/**< Fixed ID of the class of all classes in the store */
+	#define	PROP_SPEC_PINID				AfyDB::PropertyID(1)			/**< PIN id as PIN's property, immutable */
+	#define	PROP_SPEC_DOCUMENT			AfyDB::PropertyID(2)			/**< document PIN this PIN is a part of */
+	#define	PROP_SPEC_PARENT			AfyDB::PropertyID(3)			/**< parent (whole) PIN */
+	#define	PROP_SPEC_VALUE				AfyDB::PropertyID(4)			/**< value of the PIN (can be an expression using other properties */
+	#define	PROP_SPEC_CREATED			AfyDB::PropertyID(5)			/**< PIN creation timestamp, immutable */
+	#define	PROP_SPEC_CREATEDBY			AfyDB::PropertyID(6)			/**< identity created the PIN, immutable */
+	#define	PROP_SPEC_UPDATED			AfyDB::PropertyID(7)			/**< timestamp of the latest PIN modification, updated automatically */
+	#define	PROP_SPEC_UPDATEDBY			AfyDB::PropertyID(8)			/**< identity of the latest PIN modification, updated automatically */
+	#define	PROP_SPEC_ACL				AfyDB::PropertyID(9)			/**< ACL - can be a collection and contain references to other PINs */
+	#define	PROP_SPEC_URI				AfyDB::PropertyID(10)			/**< External (RDF) URI of a pin, class or relation */
+	#define	PROP_SPEC_STAMP				AfyDB::PropertyID(11)			/**< stamp (unsigned integer) of the latest modification, updated automatically */
+	#define	PROP_SPEC_CLASSID			AfyDB::PropertyID(12)			/**< classID of the class represented by this pin (VT_CLASSID) */
+	#define PROP_SPEC_PREDICATE			AfyDB::PropertyID(13)			/**< predicate of a class or relations (VT_STMT) */
+	#define	PROP_SPEC_NINSTANCES		AfyDB::PropertyID(14)			/**< number of instances of a given class currently in the store */
+	#define	PROP_SPEC_NDINSTANCES		AfyDB::PropertyID(15)			/**< number of soft-deleted instances of a given class currently in the store */
+	#define	PROP_SPEC_SUBCLASSES		AfyDB::PropertyID(16)			/**< collection of classes which are specializations of this class */
+	#define	PROP_SPEC_SUPERCLASSES		AfyDB::PropertyID(17)			/**< collection of classes which are abstractions of this class */
+	#define PROP_SPEC_CLASS_INFO		AfyDB::PropertyID(18)			/**< bit flags describing the class (VT_UINT) */
+	#define PROP_SPEC_INDEX_INFO		AfyDB::PropertyID(19)			/**< Family index information */
+	#define PROP_SPEC_PROPERTIES		AfyDB::PropertyID(20)			/**< Properties refered by the class */
+	#define	PROP_SPEC_JOIN_TRIGGER		AfyDB::PropertyID(21)			/**< Triggers associated with class events */
+	#define	PROP_SPEC_UPDATE_TRIGGER	AfyDB::PropertyID(22)			/**< Triggers associated with class events */
+	#define	PROP_SPEC_LEAVE_TRIGGER		AfyDB::PropertyID(23)			/**< Triggers associated with class events */
+	#define	PROP_SPEC_REFID				AfyDB::PropertyID(24)			/**< Future implementation */
+	#define	PROP_SPEC_KEY				AfyDB::PropertyID(25)			/**< Future implementation */
+	#define	PROP_SPEC_VERSION			AfyDB::PropertyID(26)			/**< Chain of versions */
+	#define	PROP_SPEC_WEIGHT			AfyDB::PropertyID(27)			/**< Future implementation */
+	#define	PROP_SPEC_PROTOTYPE			AfyDB::PropertyID(28)			/**< JavaScript-like inheritance */
+	#define	PROP_SPEC_WINDOW			AfyDB::PropertyID(29)			/**< Stream windowing control (size of class-related window) */
 
 	#define	PROP_SPEC_MAX				PROP_SPEC_WINDOW
 	
-	#define	PROP_SPEC_ANY				(~MVStore::PropertyID(0))		/**< used in queries, matches any property */
+	#define	PROP_SPEC_ANY				(~AfyDB::PropertyID(0))		/**< used in queries, matches any property */
 
 	/**
 	 * special collection element IDs
 	 */
-	#define	STORE_COLLECTION_ID			(~MVStore::ElementID(0))		/**< Singleton value or operation applied to the whole collection */
-	#define	STORE_LAST_ELEMENT			(~MVStore::ElementID(1))		/**< Last element of a collection */
-	#define	STORE_FIRST_ELEMENT			(~MVStore::ElementID(2))		/**< First element of a collection */
-	#define	STORE_SUM_COLLECTION		(~MVStore::ElementID(3))		/**< IStmt: replace collection with the sum of its elements */
-	#define	STORE_AVG_COLLECTION		(~MVStore::ElementID(4))		/**< IStmt: replace collection with the average of its elements */
-	#define	STORE_CONCAT_COLLECTION		(~MVStore::ElementID(5))		/**< IStmt: replace collection with the concatenation of its elements */
-	#define	STORE_MIN_ELEMENT			(~MVStore::ElementID(6))		/**< IStmt: replace collection with the minimum of its elements */
-	#define	STORE_MAX_ELEMENT			(~MVStore::ElementID(7))		/**< IStmt: replace collection with the maximum of its elements */
-	#define	STORE_SOME_ELEMENT			(~MVStore::ElementID(8))		/**< IStmt: existential quantifier for the collection */
-	#define	STORE_ALL_ELEMENTS			(~MVStore::ElementID(9))		/**< IStmt: 'for all' quantifier */
+	#define	STORE_COLLECTION_ID			(~AfyDB::ElementID(0))		/**< Singleton value or operation applied to the whole collection */
+	#define	STORE_LAST_ELEMENT			(~AfyDB::ElementID(1))		/**< Last element of a collection */
+	#define	STORE_FIRST_ELEMENT			(~AfyDB::ElementID(2))		/**< First element of a collection */
+	#define	STORE_SUM_COLLECTION		(~AfyDB::ElementID(3))		/**< IStmt: replace collection with the sum of its elements */
+	#define	STORE_AVG_COLLECTION		(~AfyDB::ElementID(4))		/**< IStmt: replace collection with the average of its elements */
+	#define	STORE_CONCAT_COLLECTION		(~AfyDB::ElementID(5))		/**< IStmt: replace collection with the concatenation of its elements */
+	#define	STORE_MIN_ELEMENT			(~AfyDB::ElementID(6))		/**< IStmt: replace collection with the minimum of its elements */
+	#define	STORE_MAX_ELEMENT			(~AfyDB::ElementID(7))		/**< IStmt: replace collection with the maximum of its elements */
+	#define	STORE_SOME_ELEMENT			(~AfyDB::ElementID(8))		/**< IStmt: existential quantifier for the collection */
+	#define	STORE_ALL_ELEMENTS			(~AfyDB::ElementID(9))		/**< IStmt: 'for all' quantifier */
 
 	/**
 	 * PIN create/commit/modify/delete, IStmt execute mode flags
@@ -597,7 +597,7 @@ namespace MVStore
 		void	set(IStmt *stm) {type=VT_STMT; property=STORE_INVALID_PROPID; flags=0; op=OP_SET; eid=STORE_COLLECTION_ID; length=1; stmt=stm; meta=0;}
 		void	set(IExprTree *ex) {type=VT_EXPRTREE; property=STORE_INVALID_PROPID; flags=0; op=OP_SET; eid=STORE_COLLECTION_ID; length=1; exprt=ex; meta=0;}
 		void	set(IExpr *ex) {type=VT_EXPR; property=STORE_INVALID_PROPID; flags=0; op=OP_SET; eid=STORE_COLLECTION_ID; length=1; expr=ex; meta=0;}
-		void	setParam(unsigned char pn,ValueType ty=VT_ANY,unsigned short f=0) {type=VT_VARREF; property=STORE_INVALID_PROPID; flags=0; op=OP_SET; eid=STORE_COLLECTION_ID; length=0; refV.refN=pn; refV.type=(unsigned char)ty; refV.flags=f&~VAR_TYPE_MASK|VAR_PARAM; refV.id=STORE_INVALID_PROPID; meta=0;}
+		void	setParam(unsigned char pn,ValueType ty=VT_ANY,unsigned short f=0) {type=VT_VARREF; property=STORE_INVALID_PROPID; flags=0; op=OP_SET; eid=STORE_COLLECTION_ID; length=0; refV.refN=pn; refV.type=(unsigned char)ty; refV.flags=(f&~VAR_TYPE_MASK)|VAR_PARAM; refV.id=STORE_INVALID_PROPID; meta=0;}
 		void	setVarRef(unsigned char vn,PropertyID id=STORE_INVALID_PROPID,ValueType ty=VT_ANY,unsigned short f=0) {type=VT_VARREF; property=STORE_INVALID_PROPID; flags=0; op=OP_SET; eid=STORE_COLLECTION_ID; length=id!=STORE_INVALID_PROPID?1:0; refV.refN=vn; refV.type=(unsigned char)ty; refV.flags=f&~VAR_TYPE_MASK; refV.id=id; meta=0;}
 		void	setRange(Value *rng) {type=VT_RANGE; property=STORE_INVALID_PROPID; flags=0; op=OP_SET; eid=STORE_COLLECTION_ID; length=2; range=rng; meta=0;}
 		void	setURIID(URIID uri) {type=VT_URIID; property=STORE_INVALID_PROPID; flags=0; op=OP_SET; eid=STORE_COLLECTION_ID; length=sizeof(uint32_t); uid=uri; meta=0;}
@@ -628,7 +628,7 @@ namespace MVStore
 	 * @see ISession
 	 */
 	
-	class MV_EXP IPIN
+	class AFY_EXP IPIN
 	{
 	public:
 		virtual	const PID&	getPID() const  = 0;
@@ -682,7 +682,7 @@ namespace MVStore
 		bool			fDel;
 	};
 
-	struct MV_EXP CompilationError
+	struct AFY_EXP CompilationError
 	{
 		RC				rc;
 		const	char	*msg;
@@ -690,7 +690,7 @@ namespace MVStore
 		unsigned		pos;
 	};
 
-	class MV_EXP IExprTree 
+	class AFY_EXP IExprTree 
 	{
 	public:
 		virtual ExprOp			getOp() const = 0;
@@ -704,7 +704,7 @@ namespace MVStore
 		virtual	void			destroy() = 0;
 	};
 
-	class MV_EXP IExpr 
+	class AFY_EXP IExpr 
 	{
 	public:
 		virtual	RC			execute(Value& res,const Value *params=NULL,unsigned nParams=0) const = 0;
@@ -713,7 +713,7 @@ namespace MVStore
 		virtual	void		destroy() = 0;
 	};
 
-	class MV_EXP ICursor
+	class AFY_EXP ICursor
 	{
 	public:
 		virtual	RC			next(Value &ret) = 0;
@@ -724,14 +724,14 @@ namespace MVStore
 		virtual	void		destroy() = 0;
 	};
 
-	class MV_EXP IStreamOut
+	class AFY_EXP IStreamOut
 	{
 	public:
 		virtual	RC		next(unsigned char *buf,size_t& lBuf) = 0;
 		virtual	void	destroy() = 0;
 	};
 	
-	class MV_EXP IStreamIn
+	class AFY_EXP IStreamIn
 	{
 	public:
 		virtual	RC		next(const unsigned char *buf,size_t lBuf) = 0;
@@ -801,7 +801,7 @@ namespace MVStore
 		virtual	void	result(ICursor *res,RC rc) = 0;
 	};
 
-	class MV_EXP IStmt
+	class AFY_EXP IStmt
 	{
 	public:
 		virtual QVarID	addVariable(const ClassSpec *classes=NULL,unsigned nClasses=0,IExprTree *cond=NULL) = 0;
@@ -895,11 +895,11 @@ namespace MVStore
 	 *  executed in its own transaction.
 	 * @see IPIN
 	 */
-	class MV_EXP ISession
+	class AFY_EXP ISession
 	{
 		void	operator	delete(void*) {}
 	public:
-		static	ISession	*startSession(MVStoreCtx,const char *identityName=NULL,const char *password=NULL);
+		static	ISession	*startSession(AfyDBCtx,const char *identityName=NULL,const char *password=NULL);
 		virtual	ISession	*clone(const char * =NULL) const = 0;
 		virtual	RC			attachToCurrentThread() = 0;
 		virtual	RC			detachFromCurrentThread() = 0;
@@ -1001,10 +1001,10 @@ namespace MVStore
 		virtual	void		free(void *) = 0;
 	};
 
-	class MV_EXP IConnection
+	class AFY_EXP IConnection
 	{
 	public:
-		static	IConnection	*create(MVStoreCtx,const char *identityName=NULL,const char *password=NULL);
+		static	IConnection	*create(AfyDBCtx,const char *identityName=NULL,const char *password=NULL);
 		virtual	RC			setURIBase(const char *URIBase) = 0;
 		virtual	RC			addURIPrefix(const char *name,const char *URIprefix) = 0;
 		virtual	void		close() = 0;

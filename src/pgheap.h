@@ -11,7 +11,7 @@ Written by Mark Venguerov 2004 - 2010
 
 #include "txpage.h"
 #include "utils.h"
-#include "mvstore.h"
+#include "affinity.h"
 #include "session.h"
 
 #define SPACE_HASH_SIZE		512
@@ -50,9 +50,9 @@ Written by Mark Venguerov 2004 - 2010
 
 #define	META_PROP_LOCAL		0x04
 
-using namespace MVStore;
+using namespace AfyDB;
 
-namespace MVStoreKernel
+namespace AfyKernel
 {
 
 enum HeapObjType	{HO_PIN,HO_BLOB,HO_SSVALUE,HO_FORWARD,HO_ALL};

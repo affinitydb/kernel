@@ -12,13 +12,13 @@ Written by Mark Venguerov 2004 - 2010
 #include "qmgr.h"
 #include "idxtree.h"
 #include "pagemgr.h"
-#include "mvstoreimpl.h"
+#include "affinityimpl.h"
 
 class IStoreNet;
 
-using namespace MVStore;
+using namespace AfyDB;
 
-namespace MVStoreKernel
+namespace AfyKernel
 {
 #define	RPIN_NOFETCH			0x8000
 

@@ -15,7 +15,7 @@ Written by Mark Venguerov 2004 - 2010
 #include "stmt.h"
 #include "parser.h"
 
-using namespace MVStoreKernel;
+using namespace AfyKernel;
 
 void QCtx::destroy()
 {
@@ -328,8 +328,8 @@ Filter::~Filter()
 	}
 	if ((qflags&QO_VCOPIED)!=0) {
 		if (conds!=NULL) {
-			if (nConds==1) cond->destroy();
-			else {for (ulong i=0; i<nConds; i++) conds[i]->destroy(); qx->ses->free(conds);}
+			for (ulong i=0; i<nConds; i++) ((Expr*)conds[i])->destroy(); 
+			qx->ses->free((void*)conds);
 		}
 		for (CondIdx *ci=condIdx,*ci2; ci!=NULL; ci=ci2) {ci2=ci->next; ci->~CondIdx(); qx->ses->free(ci);}
 	}
@@ -347,7 +347,7 @@ RC Filter::next(const PINEx *skip)
 	if ((state&QST_EOF)!=0) return RC_EOF;
 	for (; (rc=queryOp->next(skip))==RC_OK; skip=NULL) {
 		if ((qflags&QO_NODATA)==0 && (rc=queryOp->getData(*results[0],NULL,0))!=RC_OK) break;		// other vars ???
-		if (conds==NULL || Expr::condSatisfied(nConds>1?conds:&cond,nConds,results,nResults,qx->vals,QV_ALL,qx->ses,(qflags&QO_CLASS)!=0)) {
+		if (conds==NULL || Expr::condSatisfied(conds,nConds,results,nResults,qx->vals,QV_ALL,qx->ses,(qflags&QO_CLASS)!=0)) {
 			if ((qflags&QO_CLASS)==0) {
 				bool fOK=true;
 				for (CondIdx *ci=condIdx; ci!=NULL; ci=ci->next) {

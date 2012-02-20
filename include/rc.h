@@ -9,7 +9,7 @@ Written by Mark Venguerov 2004 - 2010
 #ifndef _RC_H_
 #define _RC_H_
 
-namespace MVStoreRC 
+namespace AfyRC 
 {
 	
 enum MsgType

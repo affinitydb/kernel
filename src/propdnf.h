@@ -9,11 +9,11 @@ Written by Mark Venguerov 2004 - 2010
 #ifndef _PROPDNF_H_
 #define _PROPDNF_H_
 
-#include "mvstore.h"
+#include "affinity.h"
 
-using namespace MVStore;
+using namespace AfyDB;
 
-namespace MVStoreKernel
+namespace AfyKernel
 {
 
 struct PropDNF

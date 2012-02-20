@@ -13,7 +13,7 @@ Written by Mark Venguerov 2004 - 2010
 #include "classifier.h"
 #include "startup.h"
 
-using namespace MVStoreKernel;
+using namespace AfyKernel;
 
 RC StoreCB::open(StoreCtx *ctx,const char *fname,const char *pwd,bool fForce)
 {

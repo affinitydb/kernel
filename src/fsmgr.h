@@ -18,7 +18,7 @@ Written by Mark Venguerov 2004 - 2010
 #define	EXTENTDIRMAGIC	0xEFAB
 #define	FREEPAGEFLAG	0x80000000
 
-namespace MVStoreKernel
+namespace AfyKernel
 {
 
 class ExtentDirPage : public PageMgr

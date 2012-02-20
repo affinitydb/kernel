@@ -12,7 +12,7 @@ Written by Mark Venguerov 2004 - 2010
 #include "logchkp.h"
 #include "session.h"
 
-using namespace MVStoreKernel;
+using namespace AfyKernel;
 
 bool BufMgr::fInit = false;
 Mutex BufMgr::initLock;
@@ -21,7 +21,7 @@ ulong BufMgr::nBuffers = 0;
 ulong BufMgr::xBuffers = 0;
 volatile long BufMgr::nStores = 0;
 
-namespace MVStoreKernel
+namespace AfyKernel
 {
 BufQMgr::QueueCtrl<SERVER_HEAP> bufCtrl(0);
 FreeQ<> asyncWriteReqs;
@@ -355,7 +355,7 @@ RC PBlock::load(PageMgr *pm,ulong flags)
 	pageMgr=pm; setStateBits(BLOCK_IO_READ); return readResult(mgr->ctx->fileMgr->io(FIO_READ,pageID,frame,mgr->lPage));
 }
 
-namespace MVStoreKernel
+namespace AfyKernel
 {
 	class AsyncWriteReq : public Request
 	{

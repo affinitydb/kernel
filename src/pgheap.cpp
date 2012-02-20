@@ -14,8 +14,8 @@ Written by Mark Venguerov 2004 - 2010
 #include "fsmgr.h"
 #include "lock.h"
 
-using namespace MVStore;
-using namespace MVStoreKernel;
+using namespace AfyDB;
+using namespace AfyKernel;
 
 const HType HType::compactRef={0,HDF_COMPACT<<6|VT_REFID};
 
@@ -652,7 +652,7 @@ ushort HeapPageMgr::dataLength(HType vt,const byte *pData,const byte *frame,ulon
 	case VT_EXPR:
 		memcpy(&l,pData,sizeof(uint32_t)); assert(ushort(l)==l); return ushort(l);
 	case VT_STMT:
-		p=pData; mv_dec16(p,len); return len+ushort(p-pData);
+		p=pData; afy_dec16(p,len); return len+ushort(p-pData);
 	case VT_STREAM:
 		if (fmt==HDF_LONG) {
 			ty=((HRefSSV*)pData)->type.getType();

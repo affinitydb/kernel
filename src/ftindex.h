@@ -15,7 +15,7 @@ Written by Mark Venguerov 2004 - 2010
 
 using namespace std;
 
-namespace MVStoreKernel
+namespace AfyKernel
 {
 
 struct ChangeInfo;

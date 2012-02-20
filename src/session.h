@@ -13,9 +13,9 @@ Written by Mark Venguerov 2004 - 2010
 #include "pagemgr.h"
 #include "storecb.h"
 
-namespace MVStore {class ISession; class ITrace; struct AllocCtrl; struct QName;};
+namespace AfyDB {class ISession; class ITrace; struct AllocCtrl; struct QName;};
 
-namespace MVStoreKernel
+namespace AfyKernel
 {
 
 #define	SESSION_START_MEM	0x20000
@@ -288,11 +288,11 @@ class Session : public MemAlloc
 	char			*URIBase;
 	size_t			lURIBaseBuf;
 	size_t			lURIBase;
-	MVStore::QName	*qNames;
+	AfyDB::QName	*qNames;
 	unsigned		nQNames;
 	bool			fStdOvr;
 
-	MVStore::ITrace	*iTrace;
+	AfyDB::ITrace	*iTrace;
 	unsigned		traceMode;
 
 					Session(StoreCtx*,MemAlloc *ma);
@@ -306,7 +306,7 @@ class Session : public MemAlloc
 
 public:
 	TIMESTAMP		defExpiration;
-	MVStore::AllocCtrl *allocCtrl;
+	AfyDB::AllocCtrl *allocCtrl;
 	int64_t			tzShift;
 
 public:
@@ -328,7 +328,7 @@ public:
 	const PageAddr&	getExtAddr() const {return extAddr;}
 	void			setDefaultExpiration(TIMESTAMP ts) {defExpiration=ts;}
 	TIMESTAMP		getDefaultExpiration() const {return defExpiration;}
-	RC				setAllocCtrl(const MVStore::AllocCtrl *ac);
+	RC				setAllocCtrl(const AfyDB::AllocCtrl *ac);
 	bool			inWriteTx() const {return this==NULL?StoreCtx::get()->isInit():(txState&(TX_READONLY|0xFFFF))==TX_ACTIVE||(txState&(TX_READONLY|0xFFFF))==TX_ABORTING;}
 	bool			inReadTx() const {return this!=NULL && (txState&(TX_READONLY|0xFFFF))==(TX_READONLY|TX_ACTIVE);}
 	bool			isSysTx() const {return this!=NULL && (txState&TX_SYS)!=0;}
@@ -343,7 +343,7 @@ public:
 	void			abortQ() {fAbort=true;}
 	RC				testAbortQ() const {return fAbort?RC_TIMEOUT:RC_OK;}
 
-	void			setTrace(MVStore::ITrace *trc) {iTrace=trc;}
+	void			setTrace(AfyDB::ITrace *trc) {iTrace=trc;}
 	void			changeTraceMode(unsigned mask,bool fReset) {if (fReset) traceMode&=~mask; else traceMode|=mask;}
 	unsigned		getTraceMode() const {return traceMode;}
 	void			trace(long code,const char *msg,...);
@@ -413,7 +413,7 @@ public:
 
 };
 
-inline void*	operator new(size_t s,MVStoreKernel::MemAlloc *ma) throw() {return ma->malloc(s);}
-inline void*	operator new[](size_t s,MVStoreKernel::MemAlloc *ma) throw() {return ma->malloc(s);}
+inline void*	operator new(size_t s,AfyKernel::MemAlloc *ma) throw() {return ma->malloc(s);}
+inline void*	operator new[](size_t s,AfyKernel::MemAlloc *ma) throw() {return ma->malloc(s);}
 
 #endif

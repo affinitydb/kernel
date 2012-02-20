@@ -13,7 +13,7 @@ Written by Mark Venguerov and Andrew Skowronski 2004 - 2010
 #include <limits.h>
 #include <stdio.h>
 
-using namespace MVStoreKernel;
+using namespace AfyKernel;
 
 FileIOWin::CompletionPort FileIOWin::CP;
 FreeQ<>	FileIOWin::freeIODesc;
@@ -61,7 +61,7 @@ RC FileIOWin::open(FileID& fid,const char *fname,const char *dir,ulong flags)
 	bool fdel = false;
 	if ((flags&FIO_TEMP)!=0) {
 		fname=(char*)malloc(MAX_PATH,STORE_HEAP); if (fname==NULL) return RC_NORESOURCES;
-		if (GetTempFileName(dir!=NULL?dir:".",MVSTOREPREFIX,0,(char*)fname)==0)
+		if (GetTempFileName(dir!=NULL?dir:".",STOREPREFIX,0,(char*)fname)==0)
 			{rc=convCode(GetLastError()); free((char*)fname,STORE_HEAP); return rc;}
 		fdel=true;
 	} else if (dir!=NULL && !strchr(fname,'/') && !strchr(fname,'\\') && !strchr(fname,':')) {
@@ -282,7 +282,7 @@ void FileIOWin::asyncIOCompletion()
 
 void FileIOWin::deleteLogFiles(ulong maxFile,const char *lDir,bool fArchived)
 {
-	deleteLogFiles(MVSTOREPREFIX"*"LOGFILESUFFIX,maxFile,lDir,fArchived);
+	deleteLogFiles(LOGPREFIX"*"LOGFILESUFFIX,maxFile,lDir,fArchived);
 }
 
 void FileIOWin::deleteLogFiles(const char *mask,ulong maxFile,const char *lDir,bool fArchived)
@@ -302,7 +302,7 @@ void FileIOWin::deleteLogFiles(const char *mask,ulong maxFile,const char *lDir,b
 				if ((findData.dwFileAttributes&FILE_ATTRIBUTE_ARCHIVE)!=0)
 					SetFileAttributes(buf,findData.dwFileAttributes&(~FILE_ATTRIBUTE_ARCHIVE));
 			}	
-			else if (maxFile==~0ul || strtoul(findData.cFileName+sizeof(MVSTOREPREFIX),&end,16)<=maxFile) {	// 1 more than prefix size (for 'A' or 'B')
+			else if (maxFile==~0ul || strtoul(findData.cFileName+sizeof(LOGPREFIX),&end,16)<=maxFile) {	// 1 more than prefix size (for 'A' or 'B')
 				::DeleteFile(buf);
 			}
 		} while (FindNextFile(h,&findData)==TRUE);

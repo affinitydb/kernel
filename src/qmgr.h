@@ -11,7 +11,7 @@ Written by Mark Venguerov 2004 - 2010
 
 #include "utils.h"
 
-namespace MVStoreKernel 
+namespace AfyKernel 
 {
 #define	QMGR_NOLOAD		0x80000000ul
 #define QMGR_UFORCE		0x40000000ul

@@ -10,11 +10,11 @@ Written by Mark Venguerov 2004 - 2010
 #define _IDXTREE_H_
 
 #include "utils.h"
-#include "mvstore.h"
+#include "affinity.h"
 
-using namespace MVStore;
+using namespace AfyDB;
 
-namespace MVStoreKernel 
+namespace AfyKernel 
 {
 
 class Session;

@@ -42,7 +42,7 @@ enum RTTYPE
 #define	DEFAULT_OBUF_SIZE		0x1000
 #define	DEFAULT_PIN_BATCH_SIZE	0x2000
 
-using namespace MVStoreKernel;
+using namespace AfyKernel;
 
 #define	_V(a)		((a)<<3|0)
 #define	_L(a)		((a)<<3|2)
@@ -132,35 +132,35 @@ const static byte types[VT_ALL] = {
 #define	MAX_RESIDUAL_SIZE	32
 #define	SAFETY_MARGIN_OUT	20
 
-#define	VAR_OUT(a,b,c)	{if (po<ypo) {mv_enc16(po,a); b(po,c); assert(po<end);}											\
-						else {byte *p=rbuf; mv_enc16(p,a); b(p,c); lRes=(size_t)(p-rbuf); size_t left=(size_t)(end-po);	\
+#define	VAR_OUT(a,b,c)	{if (po<ypo) {afy_enc16(po,a); b(po,c); assert(po<end);}											\
+						else {byte *p=rbuf; afy_enc16(p,a); b(p,c); lRes=(size_t)(p-rbuf); size_t left=(size_t)(end-po);	\
 						if (lRes<left) {memcpy(po,rbuf,lRes); po+=lRes; lRes=0;} else {memcpy(po,rbuf,left); lRes-=left; pRes=rbuf+left; return RC_OK;}}}
-#define	FLO_OUT(a,b)	{if (po<ypo) {mv_enc16(po,a); memcpy(po,&b,4); po+=4; assert(po<end);}	\
-						else {byte *p=rbuf; mv_enc16(p,a); memcpy(p,&b,4); p+=4;					\
+#define	FLO_OUT(a,b)	{if (po<ypo) {afy_enc16(po,a); memcpy(po,&b,4); po+=4; assert(po<end);}	\
+						else {byte *p=rbuf; afy_enc16(p,a); memcpy(p,&b,4); p+=4;					\
 						lRes=(size_t)(p-rbuf); size_t left=(size_t)(end-po); if (lRes<left) {memcpy(po,rbuf,lRes); po+=lRes; lRes=0;}	\
 						else {memcpy(po,rbuf,left); lRes-=left; pRes=rbuf+left; return RC_OK;}}}
-#define	DOU_OUT(a,b)	{if (po<ypo) {mv_enc16(po,a); memcpy(po,&b,8); po+=8; assert(po<end);}	\
-						else {byte *p=rbuf; mv_enc16(p,a); memcpy(p,&b,8); p+=8;				\
+#define	DOU_OUT(a,b)	{if (po<ypo) {afy_enc16(po,a); memcpy(po,&b,8); po+=8; assert(po<end);}	\
+						else {byte *p=rbuf; afy_enc16(p,a); memcpy(p,&b,8); p+=8;				\
 						lRes=(size_t)(p-rbuf); size_t left=(size_t)(end-po); if (lRes<left) {memcpy(po,rbuf,lRes); po+=lRes; lRes=0;}	\
 						else {memcpy(po,rbuf,left); lRes-=left; pRes=rbuf+left; return RC_OK;}}}
-#define	F64_OUT(a,b)	{if (po<ypo) {mv_enc16(po,a); memcpy(po,&b,8); po+=8; assert(po<end);}\
-						else {byte *p=rbuf; mv_enc16(p,a); memcpy(p,&b,8); p+=8;				\
+#define	F64_OUT(a,b)	{if (po<ypo) {afy_enc16(po,a); memcpy(po,&b,8); po+=8; assert(po<end);}\
+						else {byte *p=rbuf; afy_enc16(p,a); memcpy(p,&b,8); p+=8;				\
 						lRes=(size_t)(p-rbuf); size_t left=(size_t)(end-po); if (lRes<left) {memcpy(po,rbuf,lRes); po+=lRes; lRes=0;}	\
 						else {memcpy(po,rbuf,left); lRes-=left; pRes=rbuf+left; return RC_OK;}}}
-#define	BUF_OUT(a,b,c)	{if (po+c+7<=end) {mv_enc16(po,a); mv_enc32(po,c); memcpy(po,b,c); po+=c;}								\
-						else if (po<ypo) {mv_enc16(po,a); mv_enc32(po,c); if (po+c<end) {memcpy(po,b,c); po+=c;}				\
+#define	BUF_OUT(a,b,c)	{if (po+c+7<=end) {afy_enc16(po,a); afy_enc32(po,c); memcpy(po,b,c); po+=c;}								\
+						else if (po<ypo) {afy_enc16(po,a); afy_enc32(po,c); if (po+c<end) {memcpy(po,b,c); po+=c;}				\
 						else {uint32_t l=uint32_t(end-po); if (l!=0) memcpy(po,b,l); lRes=c-l; pRes=(byte*)b+l; return RC_OK;}}	\
-						else {byte *p=rbuf; mv_enc16(p,a); mv_enc32(p,c); lRes=(size_t)(p-rbuf); size_t left=(size_t)(end-po);	\
+						else {byte *p=rbuf; afy_enc16(p,a); afy_enc32(p,c); lRes=(size_t)(p-rbuf); size_t left=(size_t)(end-po);	\
 						if (lRes>left) {memcpy(po,rbuf,left); lRes-=left; pRes=rbuf+left; lRes2=c; pRes2=b; return RC_OK;}		\
 						else {memcpy(po,rbuf,lRes); po+=lRes; if ((left-=lRes)>=c) {memcpy(po,b,c); po+=c; lRes=0;} else {		\
 						if (left!=0) memcpy(po,b,left); lRes=c-left; pRes=(byte*)b+left; return RC_OK;}}}}
 
-namespace MVStoreKernel
+namespace AfyKernel
 {
 
 enum SType
 {
-	ST_MVSTREAM, ST_STRMAP, ST_PIN, ST_VALUE, ST_VARRAY, ST_PID, ST_REF, ST_STREDIT, ST_STREAM,
+	ST_PBSTREAM, ST_STRMAP, ST_PIN, ST_VALUE, ST_VARRAY, ST_PID, ST_REF, ST_STREDIT, ST_STREAM,
 	ST_STMT, ST_UID, ST_RESULT, ST_COMPOUND, ST_STATUS, ST_RESPAGES
 };
 
@@ -224,7 +224,7 @@ private:
 	__forceinline	void	push_state(SType ot,const void *obj,uint16_t tag,bool fA=false) {assert(sidx<STACK_DEPTH); stateStack[sidx++]=os; os.type=ot; os.fCid=false; os.fArray=fA; os.tag=tag; os.state=0; os.idx=0; os.obj=obj;}
 	__forceinline	static	uint16_t tag(const Value& v) {return v.type==VT_STREAM?tags[v.stream.is->dataType()]:v.type<VT_ALL?tags[v.type]:0;}
 	__forceinline	static	byte wtype(const Value& v) {return types[v.type==VT_STREAM?(uint8_t)v.stream.is->dataType():v.type];}
-	uint32_t length(const PID& id) {return 1+mv_len64(id.pid)+(id.ident!=STORE_OWNER?length(id.ident,false):0);}
+	uint32_t length(const PID& id) {return 1+afy_len64(id.pid)+(id.ident!=STORE_OWNER?length(id.ident,false):0);}
 	uint64_t length(const Value& v,bool fArray) {
 		uint64_t l=0ULL,ll; uint32_t u; uint64_t u64; const Value *cv;
 		switch (v.type) {
@@ -234,39 +234,39 @@ private:
 		case VT_RESERVED2:
 			//???
 			return 0ULL;
-		case VT_INT: u=mv_enc32zz(v.i); l=mv_len32(u); break;
+		case VT_INT: u=afy_enc32zz(v.i); l=afy_len32(u); break;
 		case VT_URIID: l=length(v.uid)-1; break;
 		case VT_IDENTITY: l=length(v.iid,false)-1; break;
-		case VT_UINT: l=mv_len32(v.ui); break;
-		case VT_INT64: u64=mv_enc64zz(v.i64); l=mv_len64(u64); break;
-		case VT_UINT64: l=mv_len64(v.ui64); break;
-		case VT_FLOAT: l=4+(v.qval.units!=Un_NDIM?mv_len16(UNITS_TAG)+mv_len16(v.qval.units):0); break;
-		case VT_DOUBLE: l=8+(v.qval.units!=Un_NDIM?mv_len16(UNITS_TAG)+mv_len16(v.qval.units):0); break;
+		case VT_UINT: l=afy_len32(v.ui); break;
+		case VT_INT64: u64=afy_enc64zz(v.i64); l=afy_len64(u64); break;
+		case VT_UINT64: l=afy_len64(v.ui64); break;
+		case VT_FLOAT: l=4+(v.qval.units!=Un_NDIM?afy_len16(UNITS_TAG)+afy_len16(v.qval.units):0); break;
+		case VT_DOUBLE: l=8+(v.qval.units!=Un_NDIM?afy_len16(UNITS_TAG)+afy_len16(v.qval.units):0); break;
 		case VT_BOOL: l=1; break;
 		case VT_DATETIME: l=8; break;
 		case VT_INTERVAL: l=8; break;
 		case VT_REF: l=length(v.pin->getPID()); break;
 		case VT_REFID: l=length(v.id); break;
-		case VT_REFELT: l=1+mv_len32(v.ref.eid);
-		case VT_REFPROP: u=length(v.ref.pin->getPID()); l+=1+mv_len16(u)+u+length(v.ref.pid); break;
-		case VT_REFIDELT: l=1+mv_len32(v.refId->eid);
-		case VT_REFIDPROP: u=length(v.refId->id); l+=1+mv_len16(u)+u+length(v.refId->pid); break;
+		case VT_REFELT: l=1+afy_len32(v.ref.eid);
+		case VT_REFPROP: u=length(v.ref.pin->getPID()); l+=1+afy_len16(u)+u+length(v.ref.pid); break;
+		case VT_REFIDELT: l=1+afy_len32(v.refId->eid);
+		case VT_REFIDPROP: u=length(v.refId->id); l+=1+afy_len16(u)+u+length(v.refId->pid); break;
 		case VT_STREAM: l=v.stream.is->length(); break;
 		case VT_EXPR: l=length((Expr*)v.expr); break;
 		case VT_STMT: l=length((Stmt*)v.stmt); break;
 		case VT_ARRAY: case VT_RANGE: case VT_STRUCT:
-			l=1+mv_len32(v.length);
-			for (u=0; u<v.length; u++) {ll=length(v.varray[u],v.op!=VT_STRUCT); l+=1+mv_len64(ll)+ll;}
+			l=1+afy_len32(v.length);
+			for (u=0; u<v.length; u++) {ll=length(v.varray[u],v.op!=VT_STRUCT); l+=1+afy_len64(ll)+ll;}
 			if (fArray) return l; break;
 		case VT_COLLECTION:
-			l=v.nav->count(); l=1+mv_len32(l);
-			for (cv=v.nav->navigate(GO_FIRST); cv!=NULL; cv=v.nav->navigate(GO_NEXT)) {ll=length(*cv,true); l+=1+mv_len64(ll)+ll;}
+			l=v.nav->count(); l=1+afy_len32(l);
+			for (cv=v.nav->navigate(GO_FIRST); cv!=NULL; cv=v.nav->navigate(GO_NEXT)) {ll=length(*cv,true); l+=1+afy_len64(ll)+ll;}
 			if (fArray) return l; break;
 		case VT_CURRENT: l=1; break;
 		}
-		uint32_t tg=tag(v); if ((tg&7)==2) l+=mv_len64(l);
-		l+=fArray?v.eid!=~0u?mv_len16(EID_TAG)+mv_len32(v.eid):0:length(v.property)+(v.meta!=0?mv_len16(META_TAG)+mv_len16(v.meta):0);
-		return l+mv_len16(tg)+mv_len16(TYPE_TAG)+1;
+		uint32_t tg=tag(v); if ((tg&7)==2) l+=afy_len64(l);
+		l+=fArray?v.eid!=~0u?afy_len16(EID_TAG)+afy_len32(v.eid):0:length(v.property)+(v.meta!=0?afy_len16(META_TAG)+afy_len16(v.meta):0);
+		return l+afy_len16(tg)+afy_len16(TYPE_TAG)+1;
 	}
 	uint32_t length(uint32_t id,bool fProp=true) {
 		if (id!=STORE_OWNER && (!fProp || id>PROP_SPEC_LAST)) {
@@ -275,19 +275,19 @@ private:
 				if ((rc=BIN<uint32_t>::insert(cache.newIds,cache.nnids,id,id,ses,&cache.xnids))!=RC_OK) {/*???*/}
 			}
 		}
-		return 1+mv_len32(id);
+		return 1+afy_len32(id);
 	}
 	void setID(uint32_t id,bool fProp=true) {
 		if (fProp) {
 			assert(id>PROP_SPEC_LAST);
 			URI *uri=(URI*)ses->getStore()->uriMgr->ObjMgr::find(id);
-			if (uri==NULL) {copied=(byte*)MVStoreKernel::strdup("???",ses); lCopied=3;}
-			else {copied=(byte*)MVStoreKernel::strdup(uri->getName(),ses); lCopied=strlen((char*)copied); uri->release();}
+			if (uri==NULL) {copied=(byte*)AfyKernel::strdup("???",ses); lCopied=3;}
+			else {copied=(byte*)AfyKernel::strdup(uri->getName(),ses); lCopied=strlen((char*)copied); uri->release();}
 		} else {
 			assert(id!=STORE_OWNER);
 			Identity *ident=(Identity*)ses->getStore()->identMgr->ObjMgr::find(id);
-			if (ident==NULL) {copied=(byte*)MVStoreKernel::strdup("???",ses); lCopied=3;}
-			else {copied=(byte*)MVStoreKernel::strdup(ident->getName(),ses); lCopied=strlen((char*)copied); ident->release();}
+			if (ident==NULL) {copied=(byte*)AfyKernel::strdup("???",ses); lCopied=3;}
+			else {copied=(byte*)AfyKernel::strdup(ident->getName(),ses); lCopied=strlen((char*)copied); ident->release();}
 		}
 		IDCache& cache=fProp?propCache:identCache; RC rc;
 		if ((rc=BIN<uint32_t>::insert(cache.ids,cache.nids,id,id,ses,&cache.xids))!=RC_OK) {/* ??? */}
@@ -305,7 +305,7 @@ private:
 	}
 public:
 	EncodePB(Session *s,ulong md=0) : ses(s),mode(md),cid(0),rtt(RTT_DEFAULT),sidx(0),propCache(s,100,30),identCache(s,10,5),
-		lRes(0),pRes(NULL),lRes2(0),pRes2(0),copied(NULL),lCopied(0),code(0) {os.type=ST_MVSTREAM; os.fCid=false; os.fArray=false; os.state=0; os.idx=0; os.obj=NULL;}
+		lRes(0),pRes(NULL),lRes2(0),pRes2(0),copied(NULL),lCopied(0),code(0) {os.type=ST_PBSTREAM; os.fCid=false; os.fArray=false; os.state=0; os.idx=0; os.obj=NULL;}
 	~EncodePB() {if (copied!=NULL) ses->free(copied);}
 	RC encode(unsigned char *buf,size_t& lbuf) {
 		try {
@@ -324,16 +324,16 @@ public:
 			for (;;) {
 			again:
 				switch (os.type) {
-				case ST_MVSTREAM:
+				case ST_PBSTREAM:
 					assert(sidx==0);
 					switch (os.state) {
 					default: goto error;
 					case 0:
 						ident=(Identity*)ses->getStore()->identMgr->ObjMgr::find(STORE_OWNER); assert(ident!=NULL);
-						copied=(byte*)MVStoreKernel::strdup(ident->getName(),ses); lCopied=strlen((char*)copied);
+						copied=(byte*)AfyKernel::strdup(ident->getName(),ses); lCopied=strlen((char*)copied);
 						os.state++; code=STORE_OWNER; push_state(ST_STRMAP,NULL,OWNER_TAG); continue;
 					case 1:
-						os.state++; if ((sid=ses->getStore()->storeID)!=0) VAR_OUT(STOREID_TAG,mv_enc16,sid);
+						os.state++; if ((sid=ses->getStore()->storeID)!=0) VAR_OUT(STOREID_TAG,afy_enc16,sid);
 					case 2:
 						// reserved pages, if dumpload
 						assert(sidx==0); lbuf-=po-buf; return RC_TRUE;
@@ -342,14 +342,14 @@ public:
 					switch (os.state) {
 					default: goto error;
 					case 0:
-						sz=1+mv_len16(lCopied)+(uint32_t)lCopied+1+mv_len32(code);	//??? which code
-						os.state++; VAR_OUT(os.tag,mv_enc32,sz);
+						sz=1+afy_len16(lCopied)+(uint32_t)lCopied+1+afy_len32(code);	//??? which code
+						os.state++; VAR_OUT(os.tag,afy_enc32,sz);
 					case 1:
 						assert(os.obj==NULL && copied!=NULL);
 						os.state++; BUF_OUT(MAP_STR_TAG,copied,lCopied);
 					case 2:
 						ses->free(copied); copied=NULL;
-						os.state++; VAR_OUT(MAP_ID_TAG,mv_enc32,code);
+						os.state++; VAR_OUT(MAP_ID_TAG,afy_enc32,code);
 					case 3:
 						break;
 					}
@@ -359,15 +359,15 @@ public:
 					switch (os.state) {
 					default: goto error;
 					case 0:
-						sz=length(os.pin->id); pinSize=1+mv_len16(sz)+sz;
+						sz=length(os.pin->id); pinSize=1+afy_len16(sz)+sz;
 						if (rtt!=RTT_PIDS) {
-							if (os.pin->mode!=0) pinSize+=1+mv_len32(os.pin->mode);
-							if (os.pin->stamp!=0) pinSize+=1+mv_len32(os.pin->stamp);
-							if (os.pin->nProperties!=0) pinSize+=1+mv_len32(os.pin->nProperties);
+							if (os.pin->mode!=0) pinSize+=1+afy_len32(os.pin->mode);
+							if (os.pin->stamp!=0) pinSize+=1+afy_len32(os.pin->stamp);
+							if (os.pin->nProperties!=0) pinSize+=1+afy_len32(os.pin->nProperties);
 							if (os.pin->properties!=NULL) for (i=0; i<os.pin->nProperties; i++)
-								{sz64=length(os.pin->properties[i],false); pinSize+=1+mv_len64(sz64)+sz64;}		// save ???
+								{sz64=length(os.pin->properties[i],false); pinSize+=1+afy_len64(sz64)+sz64;}		// save ???
 						}
-						if (os.fCid && sidx==0) pinSize+=1+mv_len64(cid);
+						if (os.fCid && sidx==0) pinSize+=1+afy_len64(cid);
 						os.state++; os.idx=0;
 					case 1:
 						while (os.idx<propCache.nnids)
@@ -377,21 +377,21 @@ public:
 						while (os.idx<identCache.nnids)
 							{setID(identCache.newIds[os.idx++],false); push_state(ST_STRMAP,NULL,STRIDENT_TAG); goto again;}
 						os.idx=0; identCache.nnids=0;
-						os.state++; VAR_OUT(PIN_TAG,mv_enc64,pinSize);
+						os.state++; VAR_OUT(PIN_TAG,afy_enc64,pinSize);
 					case 3:
 						os.state++; push_state(ST_PID,&os.pin->id,ID_TAG); continue;
 					case 4:
-						os.state++; if (rtt!=RTT_PIDS && os.pin->mode!=0) VAR_OUT(MODE_TAG,mv_enc32,os.pin->mode);
+						os.state++; if (rtt!=RTT_PIDS && os.pin->mode!=0) VAR_OUT(MODE_TAG,afy_enc32,os.pin->mode);
 					case 5:
-						os.state++; if (rtt!=RTT_PIDS && os.pin->stamp!=0) VAR_OUT(STAMP_TAG,mv_enc32,os.pin->stamp);
+						os.state++; if (rtt!=RTT_PIDS && os.pin->stamp!=0) VAR_OUT(STAMP_TAG,afy_enc32,os.pin->stamp);
 					case 6:
-						os.state++; if (rtt!=RTT_PIDS && os.pin->nProperties!=0) VAR_OUT(NVALUES_TAG,mv_enc32,os.pin->nProperties);
+						os.state++; if (rtt!=RTT_PIDS && os.pin->nProperties!=0) VAR_OUT(NVALUES_TAG,afy_enc32,os.pin->nProperties);
 					case 7:
 						if (rtt!=RTT_PIDS && os.pin->properties!=NULL) while (os.idx<os.pin->nProperties)
 							{push_state(ST_VALUE,&os.pin->properties[os.idx++],VALUES_TAG); goto again;}
 						os.state++;
 					case 8:
-						os.state++; if (os.fCid && sidx==0) VAR_OUT(CID_TAG,mv_enc64,cid);
+						os.state++; if (os.fCid && sidx==0) VAR_OUT(CID_TAG,afy_enc64,cid);
 					case 9:
 						rtt=RTT_PINS; if (sidx==0) {lbuf-=po-buf; return RC_TRUE;}
 						break;
@@ -401,13 +401,13 @@ public:
 					default: goto error;
 					case 0:
 						sz64=length(*os.pv,os.fArray);
-						if (os.fCid && sidx==0) sz64+=1+mv_len64(cid);
-						os.state++; VAR_OUT(os.tag,mv_enc64,sz64);
+						if (os.fCid && sidx==0) sz64+=1+afy_len64(cid);
+						os.state++; VAR_OUT(os.tag,afy_enc64,sz64);
 					case 1:
-						os.state++; ty=wtype(*os.pv); VAR_OUT(TYPE_TAG,mv_enc8,ty);
+						os.state++; ty=wtype(*os.pv); VAR_OUT(TYPE_TAG,afy_enc8,ty);
 					case 2:
 						os.state++; 
-						if (!os.fArray) VAR_OUT(PROPERTY_TAG,mv_enc32,os.pv->property);
+						if (!os.fArray) VAR_OUT(PROPERTY_TAG,afy_enc32,os.pv->property);
 					case 3:
 						tg=tag(*os.pv); os.state++; copied=NULL;
 						switch (os.pv->type) {
@@ -415,19 +415,19 @@ public:
 						case VT_STRING: case VT_BSTR: case VT_URL:
 							BUF_OUT(tg,os.pv->bstr,os.pv->length); break;
 						case VT_INT:
-							sz=mv_enc32zz(os.pv->i); VAR_OUT(tg,mv_enc32,sz); break;
+							sz=afy_enc32zz(os.pv->i); VAR_OUT(tg,afy_enc32,sz); break;
 						case VT_UINT: case VT_URIID: case VT_IDENTITY: case VT_CURRENT:
-							VAR_OUT(tg,mv_enc32,os.pv->ui); break;
+							VAR_OUT(tg,afy_enc32,os.pv->ui); break;
 						case VT_INT64:
-							sz64=mv_enc64zz(os.pv->i64); VAR_OUT(tg,mv_enc64,sz64); break;
+							sz64=afy_enc64zz(os.pv->i64); VAR_OUT(tg,afy_enc64,sz64); break;
 						case VT_UINT64:
-							VAR_OUT(tg,mv_enc64,os.pv->ui64); break;
+							VAR_OUT(tg,afy_enc64,os.pv->ui64); break;
 						case VT_FLOAT:
 							FLO_OUT(tg,os.pv->f); break;
 						case VT_DOUBLE:
 							DOU_OUT(tg,os.pv->d); break;
 						case VT_BOOL:
-							VAR_OUT(tg,mv_enc8,os.pv->b); break;
+							VAR_OUT(tg,afy_enc8,os.pv->b); break;
 						case VT_DATETIME: case VT_INTERVAL:
 							F64_OUT(tg,os.pv->ui64); break;
 						case VT_REF:
@@ -467,7 +467,7 @@ public:
 						case VT_STRUCT:
 							push_state(ST_VARRAY,os.pv,tg); continue;
 						case VT_STREAM:
-							push_state(ST_STREAM,os.pv->stream.is,tg); continue;
+							push_state(ST_PBSTREAM,os.pv->stream.is,tg); continue;
 						case VT_RESERVED1:
 						case VT_RESERVED2:
 							//???
@@ -479,16 +479,16 @@ public:
 					case 4:
 						os.state++; if (copied!=NULL) {ses->free(copied); copied=NULL;}
 						if ((os.pv->type==VT_FLOAT||os.pv->type==VT_DOUBLE) && os.pv->qval.units!=Un_NDIM)
-							VAR_OUT(UNITS_TAG,mv_enc16,os.pv->qval.units);
+							VAR_OUT(UNITS_TAG,afy_enc16,os.pv->qval.units);
 					case 5:
 						os.state++;
 						if (os.fArray) {
-							if (os.pv->eid!=~0u) VAR_OUT(EID_TAG,mv_enc32,os.pv->eid);
+							if (os.pv->eid!=~0u) VAR_OUT(EID_TAG,afy_enc32,os.pv->eid);
 						} else {
-							if (os.pv->meta!=0) VAR_OUT(META_TAG,mv_enc8,os.pv->meta);
+							if (os.pv->meta!=0) VAR_OUT(META_TAG,afy_enc8,os.pv->meta);
 						}
 					case 6:
-						os.state++; if (os.fCid && sidx==0) VAR_OUT(CID_TAG,mv_enc64,cid);
+						os.state++; if (os.fCid && sidx==0) VAR_OUT(CID_TAG,afy_enc64,cid);
 					case 7:
 						if (sidx==0) {lbuf-=po-buf; return RC_TRUE;}
 						break;
@@ -499,10 +499,10 @@ public:
 					default: goto error;
 					case 0:
 						assert(os.pv->type==VT_ARRAY||os.pv->type==VT_COLLECTION||os.pv->type==VT_RANGE||os.pv->type==VT_STRUCT);
-						os.state++; sz64=length(*os.pv,os.pv->type!=VT_STRUCT); VAR_OUT(os.tag,mv_enc64,sz64);
+						os.state++; sz64=length(*os.pv,os.pv->type!=VT_STRUCT); VAR_OUT(os.tag,afy_enc64,sz64);
 					case 1:
 						sz=os.pv->type==VT_COLLECTION?os.pv->nav->count():os.pv->length;
-						os.state++; VAR_OUT(VARRAY_L_TAG,mv_enc32,sz);
+						os.state++; VAR_OUT(VARRAY_L_TAG,afy_enc32,sz);
 					case 2:
 						os.state++;
 						if (os.pv->type!=VT_COLLECTION) os.idx=0;
@@ -524,7 +524,7 @@ public:
 				case ST_STREAM:
 					switch (os.state) {
 					case 0: 
-						os.state++; sz64=os.str->length(); VAR_OUT(os.tag,mv_enc64,sz64);
+						os.state++; sz64=os.str->length(); VAR_OUT(os.tag,afy_enc64,sz64);
 					case 1:
 						sz=uint32_t(end-po); if ((i=(uint32_t)os.str->read(po,sz))>=sz) return RC_OK;
 						po+=i; break;
@@ -534,11 +534,11 @@ public:
 					switch (os.state) {
 					default: goto error;
 					case 0:
-						os.state++; sz=length(*os.id); VAR_OUT(os.tag,mv_enc16,sz);
+						os.state++; sz=length(*os.id); VAR_OUT(os.tag,afy_enc16,sz);
 					case 1:
-						os.state++; VAR_OUT(PID_ID_TAG,mv_enc64,os.id->pid);
+						os.state++; VAR_OUT(PID_ID_TAG,afy_enc64,os.id->pid);
 					case 2:
-						os.state++; if (os.id->ident!=STORE_OWNER) VAR_OUT(PID_IDENT_TAG,mv_enc32,os.id->ident);
+						os.state++; if (os.id->ident!=STORE_OWNER) VAR_OUT(PID_IDENT_TAG,afy_enc32,os.id->ident);
 					case 3:
 						break;
 					}
@@ -550,24 +550,24 @@ public:
 					case 0:
 						if (os.pv->type==VT_REFPROP||os.pv->type==VT_REFELT) {
 							sz=2+length(os.pv->ref.pin->getPID())+length(os.pv->ref.pid);
-							if (os.pv->type==VT_REFELT) sz+=1+mv_len32(os.pv->ref.eid);
+							if (os.pv->type==VT_REFELT) sz+=1+afy_len32(os.pv->ref.eid);
 						} else {
 							sz=2+length(os.pv->refId->id)+length(os.pv->refId->pid);
-							if (os.pv->type==VT_REFIDELT) sz+=1+mv_len32(os.pv->refId->eid);
+							if (os.pv->type==VT_REFIDELT) sz+=1+afy_len32(os.pv->refId->eid);
 						}
-						os.state++; VAR_OUT(os.tag,mv_enc16,sz);
+						os.state++; VAR_OUT(os.tag,afy_enc16,sz);
 					case 1:
 						os.state++;
 						push_state(ST_PID,os.pv->type==VT_REFPROP||os.pv->type==VT_REFELT?&os.pv->ref.pin->getPID():&os.pv->refId->id,REF_PID_TAG);
 						continue;
 					case 2:
 						os.state++; sz=os.pv->type==VT_REFPROP||os.pv->type==VT_REFELT?os.pv->ref.pid:os.pv->refId->pid;
-						VAR_OUT(REF_PROP_TAG,mv_enc32,sz);
+						VAR_OUT(REF_PROP_TAG,afy_enc32,sz);
 					case 3:
 						if (os.pv->type==VT_REFELT) sz=os.pv->ref.eid; 
 						else if (os.pv->type==VT_REFIDELT) sz=os.pv->refId->eid;
 						else break;
-						os.state++; VAR_OUT(REF_EID_TAG,mv_enc32,sz);
+						os.state++; VAR_OUT(REF_EID_TAG,afy_enc32,sz);
 					case 4:
 						break;
 					}
@@ -577,18 +577,18 @@ public:
 					switch (os.state) {
 					default: goto error;
 					case 0:
-						sz=os.res->rc==RC_OK?1+mv_len64(os.res->cnt):1+mv_len32(unsigned(os.res->rc));
-						if (os.fCid) sz+=1+mv_len64(cid);
-						if (os.res->op!=MODOP_QUERY) sz+=1+mv_len32(unsigned(os.res->op));
-						os.state++; VAR_OUT(RESULT_TAG,mv_enc32,sz);
+						sz=os.res->rc==RC_OK?1+afy_len64(os.res->cnt):1+afy_len32(unsigned(os.res->rc));
+						if (os.fCid) sz+=1+afy_len64(cid);
+						if (os.res->op!=MODOP_QUERY) sz+=1+afy_len32(unsigned(os.res->op));
+						os.state++; VAR_OUT(RESULT_TAG,afy_enc32,sz);
 					case 1:
-						os.state++; if (os.fCid) VAR_OUT(RES_CID_TAG,mv_enc64,cid);
+						os.state++; if (os.fCid) VAR_OUT(RES_CID_TAG,afy_enc64,cid);
 					case 2:
 						os.state++;
-						if (os.res->rc==RC_OK) {VAR_OUT(RES_COUNT_TAG,mv_enc64,os.res->cnt);}
-						else {VAR_OUT(RES_ERR_TAG,mv_enc32,unsigned(os.res->rc));}
+						if (os.res->rc==RC_OK) {VAR_OUT(RES_COUNT_TAG,afy_enc64,os.res->cnt);}
+						else {VAR_OUT(RES_ERR_TAG,afy_enc32,unsigned(os.res->rc));}
 					case 3:
-						os.state++; if (os.res->op!=MODOP_QUERY) VAR_OUT(RES_OP_TAG,mv_enc32,unsigned(os.res->op));
+						os.state++; if (os.res->op!=MODOP_QUERY) VAR_OUT(RES_OP_TAG,afy_enc32,unsigned(os.res->op));
 					case 4:
 						lbuf-=po-buf; return RC_TRUE;
 					}
@@ -795,7 +795,7 @@ protected:
 	ProtoBufStreamIn(Session *s,SubAlloc *m,size_t lo=0) : ses(s),lobuf(lo==0?DEFAULT_OBUF_SIZE:lo),ma(m),obuf(NULL),enc(NULL),obleft(0),
 		inState(ST_TAG),sidx(0),lField(0),val(0),vsht(0),offset(0),left(0),sbuf(NULL),defType(VT_ANY),pins(NULL),pinoi(NULL),nPins(0),xPins(0),limit(DEFAULT_PIN_BATCH_SIZE),
 		mapBuf(NULL),lMapBuf(0),lSave(0),owner(STORE_OWNER),storeID(0),mapAlloc(s) {
-		is.type=ST_MVSTREAM; is.op=MODOP_INSERT; is.oi.cid=0; is.oi.fCid=false; is.oi.rtt=RTT_DEFAULT; is.tag=~0u; is.idx=0; is.msgEnd=~0ULL; is.fieldMask=0; is.obj=NULL;
+		is.type=ST_PBSTREAM; is.op=MODOP_INSERT; is.oi.cid=0; is.oi.fCid=false; is.oi.rtt=RTT_DEFAULT; is.tag=~0u; is.idx=0; is.msgEnd=~0ULL; is.fieldMask=0; is.obj=NULL;
 		uriMap=new(&mapAlloc) URIIDMap(64,&mapAlloc,false); identMap=new(&mapAlloc) IdentityIDMap(32,&mapAlloc,false);
 	}
 	virtual ~ProtoBufStreamIn() {
@@ -820,7 +820,7 @@ protected:
 					in+=left; left=0;
 					if (sbuf==NULL || inState==ST_LEN) goto check_end;
 				} else {
-					// if (in<yp) {mv_dec64(in,val);} else	// don't reset val!!!
+					// if (in<yp) {afy_dec64(in,val);} else	// don't reset val!!!
 					do {
 						if (in>=end) {offset+=lbuf; return RC_OK;}
 						val|=uint64_t(*in&0x7F)<<vsht; vsht+=7; 
@@ -855,7 +855,7 @@ protected:
 				is.fieldMask|=fieldBit;
 				switch (is.type) {
 				default: assert(0);
-				case ST_MVSTREAM:
+				case ST_PBSTREAM:
 					assert(sidx==0);
 					switch (is.tag) {
 					default: set_skip(); continue;
@@ -936,9 +936,9 @@ protected:
 						if ((sbuf=(byte*)ma->malloc((size_t)lField))==NULL) return RC_NORESOURCES;
 						is.pv->bstr=sbuf; is.pv->length=(uint32_t)lField;
 						if ((left=lField)!=0) continue; else break;
-					case _V(5): is.pv->i=mv_dec32zz((uint32_t)val); is.pv->length=sizeof(int32_t); defType=VT_INT; break;
+					case _V(5): is.pv->i=afy_dec32zz((uint32_t)val); is.pv->length=sizeof(int32_t); defType=VT_INT; break;
 					case _V(6): is.pv->ui=(uint32_t)val; is.pv->length=sizeof(uint32_t); defType=VT_UINT; break;
-					case _V(7): is.pv->i64=mv_dec64zz(val); is.pv->length=sizeof(int64_t); defType=VT_INT64; break;
+					case _V(7): is.pv->i64=afy_dec64zz(val); is.pv->length=sizeof(int64_t); defType=VT_INT64; break;
 					case _V(8): is.pv->ui64=val; is.pv->length=sizeof(uint64_t); defType=VT_UINT64; break;
 					case _S(9): is.pv->f=buf.f; is.pv->length=sizeof(float); defType=VT_FLOAT; break;		// byte order???
 					case _D(10): is.pv->d=buf.d; is.pv->length=sizeof(double); defType=VT_DOUBLE; break;	// byte order???
@@ -1394,7 +1394,7 @@ RC SessionX::createInputStream(IStreamIn *&in,IStreamIn *out,size_t lo)
 	} catch (RC rc) {return rc;} catch (...) {report(MSG_ERROR,"Exception in ISession::createInputStream()\n"); return RC_INTERNAL;}
 }
 
-RC createServerInputStream(MVStoreCtx ctx,const StreamInParameters *params,IStreamIn *&in,StreamInType stype)
+RC createServerInputStream(AfyDBCtx ctx,const StreamInParameters *params,IStreamIn *&in,StreamInType stype)
 {
 	try {
 		if (ctx!=NULL) ctx->set(); else if ((ctx=StoreCtx::get())==NULL) return RC_NOTFOUND;

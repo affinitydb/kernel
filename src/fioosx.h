@@ -18,7 +18,7 @@ Written by Mark Venguerov, Andrew Skowronski, Michael Andronov 2004 - 2010
 #include <aio.h>
 typedef union sigval sigval_t;
 
-namespace MVStoreKernel
+namespace AfyKernel
 {
 	struct FileDescLinux
 	{
@@ -128,7 +128,7 @@ namespace MVStoreKernel
 		SharedCounter nSig;
     };   
   
-    /* mvstore 'standard' interface 
+    /* Affinity 'standard' interface 
      */
 	class FileIOOSX : public IStoreIO
 	{

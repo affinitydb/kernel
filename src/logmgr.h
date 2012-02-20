@@ -21,7 +21,7 @@ Written by Mark Venguerov 2004 - 2010
 #define	LOGRECLENMASK		0x1FFFFFFul
 #define	LOGRECFLAGSSHIFT	25
 
-namespace MVStoreKernel
+namespace AfyKernel
 {
 
 enum LRType {LR_UPDATE=1, LR_CREATE, LR_BEGIN, LR_COMMIT, LR_ABORT, LR_COMPENSATE, LR_RESTORE, 

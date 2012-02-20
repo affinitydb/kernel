@@ -8,9 +8,9 @@ Written by Mark Venguerov 2004 - 2010
 
 #include "ftindex.h"
 
-using namespace MVStoreKernel;
+using namespace AfyKernel;
 
-const char *MVStoreKernel::defaultEnglishStopWords[] =
+const char *AfyKernel::defaultEnglishStopWords[] =
 {
     "about", "ain't", "all", "also", "am", "an", "and", "any", "anybody", "anyhow", "anyone",
 	"anything", "anyway", "anyways", "anywhere", "are", "aren't", "as", "at", "be", "because",
@@ -35,7 +35,7 @@ const char *MVStoreKernel::defaultEnglishStopWords[] =
 	"yourself", "yourselves",
 };
 
-ulong MVStoreKernel::defaultEnglishStopWordsLen()
+ulong AfyKernel::defaultEnglishStopWordsLen()
 {
 	return sizeof(defaultEnglishStopWords)/sizeof(defaultEnglishStopWords[0]);
 }
@@ -69,7 +69,7 @@ ulong MVStoreKernel::defaultEnglishStopWordsLen()
 
 #define	setE(a)					(end-=a,move(),end[0]='e')
 
-const char *MVStoreKernel::PorterStemmer::process(const char *word,size_t& len,char *buf)
+const char *AfyKernel::PorterStemmer::process(const char *word,size_t& len,char *buf)
 {
 	struct StemInfo {
 		const char	*beg;

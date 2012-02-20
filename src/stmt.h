@@ -9,15 +9,15 @@ Written by Mark Venguerov 2004 - 2010
 #ifndef _QUERY_H_
 #define _QUERY_H_
 
-#include "mvstoreimpl.h"
+#include "affinityimpl.h"
 #include "session.h"
 #include "idxtree.h"
 #include "txmgr.h"
 #include "pinex.h"
 
-using namespace MVStore;
+using namespace AfyDB;
 
-namespace MVStoreKernel
+namespace AfyKernel
 {
 
 #define	CALC_PROP_NAME	"calculated"

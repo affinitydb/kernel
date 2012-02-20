@@ -9,12 +9,12 @@ Written by Mark Venguerov 2004 - 2010
 #ifndef _PINEX_H_
 #define _PINEX_H_
 
-#include "mvstoreimpl.h"
+#include "affinityimpl.h"
 #include "pinref.h"
 #include "buffer.h"
 #include "pgheap.h"
 
-namespace MVStoreKernel
+namespace AfyKernel
 {
 
 #define	PINEX_TVERSION		0x0001

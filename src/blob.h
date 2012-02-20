@@ -12,11 +12,11 @@ Written by Mark Venguerov 2004 - 2010
 #include "pgheap.h"
 #include "pgtree.h"
 #include "buffer.h"
-#include "mvstoreimpl.h"
+#include "affinityimpl.h"
 
-using namespace MVStore;
+using namespace AfyDB;
 
-namespace MVStoreKernel
+namespace AfyKernel
 {
 
 class StreamX : public IStream, public ObjDealloc

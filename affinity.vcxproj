@@ -38,6 +38,7 @@
     <ProjectGuid>{D8475D98-808A-44E3-8FCF-222C3544F521}</ProjectGuid>
     <Keyword>Win32Proj</Keyword>
     <RootNamespace>mvstore</RootNamespace>
+    <ProjectName>affinity</ProjectName>
   </PropertyGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.Default.props" />
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'" Label="Configuration">
@@ -337,12 +338,13 @@
     </Link>
   </ItemDefinitionGroup>
   <ItemGroup>
+    <ClInclude Include="include\affinity.h" />
     <ClInclude Include="include\ifacever.h" />
-    <ClInclude Include="include\mvstore.h" />
     <ClInclude Include="include\rc.h" />
     <ClInclude Include="include\startup.h" />
     <ClInclude Include="include\storeio.h" />
     <ClInclude Include="include\units.h" />
+    <ClInclude Include="src\affinityimpl.h" />
     <ClInclude Include="src\blob.h" />
     <ClInclude Include="src\buffer.h" />
     <ClInclude Include="src\classifier.h" />
@@ -370,7 +372,6 @@
     <ClInclude Include="src\expr.h" />
     <ClInclude Include="src\pinex.h" />
     <ClInclude Include="src\pinref.h" />
-    <ClInclude Include="src\mvstoreimpl.h" />
     <ClInclude Include="src\idxtree.h" />
     <ClInclude Include="src\propdnf.h" />
     <ClInclude Include="src\qbuild.h" />
@@ -388,6 +389,7 @@
     <ClInclude Include="src\utils.h" />
   </ItemGroup>
   <ItemGroup>
+    <ClCompile Include="src\affinityimpl.cpp" />
     <ClCompile Include="src\blob.cpp" />
     <ClCompile Include="src\buffer.cpp" />
     <ClCompile Include="src\classifier.cpp" />
@@ -423,7 +425,6 @@
     <ClCompile Include="src\idxscan.cpp" />
     <ClCompile Include="src\protobuf.cpp" />
     <ClCompile Include="src\sort.cpp" />
-    <ClCompile Include="src\mvstoreimpl.cpp" />
     <ClCompile Include="src\idxtree.cpp" />
     <ClCompile Include="src\qbuild.cpp" />
     <ClCompile Include="src\queryop.cpp" />

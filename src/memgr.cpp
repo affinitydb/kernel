@@ -7,25 +7,25 @@ Written by Mark Venguerov 2004 - 2010
 **************************************************************************************/
 
 #include "startup.h"
-#include "mvstoreimpl.h"
+#include "affinityimpl.h"
 #include "dlalloc.h"
 
-using namespace	MVStore;
-using namespace MVStoreKernel;
+using namespace	AfyDB;
+using namespace AfyKernel;
 
-namespace MVStoreKernel
+namespace AfyKernel
 {
 	class SesMemAlloc : public MemAlloc
 	{
 		malloc_state	av;
 	public:
 		SesMemAlloc(size_t strt=MMAP_AS_MORECORE_SIZE) {memset(&av,0,sizeof(av)); av.block_size=strt;}		// round to page
-		void *malloc(size_t pSize) {return mv_malloc(&av,pSize);}
-		void *memalign(size_t align,size_t s) {return mv_memalign(&av,align,s);}
-		void *realloc(void *pPtr, size_t pNewSize) {return mv_realloc(&av,pPtr,pNewSize);}
-		void free(void *pPtr) {mv_free(&av,pPtr);}
+		void *malloc(size_t pSize) {return afy_malloc(&av,pSize);}
+		void *memalign(size_t align,size_t s) {return afy_memalign(&av,align,s);}
+		void *realloc(void *pPtr, size_t pNewSize) {return afy_realloc(&av,pPtr,pNewSize);}
+		void free(void *pPtr) {afy_free(&av,pPtr);}
 		virtual	HEAP_TYPE getAType() const {return SES_HEAP;}
-		void release() {mv_release(&av); delete this;}
+		void release() {afy_release(&av); delete this;}
 	};
 	class StoreMemAlloc : public MemAlloc
 	{
@@ -33,21 +33,21 @@ namespace MVStoreKernel
 		malloc_state	av;
 	public:
 		StoreMemAlloc(size_t strt=MMAP_AS_MORECORE_SIZE) {memset(&av,0,sizeof(av)); av.block_size=strt;}		// round to page
-		void *malloc(size_t pSize) {MutexP lck(&lock); return mv_malloc(&av,pSize);}
-		void *memalign(size_t align,size_t s) {MutexP lck(&lock); return mv_memalign(&av,align,s);}
-		void *realloc(void *pPtr, size_t pNewSize) {MutexP lck(&lock); return mv_realloc(&av,pPtr,pNewSize);}
-		void free(void *pPtr) {MutexP lck(&lock); mv_free(&av,pPtr);}
+		void *malloc(size_t pSize) {MutexP lck(&lock); return afy_malloc(&av,pSize);}
+		void *memalign(size_t align,size_t s) {MutexP lck(&lock); return afy_memalign(&av,align,s);}
+		void *realloc(void *pPtr, size_t pNewSize) {MutexP lck(&lock); return afy_realloc(&av,pPtr,pNewSize);}
+		void free(void *pPtr) {MutexP lck(&lock); afy_free(&av,pPtr);}
 		virtual	HEAP_TYPE getAType() const {return STORE_HEAP;}
-		void release() {mv_release(&av); delete this;}
+		void release() {afy_release(&av); delete this;}
 	};
 }
 
-MemAlloc *MVStoreKernel::createMemAlloc(size_t startSize,bool fMulti)
+MemAlloc *AfyKernel::createMemAlloc(size_t startSize,bool fMulti)
 {
 	try {return fMulti?(MemAlloc*)new StoreMemAlloc(startSize):(MemAlloc*)new SesMemAlloc(startSize);} catch (...) {return NULL;}
 }
 
-void* MVStoreKernel::malloc(size_t s,HEAP_TYPE alloc)
+void* AfyKernel::malloc(size_t s,HEAP_TYPE alloc)
 {
 	Session *ses; StoreCtx *ctx;
 	switch (alloc) {
@@ -62,7 +62,7 @@ void* MVStoreKernel::malloc(size_t s,HEAP_TYPE alloc)
 	try {return ::malloc(s);} catch(...) {return NULL;}
 }
 
-void* MVStoreKernel::memalign(size_t a,size_t s,HEAP_TYPE alloc)
+void* AfyKernel::memalign(size_t a,size_t s,HEAP_TYPE alloc)
 {
 	Session *ses; StoreCtx *ctx;
 	switch (alloc) {
@@ -86,7 +86,7 @@ void* MVStoreKernel::memalign(size_t a,size_t s,HEAP_TYPE alloc)
 	} catch (...) {return NULL;}
 }
 
-void* MVStoreKernel::realloc(void *p,size_t s,HEAP_TYPE alloc)
+void* AfyKernel::realloc(void *p,size_t s,HEAP_TYPE alloc)
 {
 	Session *ses; StoreCtx *ctx;
 	switch (alloc) {
@@ -101,7 +101,7 @@ void* MVStoreKernel::realloc(void *p,size_t s,HEAP_TYPE alloc)
 	try {return ::realloc(p,s);} catch (...) {return NULL;}
 }
 
-char* MVStoreKernel::strdup(const char *s,HEAP_TYPE alloc)
+char* AfyKernel::strdup(const char *s,HEAP_TYPE alloc)
 {
 	if (s==NULL) return NULL;
 	size_t l=strlen(s); char *p=(char*)malloc(l+1,alloc);
@@ -109,7 +109,7 @@ char* MVStoreKernel::strdup(const char *s,HEAP_TYPE alloc)
 	return p;
 }
 
-char* MVStoreKernel::strdup(const char *s,MemAlloc *ma)
+char* AfyKernel::strdup(const char *s,MemAlloc *ma)
 {
 	if (s==NULL) return NULL;
 	size_t l=strlen(s); char *p=(char*)ma->malloc(l+1);
@@ -117,7 +117,7 @@ char* MVStoreKernel::strdup(const char *s,MemAlloc *ma)
 	return p;
 }
 
-void MVStoreKernel::free(void *p,HEAP_TYPE alloc)
+void AfyKernel::free(void *p,HEAP_TYPE alloc)
 {
 	Session *ses; StoreCtx *ctx;
 	if (p!=NULL) switch (alloc) {
@@ -176,7 +176,7 @@ HEAP_TYPE SubAlloc::getAType() const
 void SubAlloc::release()
 {
 	for (ObjDealloc *od=chain,*od2; od!=NULL; od=od2) {od2=od->next; od->destroyObj();}
-	for (SubExt *se=extents,*se2; se!=NULL; se=se2) {se2=se->next; parent!=NULL?parent->free(se):MVStoreKernel::free(se,SES_HEAP);} 
+	for (SubExt *se=extents,*se2; se!=NULL; se=se2) {se2=se->next; parent!=NULL?parent->free(se):AfyKernel::free(se,SES_HEAP);} 
 	chain=NULL; extents=NULL; ptr=NULL; extentLeft=0;
 }
 
@@ -197,7 +197,7 @@ byte *SubAlloc::expand(size_t s)
 {
 	extentLeft=extents!=NULL?extents->size<<1:0x1000; 
 	if (extentLeft<s+sizeof(SubExt)) extentLeft=s+sizeof(SubExt);
-	SubExt *se=(SubExt*)(parent?parent->malloc(extentLeft):MVStoreKernel::malloc(extentLeft,SES_HEAP));
+	SubExt *se=(SubExt*)(parent?parent->malloc(extentLeft):AfyKernel::malloc(extentLeft,SES_HEAP));
 	if (se==NULL) return NULL;
 	se->next=extents; se->size=extentLeft; extents=se;
 	ptr=(byte*)(se+1); extentLeft-=sizeof(SubExt);
@@ -209,10 +209,10 @@ void SubAlloc::compact()
 {
 	if (extents!=NULL) {
 		if (ptr==(byte*)(extents+1)) {
-			SubExt *se=extents; extents=se->next; parent?parent->free(se):MVStoreKernel::free(se,SES_HEAP);
+			SubExt *se=extents; extents=se->next; parent?parent->free(se):AfyKernel::free(se,SES_HEAP);
 		} else {
 			size_t s=ptr-(byte*)extents;
-			extents=(SubExt*)(parent?parent->realloc(extents,s):MVStoreKernel::realloc(extents,s,SES_HEAP));
+			extents=(SubExt*)(parent?parent->realloc(extents,s):AfyKernel::realloc(extents,s,SES_HEAP));
 			assert(extents!=NULL); extents->size=s;
 		}
 		extentLeft=0;

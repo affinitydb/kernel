@@ -10,13 +10,13 @@ Written by Mark Venguerov 2004 - 2010
 #define _LOCK_H_
 
 #include "pinex.h"
-#include "mvstore.h"
+#include "affinity.h"
 
-using namespace MVStore;
+using namespace AfyDB;
 
 class ILockNotification;
 
-namespace MVStoreKernel
+namespace AfyKernel
 {
 
 #define	FREE_BLOCK_SIZE			0x1000

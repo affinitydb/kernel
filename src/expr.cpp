@@ -16,7 +16,7 @@ Written by Mark Venguerov 2004 - 2010
 #include <math.h>
 #include <stdio.h>
 
-using namespace MVStoreKernel;
+using namespace AfyKernel;
 
 static const bool jumpOp[8][2] = {{false,false},{false,false},{true,false},{false,true},{false,true},{true,false},{false,true},{true,false}};
 static const byte logOp[8][2] = {{4,2},{3,5},{6,2},{3,7},{4,7},{6,5},{6,7},{6,7}};
@@ -237,7 +237,7 @@ RC ExprCompileCtx::compileNode(const ExprTree *node,ulong flg)
 		for (j=0; ++j<=i; node=(ExprTree*)node->operands[0].exprt) {
 			assert(node->op==OP_PATH); f=(node->flags&FILTER_LAST_OP)!=0?1:0;
 			if (node->operands[1].type==VT_URIID) {
-				//l=mv_len32(node->operands[1].uid);
+				//l=afy_len32(node->operands[1].uid);
 				//addExtRef(), store index
 			} else if ((rc=compileValue(node->operands[1],flg))==RC_OK) f|=0x04,l=0; else return rc;
 			if (node->nops<4) f|=(node->flags&(QUEST_PATH_OP|PLUS_PATH_OP|STAR_PATH_OP))<<5;
@@ -246,7 +246,7 @@ RC ExprCompileCtx::compileNode(const ExprTree *node,ulong flg)
 				switch (node->operands[2].type) {
 				case VT_ERROR: break;
 				case VT_INT: case VT_UINT:
-					if (node->operands[2].ui!=STORE_COLLECTION_ID) {f|=0x08; unsigned u=mv_enc32zz(node->operands[2].ui); l+=mv_len32(u);}
+					if (node->operands[2].ui!=STORE_COLLECTION_ID) {f|=0x08; unsigned u=afy_enc32zz(node->operands[2].ui); l+=afy_len32(u);}
 					break;
 				case VT_EXPRTREE:
 					if (isBool(((ExprTree*)node->operands[2].exprt)->op)) {
@@ -267,22 +267,22 @@ RC ExprCompileCtx::compileNode(const ExprTree *node,ulong flg)
 				byte *pp=alloc(l); if (pp==NULL) return RC_NORESOURCES;
 				switch (f&0xE0) {
 				default: break;
-				case 0x80: //mv_dec32(codePtr,rmin); mv_dec32(codePtr,rmax); break;
+				case 0x80: //afy_dec32(codePtr,rmin); afy_dec32(codePtr,rmax); break;
 				case 0xA0:
-					//mv_dec32(codePtr,rmin); // rmin=rmax=params[rmin];
+					//afy_dec32(codePtr,rmin); // rmin=rmax=params[rmin];
 					break;
 				case 0xC0:
-					//mv_dec32(codePtr,rmin); mv_dec32(codePtr,rmax);
+					//afy_dec32(codePtr,rmin); afy_dec32(codePtr,rmax);
 					// rmin=params[rmin]; rmax=params[rmax];
 					break;
 				}
 				switch (f&0x18) {
 				default: break;
-				case 0x08: l=mv_enc32zz(node->operands[2].i); mv_enc32(pp,l); break;
+				case 0x08: l=afy_enc32zz(node->operands[2].i); afy_enc32(pp,l); break;
 				case 0x18: pp=filter->serialize(pp); break;		// classID??
 				}
 				if ((f&4)==0) {
-					// store index mv_enc32(pp,node->operands[1].uid);
+					// store index afy_enc32(pp,node->operands[1].uid);
 				}
 			}
 		}
@@ -358,20 +358,20 @@ RC ExprCompileCtx::compileValue(const Value& v,ulong flg) {
 			byte op=OP_PROP; unsigned eid=0;
 			if ((rc=addExtRef(v.refV.id,v.refV.refN,((flg&CV_CARD)?PROP_ORD:0)|((flg&CV_OPT)!=0?PROP_OPTIONAL:0),pdx))!=RC_OK) return rc;
 			const bool fExt=v.refV.refN>3||pdx>0x3F; l=fExt?5:2;
-			if (v.eid!=STORE_COLLECTION_ID) {op=OP_ELT; eid=mv_enc32zz(v.eid); l+=mv_len32(eid);}
+			if (v.eid!=STORE_COLLECTION_ID) {op=OP_ELT; eid=afy_enc32zz(v.eid); l+=afy_len32(eid);}
 			if ((p=alloc(l))==NULL) return RC_NORESOURCES; p[0]=op|fc;
 			if (!fExt) {p[1]=byte(v.refV.refN<<6|pdx); p+=2;}
 			else {p[1]=0xFF; p[2]=v.refV.refN; p[3]=byte(pdx); p[4]=byte(pdx>>8); p+=5;}
-			if (op==OP_ELT) mv_enc32(p,eid);
+			if (op==OP_ELT) afy_enc32(p,eid);
 		}
 		break;
 	case VT_CURRENT:
 		if ((p=alloc(2))==NULL) return RC_NORESOURCES; p[0]=OP_CURRENT; p[1]=(byte)v.ui; break;
 	case VT_STREAM:
 		if ((rc=streamToValue(v.stream.is,val,ma))!=RC_OK) return rc;
-		if ((l=(uint32_t)MVStoreKernel::serSize(val))==0) rc=RC_TYPE;
+		if ((l=(uint32_t)AfyKernel::serSize(val))==0) rc=RC_TYPE;
 		else if ((p=alloc(l+1))==NULL) rc=RC_NORESOURCES;
-		else {*p=OP_CON|fc; MVStoreKernel::serialize(val,p+1);}
+		else {*p=OP_CON|fc; AfyKernel::serialize(val,p+1);}
 		freeV(val); if (rc!=RC_OK) return rc;
 		break;
 	case VT_URIID: case VT_IDENTITY:
@@ -389,8 +389,8 @@ RC ExprCompileCtx::compileValue(const Value& v,ulong flg) {
 //	case VT_STMT:
 		//...
 	default:
-		if ((l=(uint32_t)MVStoreKernel::serSize(v))==0) return RC_TYPE; if ((p=alloc(l+1))==NULL) return RC_NORESOURCES;
-		*p=OP_CON|fc; MVStoreKernel::serialize(v,p+1); break;
+		if ((l=(uint32_t)AfyKernel::serSize(v))==0) return RC_TYPE; if ((p=alloc(l+1))==NULL) return RC_NORESOURCES;
+		*p=OP_CON|fc; AfyKernel::serialize(v,p+1); break;
 	}
 	if ((flg&CV_PROP)!=0) {
 		if (v.property==STORE_INVALID_PROPID) return RC_INTERNAL;
@@ -523,7 +523,7 @@ RC Expr::decompile(ExprTree*&res,Session *ses) const
 		switch (op&=0x7F) {
 		case OP_CON:
 			if (top>=end) {rc=RC_NORESOURCES; break;}
-			if ((rc=MVStoreKernel::deserialize(*top,codePtr,codeEnd,ses,true))==RC_OK) top++;
+			if ((rc=AfyKernel::deserialize(*top,codePtr,codeEnd,ses,true))==RC_OK) top++;
 			break;
 		case OP_CONID:
 			l=*codePtr++; if (l==0xFF) {l=codePtr[0]|codePtr[1]<<8; codePtr+=2;}
@@ -540,7 +540,7 @@ RC Expr::decompile(ExprTree*&res,Session *ses) const
 				getExtRefs((ushort)idx,pids,nPids); if (l<nPids) l=pids[l]&STORE_MAX_URIID; else {rc=RC_CORRUPTED; break;}
 				if (op==OP_SETPROP) {if (top>stack) {top[-1].property=l; if (ff) top[-1].meta=*codePtr++;} else rc=RC_CORRUPTED; break;}
 			}
-			top->setVarRef((byte)idx,l); if (op==OP_ELT) {ElementID eid; mv_dec32(codePtr,eid); top->eid=mv_dec32zz(eid);}
+			top->setVarRef((byte)idx,l); if (op==OP_ELT) {ElementID eid; afy_dec32(codePtr,eid); top->eid=afy_dec32zz(eid);}
 			if (ff) {if ((exp=new(1,ses) ExprTree(OP_COUNT,1,0,0,top,ses))!=NULL) top->set(exp); else rc=RC_NORESOURCES;}
 			top++; break;
 		case OP_PARAM:
@@ -552,7 +552,7 @@ RC Expr::decompile(ExprTree*&res,Session *ses) const
 		case OP_PATH:
 			flg=ff?*codePtr++:0; l=(flg&0x80)!=0?4:(flg&0x18)!=0?3:2;
 			if ((flg&0x80)!=0) {
-				mv_dec32(codePtr,rm); if ((flg&0x20)!=0) rx=rm; else mv_dec32(codePtr,rx);
+				afy_dec32(codePtr,rm); if ((flg&0x20)!=0) rx=rm; else afy_dec32(codePtr,rx);
 				if (top+1>=end) {rc=RC_NORESOURCES; break;}
 				if ((flg&0x18)==0) {top->set((unsigned)STORE_COLLECTION_ID); top++;}
 				top->setU64((uint64_t)rx<<32|rm); top++;
@@ -560,7 +560,7 @@ RC Expr::decompile(ExprTree*&res,Session *ses) const
 			if ((flg&0x08)!=0) {
 				Expr *filter=NULL;
 				if (top>=end) {rc=RC_NORESOURCES; break;} if (l==4) top[0]=top[-1];
-				if ((flg&0x10)==0) {mv_dec32(codePtr,rm); l=mv_dec32zz(rm); top[3-l].set((unsigned)rm);}
+				if ((flg&0x10)==0) {afy_dec32(codePtr,rm); l=afy_dec32zz(rm); top[3-l].set((unsigned)rm);}
 				else if ((rc=deserialize(filter,codePtr,codeEnd,ses))!=RC_OK) break;
 				else {
 					// classID
@@ -572,7 +572,7 @@ RC Expr::decompile(ExprTree*&res,Session *ses) const
 			if ((flg&0x04)==0) {
 				if (top>=end) {rc=RC_NORESOURCES; break;}
 				if (l>2) memmove(&top[3-l],&top[2-l],(l-2)*sizeof(Value));
-				mv_dec32(codePtr,rm); top[2-l].setURIID(rm); top++;
+				afy_dec32(codePtr,rm); top[2-l].setURIID(rm); top++;
 			}
 			assert(top>=stack+l);
 			if ((exp=new(l,ses) ExprTree(OP_PATH,(ushort)l,0,(flg>>5&0x06)|(flg&0x01),top-l,ses))==NULL) rc=RC_NORESOURCES;

@@ -13,7 +13,7 @@ Written by Mark Venguerov 2004 - 2010
 #include "expr.h"
 #include <stdio.h>
 
-using namespace MVStoreKernel;
+using namespace AfyKernel;
 
 void SessionX::abortQuery()
 {
@@ -602,6 +602,24 @@ RC Stmt::processCond(ExprTree *node,QVar *qv,DynArray<const ExprTree*> *exprs)
 				if ((node->flags&NOT_BOOLEAN_OP)==0) return (rc=qv->addPropRefs(&v.refV.id,1))==RC_OK?RC_FALSE:rc;
 			}
 			break;
+		case OP_IS_A:
+			if (qv->type==QRY_SIMPLE && node->operands[1].type==VT_URIID) {
+				SimpleVar *sv=(SimpleVar*)qv; ClassSpec *cs=(ClassSpec*)sv->classes;
+				for (unsigned i=0; ;++i,++cs)
+					if (i>=sv->nClasses) {cs=NULL; break;}
+					else if (cs->classID==node->operands[1].uid) {
+						if (node->nops<=2) return RC_FALSE;
+						if (cs->params!=NULL && cs->nParams!=0) cs=NULL;
+						break;
+					}
+				if (cs==NULL) {
+					if ((sv->classes=(ClassSpec*)sv->ma->realloc((void*)sv->classes,(sv->nClasses+1)*sizeof(ClassSpec)))==NULL) return RC_NORESOURCES;
+					cs=(ClassSpec*)&sv->classes[sv->nClasses]; cs->classID=node->operands[1].uid; cs->params=NULL; cs->nParams=0; sv->nClasses++;
+				}
+				if (node->nops>2 && (rc=copyV(&node->operands[2],cs->nParams=node->nops-2,*(Value**)&cs->params,sv->ma))!=RC_OK) return rc;
+				return RC_FALSE;
+			}
+			break;
 		case OP_EQ:
 			// commutativity ?
 			if (v.type==VT_VARREF && (v.refV.flags&VAR_TYPE_MASK)==0) {
@@ -967,17 +985,17 @@ RC JoinVar::clone(MemAlloc *m,QVar *&res,bool fClass) const
 size_t QVar::serSize() const
 {
 	unsigned i;
-	size_t len=4+1+mv_len32(nOuts)+mv_len32(nConds)+mv_len32(nGroupBy)+1+mv_len16(aggrs.nValues);
+	size_t len=4+1+afy_len32(nOuts)+afy_len32(nConds)+afy_len32(nGroupBy)+1+afy_len16(aggrs.nValues);
 	if (name!=NULL) len+=min(strlen(name),size_t(255));
 	if (outs!=NULL) for (unsigned i=0; i<nOuts; i++) {
-		const ValueV& td=outs[i]; len+=mv_len16(td.nValues);
-		for (unsigned j=0; j<td.nValues; j++) len+=MVStoreKernel::serSize(td.vals[j],true);
+		const ValueV& td=outs[i]; len+=afy_len16(td.nValues);
+		for (unsigned j=0; j<td.nValues; j++) len+=AfyKernel::serSize(td.vals[j],true);
 	}
 	if (nConds==1) len+=cond->serSize(); else for (i=0; i<nConds; i++) len+=conds[i]->serSize();
 	if (groupBy!=NULL && nGroupBy!=0) for (unsigned i=0; i<nGroupBy; i++)
-		{const OrderSegQ& sq=groupBy[i]; len+=2+mv_len16(sq.flags)+mv_len32(sq.lPref)+((sq.flags&ORDER_EXPR)!=0?sq.expr->serSize():mv_len32(sq.pid));}
+		{const OrderSegQ& sq=groupBy[i]; len+=2+afy_len16(sq.flags)+afy_len32(sq.lPref)+((sq.flags&ORDER_EXPR)!=0?sq.expr->serSize():afy_len32(sq.pid));}
 	if (having!=NULL) len+=having->serSize();
-	if (aggrs.vals!=NULL) for (unsigned i=0; i<aggrs.nValues; i++) len+=MVStoreKernel::serSize(aggrs.vals[i],true);
+	if (aggrs.vals!=NULL) for (unsigned i=0; i<aggrs.nValues; i++) len+=AfyKernel::serSize(aggrs.vals[i],true);
 	return len;
 }
 
@@ -987,23 +1005,23 @@ byte *QVar::serQV(byte *buf) const
 	buf[0]=id; buf[1]=type; buf[2]=stype; buf[3]=dtype; buf=serialize(buf+4);
 	size_t l=name!=NULL?min(strlen(name),size_t(255)):0;
 	buf[0]=(byte)l; if (l!=0) memcpy(buf+1,name,l); buf+=l+1;
-	mv_enc32(buf,nOuts);
+	afy_enc32(buf,nOuts);
 	if (outs!=NULL) for (unsigned i=0; i<nOuts; i++) {
-		const ValueV& td=outs[i]; mv_enc16(buf,td.nValues);
-		for (unsigned j=0; j<td.nValues; j++) buf=MVStoreKernel::serialize(td.vals[j],buf,true);
+		const ValueV& td=outs[i]; afy_enc16(buf,td.nValues);
+		for (unsigned j=0; j<td.nValues; j++) buf=AfyKernel::serialize(td.vals[j],buf,true);
 	}
-	mv_enc32(buf,nConds);
+	afy_enc32(buf,nConds);
 	if (nConds==1) buf=cond->serialize(buf);
 	else for (i=0; i<nConds; i++) buf=conds[i]->serialize(buf);
-	mv_enc32(buf,nGroupBy);
+	afy_enc32(buf,nGroupBy);
 	if (groupBy!=NULL && nGroupBy!=0) for (unsigned i=0; i<nGroupBy; i++) {
 		const OrderSegQ& sq=groupBy[i]; buf[0]=sq.var; buf[1]=sq.aggop; buf+=2;
-		mv_enc16(buf,sq.flags); mv_enc32(buf,sq.lPref);
-		if ((sq.flags&ORDER_EXPR)!=0) buf=sq.expr->serialize(buf); else mv_enc32(buf,sq.pid);
+		afy_enc16(buf,sq.flags); afy_enc32(buf,sq.lPref);
+		if ((sq.flags&ORDER_EXPR)!=0) buf=sq.expr->serialize(buf); else afy_enc32(buf,sq.pid);
 	}
 	*buf++=having!=NULL?1:0; if (having!=NULL) buf=having->serialize(buf);
-	mv_enc16(buf,aggrs.nValues);
-	if (aggrs.vals!=NULL) for (unsigned i=0; i<aggrs.nValues; i++) buf=MVStoreKernel::serialize(aggrs.vals[i],buf,true);
+	afy_enc16(buf,aggrs.nValues);
+	if (aggrs.vals!=NULL) for (unsigned i=0; i<aggrs.nValues; i++) buf=AfyKernel::serialize(aggrs.vals[i],buf,true);
 	return buf;
 }
 
@@ -1040,7 +1058,7 @@ RC QVar::deserialize(const byte *&buf,const byte *const ebuf,MemAlloc *ma,QVar *
 					if ((res->outs[i].vals=new(ma) Value[res->outs[i].nValues])==NULL) rc=RC_NORESOURCES;
 					else {
 						res->outs[i].fFree=true;
-						for (unsigned j=0; j<res->outs[i].nValues; j++) if ((rc=MVStoreKernel::deserialize(*(Value*)&res->outs[i].vals[j],buf,ebuf,ma,false,true))!=RC_OK) break;
+						for (unsigned j=0; j<res->outs[i].nValues; j++) if ((rc=AfyKernel::deserialize(*(Value*)&res->outs[i].vals[j],buf,ebuf,ma,false,true))!=RC_OK) break;
 					}
 				}
 			}
@@ -1069,7 +1087,7 @@ RC QVar::deserialize(const byte *&buf,const byte *const ebuf,MemAlloc *ma,QVar *
 			if ((res->aggrs.vals=new(ma) Value[res->aggrs.nValues])==NULL) rc=RC_NORESOURCES;
 			else {
 				res->aggrs.fFree=true;
-				for (unsigned j=0; j<res->aggrs.nValues; j++) if ((rc=MVStoreKernel::deserialize(*(Value*)&res->aggrs.vals[j],buf,ebuf,ma,false,true))!=RC_OK) break;
+				for (unsigned j=0; j<res->aggrs.nValues; j++) if ((rc=AfyKernel::deserialize(*(Value*)&res->aggrs.vals[j],buf,ebuf,ma,false,true))!=RC_OK) break;
 			}
 		}
 	}
@@ -1079,72 +1097,72 @@ RC QVar::deserialize(const byte *&buf,const byte *const ebuf,MemAlloc *ma,QVar *
 
 size_t SimpleVar::serSize() const
 {
-	size_t len=QVar::serSize()+mv_len32(nClasses)+mv_len32(nCondIdx)+mv_len32(nPids)+1+mv_len32(nPathSeg);
+	size_t len=QVar::serSize()+afy_len32(nClasses)+afy_len32(nCondIdx)+afy_len32(nPids)+1+afy_len32(nPathSeg);
 	if (classes!=NULL) for (unsigned i=0; i<nClasses; i++) {
-		const ClassSpec &cs=classes[i]; len+=mv_len32(cs.classID)+mv_len32(cs.nParams);
-		for (unsigned i=0; i<cs.nParams; i++) len+=MVStoreKernel::serSize(cs.params[i]);
+		const ClassSpec &cs=classes[i]; len+=afy_len32(cs.classID)+afy_len32(cs.nParams);
+		for (unsigned i=0; i<cs.nParams; i++) len+=AfyKernel::serSize(cs.params[i]);
 	}
 	for (CondIdx *ci=condIdx; ci!=NULL; ci=ci->next) {
-		len+=mv_len32(ci->ks.propID)+mv_len16(ci->ks.flags)+mv_len16(ci->ks.lPrefix)+2+mv_len16(ci->param);
+		len+=afy_len32(ci->ks.propID)+afy_len16(ci->ks.flags)+afy_len16(ci->ks.lPrefix)+2+afy_len16(ci->param);
 		if (ci->expr!=NULL) {
 			//...
 		}
 	}
-	if (pids!=0) for (unsigned i=0; i<nPids; i++) len+=MVStoreKernel::serSize(pids[i]);
+	if (pids!=0) for (unsigned i=0; i<nPids; i++) len+=AfyKernel::serSize(pids[i]);
 	uint32_t cnt=0;
 	for (CondFT *cf=condFT; cf!=NULL; cf=cf->next) if (cf->str!=NULL) {
 		size_t l=strlen(cf->str); cnt++; 
-		len+=mv_len32(l)+l+mv_len32(cf->flags)+mv_len32(cf->nPids);
-		for (unsigned i=0; i<cf->nPids; i++) len+=mv_len32(cf->pids[i]);
+		len+=afy_len32(l)+l+afy_len32(cf->flags)+afy_len32(cf->nPids);
+		for (unsigned i=0; i<cf->nPids; i++) len+=afy_len32(cf->pids[i]);
 	}
-	len+=mv_len32(cnt);
+	len+=afy_len32(cnt);
 	if (path!=NULL) for (unsigned i=0; i<nPathSeg; i++) {
 		const PathSeg& ps=path[i];
-		len+=mv_len32(ps.pid)+1;
-		if (ps.eid!=STORE_COLLECTION_ID) len+=mv_len32(ps.eid);
+		len+=afy_len32(ps.pid)+1;
+		if (ps.eid!=STORE_COLLECTION_ID) len+=afy_len32(ps.eid);
 		if (ps.filter!=NULL) len+=((Expr*)ps.filter)->serSize();
-		if (ps.cid!=STORE_INVALID_CLASSID) len+=mv_len32(ps.cid);
-		if (ps.rmin!=1) len+=mv_len32(ps.rmin);
-		if (ps.rmax!=1) len+=mv_len32(ps.rmax);
+		if (ps.cid!=STORE_INVALID_CLASSID) len+=afy_len32(ps.cid);
+		if (ps.rmin!=1) len+=afy_len32(ps.rmin);
+		if (ps.rmax!=1) len+=afy_len32(ps.rmax);
 	}
 	return len;
 }
 
 byte *SimpleVar::serialize(byte *buf) const
 {
-	mv_enc32(buf,nClasses);
+	afy_enc32(buf,nClasses);
 	if (classes!=NULL) for (unsigned i=0; i<nClasses; i++) {
-		const ClassSpec &cs=classes[i]; mv_enc32(buf,cs.classID); mv_enc32(buf,cs.nParams);
-		for (unsigned i=0; i<cs.nParams; i++) buf=MVStoreKernel::serialize(cs.params[i],buf);
+		const ClassSpec &cs=classes[i]; afy_enc32(buf,cs.classID); afy_enc32(buf,cs.nParams);
+		for (unsigned i=0; i<cs.nParams; i++) buf=AfyKernel::serialize(cs.params[i],buf);
 	}
-	mv_enc32(buf,nCondIdx);
+	afy_enc32(buf,nCondIdx);
 	for (CondIdx *ci=condIdx; ci!=NULL; ci=ci->next) {
-		mv_enc32(buf,ci->ks.propID); mv_enc16(buf,ci->ks.flags); mv_enc16(buf,ci->ks.lPrefix);
+		afy_enc32(buf,ci->ks.propID); afy_enc16(buf,ci->ks.flags); afy_enc16(buf,ci->ks.lPrefix);
 		buf[0]=ci->ks.type; buf[1]=ci->ks.op; buf+=2;
-		mv_enc16(buf,ci->param);
+		afy_enc16(buf,ci->param);
 		if (ci->expr!=NULL) {
 			//...
 		}
 	}
-	mv_enc32(buf,nPids);
-	if (pids!=0) for (unsigned i=0; i<nPids; i++) buf=MVStoreKernel::serialize(pids[i],buf);
+	afy_enc32(buf,nPids);
+	if (pids!=0) for (unsigned i=0; i<nPids; i++) buf=AfyKernel::serialize(pids[i],buf);
 	uint32_t cnt=0; CondFT *cf;
 	for (cf=condFT; cf!=NULL; cf=cf->next) if (cf->str!=NULL) cnt++;
-	mv_enc32(buf,cnt);
+	afy_enc32(buf,cnt);
 	for (cf=condFT; cf!=NULL; cf=cf->next) if (cf->str!=NULL) {
-		size_t l=strlen(cf->str); mv_enc32(buf,l); memcpy(buf,cf->str,l); buf+=l;
-		mv_enc32(buf,cf->flags); mv_enc32(buf,cf->nPids);
-		for (unsigned i=0; i<cf->nPids; i++) mv_enc32(buf,cf->pids[i]);
+		size_t l=strlen(cf->str); afy_enc32(buf,l); memcpy(buf,cf->str,l); buf+=l;
+		afy_enc32(buf,cf->flags); afy_enc32(buf,cf->nPids);
+		for (unsigned i=0; i<cf->nPids; i++) afy_enc32(buf,cf->pids[i]);
 	}
-	mv_enc32(buf,nPathSeg);
+	afy_enc32(buf,nPathSeg);
 	if (path!=NULL) for (unsigned i=0; i<nPathSeg; i++) {
-		const PathSeg& ps=path[i]; mv_enc32(buf,ps.pid);
+		const PathSeg& ps=path[i]; afy_enc32(buf,ps.pid);
 		byte *pf=buf; *buf++=ps.fLast?0x80:0;
-		if (ps.eid!=STORE_COLLECTION_ID) {*pf|=0x01; mv_enc32(buf,ps.eid);}
+		if (ps.eid!=STORE_COLLECTION_ID) {*pf|=0x01; afy_enc32(buf,ps.eid);}
 		if (ps.filter!=NULL) {*pf|=0x02; buf=((Expr*)ps.filter)->serialize(buf);}
-		if (ps.cid!=STORE_INVALID_CLASSID) {*pf|=0x04; mv_enc32(buf,ps.cid);}
-		if (ps.rmin!=1) {*pf|=0x08; mv_enc32(buf,ps.rmin);}
-		if (ps.rmax!=1) {*pf|=0x10; mv_enc32(buf,ps.rmax);}
+		if (ps.cid!=STORE_INVALID_CLASSID) {*pf|=0x04; afy_enc32(buf,ps.cid);}
+		if (ps.rmin!=1) {*pf|=0x08; afy_enc32(buf,ps.rmin);}
+		if (ps.rmax!=1) {*pf|=0x10; afy_enc32(buf,ps.rmax);}
 	}
 	*buf++=fOrProps;
 	return buf;
@@ -1164,7 +1182,7 @@ RC SimpleVar::deserialize(const byte *&buf,const byte *const ebuf,QVarID id,MemA
 				if ((cs.params=new(ma) Value[cs.nParams])==NULL) return RC_NORESOURCES;
 				memset((void*)cs.params,0,cs.nParams*sizeof(Value));
 				for (unsigned j=0; j<cs.nParams; j++)
-					if ((rc=MVStoreKernel::deserialize(*(Value*)&cs.params[j],buf,ebuf,ma,false))!=RC_OK) return rc;
+					if ((rc=AfyKernel::deserialize(*(Value*)&cs.params[j],buf,ebuf,ma,false))!=RC_OK) return rc;
 			}
 		}
 	}
@@ -1182,7 +1200,7 @@ RC SimpleVar::deserialize(const byte *&buf,const byte *const ebuf,QVarID id,MemA
 	if (cv->nPids!=0) {
 		if ((cv->pids=new(ma) PID[cv->nPids])==NULL) return RC_NORESOURCES;
 		for (unsigned i=0; i<cv->nPids; i++)
-			if ((rc=MVStoreKernel::deserialize(cv->pids[i],buf,ebuf))!=RC_OK) return rc;
+			if ((rc=AfyKernel::deserialize(cv->pids[i],buf,ebuf))!=RC_OK) return rc;
 	}
 	uint32_t cntFT=0; CHECK_dec32(buf,cntFT,ebuf); CondFT **pft=&cv->condFT,*cf;
 	for (uint32_t i=0; i<cntFT; i++) {
@@ -1256,17 +1274,17 @@ size_t JoinVar::serSize() const
 {
 	size_t len=QVar::serSize()+1+nVars; unsigned nej=0;
 	for (CondEJ *ej=condEJ; ej!=NULL; ej=ej->next,++nej)
-		len+=mv_len32(ej->propID1)+mv_len32(ej->propID2)+mv_len16(ej->flags);
-	return len+mv_len32(nej);
+		len+=afy_len32(ej->propID1)+afy_len32(ej->propID2)+afy_len16(ej->flags);
+	return len+afy_len32(nej);
 }
 
 byte *JoinVar::serialize(byte *buf) const
 { 
 	*buf++=nVars; for (unsigned i=0; i<nVars; i++) *buf++=vars[i].var->getID();
 	unsigned nej=0; CondEJ *ej; for (ej=condEJ; ej!=NULL; ej=ej->next) nej++;
-	mv_enc32(buf,nej);
+	afy_enc32(buf,nej);
 	for (ej=condEJ; ej!=NULL; ej=ej->next)
-		{mv_enc32(buf,ej->propID1); mv_enc32(buf,ej->propID2); mv_enc16(buf,ej->flags);}
+		{afy_enc32(buf,ej->propID1); afy_enc32(buf,ej->propID2); afy_enc16(buf,ej->flags);}
 	return buf;
 }
 
@@ -1286,27 +1304,27 @@ RC JoinVar::deserialize(const byte *&buf,const byte *const ebuf,QVarID id,byte t
 }
 
 size_t Stmt::serSize() const {
-	size_t len=1+mv_len32(mode)+mv_len32(nVars)+mv_len32(nOrderBy)+mv_len32(nValues)+mv_len32(nNested);
+	size_t len=1+afy_len32(mode)+afy_len32(nVars)+afy_len32(nOrderBy)+afy_len32(nValues)+afy_len32(nNested);
 	for (QVar *qv=vars; qv!=NULL; qv=qv->next) len+=qv->serSize();
 	if (orderBy!=NULL && nOrderBy!=0) for (unsigned i=0; i<nOrderBy; i++) {
-		const OrderSegQ& sq=orderBy[i]; len+=2+mv_len16(sq.flags)+mv_len32(sq.lPref)+((sq.flags&ORDER_EXPR)!=0?sq.expr->serSize():mv_len32(sq.pid));
+		const OrderSegQ& sq=orderBy[i]; len+=2+afy_len16(sq.flags)+afy_len32(sq.lPref)+((sq.flags&ORDER_EXPR)!=0?sq.expr->serSize():afy_len32(sq.pid));
 	}
-	if (values!=NULL && nValues!=0) for (unsigned i=0; i<nValues; i++) len+=MVStoreKernel::serSize(values[i],true);
+	if (values!=NULL && nValues!=0) for (unsigned i=0; i<nValues; i++) len+=AfyKernel::serSize(values[i],true);
 	return len;
 }
 
 byte *Stmt::serialize(byte *buf) const
 {
-	*buf++=op; mv_enc32(buf,mode); mv_enc32(buf,nVars);
+	*buf++=op; afy_enc32(buf,mode); afy_enc32(buf,nVars);
 	for (QVar *qv=vars; qv!=NULL; qv=qv->next) buf=qv->serQV(buf);
-	mv_enc32(buf,nOrderBy);
+	afy_enc32(buf,nOrderBy);
 	if (orderBy!=NULL && nOrderBy!=0) for (unsigned i=0; i<nOrderBy; i++) {
 		const OrderSegQ& sq=orderBy[i]; buf[0]=sq.var; buf[1]=sq.aggop; buf+=2;
-		mv_enc16(buf,sq.flags); mv_enc32(buf,sq.lPref);
-		if ((sq.flags&ORDER_EXPR)!=0) buf=sq.expr->serialize(buf); else mv_enc32(buf,sq.pid);
+		afy_enc16(buf,sq.flags); afy_enc32(buf,sq.lPref);
+		if ((sq.flags&ORDER_EXPR)!=0) buf=sq.expr->serialize(buf); else afy_enc32(buf,sq.pid);
 	}
-	mv_enc32(buf,nValues); mv_enc32(buf,nNested);
-	if (values!=NULL && nValues!=0) for (unsigned i=0; i<nValues; i++) buf=MVStoreKernel::serialize(values[i],buf,true);
+	afy_enc32(buf,nValues); afy_enc32(buf,nNested);
+	if (values!=NULL && nValues!=0) for (unsigned i=0; i<nValues; i++) buf=AfyKernel::serialize(values[i],buf,true);
 	return buf;
 }
 
@@ -1344,7 +1362,7 @@ RC Stmt::deserialize(Stmt *&res,const byte *&buf,const byte *const ebuf,MemAlloc
 				if ((stmt->values=new(ma) Value[stmt->nValues])==NULL) rc=RC_NORESOURCES;
 				else {
 					memset(stmt->values,0,sizeof(Value)*stmt->nValues);
-					for (unsigned i=0; i<stmt->nValues; i++) if ((rc=MVStoreKernel::deserialize(stmt->values[i],buf,ebuf,ma,false,true))!=RC_OK) break;	
+					for (unsigned i=0; i<stmt->nValues; i++) if ((rc=AfyKernel::deserialize(stmt->values[i],buf,ebuf,ma,false,true))!=RC_OK) break;	
 				}
 			}
 		}

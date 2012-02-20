@@ -12,14 +12,14 @@ Written by Mark Venguerov 2004 - 2010
 #include "classifier.h"
 #include "queryprc.h"
 #include "pgheap.h"
-#include "mvstore.h"
+#include "affinity.h"
 #include "fsmgr.h"
 #include <locale.h>
 
 #include <stdio.h>
 
-using namespace	MVStore;
-using namespace MVStoreKernel;
+using namespace	AfyDB;
+using namespace AfyKernel;
 
 Tls Session::sessionTls;
 Tls	StoreCtx::storeTls;
@@ -214,22 +214,22 @@ RC Session::detach()
 
 void* Session::malloc(size_t s)
 {
-	return this!=NULL?mem->malloc(s):MVStoreKernel::malloc(s,SES_HEAP);
+	return this!=NULL?mem->malloc(s):AfyKernel::malloc(s,SES_HEAP);
 }
 
 void* Session::memalign(size_t a,size_t s)
 {
-	return this!=NULL?mem->memalign(a,s):MVStoreKernel::memalign(a,s,SES_HEAP);
+	return this!=NULL?mem->memalign(a,s):AfyKernel::memalign(a,s,SES_HEAP);
 }
 
 void* Session::realloc(void *p,size_t s)
 {
-	return this!=NULL?mem->realloc(p,s):MVStoreKernel::realloc(p,s,SES_HEAP);
+	return this!=NULL?mem->realloc(p,s):AfyKernel::realloc(p,s,SES_HEAP);
 }
 
 void Session::free(void *p)
 {
-	if (this!=NULL) mem->free(p); else MVStoreKernel::free(p,SES_HEAP);
+	if (this!=NULL) mem->free(p); else AfyKernel::free(p,SES_HEAP);
 }
 
 HEAP_TYPE Session::getAType() const 
@@ -424,22 +424,22 @@ LSN StoreCtx::getOldLSN() const
 
 void* StoreCtx::malloc(size_t s)
 {
-	return this!=NULL&&mem!=NULL?mem->malloc(s):MVStoreKernel::malloc(s,STORE_HEAP);
+	return this!=NULL&&mem!=NULL?mem->malloc(s):AfyKernel::malloc(s,STORE_HEAP);
 }
 
 void* StoreCtx::memalign(size_t a,size_t s)
 {
-	return this!=NULL&&mem!=NULL?mem->memalign(a,s):MVStoreKernel::memalign(a,s,STORE_HEAP);
+	return this!=NULL&&mem!=NULL?mem->memalign(a,s):AfyKernel::memalign(a,s,STORE_HEAP);
 }
 
 void* StoreCtx::realloc(void *p,size_t s)
 {
-	return this!=NULL&&mem!=NULL?mem->realloc(p,s):MVStoreKernel::realloc(p,s,STORE_HEAP);
+	return this!=NULL&&mem!=NULL?mem->realloc(p,s):AfyKernel::realloc(p,s,STORE_HEAP);
 }
 
 void StoreCtx::free(void *p)
 {
-	if (this!=NULL && mem!=NULL) mem->free(p); else MVStoreKernel::free(p,STORE_HEAP);
+	if (this!=NULL && mem!=NULL) mem->free(p); else AfyKernel::free(p,STORE_HEAP);
 }
 
 HEAP_TYPE StoreCtx::getAType() const 

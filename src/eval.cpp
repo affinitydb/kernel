@@ -16,7 +16,7 @@ Written by Mark Venguerov 2004 - 2010
 #include <math.h>
 #include <stdio.h>
 
-using namespace MVStoreKernel;
+using namespace AfyKernel;
 
 const byte Expr::compareCodeTab[] = {2,5,1,3,4,6};
 
@@ -89,7 +89,7 @@ RC Expr::eval(const Expr *const *exprs,ulong nExp,Value& result,PINEx **vars,ulo
 		switch (op&=0x7F) {
 		case OP_CON:
 			assert(top<stack+exp->hdr.lStack); top->flags=0;
-			if ((rc=MVStoreKernel::deserialize(*top,codePtr,codeEnd,ma,true))!=RC_OK) break;
+			if ((rc=AfyKernel::deserialize(*top,codePtr,codeEnd,ma,true))!=RC_OK) break;
 			assert(top->type!=VT_VARREF && top->type!=VT_CURRENT);
 			top++; break;
 		case OP_CONID:
@@ -139,14 +139,14 @@ RC Expr::eval(const Expr *const *exprs,ulong nExp,Value& result,PINEx **vars,ulo
 			if (op==OP_SETPROP) {
 				top[-1].property=vd->props[u]&STORE_MAX_URIID; if (ff) top[-1].meta=*codePtr++;
 			} else if (!vd->fLoaded) {
-				if (op==OP_ELT) {mv_dec32(codePtr,eid); eid=mv_dec32zz(eid);} else eid=STORE_COLLECTION_ID;
+				if (op==OP_ELT) {afy_dec32(codePtr,eid); eid=afy_dec32zz(eid);} else eid=STORE_COLLECTION_ID;
 				if ((rc=vars[vdx]->getValue(vd->props[u],*top,ff?LOAD_CARDINALITY|LOAD_SSV:LOAD_SSV,NULL,eid))!=RC_OK)
 					{if (cntCatch!=0 && rc==RC_NOTFOUND) {top->setError(); rc=RC_OK;}}
 			} else {
 				v=&vd->vals[u]; assert(u<vd->nVals && vd->vals!=NULL); 
 				if (op==OP_PROP) {*top=*v; top->flags=NO_HEAP;}
 				else {
-					mv_dec32(codePtr,eid); eid=mv_dec32zz(eid);
+					afy_dec32(codePtr,eid); eid=afy_dec32zz(eid);
 					if (v->type==VT_ARRAY || v->type==VT_COLLECTION) {
 						// get elt
 					} else if (eid==STORE_FIRST_ELEMENT || eid==STORE_LAST_ELEMENT) {
@@ -253,16 +253,16 @@ RC Expr::path(Value *&top,const byte *&codePtr,const ValueV& params,MemAlloc *ma
 		case 0x20: sg.rmin=0; break;
 		case 0x40: sg.rmax=~0u; break;
 		case 0x60: sg.rmin=0; sg.rmax=~0u; break;
-		case 0x80: mv_dec32(pc,sg.rmin); mv_dec32(pc,sg.rmax); break;
+		case 0x80: afy_dec32(pc,sg.rmin); afy_dec32(pc,sg.rmax); break;
 		case 0xA0:
-			mv_dec32(pc,sg.rmin);
+			afy_dec32(pc,sg.rmin);
 			if (sg.rmin>=params.nValues) rc=RC_NOTFOUND;
 			else if (params.vals[sg.rmin].type!=VT_UINT && params.vals[sg.rmin].type!=VT_INT) rc=RC_TYPE;
 			else if (params.vals[sg.rmin].type==VT_INT && params.vals[sg.rmin].i<0) rc=RC_INVPARAM;
 			else sg.rmin=sg.rmax=params.vals[sg.rmin].ui;
 			break;
 		case 0xC0:
-			mv_dec32(pc,sg.rmin); mv_dec32(pc,sg.rmax);
+			afy_dec32(pc,sg.rmin); afy_dec32(pc,sg.rmax);
 			if (sg.rmin>=params.nValues||sg.rmax>=params.nValues) rc=RC_NOTFOUND;
 			else if (params.vals[sg.rmin].type!=VT_UINT && params.vals[sg.rmin].type!=VT_INT || params.vals[sg.rmax].type!=VT_UINT && params.vals[sg.rmax].type!=VT_INT) rc=RC_TYPE;
 			else if (params.vals[sg.rmin].type==VT_INT && params.vals[sg.rmin].i<0 || params.vals[sg.rmax].type==VT_INT && params.vals[sg.rmax].i<0 || params.vals[sg.rmin].ui>params.vals[sg.rmax].ui) rc=RC_INVPARAM;
@@ -271,7 +271,7 @@ RC Expr::path(Value *&top,const byte *&codePtr,const ValueV& params,MemAlloc *ma
 		}
 		switch (u&0x18) {
 		case 0: break;
-		case 0x08: mv_dec32(pc,sg.eid); sg.eid=mv_dec32zz((uint32_t)sg.eid); break;
+		case 0x08: afy_dec32(pc,sg.eid); sg.eid=afy_dec32zz((uint32_t)sg.eid); break;
 		case 0x10: if (top->type!=VT_INT && top->type!=VT_UINT) rc=RC_TYPE; else sg.eid=(top--)->ui; break;	// convert type?
 		case 0x18:
 //???		rc=deserialize(filter,pc,codeEnd,ses!=NULL?ses:(ses=Session::getSession()));
@@ -346,7 +346,7 @@ const Value *PathIt::navigate(GO_DIR dir,ElementID eid)
 //			if ((rc=getBody(*res))!=RC_OK || (res->hpin->hdr.descr&HOH_HIDDEN)!=0)
 //				{res->cleanup(); if (rc==RC_OK || rc==RC_NOACCESS || rc==RC_REPEAT || rc==RC_DELETED) {pop(); continue;} else {state|=QST_EOF; return rc;}}
 //			fOK=path[pst->idx-1].filter==NULL || ses->getStore()->queryMgr->condSatisfied((const Expr* const*)&path[pst->idx-1].filter,1,(const PINEx**)&res,1,params,nParams,ses);
-			if (!fOK && !path[pst->idx-1].fLast) {MVStoreKernel::freeV(res); res.setError(); pop(); continue;}
+			if (!fOK && !path[pst->idx-1].fLast) {AfyKernel::freeV(res); res.setError(); pop(); continue;}
 			if (pst->rcnt<path[pst->idx-1].rmax||path[pst->idx-1].rmax==0xFFFF) {
 //				if ((rc=ses->getStore()->queryMgr->loadV(pst->v[1],path[pst->idx-1].pid,*res,LOAD_SSV|LOAD_REF,ses,path[pst->idx-1].eid))==RC_OK) {if (pst->v[1].type!=VT_ERROR) pst->vidx=1;}
 //				else if (rc!=RC_NOTFOUND) {freeV(res); res.setError(); return NULL;}
@@ -855,33 +855,27 @@ RC Expr::calc(ExprOp op,Value& arg,const Value *moreArgs,int nargs,unsigned flag
 				{val=*arg2; val.flags=val.flags&~HEAP_TYPE_MASK|NO_HEAP; rc=calc(op,val,moreArgs,2,flags,ma); freeV(val);}
 			arg.nav->navigate(GO_FINDBYID,STORE_COLLECTION_ID); return rc;
 		}
-		if (op==OP_IS_A) switch (moreArgs->type) {
-		default: return RC_TYPE;
-		case VT_URIID:
-			if (arg.type==VT_REFID) {
-				if ((ses=Session::getSession())==NULL) return RC_NOSESSION; PINEx cb(ses,arg.id);
-				return (rc=ses->getStore()->queryMgr->getBody(cb))!=RC_OK?rc:ses->getStore()->queryMgr->test(&cb,moreArgs->uid,ValueV(nargs>2?&moreArgs[1]:NULL,nargs-2),nargs<=2)?RC_TRUE:RC_FALSE;
-			} else if (arg.type==VT_REF) {
-				PINEx pex((const PIN*)arg.pin); return arg.type==VT_REF&&StoreCtx::get()->queryMgr->test(&pex,moreArgs->uid,ValueV(nargs>2?&moreArgs[1]:NULL,nargs-2),nargs<=2)?RC_TRUE:RC_FALSE;
-			} else return RC_FALSE;
-		case VT_ARRAY:
-			for (len=moreArgs->length,rc=RC_FALSE; len!=0;) {
-				arg2=&moreArgs->varray[--len];
-				if (arg2->type==VT_URIID) {
-					//...
+		if (op==OP_IS_A) {
+			if (moreArgs->type==VT_STMT) return ((Stmt*)moreArgs->stmt)->cmp(arg,op,flags);
+			if (arg.type==VT_REFID) ses=Session::getSession(); else if (arg.type==VT_REF) ses=((PIN*)arg.pin)->getSes(); else return RC_FALSE;
+			if (ses==NULL) return RC_NOSESSION; PINEx pex(ses);
+			if (arg.type==VT_REF) new(&pex) PINEx((const PIN*)arg.pin); else {pex=arg.id; if ((rc=ses->getStore()->queryMgr->getBody(pex))!=RC_OK) return rc;}
+			switch (moreArgs->type) {
+			default: return RC_TYPE;
+			case VT_URIID: return ses->getStore()->queryMgr->test(&pex,moreArgs->uid,ValueV(nargs>2?&moreArgs[1]:NULL,nargs-2),nargs<=2)?RC_TRUE:RC_FALSE;
+			case VT_ARRAY:
+				for (len=moreArgs->length,rc=RC_FALSE; len!=0;) {
+					arg2=&moreArgs->varray[--len];
+					if (arg2->type==VT_URIID &&
+						ses->getStore()->queryMgr->test(&pex,arg2->uid,ValueV(nargs>2?&moreArgs[1]:NULL,nargs-2),nargs<=2)) return RC_TRUE;
 				}
+				return RC_FALSE;
+			case VT_COLLECTION:
+				for (arg2=moreArgs->nav->navigate(GO_FIRST),rc=RC_FALSE; arg2!=NULL; arg2=moreArgs->nav->navigate(GO_NEXT))
+					if (arg2->type==VT_URIID &&
+							ses->getStore()->queryMgr->test(&pex,arg2->uid,ValueV(nargs>2?&moreArgs[1]:NULL,nargs-2),nargs<=2)) return RC_TRUE;
+				moreArgs->nav->navigate(GO_FINDBYID,STORE_COLLECTION_ID); return rc;
 			}
-			return RC_FALSE;
-		case VT_COLLECTION:
-			for (arg2=moreArgs->nav->navigate(GO_FIRST),rc=RC_FALSE; arg2!=NULL; arg2=moreArgs->nav->navigate(GO_NEXT)) {
-				if (arg2->type==VT_URIID) {
-					//...
-					//  if ok -> break;
-				}
-			}
-			moreArgs->nav->navigate(GO_FINDBYID,STORE_COLLECTION_ID); return rc;
-		case VT_STMT:
-			return ((Stmt*)moreArgs->stmt)->cmp(arg,op,flags);
 		} else switch (moreArgs->type) {
 		default: return cmp(arg,*moreArgs,flags|CND_EQ)==0?RC_TRUE:RC_FALSE;
 		case VT_RANGE:

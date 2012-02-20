@@ -11,7 +11,7 @@ Written by Mark Venguerov 2004 - 2010
 
 #include "objmgr.h"
 #include "crypt.h"
-#include "mvstore.h"
+#include "affinity.h"
 
 #define	DEFAULT_URIHASH_SIZE	256
 #define	DEFAULT_URINAME_SIZE	256
@@ -21,9 +21,9 @@ Written by Mark Venguerov 2004 - 2010
 #define	DEFAULT_IDENTNAME_SIZE	128
 #define	DEFAULT_CACHED_IDENTS	256
 
-using namespace MVStore;
+using namespace AfyDB;
 
-namespace MVStoreKernel
+namespace AfyKernel
 {
 
 #define	UID_ID		0x01

@@ -15,7 +15,7 @@ Written by Mark Venguerov 2010
 #include "startup.h"
 #include "fio.h"
 
-using namespace MVStoreKernel;
+using namespace AfyKernel;
 
 #define	SELECT_S			"SELECT"
 #define	STAR_S				"*"
@@ -1281,7 +1281,7 @@ const TLx SInCtx::charLex[256] =
 	LX_UTF8,LX_UTF8,LX_UTF8,LX_UTF8,LX_UTF8,LX_ERR,LX_ERR,LX_ERR,LX_ERR,LX_ERR,LX_ERR,LX_ERR,LX_ERR,LX_ERR,LX_ERR,LX_ERR,											// 0xF0 - 0xFF
 };
 
-bool MVStoreKernel::testStrNum(const char *s,size_t l,Value& res)
+bool AfyKernel::testStrNum(const char *s,size_t l,Value& res)
 {
 	while (l!=0 && SInCtx::charLex[(byte)*s]==LX_SPACE) --l,++s;
 	if (l==0) return false;
@@ -2904,7 +2904,7 @@ RC SInCtx::exec(const Value *params,unsigned nParams,char **result,uint64_t *nPr
 	return result==NULL||(*result=(char*)out)!=NULL?RC_OK:RC_NORESOURCES;
 }
 
-void SInCtx::parseManage(IMapDir *id,MVStoreCtx& ctx,const StartupParameters *sp)
+void SInCtx::parseManage(IMapDir *id,AfyDBCtx& ctx,const StartupParameters *sp)
 {
 	struct StrCopy {
 		char *s; 

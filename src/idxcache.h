@@ -11,9 +11,9 @@ Written by Mark Venguerov 2004 - 2010
 
 #include "pinex.h"
 
-using namespace MVStore;
+using namespace AfyDB;
 
-namespace MVStoreKernel
+namespace AfyKernel
 {
 
 #define	DEFAULT_LIMIT	(~0u)	//0x1000

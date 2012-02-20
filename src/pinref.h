@@ -8,12 +8,12 @@ Written by Mark Venguerov 2008 - 2010
 #ifndef _PINREF_H_
 #define _PINREF_H_
 
-#include "mvstore.h"
+#include "affinity.h"
 #include "utils.h"
 
-using namespace MVStore;
+using namespace AfyDB;
 
-namespace MVStoreKernel
+namespace AfyKernel
 {
 
 #define	XPINREFSIZE	64
@@ -45,7 +45,7 @@ struct PINRef
 	RC					dec(const byte *p,size_t l);
 	static	bool		isColl(const byte *p,size_t l) {assert(l!=0); return (p[l-1]&0xA0)==0xA0;}
 	static	void		changeFColl(byte *p,byte& l,bool fSet) {assert(l!=0); if ((*(p+=l-1)&0x80)==0) {if (fSet) *++p=0xA0,++l;} else if (fSet) *p|=0x20; else if ((*p&=~0x20)==0x80) --l;}
-	static	uint32_t	getCount(const byte *p,size_t l) {assert(l!=0); uint32_t c=1; if (l!=0 && (*(p+=l-1)&0x90)==0x90) {if ((*p&0x40)!=0) --p; mv_dec32r(p,c);} return c;}
+	static	uint32_t	getCount(const byte *p,size_t l) {assert(l!=0); uint32_t c=1; if (l!=0 && (*(p+=l-1)&0x90)==0x90) {if ((*p&0x40)!=0) --p; afy_dec32r(p,c);} return c;}
 	static	RC			getPID(const byte *p,size_t l,ushort stID,PID& id,PageAddr *paddr=NULL);
 	static	RC			adjustCount(byte *p,size_t& l,uint32_t cnt,byte *buf,bool fDec=false);
 	static	int			cmpPIDs(const byte *p1,unsigned l1,const byte *p2,unsigned l2);

@@ -14,7 +14,7 @@ Written by Mark Venguerov and Andrew Skowronski 2004 - 2010
 
 class IStoreIO;
 
-namespace MVStoreKernel
+namespace AfyKernel
 {
 class StoreCtx;
 struct myaio

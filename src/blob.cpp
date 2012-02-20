@@ -12,7 +12,7 @@ Written by Mark Venguerov 2004 - 2010
 #include "fsmgr.h"
 #include "expr.h"
 
-using namespace MVStoreKernel;
+using namespace AfyKernel;
 
 StreamX::StreamX(const PageAddr& addr,uint64_t l,ValueType ty,MemAlloc *ma) 
 : start(addr),type(ty),allc(ma),ctx(StoreCtx::get()),len(l),pos(0),current(addr),shift(0)
@@ -947,7 +947,7 @@ void Collection::destroy()
 	MemAlloc *ma=allc; this->~Collection(); if (ma!=NULL) ma->free(this);
 }
 
-namespace MVStoreKernel
+namespace AfyKernel
 {
 class InitCollection : public Tree
 {

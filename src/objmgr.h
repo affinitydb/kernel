@@ -16,7 +16,7 @@ Written by Mark Venguerov 2004 - 2010
 
 #define	DEFAULT_MAX_OBJECTS	512
 
-namespace MVStoreKernel
+namespace AfyKernel
 {
 
 #define COBJ_NONAME	0x8000

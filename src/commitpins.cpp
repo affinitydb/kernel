@@ -19,7 +19,7 @@ Written by Mark Venguerov 2004 - 2010
 #include "classifier.h"
 #include "maps.h"
 
-using namespace MVStoreKernel;
+using namespace AfyKernel;
 
 #define	START_BUF_SIZE	0x200
 
@@ -40,7 +40,7 @@ using namespace MVStoreKernel;
 #define	COMMIT_PARTS		0x0040
 #define	COMMIT_SSVS			0x0020
 
-namespace MVStoreKernel
+namespace AfyKernel
 {
 	struct AllocPage {
 		AllocPage	*next;
@@ -613,7 +613,7 @@ RC QueryPrc::estimateLength(const Value& v,size_t& res,ulong mode,size_t thresho
 		break;
 	case VT_STMT:
 		if (v.stmt==NULL) return RC_INVPARAM;
-		len=((Stmt*)v.stmt)->serSize(); res=len<=threshold?mv_len16(len)+len:(v.flags|=VF_SSV,
+		len=((Stmt*)v.stmt)->serSize(); res=len<=threshold?afy_len16(len)+len:(v.flags|=VF_SSV,
 			len<=HeapPageMgr::contentSize(ctx->bufMgr->getPageSize())-sizeof(PageOff)-sizeof(HeapPageMgr::HeapObjHeader)?sizeof(HRefSSV):sizeof(HLOB));
 		break;
 	}
@@ -843,7 +843,7 @@ RC QueryPrc::persistValue(const Value& v,ushort& sht,HType& vt,ushort& offs,byte
 		} else {
 			assert(ll<0xFFFF); len=(PageOff)ll;
 			if (ty==VT_EXPR) ((Expr*)v.expr)->serialize(buf);
-			else {mv_enc16(buf,len); len+=mv_len16(len); ((Stmt*)v.stmt)->serialize(buf);}
+			else {afy_enc16(buf,len); len+=afy_len16(len); ((Stmt*)v.stmt)->serialize(buf);}
 			vt.setType(ty,HDF_NORMAL); 
 		}
 		break;

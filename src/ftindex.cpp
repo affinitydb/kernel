@@ -11,7 +11,7 @@ Written by Mark Venguerov 2004 - 2010
 #include "txmgr.h"
 #include "blob.h"
 
-using namespace MVStoreKernel;
+using namespace AfyKernel;
 
 static const IndexFormat ftIndexFmt(KT_BIN,KT_VARKEY,KT_VARMDPINREFS);
 
@@ -290,7 +290,7 @@ void StringEnumFTScan::destroy()
 
 //-------------------------------------------------------------------------------------------
 
-namespace MVStoreKernel
+namespace AfyKernel
 {
 	enum TokenizerState {TK_NOWORD, TK_NUMBER, TK_LOWER, TK_WORD, TK_NSTATES, TK_STOP};
 	enum TokenizerType {TK_OTHER, TK_DIGIT, TK_LC, TK_UC, TK_NCHARTYPES};

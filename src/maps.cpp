@@ -11,7 +11,7 @@ Written by Mark Venguerov 2004 - 2010
 #include "queryprc.h"
 #include "parser.h"
 
-using namespace MVStoreKernel;
+using namespace AfyKernel;
 
 URIMgr::URIMgr(StoreCtx *ct,int hashSize,int nameHashSize,unsigned xObj) : NamedObjMgr(ct,MA_URIID,hashSize,MA_URI,nameHashSize,xObj)
 {

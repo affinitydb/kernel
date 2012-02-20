@@ -13,7 +13,7 @@ Written by Mark Venguerov 2004 - 2010
 #include <stdio.h>
 #include <stdarg.h>
 
-using namespace MVStoreKernel;
+using namespace AfyKernel;
 
 static int nLogOpen = 0;
 
@@ -142,7 +142,7 @@ char *LogMgr::getLogFileName(ulong logFileN,char *buf) const
 {
 	char *p=buf;
 	if (logDirectory!=NULL) {size_t l=strlen(logDirectory); memcpy(p,logDirectory,l); p+=l;}
-	sprintf(p,MVSTOREPREFIX"A%08lX%s",logFileN,LOGFILESUFFIX);
+	sprintf(p,LOGPREFIX"A%08lX%s",logFileN,LOGFILESUFFIX);
 	return buf;
 }
 

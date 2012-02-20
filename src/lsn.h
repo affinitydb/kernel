@@ -11,7 +11,7 @@ Written by Mark Venguerov 2004 - 2010
 
 #include "types.h"
 
-namespace MVStoreKernel
+namespace AfyKernel
 {
 
 struct LSN

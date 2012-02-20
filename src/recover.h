@@ -17,7 +17,7 @@ Written by Mark Venguerov 2004 - 2010
 #define ACTIVESETSIZE		2000
 #define DIRTYPAGESETSIZE	3000
 
-namespace MVStoreKernel
+namespace AfyKernel
 {
 
 class TXIDKey

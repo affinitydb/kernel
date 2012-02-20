@@ -15,7 +15,7 @@ Written by Adam Back and Mark Venguerov 2004 - 2010
 #include <fcntl.h>
 #endif
 
-using namespace MVStoreKernel;
+using namespace AfyKernel;
 
 const static uint32_t iii=1;
 const bool fLEnd = *(byte*)&iii!=0;
@@ -32,17 +32,17 @@ const bool fLEnd = *(byte*)&iii!=0;
 
 const uint32_t SHA1::IV[SHA1_DIGEST_WORDS] = {0x67452301, 0xEFCDAB89, 0x98BADCFE, 0x10325476, 0xC3D2E1F0};
 
-__forceinline void	make_big_endian32(uint32_t *data,unsigned n) {if (fLEnd) for (;n>0;++data,--n) *data=mv_rev(*data);}
-__forceinline void	restore_endian32(uint32_t *data,unsigned n) {if (fLEnd) for (;n>0;++data,--n) *data=mv_rev(*data);}
+__forceinline void	make_big_endian32(uint32_t *data,unsigned n) {if (fLEnd) for (;n>0;++data,--n) *data=afy_rev(*data);}
+__forceinline void	restore_endian32(uint32_t *data,unsigned n) {if (fLEnd) for (;n>0;++data,--n) *data=afy_rev(*data);}
 template<typename T> __forceinline void	axor(T *p1,const T *p2,size_t l) {for (;l!=0; --l) *p1++^=*p2++;}
 
 void SHA1::transform()
 {   
 	uint32_t W[80];
     memcpy(W,M,SHA1_INPUT_BYTES); memset((byte*)W+SHA1_INPUT_BYTES,0,sizeof(W)-SHA1_INPUT_BYTES);
-    for (unsigned t=16; t<80; t++) W[t]=mv_rot(W[t-16]^W[t-14]^W[t-8]^W[t-3],1);
+    for (unsigned t=16; t<80; t++) W[t]=afy_rot(W[t-16]^W[t-14]^W[t-8]^W[t-3],1);
 
-#define ROUND(t,A,B,C,D,E,Func,K)	E+=mv_rot(A,5)+Func(B,C,D)+W[t]+K; B=mv_rot(B,30);
+#define ROUND(t,A,B,C,D,E,Func,K)	E+=afy_rot(A,5)+Func(B,C,D)+W[t]+K; B=afy_rot(B,30);
 #define ROUND5(t,Func,K)			ROUND(t,A,B,C,D,E,Func,K); ROUND(t+1,E,A,B,C,D,Func,K); ROUND(t+2,D,E,A,B,C,Func,K );\
 									ROUND(t+3,C,D,E,A,B,Func,K); ROUND(t+4,B,C,D,E,A,Func,K)
 #define ROUND20(t,Func,K)			ROUND5(t,Func,K); ROUND5(t+5,Func,K); ROUND5(t+10,Func,K); ROUND5(t+15,Func,K)
@@ -121,7 +121,7 @@ PWD_PBKDF2::PWD_PBKDF2(const byte *key,size_t lkey,const byte *enc) : fOK(false)
 	uint32_t count,i;
 	if (enc!=NULL) {
 		memcpy(pwd,enc,sizeof(uint32_t)+PWD_LSALT);
-		count=fLEnd?mv_rev(*(uint32_t*)pwd):*(uint32_t*)pwd;
+		count=fLEnd?afy_rev(*(uint32_t*)pwd):*(uint32_t*)pwd;
 	} else {
 		*(uint32_t*)pwd=count=PWD_COUNT; make_big_endian32((uint32_t*)pwd,1);
 		StoreCtx::get()->cryptoMgr->randomBytes(pwd+sizeof(uint32_t),PWD_LSALT);
@@ -166,13 +166,13 @@ AES::AESInit::AESInit()
 	}
 	for(i=0; i<256; i++) {
 		uint32_t a=encSTab[i],b=X(a)&0xFF; a=encTab[0][i]=(a^b)^(a<<8)^(a<<16)^(b<<24);
-		encTab[1][i]=mv_rot(a,24); encTab[2][i]=mv_rot(a,16); encTab[3][i]=mv_rot(a,8);
+		encTab[1][i]=afy_rot(a,24); encTab[2][i]=afy_rot(a,16); encTab[3][i]=afy_rot(a,8);
 		if ((a=decSTab[i])==0) decTab[0][i]=decTab[1][i]=decTab[2][i]=decTab[3][i]=0;
 		else {
 			a=t2[a];
 			a=decTab[0][i]=t1[(a+t2[0x0B])%0xFF]^uint32_t(t1[(a+t2[0x0D])%0xFF])<<8
 				^uint32_t(t1[(a+t2[0x09])%0xFF])<<16^uint32_t(t1[(a+t2[0x0E])%0xFF])<<24;
-			decTab[1][i]=mv_rot(a,24); decTab[2][i]=mv_rot(a,16); decTab[3][i]=mv_rot(a,8);
+			decTab[1][i]=afy_rot(a,24); decTab[2][i]=afy_rot(a,16); decTab[3][i]=afy_rot(a,8);
 		}
     }
 	for(i=0; i<256; i++) {

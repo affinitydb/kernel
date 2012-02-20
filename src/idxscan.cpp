@@ -11,10 +11,10 @@ Written by Mark Venguerov 2004 - 2010
 #include "buffer.h"
 #include "session.h"
 
-using namespace MVStore;
-using namespace MVStoreKernel;
+using namespace AfyDB;
+using namespace AfyKernel;
 
-namespace MVStoreKernel
+namespace AfyKernel
 {
 
 #define	SC_INIT		0x80000000

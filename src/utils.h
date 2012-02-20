@@ -13,9 +13,9 @@ Written by Mark Venguerov 2004 - 2010
 #include "mem.h"
 #include <stddef.h>
 
-namespace MVStore {struct Value; struct DateTime;}
+namespace AfyDB {struct Value; struct DateTime;}
 
-namespace MVStoreKernel
+namespace AfyKernel
 {
 
 // Next Power of 2 (H. Warren, Hacker's Delight, 2003, p.48)
@@ -99,56 +99,56 @@ __forceinline bool cmpncase(const char *p1,const char *p2,size_t l)
 	return true;
 }
 
-extern	RC		strToNum(const char *str,size_t lstr,MVStore::Value& res,const char **pend=NULL,bool fInt=false);
+extern	RC		strToNum(const char *str,size_t lstr,AfyDB::Value& res,const char **pend=NULL,bool fInt=false);
 extern	RC		strToTimestamp(const char *str,size_t lstr,TIMESTAMP& res);
 extern	RC		strToInterval(const char *str,size_t lstr,int64_t& res);
 extern	RC		convDateTime(class Session *ses,TIMESTAMP dt,char *buf,int& l,bool fUTC=true);
 extern	RC		convInterval(int64_t it,char *buf,int& l);
-extern	RC		convDateTime(class Session *ses,TIMESTAMP dt,MVStore::DateTime& dts,bool fUTC=true);
-extern	RC		convDateTime(class Session *ses,const MVStore::DateTime& dts,TIMESTAMP& dt,bool fUTC=true);
+extern	RC		convDateTime(class Session *ses,TIMESTAMP dt,AfyDB::DateTime& dts,bool fUTC=true);
+extern	RC		convDateTime(class Session *ses,const AfyDB::DateTime& dts,TIMESTAMP& dt,bool fUTC=true);
 extern	RC		getDTPart(TIMESTAMP dt,unsigned& res,int part);
 
-#undef mv_rot
-#undef mv_rev
+#undef afy_rot
+#undef afy_rev
 #ifdef WIN32
-#define mv_rot(u,n)	_lrotl(u,n)
-#define mv_rev(u) _byteswap_ulong(u)
+#define afy_rot(u,n)	_lrotl(u,n)
+#define afy_rev(u) _byteswap_ulong(u)
 #elif defined(IA32) || defined(__x86_64__)
-#define mv_rot(u,n) ({register uint32_t ret; asm ("roll %1,%0":"=r"(ret):"I"(n),"0"(u):"cc"); ret;})
-__forceinline uint32_t mv_rev(uint32_t u) {register uint32_t l=u; asm ("bswapl %0":"=r"(l):"0"(l)); return l;}
+#define afy_rot(u,n) ({register uint32_t ret; asm ("roll %1,%0":"=r"(ret):"I"(n),"0"(u):"cc"); ret;})
+__forceinline uint32_t afy_rev(uint32_t u) {register uint32_t l=u; asm ("bswapl %0":"=r"(l):"0"(l)); return l;}
 #elif defined(__arm__)
-#define mv_rot(u, n) ({register uint32_t ret, i=32-n; asm (" mov %0, %2, ror %1":"=r"(ret):"r"(i),"0"(u):"cc"); ret;})
-__forceinline uint32_t mv_rev(uint32_t u) {register uint32_t l=u; asm ("rev %0, %1":"=r"(l):"0"(l)); return l;}
+#define afy_rot(u, n) ({register uint32_t ret, i=32-n; asm (" mov %0, %2, ror %1":"=r"(ret):"r"(i),"0"(u):"cc"); ret;})
+__forceinline uint32_t afy_rev(uint32_t u) {register uint32_t l=u; asm ("rev %0, %1":"=r"(l):"0"(l)); return l;}
 #else
-__forceinline uint32_t mv_rot(uint32_t u,uint32_t n) {return u<<n|u>>(sizeof(uint32_t)*8-n);}
-__forceinline uint32_t mv_rev(uint32_t u) {return mv_rot(u,8)&0x00FF00FF|mv_rot(u&0x00FF00FF,24);}
+__forceinline uint32_t afy_rot(uint32_t u,uint32_t n) {return u<<n|u>>(sizeof(uint32_t)*8-n);}
+__forceinline uint32_t afy_rev(uint32_t u) {return afy_rot(u,8)&0x00FF00FF|afy_rot(u&0x00FF00FF,24);}
 #endif
 
-#define	mv_dec64(a,b)	{if (((b=*a++)&1<<7)!=0 && ((b=b&(1<<7)-1|*a++<<7)&1<<14)!=0 &&													\
+#define	afy_dec64(a,b)	{if (((b=*a++)&1<<7)!=0 && ((b=b&(1<<7)-1|*a++<<7)&1<<14)!=0 &&													\
 						((b=b&(1<<14)-1|*a++<<14)&1<<21)!=0 && ((b=b&(1<<21)-1|*a++<<21)&1<<28)!=0 &&									\
 						((b=b&(1<<28)-1|uint64_t(*a++)<<28)&1ULL<<35)!=0 && ((b=b&(1ULL<<35)-1|uint64_t(*a++)<<35)&1ULL<<42)!=0 &&		\
 						((b=b&(1ULL<<42)-1|uint64_t(*a++)<<42)&1ULL<<49)!=0 && ((b=b&(1ULL<<49)-1|uint64_t(*a++)<<49)&1ULL<<56)!=0 &&	\
 						((b=b&(1ULL<<56)-1|uint64_t(*a++)<<56)&1ULL<<63)!=0) b=b&(1ULL<<63)-1|uint64_t(*a++)<<63;}
-#define mv_dec32(a,b)	{if (((b=*a++)&1<<7)!=0 && ((b=b&(1<<7)-1|(*a++)<<7)&1<<14)!=0 &&										\
+#define afy_dec32(a,b)	{if (((b=*a++)&1<<7)!=0 && ((b=b&(1<<7)-1|(*a++)<<7)&1<<14)!=0 &&										\
 						((b=b&(1<<14)-1|(*a++)<<14)&1<<21)!=0 && ((b=b&(1<<21)-1|(*a++)<<21)&1<<28)!=0)	b=b&(1<<28)-1|*a++<<28;}
-#define mv_dec16(a,b)	{if (((b=*a++)&1<<7)!=0 && ((b=b&(1<<7)-1|(*a++)<<7)&1<<14)!=0) b=b&(1<<14)-1|(*a++&3)<<14;}
-#define	mv_dec8(a,b)	{if (((b=*a++)&1<<7)!=0) b=b&(1<<7)-1|(*a++)<<7;}
+#define afy_dec16(a,b)	{if (((b=*a++)&1<<7)!=0 && ((b=b&(1<<7)-1|(*a++)<<7)&1<<14)!=0) b=b&(1<<14)-1|(*a++&3)<<14;}
+#define	afy_dec8(a,b)	{if (((b=*a++)&1<<7)!=0) b=b&(1<<7)-1|(*a++)<<7;}
 
-#define	mv_dec64b(a,b,c)	{if (((b=*a++)&1<<7)!=0 && a<c && ((b=b&(1<<7)-1|*a++<<7)&1<<14)!=0 && a<c &&												\
+#define	afy_dec64b(a,b,c)	{if (((b=*a++)&1<<7)!=0 && a<c && ((b=b&(1<<7)-1|*a++<<7)&1<<14)!=0 && a<c &&												\
 							((b=b&(1<<14)-1|*a++<<14)&1<<21)!=0 && a<c && ((b=b&(1<<21)-1|*a++<<21)&1<<28)!=0 && a<c &&									\
 							((b=b&(1<<28)-1|uint64_t(*a++)<<28)&1ULL<<35)!=0 && a<c && ((b=b&(1ULL<<35)-1|uint64_t(*a++)<<35)&1ULL<<42)!=0 && a<c &&	\
 							((b=b&(1ULL<<42)-1|uint64_t(*a++)<<42)&1ULL<<49)!=0 && a<c && ((b=b&(1ULL<<49)-1|uint64_t(*a++)<<49)&1ULL<<56)!=0 && a<c &&	\
 							((b=b&(1ULL<<56)-1|uint64_t(*a++)<<56)&1ULL<<63)!=0 && a<c) b=b&(1ULL<<63)-1|uint64_t(*a++)<<63;}
-#define mv_dec32b(a,b,c)	{if (((b=*a++)&1<<7)!=0 && a<c && ((b=b&(1<<7)-1|(*a++)<<7)&1<<14)!=0 && a<c &&								\
+#define afy_dec32b(a,b,c)	{if (((b=*a++)&1<<7)!=0 && a<c && ((b=b&(1<<7)-1|(*a++)<<7)&1<<14)!=0 && a<c &&								\
 							((b=b&(1<<14)-1|(*a++)<<14)&1<<21)!=0 && a<c && ((b=b&(1<<21)-1|(*a++)<<21)&1<<28)!=0 && a<c)	b=b&(1<<28)-1|*a++<<28;}
-#define mv_dec16b(a,b,c)	{if (((b=*a++)&1<<7)!=0 && a<c && ((b=b&(1<<7)-1|(*a++)<<7)&1<<14)!=0 && a<c) b=b&(1<<14)-1|(*a++&3)<<14;}
-#define	mv_dec8b(a,b,c)		{if (((b=*a++)&1<<7)!=0 && a<c) b=b&(1<<7)-1|(*a++)<<7;}
+#define afy_dec16b(a,b,c)	{if (((b=*a++)&1<<7)!=0 && a<c && ((b=b&(1<<7)-1|(*a++)<<7)&1<<14)!=0 && a<c) b=b&(1<<14)-1|(*a++&3)<<14;}
+#define	afy_dec8b(a,b,c)		{if (((b=*a++)&1<<7)!=0 && a<c) b=b&(1<<7)-1|(*a++)<<7;}
 
-#define	CHECK_dec16(a,b,c)	{mv_dec16b(a,b,c); if (a==c && (a[-1]&0x80)!=0) return RC_CORRUPTED;}
-#define	CHECK_dec32(a,b,c)	{mv_dec32b(a,b,c); if (a==c && (a[-1]&0x80)!=0) return RC_CORRUPTED;}
-#define	CHECK_dec64(a,b,c)	{mv_dec64b(a,b,c); if (a==c && (a[-1]&0x80)!=0) return RC_CORRUPTED;}
+#define	CHECK_dec16(a,b,c)	{afy_dec16b(a,b,c); if (a==c && (a[-1]&0x80)!=0) return RC_CORRUPTED;}
+#define	CHECK_dec32(a,b,c)	{afy_dec32b(a,b,c); if (a==c && (a[-1]&0x80)!=0) return RC_CORRUPTED;}
+#define	CHECK_dec64(a,b,c)	{afy_dec64b(a,b,c); if (a==c && (a[-1]&0x80)!=0) return RC_CORRUPTED;}
 
-#define	mv_enc64(a,b)	{if (b<1u<<7) *a++=byte(b);										\
+#define	afy_enc64(a,b)	{if (b<1u<<7) *a++=byte(b);										\
 						else {*a++=byte(b|0x80); if (b<1u<<14) *a++=byte(b>>7);			\
 						else {*a++=byte(b>>7|0x80); if (b<1u<<21) *a++=byte(b>>14);		\
 						else {*a++=byte(b>>14|0x80); if (b<1u<<28) *a++=byte(b>>21);	\
@@ -158,42 +158,42 @@ __forceinline uint32_t mv_rev(uint32_t u) {return mv_rot(u,8)&0x00FF00FF|mv_rot(
 						else {*a++=byte(b>>42|0x80); if (b<1ULL<<56) *a++=byte(b>>49);	\
 						else {*a++=byte(b>>49|0x80); if (b<1ULL<<63) *a++=byte(b>>56);	\
 						else {*a++=byte(b>>56|0x80); *a++=byte(b>>63);}}}}}}}}}}
-#define mv_enc32(a,b)	{if (b<1u<<7) *a++=byte(b);										\
+#define afy_enc32(a,b)	{if (b<1u<<7) *a++=byte(b);										\
 						else {*a++=byte(b|0x80); if (b<1u<<14) *a++=byte(b>>7);			\
 						else {*a++=byte(b>>7|0x80); if (b<1u<<21) *a++=byte(b>>14);		\
 						else {*a++=byte(b>>14|0x80); if (b<1u<<28) *a++=byte(b>>21);	\
 						else {*a++=byte(b>>21|0x80); *a++=byte(b>>28);}}}}}
-#define mv_enc16(a,b)	{if (b<1u<<7) *a++=byte(b);										\
+#define afy_enc16(a,b)	{if (b<1u<<7) *a++=byte(b);										\
 						else {*a++=byte(b|0x80); if (b<1u<<14) *a++=byte(b>>7);			\
 						else {*a++=byte(b>>7|0x80); *a++=byte(b>>14&3);}}}
-#define mv_enc8(a,b)	{if (((*a++=byte(b))&0x80)!=0) *a++=1;}
+#define afy_enc8(a,b)	{if (((*a++=byte(b))&0x80)!=0) *a++=1;}
 
-#define	mv_adv64(a)		{if ((*a++&0x80)!=0 && (*a++&0x80)!=0 && (*a++&0x80)!=0 && (*a++&0x80)!=0) && (*a++&0x80)!=0)\
+#define	afy_adv64(a)		{if ((*a++&0x80)!=0 && (*a++&0x80)!=0 && (*a++&0x80)!=0 && (*a++&0x80)!=0) && (*a++&0x80)!=0)\
 							&& (*a++&0x80)!=0) && (*a++&0x80)!=0) && (*a++&0x80)!=0) && (*a++&0x80)!=0)) a++;}
-#define	mv_adv32(a)		{if ((*a++&0x80)!=0 && (*a++&0x80)!=0 && (*a++&0x80)!=0 && (*a++&0x80)!=0) a++;}
-#define	mv_adv16(a)		{if ((*a++&0x80)!=0 && (*a++&0x80)!=0) a++;}
-#define	mv_adv8(a)		{if ((*a++&0x80)!=0) a++;}
+#define	afy_adv32(a)		{if ((*a++&0x80)!=0 && (*a++&0x80)!=0 && (*a++&0x80)!=0 && (*a++&0x80)!=0) a++;}
+#define	afy_adv16(a)		{if ((*a++&0x80)!=0 && (*a++&0x80)!=0) a++;}
+#define	afy_adv8(a)		{if ((*a++&0x80)!=0) a++;}
 
-#define	mv_len64(a)		(a<1u<<7?1:a<1u<<14?2:a<1u<<21?3:a<1u<<28?4:a<1ULL<<35?5:a<1ULL<<42?6:a<1ULL<<49?7:a<1ULL<<56?8:a<1ULL<<63?9:10)
-#define	mv_len32(a)		(a<1u<<7?1:a<1u<<14?2:a<1u<<21?3:a<1u<<28?4:5)
-#define	mv_len16(a)		(a<1u<<7?1:a<1u<<14?2:3)
-#define	mv_len8(a)		(byte(a)<1u<<7?1:2)
+#define	afy_len64(a)		(a<1u<<7?1:a<1u<<14?2:a<1u<<21?3:a<1u<<28?4:a<1ULL<<35?5:a<1ULL<<42?6:a<1ULL<<49?7:a<1ULL<<56?8:a<1ULL<<63?9:10)
+#define	afy_len32(a)		(a<1u<<7?1:a<1u<<14?2:a<1u<<21?3:a<1u<<28?4:5)
+#define	afy_len16(a)		(a<1u<<7?1:a<1u<<14?2:3)
+#define	afy_len8(a)		(byte(a)<1u<<7?1:2)
 
-#define mv_enc32r(a,b)	{if (b<1u<<7) *a++=byte(b);																							\
+#define afy_enc32r(a,b)	{if (b<1u<<7) *a++=byte(b);																							\
 						else if (b<1u<<14) {a[0]=byte(b>>7); a[1]=byte(b|0x80); a+=2;}														\
 						else if (b<1u<<21) {a[0]=byte(b>>14); a[1]=byte(b>>7|0x80); a[2]=byte(b|0x80); a+=3;}								\
 						else if (b<1u<<28) {a[0]=byte(b>>21); a[1]=byte(b>>14|0x80); a[2]=byte(b>>7|0x80); a[3]=byte(b|0x80); a+=4;}		\
 						else {a[0]=byte(b>>28); a[1]=byte(b>>21|0x80); a[2]=byte(b>>14|0x80); a[3]=byte(b>>7|0x80); a[4]=byte(b|0x80); a+=5;}}
 
-#define mv_dec32r(a,b)	{if (((b=*--a)&1<<7)!=0 && ((b=b&(1<<7)-1|(*--a)<<7)&1<<14)!=0 &&				\
+#define afy_dec32r(a,b)	{if (((b=*--a)&1<<7)!=0 && ((b=b&(1<<7)-1|(*--a)<<7)&1<<14)!=0 &&				\
 						((b=b&(1<<14)-1|(*--a)<<14)&1<<21)!=0 && ((b=b&(1<<21)-1|(*--a)<<21)&1<<28)!=0)	\
 						b=b&(1<<28)-1|*--a<<28;}
-#define	mv_adv32r(a)	{if ((*--a&0x80)!=0 && (*--a&0x80)!=0 && (*--a&0x80)!=0 && (*--a&0x80)!=0) --a;}
+#define	afy_adv32r(a)	{if ((*--a&0x80)!=0 && (*--a&0x80)!=0 && (*--a&0x80)!=0 && (*--a&0x80)!=0) --a;}
 
-#define	mv_enc32zz(a)	((a)<<1^int32_t(a)>>31)
-#define	mv_enc64zz(a)	((a)<<1^int64_t(a)>>63)
-#define	mv_dec32zz(a)	int32_t(uint32_t(a)>>1^-int32_t((a)&1))
-#define	mv_dec64zz(a)	int64_t(uint64_t(a)>>1^-int64_t((a)&1))
+#define	afy_enc32zz(a)	((a)<<1^int32_t(a)>>31)
+#define	afy_enc64zz(a)	((a)<<1^int64_t(a)>>63)
+#define	afy_dec32zz(a)	int32_t(uint32_t(a)>>1^-int32_t((a)&1))
+#define	afy_dec64zz(a)	int64_t(uint64_t(a)>>1^-int64_t((a)&1))
 
 template<typename T> class DefCmp
 {

@@ -16,7 +16,7 @@ Written by Mark Venguerov 2004 - 2010
 #include "maps.h"
 #include "blob.h"
 
-using namespace MVStoreKernel;
+using namespace AfyKernel;
 
 QueryPrc::QueryPrc(StoreCtx *c,IStoreNotification *notItf) 
 	: notification(notItf),ctx(c),bigThreshold(c->bufMgr->getPageSize()*SKEW_PAGE_PCT/100),calcProps(NULL),nCalcProps(0)
@@ -118,7 +118,7 @@ RC Stmt::cmp(const Value& v,ExprOp op,unsigned flags/* pars??? */)
 		if (top->stype==SEL_COUNT) {
 			uint64_t cnt; rc=ses->getStore()->queryMgr->count(qop,cnt,~0u); delete qop;
 			if (rc!=RC_OK) return rc!=RC_EOF?rc:op==OP_EQ||op==OP_IN?RC_FALSE:RC_TRUE;
-			Value w; w.setU64(cnt); int c=MVStoreKernel::cmp(v,w,flags);
+			Value w; w.setU64(cnt); int c=AfyKernel::cmp(v,w,flags);
 			return op!=OP_IN?Expr::condRC(c,op):c==0?RC_TRUE:RC_FALSE;
 		}
 		PINEx qr(ses),*pqr=&qr; qop->connect(&pqr); const bool fChecked=top->stype!=SEL_PINSET && top->stype!=SEL_PROJECTED && top->stype!=SEL_COMPOUND;
@@ -126,7 +126,7 @@ RC Stmt::cmp(const Value& v,ExprOp op,unsigned flags/* pars??? */)
 			if (rc!=RC_OK) break;
 			if (top->stype==SEL_VALUE || top->stype==SEL_VALUESET) {
 				if (qr.properties!=NULL && qr.nProperties==1) {
-					int c=MVStoreKernel::cmp(v,*qr.properties,flags);
+					int c=AfyKernel::cmp(v,*qr.properties,flags);
 					if (op==OP_EQ||op==OP_IN) {if (c==0) {rc=RC_TRUE; break;}} else if ((rc=Expr::condRC(c,op))!=RC_TRUE) break;
 				}
 				if (top->stype==SEL_VALUE) {rc=RC_EOF; break;}
@@ -241,7 +241,7 @@ RC QueryPrc::apply(Session *ses,STMT_OP op,PINEx& qr,const Value *values,unsigne
 	return rc;
 }
 
-namespace MVStoreKernel
+namespace AfyKernel
 {
 	class StmtRequest : public Request {
 		Stmt			*const	stmt;

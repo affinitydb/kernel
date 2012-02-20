@@ -11,7 +11,7 @@ Written by Mark Venguerov 2004 - 2010
 
 #include "sync.h"
 
-namespace MVStoreKernel
+namespace AfyKernel
 {
 
 class CryptoMgr

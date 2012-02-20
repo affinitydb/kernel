@@ -6,15 +6,15 @@ Written by Mark Venguerov 2004 - 2010
 
 **************************************************************************************/
 
-#ifndef _MVSTOREIMPL_H_
-#define _MVSTOREIMPL_H_
+#ifndef _STOREIMPL_H_
+#define _STOREIMPL_H_
 
-#include "mvstore.h"
+#include "affinity.h"
 #include "session.h"
 
-using namespace MVStore;
+using namespace AfyDB;
 
-namespace MVStoreKernel
+namespace AfyKernel
 {
 
 /*
@@ -115,7 +115,7 @@ protected:
 };
 
 /**
- * PIN flags (continuation of flags in mvstore.h)
+ * PIN flags (continuation of flags in affinity.h)
  */
 
 #define	PIN_NO_FREE					0x80000000	/**< don't free properties in destructor */
@@ -230,7 +230,7 @@ private:
 	bool			checkAdmin() {return ses!=NULL&&ses->identity==STORE_OWNER;}
 public:
 	SessionX(Session *s) : ses(s) {}
-	friend		ISession	*ISession::startSession(MVStoreCtx,const char*,const char*);
+	friend		ISession	*ISession::startSession(AfyDBCtx,const char*,const char*);
 	static		SessionX	*create(Session *ses) {return new(ses) SessionX(ses);}
 	ISession	*clone(const char* =NULL) const;
 	RC			attachToCurrentThread();

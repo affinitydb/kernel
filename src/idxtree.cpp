@@ -13,13 +13,13 @@ Written by Mark Venguerov 2004 - 2010
 #include "logmgr.h"
 #include "pinref.h"
 #include "startup.h"
-#include "mvstoreimpl.h"
+#include "affinityimpl.h"
 #include "expr.h"
 
-using namespace MVStore;
-using namespace MVStoreKernel;
+using namespace AfyDB;
+using namespace AfyKernel;
 
-namespace MVStoreKernel
+namespace AfyKernel
 {
 
 class TreeRQ : public Request, public TreeCtx {
@@ -663,7 +663,7 @@ int IndexKeyV::cmp(const IndexKeyV& rhs,TREE_KT type) const
 	return -2;
 }
 
-namespace MVStoreKernel
+namespace AfyKernel
 {
 enum KVT
 {
@@ -867,7 +867,7 @@ static int cmpSeg(const byte *&s1,ushort& l1,const byte *&s2,ushort& l2,byte mbe
 	s1+=ls1; l1-=ls1; s2+=ls2; l2-=ls2; return cmp;
 }
 
-int MVStoreKernel::cmpMSeg(const byte *s1,ushort l1,const byte *s2,ushort l2)
+int AfyKernel::cmpMSeg(const byte *s1,ushort l1,const byte *s2,ushort l2)
 {
 	try {
 		do {int cmp=cmpSeg(s1,l1,s2,l2); if (cmp!=0) return cmp;} while (l1*l2!=0);
@@ -878,7 +878,7 @@ int MVStoreKernel::cmpMSeg(const byte *s1,ushort l1,const byte *s2,ushort l2)
 	return -2;
 }
 
-bool MVStoreKernel::isHyperRect(const byte *s1,ushort l1,const byte *s2,ushort l2)
+bool AfyKernel::isHyperRect(const byte *s1,ushort l1,const byte *s2,ushort l2)
 {
 	try {
 		do {int cmp=cmpSeg(s1,l1,s2,l2); if (cmp!=0) return (l1|l2)!=0;} while (l1*l2!=0);
@@ -888,7 +888,7 @@ bool MVStoreKernel::isHyperRect(const byte *s1,ushort l1,const byte *s2,ushort l
 	return false;
 }
 
-bool MVStoreKernel::cmpBound(const byte *s1,ushort l1,const byte *s2,ushort l2,const IndexSeg *sg,unsigned nSegs,bool fStart)
+bool AfyKernel::cmpBound(const byte *s1,ushort l1,const byte *s2,ushort l2,const IndexSeg *sg,unsigned nSegs,bool fStart)
 {
 	try {
 		unsigned i=0;
@@ -904,7 +904,7 @@ bool MVStoreKernel::cmpBound(const byte *s1,ushort l1,const byte *s2,ushort l2,c
 	return false;
 }
 
-bool MVStoreKernel::checkHyperRect(const byte *s1,ushort l1,const byte *s2,ushort l2,const IndexSeg *sg,unsigned nSegs,bool fStart)
+bool AfyKernel::checkHyperRect(const byte *s1,ushort l1,const byte *s2,ushort l2,const IndexSeg *sg,unsigned nSegs,bool fStart)
 {
 	try {
 		unsigned i=0;
@@ -919,7 +919,7 @@ bool MVStoreKernel::checkHyperRect(const byte *s1,ushort l1,const byte *s2,ushor
 	return false;
 }
 
-ushort MVStoreKernel::calcMSegPrefix(const byte *s1,ushort l1,const byte *s2,ushort l2)
+ushort AfyKernel::calcMSegPrefix(const byte *s1,ushort l1,const byte *s2,ushort l2)
 {
 	for (ushort lPrefix=0;;) {
 		//if (l1*l2==0 || *s1!=*s2) return lPrefix;

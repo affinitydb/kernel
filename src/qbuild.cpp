@@ -13,7 +13,7 @@ Written by Mark Venguerov 2004 - 2010
 #include "stmt.h"
 #include "parser.h"
 
-using namespace MVStoreKernel;
+using namespace AfyKernel;
 
 QBuildCtx::QBuildCtx(Session *s,const ValueV& prs,const Stmt *st,ulong nsk,ulong md)
 	: ses(s),qx(new(s) QCtx(s)),stmt(st),nSkip(nsk),mode(md),flg(0),propsReq(s),sortReq(NULL),nSortReq(0),nqs(0),ncqs(0) 
@@ -99,15 +99,8 @@ RC SetOpVar::build(class QBuildCtx& qctx,class QueryOp *&q) const
 		if ((rc=qctx.sort(qq,NULL,0))!=RC_OK) break;
 	}
 	qctx.sortReq=os; qctx.nSortReq=nos;
-	if (rc==RC_OK) {
-		if (type!=QRY_EXCEPT) rc=qctx.mergeN(q,&qctx.src[nqs0],nVars,type==QRY_UNION);
-		else {
-			static const CondEJ cej(PROP_SPEC_PINID,PROP_SPEC_PINID,0);
-			rc=qctx.merge2(q,&qctx.src[nqs0],&cej,QRY_EXCEPT);
-		}
-		if (rc==RC_OK) qctx.nqs-=nVars;
-	}
-	if (rc!=RC_OK) while (qctx.nqs>nqs0) delete qctx.src[--qctx.nqs];
+	if (rc==RC_OK && (rc=qctx.mergeN(q,&qctx.src[nqs0],nVars,(QUERY_SETOP)type))==RC_OK) qctx.nqs-=nVars;
+	else while (qctx.nqs>nqs0) delete qctx.src[--qctx.nqs];
 	return rc;
 }
 
@@ -134,8 +127,7 @@ RC JoinVar::build(class QBuildCtx& qctx,class QueryOp *&q) const
 			ids.pid=ce->propID2;
 			if ((rc=vars[1].var->build(qctx,qctx.src[qctx.nqs]))==RC_OK) qctx.nqs++; else return rc;
 			qctx.sortReq=os; qctx.nSortReq=no;
-			if ((rc=qctx.merge2(q,&qctx.src[nqs0],ce,(QUERY_SETOP)type))==RC_OK && nConds!=0)
-				rc=qctx.filter(q,(const Expr**)(nConds==1?&cond:conds),nConds);
+			rc=qctx.merge2(q,&qctx.src[nqs0],ce,(QUERY_SETOP)type,(const Expr**)(nConds==1?&cond:conds),nConds);
 			break;
 		}
 		if (ce->propID1==PROP_SPEC_PINID && ce->propID2==PROP_SPEC_PINID) {
@@ -157,7 +149,7 @@ RC JoinVar::build(class QBuildCtx& qctx,class QueryOp *&q) const
 					break;
 				}
 			}
-			rc=qctx.mergeN(q,&qctx.src[nqs0],nVars,false); break;
+			rc=qctx.mergeN(q,&qctx.src[nqs0],nVars,QRY_INTERSECT); break;
 		}
 	}
 	if (rc==RC_OK) {qctx.nqs-=nVars; if (fTrans) rc=qctx.out(q,this);}
@@ -340,7 +332,7 @@ RC SimpleVar::build(class QBuildCtx& qctx,class QueryOp *&q) const
 	if (rc==RC_OK) {
 		bool fArrayFilter=pids!=NULL && nPids!=0;
 		if (qctx.nqs>nqs0) {
-			if (qctx.nqs>nqs0+1 && (rc=qctx.mergeN(qq,&qctx.src[nqs0],qctx.nqs-nqs0,false))==RC_OK) {qctx.src[nqs0]=qq; qctx.nqs=nqs0+1;}
+			if (qctx.nqs>nqs0+1 && (rc=qctx.mergeN(qq,&qctx.src[nqs0],qctx.nqs-nqs0,QRY_INTERSECT))==RC_OK) {qctx.src[nqs0]=qq; qctx.nqs=nqs0+1;}
 			if (rc==RC_OK && primary!=NULL) {if ((qq=new(qctx.ses) HashOp(primary,qctx.src[nqs0]))!=NULL) {qctx.src[nqs0]=qq; primary=NULL;} else rc=RC_NORESOURCES;}
 		} else if (qctx.nqs>=sizeof(qctx.src)/sizeof(qctx.src[0])) rc=RC_NORESOURCES;
 		else if (primary!=NULL) {qctx.src[qctx.nqs++]=primary; primary=NULL;}
@@ -421,30 +413,62 @@ RC QBuildCtx::sort(QueryOp *&qop,const OrderSegQ *os,unsigned no,PropListP *pl,b
 	return rc;
 }
 
-RC QBuildCtx::mergeN(QueryOp *&res,QueryOp **o,unsigned no,bool fOr)
+RC QBuildCtx::mergeN(QueryOp *&res,QueryOp **o,unsigned no,QUERY_SETOP op)
 {
 	res=NULL; RC rc; if (o==NULL || no<2) return RC_INTERNAL;
 	for (unsigned i=0; i<no; i++) {if ((o[i]->getQFlags()&(QO_IDSORT|QO_UNIQUE))!=(QO_IDSORT|QO_UNIQUE) && (rc=sort(o[i],NULL,0))!=RC_OK) return rc;}
-	return (res=new(ses,no) MergeIDs(qx,o,no,flg,fOr))!=NULL?RC_OK:RC_NORESOURCES;
+	return (res=new(ses,no) MergeIDs(qx,o,no,op,flg))!=NULL?RC_OK:RC_NORESOURCES;
 }
 
-RC QBuildCtx::merge2(QueryOp *&res,QueryOp **qs,const CondEJ *cej,QUERY_SETOP qo)
+RC QBuildCtx::merge2(QueryOp *&res,QueryOp **qs,const CondEJ *cej,QUERY_SETOP qo,const Expr *const *conds,unsigned nConds)
 {
 	res=NULL; if (qs[0]==NULL || qs[1]==NULL) return RC_EOF;
-	ulong fUni=qo==QRY_SEMIJOIN||qo==QRY_EXCEPT?QO_SEMIJOIN:0; RC rc;
-	OrderSegQ os; os.flags=0; os.var=0; os.aggop=OP_ALL; os.lPref=0; assert(qo!=QRY_UNION && qo!=QRY_INTERSECT);
-	if ((qs[0]->sort==NULL || qs[0]->sort[0].pid!=cej->propID1 || (qs[0]->sort[0].flags&ORD_DESC)!=0) && (cej->propID1!=PROP_SPEC_PINID||(qs[0]->qflags&QO_IDSORT)==0)) {
-		os.pid=cej->propID1; if ((rc=sort(qs[0],&os,1,NULL,true))!=RC_OK) {delete qs[0]; delete qs[1]; return rc;}
-	} else if (cej->propID1!=PROP_SPEC_PINID) qs[0]->unique(false);
-	if ((qs[0]->qflags&QO_UNIQUE)!=0 && cej->propID1==PROP_SPEC_PINID) fUni|=QO_UNI1;
-	if ((qs[1]->sort==NULL || qs[1]->sort[0].pid!=cej->propID2 || (qs[1]->sort[0].flags&ORD_DESC)!=0) && (cej->propID2!=PROP_SPEC_PINID||(qs[1]->qflags&QO_IDSORT)==0)) {
-		os.pid=cej->propID2; if ((rc=sort(qs[1],&os,1,NULL,true))!=RC_OK) {delete qs[0]; delete qs[1]; return rc;}
-	} else if (cej->propID2!=PROP_SPEC_PINID) qs[1]->unique(false);
-	if ((qs[1]->qflags&QO_UNIQUE)!=0 && cej->propID2==PROP_SPEC_PINID) fUni|=QO_UNI2;
-	if ((res=new(ses) MergeOp(qs[0],cej->propID1,qs[1],cej->propID2,qo,flg|fUni))==NULL) return RC_NORESOURCES;
-	if (cej->next!=NULL) {
-		//...
+	ulong fUni=qo==QRY_SEMIJOIN?QO_SEMIJOIN:0; RC rc; assert(qo!=QRY_UNION && qo!=QRY_INTERSECT);
+	unsigned nej=0; const CondEJ *cid1=NULL,*cid2=NULL; bool fS1=qs[0]->sort!=NULL,fS2=qs[1]->sort!=NULL;
+	for (const CondEJ *ce=cej; ce!=NULL; ce=ce->next,nej++) {
+		if (ce->propID1==PROP_SPEC_PINID && (qs[0]->qflags&QO_IDSORT)!=0) cid1=ce;
+		else if (fS1) for (unsigned i=0; ;i++) 
+			if (i>=qs[0]->nSegs) {fS1=false; break;}
+			else if ((qs[0]->sort[i].flags&ORDER_EXPR)==0 && qs[0]->sort[i].pid==ce->propID1
+				&& ((qs[0]->sort[i].flags^ce->flags)&SORT_MASK)==0) break;
+		if (ce->propID2==PROP_SPEC_PINID && (qs[1]->qflags&QO_IDSORT)!=0) cid2=ce;
+		else if (fS2) for (unsigned i=0; ;i++) 
+			if (i>=qs[1]->nSegs) {fS2=false; break;}
+			else if ((qs[1]->sort[i].flags&ORDER_EXPR)==0 && qs[1]->sort[i].pid==ce->propID2
+				&& ((qs[1]->sort[i].flags^ce->flags)&SORT_MASK)==0) break;
 	}
+	if (!fS1 && cid1==NULL || !fS2 && cid2==NULL) {
+		OrderSegQ *oss=(OrderSegQ*)alloca(nej*sizeof(OrderSegQ)); if (oss==NULL) return RC_NORESOURCES;
+		if (!fS1) {
+			if (cid1==NULL) {
+				OrderSegQ *os=oss; memset(oss,0,nej*sizeof(OrderSegQ));
+				for (const CondEJ *ce=cej; ce!=NULL; ce=ce->next,os++) {os->pid=ce->propID1; os->flags=ce->flags;}
+				if ((rc=sort(qs[0],oss,nej,NULL,true))!=RC_OK) return rc;	// cleanup???
+			} else {
+				if (qo==QRY_SEMIJOIN && cid1->propID1!=PROP_SPEC_PINID) qs[0]->unique(false);
+				if (nej>1) {
+					// other conds
+				}
+			}
+		}
+		if (!fS2) {
+			if (cid2==NULL) {
+				OrderSegQ *os=oss; memset(oss,0,nej*sizeof(OrderSegQ));
+				for (const CondEJ *ce=cej; ce!=NULL; ce=ce->next,os++) {os->pid=ce->propID2; os->flags=ce->flags;}
+				if ((rc=sort(qs[1],oss,nej,NULL,true))!=RC_OK) return rc;	// cleanup???
+			} else {
+				if (qo==QRY_SEMIJOIN && cid2->propID2!=PROP_SPEC_PINID) qs[1]->unique(false);		// ????
+				if (nej>1) {
+					// other conds
+				}
+			}
+		}
+	} else if (nej>1) {
+		// check order corresponds, re-order cej if necessary
+	}
+	if ((qs[0]->qflags&QO_UNIQUE)!=0 && cej->propID1==PROP_SPEC_PINID) fUni|=QO_UNI1;
+	if ((qs[1]->qflags&QO_UNIQUE)!=0 && cej->propID2==PROP_SPEC_PINID) fUni|=QO_UNI2;
+	try {if ((res=new(ses,nej) MergeOp(qs[0],qs[1],cej,nej,qo,conds,nConds,flg|fUni))==NULL) return RC_NORESOURCES;} catch (RC rc) {return rc;}
 	return RC_OK;
 }
 
@@ -506,7 +530,7 @@ RC QBuildCtx::mergeFT(QueryOp *&res,const CondFT *cft)
 	}
 	if (rc==RC_OK) {
 		if (nqops<=1) {res=nqops!=0?qops[0]:(rc=RC_EOF,(QueryOp*)0); nqops=0;}
-		else if ((rc=mergeN(res,qops,nqops,(mode&MODE_ALL_WORDS)==0))==RC_OK) nqops=0;
+		else if ((rc=mergeN(res,qops,nqops,(mode&MODE_ALL_WORDS)==0?QRY_UNION:QRY_INTERSECT))==RC_OK) nqops=0;
 	}
 	for (ulong i=0; i<nqops; i++) delete qops[i];
 	if (qops!=qopsbuf) ses->free(qops);
@@ -527,12 +551,11 @@ RC QBuildCtx::filter(QueryOp *&qop,const Expr *const *conds,unsigned nConds,cons
 	try {
 		Filter *flt=new(ses) Filter(qop,nqs,flg); if (flt==NULL) return RC_NORESOURCES;
 		bool fOK=true; 
-		if (fOK && conds!=NULL) {
-			flt->nConds=nConds;
-			if ((flg&QO_VCOPIED)==0) {if (nConds==1) flt->cond=(Expr*)*conds; else flt->conds=(Expr**)conds;}
-			else if (nConds==1) {if ((flt->cond=Expr::clone(*conds,ses))==NULL) fOK=false;}
-			else if ((flt->conds=new(ses) Expr*[nConds])==NULL) fOK=false;
-			else for (ulong i=0; i<nConds; ++i) {if ((flt->conds[i]=Expr::clone(conds[i],ses))==NULL) {fOK=false; break;}}
+		if (conds!=NULL) {
+			flt->nConds=nConds; Expr **pex;
+			if ((flg&QO_VCOPIED)==0) flt->conds=conds;
+			else if ((flt->conds=pex=new(ses) Expr*[nConds])==NULL) fOK=false;
+			else {memset(pex,0,nConds*sizeof(Expr*)); for (ulong i=0; i<nConds; ++i) if ((pex[i]=Expr::clone(conds[i],ses))==NULL) {fOK=false; break;}}
 		}
 		if ((flg&QO_CLASS)==0) {
 			if ((flg&QO_VCOPIED)==0) flt->condIdx=(CondIdx*)condIdx;

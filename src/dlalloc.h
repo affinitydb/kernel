@@ -526,22 +526,22 @@ extern "C" {
 #endif
 
 #ifdef USE_DL_PREFIX
-#define public_cALLOc    mv_calloc
-#define public_fREe      mv_free
-#define public_cFREe     mv_cfree
-#define public_mALLOc    mv_malloc
-#define public_mEMALIGn  mv_memalign
-#define public_rEALLOc   mv_realloc
-#define public_vALLOc    mv_valloc
-#define public_pVALLOc   mv_pvalloc
-#define public_mALLINFo  mv_mallinfo
-#define public_mALLOPt   mv_mallopt
-#define public_mTRIm     mv_malloc_trim
-#define public_mSTATs    mv_malloc_stats
-#define public_mUSABLe   mv_malloc_usable_size
-#define public_iCALLOc   mv_independent_calloc
-#define public_iCOMALLOc mv_independent_comalloc
-#define	public_rELEASe   mv_release
+#define public_cALLOc    afy_calloc
+#define public_fREe      afy_free
+#define public_cFREe     afy_cfree
+#define public_mALLOc    afy_malloc
+#define public_mEMALIGn  afy_memalign
+#define public_rEALLOc   afy_realloc
+#define public_vALLOc    afy_valloc
+#define public_pVALLOc   afy_pvalloc
+#define public_mALLINFo  afy_mallinfo
+#define public_mALLOPt   afy_mallopt
+#define public_mTRIm     afy_malloc_trim
+#define public_mSTATs    afy_malloc_stats
+#define public_mUSABLe   afy_malloc_usable_size
+#define public_iCALLOc   afy_independent_calloc
+#define public_iCOMALLOc afy_independent_comalloc
+#define	public_rELEASe   afy_release
 #else /* USE_DL_PREFIX */
 #define public_cALLOc    calloc
 #define public_fREe      free

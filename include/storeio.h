@@ -42,7 +42,7 @@ enum LIOMODE {LIO_WAIT, LIO_NOWAIT};
 /*! \class IStoreIO
  \brief Interface which can be implemented in order to replace or supplement the native kernel i/o
 
- The MVStore kernel uses this interface to open, read and change the contents of 
+ The AfyDB kernel uses this interface to open, read and change the contents of 
  store data files, log files. and temporary files.  Multiple files can be open at the 
  same time, and the implementation is responsible to track each file with a FD 
  identifier which remains unique and constant as long as the file is open.
@@ -56,7 +56,7 @@ class IStoreIO
 {
 public:
 	struct iodesc {
-		MVStoreKernel::FileID	aio_fildes;		//!< In call to listIO set to file handle, as returned by open method.  Implementation may change to true file handle
+		AfyKernel::FileID	aio_fildes;		//!< In call to listIO set to file handle, as returned by open method.  Implementation may change to true file handle
 		off64_t					aio_offset;		//!< Offset in bytes from beginning of file
 		void					*aio_buf;	    //!< Buffer to read or write.  Normally needs to be aligned according to disk sector size (performance and O_DIRECT requirement).
 		size_t					aio_nbytes;		//!< Size of buffer
@@ -95,13 +95,13 @@ public:
 	\param dir store directory, useful when fname does not specify a full path
 	\param flags For example FIO_CREATE, FIO_TEMP
 	*/
-	virtual RC		open(MVStoreKernel::FileID& iofid,const char *fname,const char *dir,ulong flags) =0;
+	virtual RC		open(AfyKernel::FileID& iofid,const char *fname,const char *dir,ulong flags) =0;
 
 	/*! Returns the current size, in bytes, of the file
 	\param fid Identifies an open file
 	\returns size of file or 0 if invalid FileID
 	*/
-	virtual off64_t	getFileSize(MVStoreKernel::FileID fid) const =0;
+	virtual off64_t	getFileSize(AfyKernel::FileID fid) const =0;
 
 	/*!Returns the full path to an open file
 	\param fid Identifies an open file
@@ -109,25 +109,25 @@ public:
 	\param lbuf length of buffer
 	\returns length of file name (excluding null termination)
 	*/
-	virtual size_t	getFileName(MVStoreKernel::FileID fid,char buf[],size_t lbuf) const =0;
+	virtual size_t	getFileName(AfyKernel::FileID fid,char buf[],size_t lbuf) const =0;
 
 	/*!Increase the size of an open file
 	\param file Identifies an open file
 	\param newsize in bytes
 	\returns Will return error code if full disk space, or other error condition hit
 	*/
-	virtual RC      growFile(MVStoreKernel::FileID file, off64_t newsize)=0;
+	virtual RC      growFile(AfyKernel::FileID file, off64_t newsize)=0;
 
 	/*!Close file (deleting temporary files)
 	\param fid Which file to close
 	*/
-	virtual RC		close(MVStoreKernel::FileID fid) =0;
+	virtual RC		close(AfyKernel::FileID fid) =0;
 
 	/*!Close all open files
 	\param start When zero all files are closed.  When > 0 then
 	          only files with FileID larger than this value are closed.
 	*/
-	virtual void	closeAll(MVStoreKernel::FileID start) =0;
+	virtual void	closeAll(AfyKernel::FileID start) =0;
 
 
 	/*! Perform one or more I/O reads or writes

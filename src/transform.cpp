@@ -12,7 +12,7 @@ Written by Mark Venguerov 2008 - 2010
 #include "expr.h"
 #include "blob.h"
 
-using namespace MVStoreKernel;
+using namespace AfyKernel;
 
 TransOp::TransOp(QueryOp *q,const ValueV *d,unsigned nD,const ValueV& ag,const OrderSegQ *gs,unsigned nG,const Expr *hv,ulong qf) 
 	: QueryOp(q,qf|(q->getQFlags()&(QO_UNIQUE|QO_IDSORT|QO_REVERSIBLE))),dscr(d),ins(NULL),nIns(0),qr(qx->ses),pqr(&qr),res(NULL),nRes(0),aggs(ag),groupSeg(gs),nGroup(nG),having(hv),ac(NULL)

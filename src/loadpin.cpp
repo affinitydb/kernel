@@ -13,7 +13,7 @@ Written by Mark Venguerov 2004 - 2010
 #include "expr.h"
 #include "blob.h"
 
-using namespace MVStoreKernel;
+using namespace AfyKernel;
 
 RC QueryPrc::loadPIN(Session *ses,const PID& id,PIN *&pin,unsigned mode,PINEx *pcb,VersionID vid)
 {
@@ -193,7 +193,7 @@ RC QueryPrc::loadSSV(Value& v,ValueType ty,const HeapPageMgr::HeapObjHeader *hob
 		if ((rc=Expr::deserialize(exp,p,p+ehdr.lExpr,ma))!=RC_OK) return rc;
 		v.expr=exp; v.type=VT_EXPR; v.length=1; break;}
 	case VT_STMT:
-		p=(byte*)(hobj+1); mv_dec16(p,l);
+		p=(byte*)(hobj+1); afy_dec16(p,l);
 		if ((rc=Stmt::deserialize(qry,p,p+l,ma))!=RC_OK) return rc;
 		v.stmt=qry; v.type=VT_STMT; v.length=1; break;
 	} else if (hobj->getType()!=HO_BLOB) {
@@ -476,7 +476,7 @@ RC QueryPrc::loadS(Value& v,HType vt,PageOff offset,const HeapPageMgr::HeapPage 
 		v.set(exp); v.flags=ma->getAType(); break;}
 	case VT_STMT:
 		if (ma==NULL && (ma=Session::getSession())==NULL && (ma=StoreCtx::get())==NULL) return RC_NOSESSION;
-		mv_dec16(pData,l); if ((rc=Stmt::deserialize(qry,pData,pData+l,ma))!=RC_OK) return rc;
+		afy_dec16(pData,l); if ((rc=Stmt::deserialize(qry,pData,pData+l,ma))!=RC_OK) return rc;
 		v.set(qry); v.flags=ma->getAType(); break;
 	}
 	v.eid=eid; v.meta=vt.flags; v.op=OP_SET; return RC_OK;

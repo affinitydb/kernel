@@ -11,7 +11,7 @@ Written by Mark Venguerov 2004 - 2010
 #include "session.h"
 #include "buffer.h"
 
-using namespace MVStoreKernel;
+using namespace AfyKernel;
 
 void TxPage::initPage(byte *frame,size_t len,PageID pid)
 {

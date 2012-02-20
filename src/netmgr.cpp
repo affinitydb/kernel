@@ -11,11 +11,11 @@ Written by Mark Venguerov 2004 - 2010
 #include "buffer.h"
 #include "txmgr.h"
 #include "startup.h"
-#include "mvstoreimpl.h"
+#include "affinityimpl.h"
 #include "queryprc.h"
 #include "logmgr.h"
 
-using namespace MVStoreKernel;
+using namespace AfyKernel;
 
 static const IndexFormat rpinIndexFmt(KT_BIN,PIDKeySize,PageAddrSize+sizeof(TIMESTAMP));
 

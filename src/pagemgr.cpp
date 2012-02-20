@@ -9,7 +9,7 @@ Written by Mark Venguerov 2004 - 2010
 #include "pagemgr.h"
 #include "session.h"
 
-using namespace MVStoreKernel;
+using namespace AfyKernel;
 
 void PageMgr::initPage(byte *,size_t,PageID)
 {

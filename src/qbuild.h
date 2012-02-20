@@ -9,13 +9,13 @@ Written by Mark Venguerov 2004 - 2010
 #ifndef _QBUILD_H_
 #define _QBUILD_H_
 
-#include "mvstore.h"
+#include "affinity.h"
 #include "types.h"
 #include "mem.h"
 
-using namespace MVStore;
+using namespace AfyDB;
 
-namespace MVStoreKernel
+namespace AfyKernel
 {
 /**
  * loadPIN/loadValues/loadV flags
@@ -153,8 +153,8 @@ public:
 	RC	process(QueryOp *&qop);
 private:
 	RC	sort(QueryOp *&qop,const OrderSegQ *os,unsigned no,PropListP *props=NULL,bool fTmp=false);
-	RC	mergeN(QueryOp *&res,QueryOp **o,unsigned no,bool fOr);
-	RC	merge2(QueryOp *&res,QueryOp **qs,const CondEJ *cej,QUERY_SETOP qo);
+	RC	mergeN(QueryOp *&res,QueryOp **o,unsigned no,QUERY_SETOP op);
+	RC	merge2(QueryOp *&res,QueryOp **qs,const CondEJ *cej,QUERY_SETOP qo,const Expr *const *conds=NULL,unsigned nConds=0);
 	RC	mergeFT(QueryOp *&res,const CondFT *cft);
 	RC	nested(QueryOp *&res,QueryOp **qs,const Expr **conds,unsigned nConds);
 	RC	filter(QueryOp *&qop,const Expr *const *c,unsigned nConds,const CondIdx *condIdx=NULL,unsigned ncq=0);

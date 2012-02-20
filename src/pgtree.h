@@ -13,7 +13,7 @@ Written by Mark Venguerov 2004 - 2010
 #include "idxtree.h"
 #include "buffer.h"
 
-namespace MVStoreKernel
+namespace AfyKernel
 {
 
 #define	XSUBPAGES		20

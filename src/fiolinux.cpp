@@ -17,18 +17,18 @@ Written by Mark Venguerov, Andrew Skowronski, Michael Andronov 2004 - 2010
 #include <sys/types.h>
 #include <sys/signal.h> 
 
-using namespace MVStoreKernel;
+using namespace AfyKernel;
 	
 FreeQ<> FileIOLinux::freeAio64;
 
 #ifndef SYNC_IO
-struct mv_sync_io
+struct afy_sync_io
 {
 	SharedCounter	cnt;
 	int				errNo;
 	pthread_mutex_t	lock;
 	pthread_cond_t	wait;
-	mv_sync_io() : errNo(0) {pthread_mutex_init(&lock,NULL); pthread_cond_init(&wait,NULL);}
+	afy_sync_io() : errNo(0) {pthread_mutex_init(&lock,NULL); pthread_cond_init(&wait,NULL);}
 };
 #endif
 
@@ -82,8 +82,8 @@ RC FileIOLinux::open(FileID& fid,const char *fname,const char *dir,ulong flags)
 
 	bool fdel = false;
 	if ((flags&FIO_TEMP)!=0) {
-		char *p=(char*)malloc((dir!=NULL?strlen(dir):2)+sizeof(MVSTOREPREFIX)+6+1,STORE_HEAP); 
-		if (p==NULL) return RC_NORESOURCES; strcpy(p,dir!=NULL?dir:"./"); strcat(p,MVSTOREPREFIX);
+		char *p=(char*)malloc((dir!=NULL?strlen(dir):2)+sizeof(STOREPREFIX)+6+1,STORE_HEAP); 
+		if (p==NULL) return RC_NORESOURCES; strcpy(p,dir!=NULL?dir:"./"); strcat(p,STOREPREFIX);
 		fname=p; p+=strlen(p); memset(p,'X',6); p[6]='\0'; p=mktemp((char*)fname);
 		if (p==NULL||*p=='\0') {free((char*)fname,STORE_HEAP); return RC_NORESOURCES;}
 		fdel=true;
@@ -246,7 +246,7 @@ RC FileIOLinux::listIO(int mode,int nent,iodesc* const* pcbs)
 			}				
 		} else
 #else
-		mv_sync_io sync; sigset_t omask; 
+		afy_sync_io sync; sigset_t omask; 
 		if (mode==LIO_WAIT) pthread_sigmask(SIG_BLOCK,&sigSIO,&omask);
 #endif
 		for (i=0; i<nent; i++) if (pcbs[i]!=NULL && adescs[i]!=NULL) {
@@ -323,7 +323,7 @@ void FileIOLinux::_asyncIOCompletion(sigval_t val)
 	}
 }
 #else
-namespace MVStoreKernel
+namespace AfyKernel
 {
 FreeQ<> FileIOLinux::freeIORequests;
 class IOCompletionRequest : public Request
@@ -352,7 +352,7 @@ void FileIOLinux::_asyncAIOCompletion(int sig, siginfo_t *info, void *uap)
 void FileIOLinux::_asyncSIOCompletion(int sig, siginfo_t *info, void *uap)
 {
 	if (info==NULL) return; assert(sig==SIGPISIO);
-	mv_sync_io *sio=(mv_sync_io*)info->si_value.sival_ptr;
+	afy_sync_io *sio=(afy_sync_io*)info->si_value.sival_ptr;
 	if (sio!=NULL) {
 		pthread_mutex_lock(&sio->lock);
 		if (info->si_errno!=0) sio->errNo=info->si_errno;
@@ -375,7 +375,7 @@ RC FileIOLinux::deleteFile(const char *fname)
 
 void FileIOLinux::deleteLogFiles(ulong maxFile,const char *lDir,bool fArchived)
 {
-	deleteLogFiles(MVSTOREPREFIX"*"LOGFILESUFFIX,maxFile,lDir,fArchived);
+	deleteLogFiles(LOGPREFIX"*"LOGFILESUFFIX,maxFile,lDir,fArchived);
 }
 
 void FileIOLinux::deleteLogFiles(const char *mask,ulong maxFile,const char *lDir,bool fArchived)
@@ -388,7 +388,7 @@ void FileIOLinux::deleteLogFiles(const char *mask,ulong maxFile,const char *lDir
 			if (fArchived) {
 				// ???
 			}
-			else if (maxFile==~0ul || strtoul(ep->d_name+sizeof(MVSTOREPREFIX),&end,16)<=maxFile) {	// 1 more than prefix size (for 'A' or 'B')
+			else if (maxFile==~0ul || strtoul(ep->d_name+sizeof(LOGPREFIX),&end,16)<=maxFile) {	// 1 more than prefix size (for 'A' or 'B')
 				strcpy(buf,lDir!=NULL?lDir:"./"); strcat(buf,ep->d_name); unlink(buf);
 			}
 		}

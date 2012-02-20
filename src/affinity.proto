@@ -6,9 +6,9 @@
 //
 //**************************************************************************************
 
-package MVStorePB;
+package AffinityPB;
 
-option java_package = "com.mvstore";
+option java_package = "com.affinity";
 option java_outer_classname = "stream";
 
 // Errors are reported using the following codes.
@@ -45,7 +45,7 @@ enum ErrorCode {
 	RC_SYNTAX			= 30; // Syntactic error in query or expression.
 }
 
-// mvStore defines a few 'special' properties (usable as Value::property).
+// Affinity defines a few 'special' properties (usable as Value::property).
 // Some of these properties appear automatically on PINs.
 // Some are only used in queries.
 // Others must be inserted explicitly by the client, in order to cause the advertized effect.
@@ -143,16 +143,16 @@ enum ClassFlags {
 
 // PathSQL statements (query,insert,update,delete) and individual PIN modification operations can return information with various level of details.
 enum ReturnType {
-	RT_PINS			= 1; // Specifies that a query will return entire MVStream::PIN object(s) (see definition below).
+	RT_PINS			= 1; // Specifies that a query will return entire AfyStream::PIN object(s) (see definition below).
 	RT_COUNT		= 2; // Specifies that a query will return a simple count.
-	RT_PIDS			= 3; // Specifies that a query will return MVStream::PIN object(s) containing only MVStream::PIN::id field.
+	RT_PIDS			= 3; // Specifies that a query will return AfyStream::PIN object(s) containing only MVStream::PIN::id field.
 	RT_SRCPINS		= 4; // Like RT_PINS, but VT_EXPR and VT_QUERY are converted to string form.
 	RT_VALUES		= 5; // Specifies that a query will return Value object(s).
 }
 
 // Every PIN holds a globally unique ID.
 message PID {
-	optional uint64	id = 1; // The unique identifier of a MVStream::PIN, in the scope of PID::ident's store (and replicas).
+	optional uint64	id = 1; // The unique identifier of a AfyStream::PIN, in the scope of PID::ident's store (and replicas).
 	optional uint32	ident = 2; // The numeric identity ID of the owner of that PIN. The combination of ident and id is globally unique.
 }
 
@@ -165,14 +165,14 @@ message Ref {
 }
 
 // The Value structure can describe the value of a PIN property, or one logical update, or even a whole collection.
-// Please refer to the documentation for context on mvStore's data model: PINs, properties, values, collections and elements.
+// Please refer to the documentation for context on Affinity's data model: PINs, properties, values, collections and elements.
 message Value {
 	// Every value has a type. Value::type is a required field.
 	// Even though the "union" fields of Value (str, bstr, i, ui etc.) already
 	// define a type implicitly via the protocol buffer's descriptor,
 	// Value::type must always be set explicitly. This is partly
 	// to disambiguate some overlapping types (e.g. VT_UINT vs VT_URIID).
-	// Please refer to the documentation for more information on mvStore's data types.
+	// Please refer to the documentation for more information on Affinity's data types.
 	enum ValueType {
 		VT_ANY			= 0; // To specify open-ended ranges
 
@@ -263,7 +263,7 @@ message Value {
 	}
 	
 	optional ValueType	type		= 1; // The type of the value.
-	optional uint32		property	= 2; // The numeric ID of the property that this value belongs to, as defined by the relevant MVStream::StringMap.
+	optional uint32		property	= 2; // The numeric ID of the property that this value belongs to, as defined by the relevant AfyStream::StringMap.
 
 	// The following fields are meant to be used as a union, based on Value::type.
 	optional string		str			= 3; // The VT_STRING or VT_URL value, or string form of VT_EXPR or VT_QUERY.
@@ -291,15 +291,15 @@ message Value {
 	optional uint64		cid			= 128; // Client-side ID. Allows identifying the statement generated this result.
 }
 
-// MVStream encapsulates all the elements that can be inserted/retrieved in a
-// protobuf stream of mvStore objects. It can completely represent any output
-// response returned by mvStore. It can also be used to build a segment of any
-// input request sent to mvStore. mvstore.proto does not define
+// AfyStream encapsulates all the elements that can be inserted/retrieved in a
+// protobuf stream of Affinity objects. It can completely represent any output
+// response returned by Affinity. It can also be used to build a segment of any
+// input request sent to Affinity. affinity.proto does not define
 // an overall structure for input streams, nor does it specify illegal sequences.
-// Incorrect usage will simply be reported as errors by mvStore.
-message MVStream
+// Incorrect usage will simply be reported as errors by Affinity.
+message AfyStream
 {
-	// In an input stream sent to mvStore, specifies how a PIN message
+	// In an input stream sent to Affinity, specifies how a PIN message
 	// is meant to be interpreted by the store.
 	enum MODOP {
 		OP_INSERT	= 0; // A PIN insert.
@@ -308,7 +308,7 @@ message MVStream
 		OP_COPY		= 3; // A PIN copy.
 		OP_UNDELETE	= 4; // A PIN undelete.
 	}
-	// Allows to define transaction boundaries (see the big comment for MVStream, above).
+	// Allows to define transaction boundaries (see the big comment for AfyStream, above).
 	enum TXOP {
 		TX_START			= 1; // Start a transaction, or if a transaction is already active, a nested sub-transaction.
 		TX_COMMIT			= 2; // Commit the innermost nested transaction, for the current stream.
@@ -319,13 +319,13 @@ message MVStream
 		TX_START_CLASSMODIFY = 7; // Start a transaction, which can modify class pins.
 	}
 	// Allows to specify name and identity mappings, to avoid repeating names.
-	// In an input stream sent to mvStore, the mapping is purely logical (the IDs are not persistent).
-	// In an output stream returned by mvStore, the mapping is the store's persistent mapping; it can be cached and reused by the client.
+	// In an input stream sent to Affinity, the mapping is purely logical (the IDs are not persistent).
+	// In an output stream returned by Affinity, the mapping is the store's persistent mapping; it can be cached and reused by the client.
 	message StringMap {
 		required string	str = 1; // The name (URI or Identity).
 		required uint32 id	= 2; // The corresponding ID.
 	}
-	// Query result meta-data, returned by mvStore in an output stream.
+	// Query result meta-data, returned by Affinity in an output stream.
 	message Result {
 		optional uint64		cid		= 1; // Client-side ID of corresponding PathSQL or PIN message.
 		optional ErrorCode	error	= 2; // Error code. If success - this field is omitted.
@@ -350,7 +350,7 @@ message MVStream
 		optional MODOP		op		= 1; // Operation to perform on this PIN. If missing insert is implied.
 		optional PID		id		= 2; // PIN ID (for existing PINs and update/delete/copy/undelete operations).
 		optional uint32		mode	= 3; // Special modifiers.
-		optional uint32		stamp	= 4; // PIN stamp. Only relevant in output streams returned by mvStore.
+		optional uint32		stamp	= 4; // PIN stamp. Only relevant in output streams returned by Affinity.
 		optional uint32		nValues	= 5; // Optional specifier for the number of values of properties. Optimization.
 		repeated Value		values	= 6; // Values of properties of the PIN.
 		optional uint64		cid		= 7; // Client-side ID. Used for references between uncommitted PINs and to relate results to the request.
@@ -374,11 +374,11 @@ message MVStream
 	optional StringMap	owner		= 1; // Owner of the store returning results (output stream only).
 	optional uint32		storeID		= 2; // Store ID of the store returning results (output stream only).
 	repeated PIN		pins		= 3; // A set of PIN descriptions. In input streams, can be used to insert or update PINs. In output streams, describes the query result.
-	repeated StringMap	properties	= 4; // A map of property IDs vs names (URIs). In input streams sent to mvStore, the mapping is purely logical (note: by convention property IDs start at 64). In output streams returned by mvStore, the mapping is mvStore's persistent internal mapping.
-	repeated StringMap	identities	= 5; // A map of identity IDs vs names (URIs). In input streams sent to mvStore, the mapping is purely logical. In output streams, the mapping is mvStore's persistent internal mapping.
-	repeated PathSQL	stmt		= 6; // Query to be executed. Only relevant in input streams sent to mvStore.
+	repeated StringMap	properties	= 4; // A map of property IDs vs names (URIs). In input streams sent to Affinity, the mapping is purely logical (note: by convention property IDs start at 64). In output streams returned by mvStore, the mapping is mvStore's persistent internal mapping.
+	repeated StringMap	identities	= 5; // A map of identity IDs vs names (URIs). In input streams sent to Affinity, the mapping is purely logical. In output streams, the mapping is mvStore's persistent internal mapping.
+	repeated PathSQL	stmt		= 6; // Query to be executed. Only relevant in input streams sent to Affinity.
 	repeated TXOP		txop		= 7; // A transaction operation. In practice, this will only ever contain one element.
-	repeated Result		result		= 8; // Query result meta-data. Only relevant in streams output by mvStore. Matches the specified ReturnType.
+	repeated Result		result		= 8; // Query result meta-data. Only relevant in streams output by Affinity. Matches the specified ReturnType.
 	repeated Compound	compound	= 9; // A few PINs returned as a set.
 	repeated Status		status		= 10; // [Not available yet.] To obtain status of a transaction running asynchronously in the server. Applies to "server mode" only.
 	repeated uint32		flush		= 11; // To request immediate partial output at any known point in the stream (e.g. to obtain PIDs during a transaction).

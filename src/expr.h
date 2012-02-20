@@ -10,11 +10,11 @@ Written by Mark Venguerov 2004 - 2010
 #define _EXPR_H_
 
 #include "pinex.h"
-#include "mvstoreimpl.h"
+#include "affinityimpl.h"
 
-using namespace MVStore;
+using namespace AfyDB;
 
-namespace MVStoreKernel
+namespace AfyKernel
 {
 
 #define INITEXPRSIZE	128

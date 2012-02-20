@@ -33,9 +33,9 @@ Written by Mark Venguerov 2004 - 2010
 #endif
 #endif
 
-using namespace MVStoreKernel;
+using namespace AfyKernel;
 
-RC manageStores(const char *cmd,size_t lcmd,MVStoreCtx &store,IMapDir *id,const StartupParameters *sp,CompilationError *ce)
+RC manageStores(const char *cmd,size_t lcmd,AfyDBCtx &store,IMapDir *id,const StartupParameters *sp,CompilationError *ce)
 {
 	try {
 		store=NULL; if (cmd==NULL || lcmd==0) return RC_INVPARAM;
@@ -54,9 +54,9 @@ static void setDirectory(FileMgr *fio, const char *dir,StoreCtx *ctx)
 
 	const char *homeDir=getenv(HOME_ENV); if (homeDir==NULL) homeDir=getenv("HOME");
 	if (homeDir!=NULL && *homeDir!='\0') {
-		char *dir=(char*)ctx->malloc(strlen(homeDir)+1+sizeof(MVSTOREDIR)+1);
+		char *dir=(char*)ctx->malloc(strlen(homeDir)+1+sizeof(STOREDIR)+1);
 		if (dir!=NULL) {
-			strcpy(dir,homeDir); strcat(dir,"/"MVSTOREDIR);
+			strcpy(dir,homeDir); strcat(dir,"/"STOREDIR);
 #ifdef WIN32
 			HANDLE hDir=CreateFile(dir,GENERIC_READ,FILE_SHARE_READ,NULL,OPEN_EXISTING,FILE_FLAG_BACKUP_SEMANTICS,NULL);
 			if (hDir!=INVALID_HANDLE_VALUE) {CloseHandle(hDir); fio->setDirectory(dir);}
@@ -99,7 +99,7 @@ static RC testEnv()
 	return RC_OK;
 }
 
-RC openStore(const StartupParameters& params,MVStoreCtx &cctx)
+RC openStore(const StartupParameters& params,AfyDBCtx &cctx)
 {
 	StoreCtx *ctx=NULL; RC rc=testEnv(); if (rc!=RC_OK) return rc;
 	try {
@@ -117,37 +117,37 @@ RC openStore(const StartupParameters& params,MVStoreCtx &cctx)
 
 		int dataFileN=0; FileID lastFile=0; bool fForce=(params.mode&STARTUP_FORCE_OPEN)!=0;
 
-		if ((rc=StoreCB::open(ctx,MVSTOREPREFIX MASTERFILESUFFIX,params.password,fForce))==RC_OK) {
+		if ((rc=StoreCB::open(ctx,STOREPREFIX MASTERFILESUFFIX,params.password,fForce))==RC_OK) {
 			if (ctx->theCB->nMaster!=1) {
 				report(MSG_ERROR,"StoreCB: invalid nMaster field %d\n",ctx->theCB->nMaster); throw RC_CORRUPTED;
 			} else {
-				report(MSG_INFO,"Master record found in "MVSTOREPREFIX MASTERFILESUFFIX"\n");
+				report(MSG_INFO,"Master record found in "STOREPREFIX MASTERFILESUFFIX"\n");
 			}
 		} 
-		if (rc==RC_NOTFOUND && (rc=StoreCB::open(ctx,MVSTOREPREFIX"1"MASTERFILESUFFIX,params.password,fForce))==RC_OK) {
+		if (rc==RC_NOTFOUND && (rc=StoreCB::open(ctx,STOREPREFIX"1"MASTERFILESUFFIX,params.password,fForce))==RC_OK) {
 			if (ctx->theCB->nMaster<2 || ctx->theCB->nMaster>MAXMASTERFILES) {
 				report(MSG_ERROR,"StoreCB: invalid nMaster field %d\n",ctx->theCB->nMaster); throw RC_CORRUPTED;
 			} else {
-				report(MSG_INFO,"Master record found in "MVSTOREPREFIX"1"MASTERFILESUFFIX"\n");
-				// open MVSTOREPREFIX"2 to nMaster+1"MASTERFILESUFFIX
+				report(MSG_INFO,"Master record found in "STOREPREFIX"1"MASTERFILESUFFIX"\n");
+				// open STOREPREFIX"2 to nMaster+1"MASTERFILESUFFIX
 				// compare timestamp -> use latest
 			}
 		}
-		if (rc==RC_NOTFOUND && (rc=StoreCB::open(ctx,MVSTOREPREFIX DATAFILESUFFIX,params.password,fForce))==RC_OK) {
+		if (rc==RC_NOTFOUND && (rc=StoreCB::open(ctx,STOREPREFIX DATAFILESUFFIX,params.password,fForce))==RC_OK) {
 			if (ctx->theCB->nMaster!=0) {
 				report(MSG_ERROR,"StoreCB: invalid nMaster field %d\n",ctx->theCB->nMaster); throw RC_CORRUPTED;
 			} else {
-				report(MSG_INFO,"Master record found in "MVSTOREPREFIX DATAFILESUFFIX"\n"); dataFileN=1;
+				report(MSG_INFO,"Master record found in "STOREPREFIX DATAFILESUFFIX"\n"); dataFileN=1;
 			}
 		}
 		if (rc==RC_NOTFOUND) for (ulong i=1; i<MAXMASTERFILES; i++) {
-			char buf[100]; sprintf(buf,MVSTOREPREFIX"%lu"MASTERFILESUFFIX,i+1);
+			char buf[100]; sprintf(buf,STOREPREFIX"%lu"MASTERFILESUFFIX,i+1);
 			if ((rc=StoreCB::open(ctx,buf,params.password,fForce))==RC_OK) {
 				if (ctx->theCB->nMaster<i+1 || ctx->theCB->nMaster>MAXMASTERFILES) {
 					report(MSG_ERROR,"StoreCB: invalid nMaster field %d\n",ctx->theCB->nMaster); throw RC_CORRUPTED;
 				} else {
 					report(MSG_INFO,"Master record found in %.512s\n",buf);
-					// create and open MVSTOREPREFIX"1 to i"MASTERFILESUFFIX
+					// create and open STOREPREFIX"1 to i"MASTERFILESUFFIX
 					// copy from "i+1"
 					break;
 				}
@@ -179,8 +179,8 @@ RC openStore(const StartupParameters& params,MVStoreCtx &cctx)
 
 		for (ulong i=dataFileN; i<ctx->theCB->nDataFiles; i++) {
 			lastFile=FileID(RESERVEDFILEIDS + i - dataFileN); char buf[100];
-			if (i==0) strcpy(buf,MVSTOREPREFIX DATAFILESUFFIX);
-			else sprintf(buf,MVSTOREPREFIX"%lu"DATAFILESUFFIX,i);
+			if (i==0) strcpy(buf,STOREPREFIX DATAFILESUFFIX);
+			else sprintf(buf,STOREPREFIX"%lu"DATAFILESUFFIX,i);
 			if ((rc=fio->open(lastFile,buf))!=RC_OK)
 				{report(MSG_CRIT,"Cannot open data file '%s' in directory '%.400s' (%d)\n",buf,fio->getDirectory(),rc); throw rc;}
 		}
@@ -241,7 +241,7 @@ RC openStore(const StartupParameters& params,MVStoreCtx &cctx)
 	return rc;
 }
 
-RC createStore(const StoreCreationParameters& create,const StartupParameters& params,MVStoreCtx &cctx,ISession **pLoad)
+RC createStore(const StoreCreationParameters& create,const StartupParameters& params,AfyDBCtx &cctx,ISession **pLoad)
 {
 	StoreCtx *ctx=NULL; RC rc=testEnv(); if (rc!=RC_OK) return rc;
 	try {
@@ -260,9 +260,9 @@ RC createStore(const StoreCreationParameters& create,const StartupParameters& pa
 
 		unsigned nCtl=create.nControlRecords>MAXMASTERFILES ? MAXMASTERFILES : create.nControlRecords;
 
-		const char *fname=nCtl <= 0 ? MVSTOREPREFIX DATAFILESUFFIX : 
-							nCtl==1 ? MVSTOREPREFIX MASTERFILESUFFIX : 
-									MVSTOREPREFIX"1"MASTERFILESUFFIX;
+		const char *fname=nCtl <= 0 ? STOREPREFIX DATAFILESUFFIX : 
+							nCtl==1 ? STOREPREFIX MASTERFILESUFFIX : 
+									STOREPREFIX"1"MASTERFILESUFFIX;
 		rc=StoreCB::create(ctx,fname,create);
 	
 		if (rc==RC_ALREADYEXISTS && (params.mode&STARTUP_FORCE_NEW)!=0) {
@@ -279,7 +279,7 @@ RC createStore(const StoreCreationParameters& create,const StartupParameters& pa
 
 		if (nCtl>0) {
 			for (unsigned i=1; i<nCtl; i++) {
-				char buf[100]; sprintf(buf,MVSTOREPREFIX"%d"MASTERFILESUFFIX,i+1); FileID fid=i;
+				char buf[100]; sprintf(buf,STOREPREFIX"%d"MASTERFILESUFFIX,i+1); FileID fid=i;
 				if ((rc=ctx->fileMgr->open(fid,buf,FIO_CREATE|FIO_NEW))!=RC_OK) {
 					if (rc==RC_ALREADYEXISTS && (params.mode&STARTUP_FORCE_NEW)!=0) {
 						// rename old, repeat open()
@@ -288,8 +288,8 @@ RC createStore(const StoreCreationParameters& create,const StartupParameters& pa
 				}
 			}
 			fid=RESERVEDFILEIDS;
-			if ((rc=ctx->fileMgr->open(fid,MVSTOREPREFIX DATAFILESUFFIX,FIO_CREATE|FIO_NEW))!=RC_OK)
-				{report(MSG_CRIT,"Cannot create '"MVSTOREPREFIX DATAFILESUFFIX"' in directory '%.400s' (%d)\n",ctx->fileMgr->getDirectory(),rc); throw rc;}
+			if ((rc=ctx->fileMgr->open(fid,STOREPREFIX DATAFILESUFFIX,FIO_CREATE|FIO_NEW))!=RC_OK)
+				{report(MSG_CRIT,"Cannot create '"STOREPREFIX DATAFILESUFFIX"' in directory '%.400s' (%d)\n",ctx->fileMgr->getDirectory(),rc); throw rc;}
 		}
 
 		ctx->txMgr=new(ctx) TxMgr(ctx,0,params.notification);
@@ -361,7 +361,7 @@ RC createStore(const StoreCreationParameters& create,const StartupParameters& pa
 	return rc;
 }
 
-RC getStoreCreationParameters(StoreCreationParameters& params,MVStoreCtx ctx)
+RC getStoreCreationParameters(StoreCreationParameters& params,AfyDBCtx ctx)
 {
 	try {
 		if (ctx!=NULL) ctx->set(); else if ((ctx=StoreCtx::get())==NULL) return RC_NOTFOUND;
@@ -418,14 +418,14 @@ static void reportTree(PageID pid,const char *t,StoreCtx *ctx)
 	}
 }
 
-unsigned getStoreState(MVStoreCtx ctx)
+unsigned getStoreState(AfyDBCtx ctx)
 {
 	try {return ctx!=NULL || (ctx=StoreCtx::get())!=NULL ? ctx->getState() : 0u;}
 	catch (RC) {} catch (...) {report(MSG_ERROR,"Exception in getStoreState\n");}
 	return 0u;
 }
 
-RC shutdownStore(MVStoreCtx ctx)
+RC shutdownStore(AfyDBCtx ctx)
 {
 	try {
 		if (ctx!=NULL) ctx->set(); else if ((ctx=StoreCtx::get())==NULL) return RC_NOTFOUND;
@@ -543,5 +543,5 @@ StoreCtx *StoreCtx::createCtx(ulong f,bool fNew)
 
 void StoreCtx::operator delete(void *p)
 {
-	MVStoreKernel::free(p,SERVER_HEAP);
+	AfyKernel::free(p,SERVER_HEAP);
 }

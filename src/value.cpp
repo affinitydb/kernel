@@ -6,7 +6,7 @@ Written by Mark Venguerov 2004 - 2010
 
 **************************************************************************************/
 
-#include "mvstoreimpl.h"
+#include "affinityimpl.h"
 #include "queryprc.h"
 #include "stmt.h"
 #include "parser.h"
@@ -17,9 +17,9 @@ Written by Mark Venguerov 2004 - 2010
 #include <string.h>
 #include <math.h>
 
-using namespace MVStoreKernel;
+using namespace AfyKernel;
 
-RC MVStoreKernel::copyV0(Value &v,MemAlloc *ma)
+RC AfyKernel::copyV0(Value &v,MemAlloc *ma)
 {
 	try {
 		ulong i; RC rc; Value w; size_t ll; assert(ma!=NULL);
@@ -70,7 +70,7 @@ RC MVStoreKernel::copyV0(Value &v,MemAlloc *ma)
 	} catch (RC rc) {return rc;} catch (...) {report(MSG_ERROR,"Exception in copyV(...)\n"); return RC_INTERNAL;}
 }
 
-RC MVStoreKernel::copyV(const Value *from,ulong nv,Value *&to,MemAlloc *ma)
+RC AfyKernel::copyV(const Value *from,ulong nv,Value *&to,MemAlloc *ma)
 {
 	if (ma==NULL) ma=Session::getSession();
 	if (from==NULL||nv==0) to=NULL;
@@ -82,7 +82,7 @@ RC MVStoreKernel::copyV(const Value *from,ulong nv,Value *&to,MemAlloc *ma)
 	return RC_OK;
 }
 
-bool MVStoreKernel::operator==(const Value& lhs, const Value& rhs)
+bool AfyKernel::operator==(const Value& lhs, const Value& rhs)
 {
 	ulong i;
 	if (lhs.property!=rhs.property || lhs.eid!=rhs.eid || lhs.op!=rhs.op || lhs.meta!=rhs.meta) return false;		// flags???
@@ -127,69 +127,69 @@ bool MVStoreKernel::operator==(const Value& lhs, const Value& rhs)
 	return true;
 }
 
-size_t MVStoreKernel::serSize(const PID& id)
+size_t AfyKernel::serSize(const PID& id)
 {
 	uint32_t pg=uint32_t(id.pid>>16); uint16_t idx=uint16_t(id.pid),st=uint16_t(id.pid>>48);
-	return mv_len32(pg)+mv_len16(idx)+mv_len16(st)+mv_len32(id.ident);
+	return afy_len32(pg)+afy_len16(idx)+afy_len16(st)+afy_len32(id.ident);
 }
 
-size_t MVStoreKernel::serSize(const Value& v,bool full)
+size_t AfyKernel::serSize(const Value& v,bool full)
 {
 	size_t l=1; uint32_t i; uint64_t u64; const Value *pv;
 	switch (v.type) {
 	default: l=0; break;
 	case VT_ANY: if (!full) l++; break;
-	case VT_STREAM: u64=v.stream.is->length(); l+=1+mv_len64(u64)+(size_t)u64; break;
-	case VT_STRING: case VT_URL: l+=mv_len32(v.length+1)+v.length+1; break;
-	case VT_BSTR: l+=mv_len32(v.length)+v.length; break;
-	case VT_INT: i=mv_enc32zz(v.i); l+=mv_len32(i); break;
-	case VT_UINT: case VT_URIID: case VT_IDENTITY: l+=mv_len32(v.ui); break;
-	case VT_INT64: case VT_INTERVAL: u64=mv_enc64zz(v.i64); l+=mv_len64(u64); break;
-	case VT_UINT64: case VT_DATETIME: l+=mv_len64(v.ui64); break;
+	case VT_STREAM: u64=v.stream.is->length(); l+=1+afy_len64(u64)+(size_t)u64; break;
+	case VT_STRING: case VT_URL: l+=afy_len32(v.length+1)+v.length+1; break;
+	case VT_BSTR: l+=afy_len32(v.length)+v.length; break;
+	case VT_INT: i=afy_enc32zz(v.i); l+=afy_len32(i); break;
+	case VT_UINT: case VT_URIID: case VT_IDENTITY: l+=afy_len32(v.ui); break;
+	case VT_INT64: case VT_INTERVAL: u64=afy_enc64zz(v.i64); l+=afy_len64(u64); break;
+	case VT_UINT64: case VT_DATETIME: l+=afy_len64(v.ui64); break;
 	case VT_FLOAT: l=2+sizeof(float); break;
 	case VT_DOUBLE: l=2+sizeof(double); break;
 	case VT_BOOL: case VT_CURRENT: l=2; break;
 	case VT_REF: l+=serSize(v.pin->getPID()); break;
 	case VT_REFID: l+=serSize(v.id); break;
-	case VT_REFPROP: l+=serSize(v.ref.pin->getPID())+mv_len32(v.ref.pid); break;
-	case VT_REFIDPROP: l+=serSize(v.refId->id)+mv_len32(v.refId->pid); break;
-	case VT_REFELT: l+=serSize(v.ref.pin->getPID())+mv_len32(v.ref.pid)+mv_len32(v.ref.eid); break;
-	case VT_REFIDELT: l+=serSize(v.refId->id)+mv_len32(v.refId->pid)+mv_len32(v.refId->eid); break;
+	case VT_REFPROP: l+=serSize(v.ref.pin->getPID())+afy_len32(v.ref.pid); break;
+	case VT_REFIDPROP: l+=serSize(v.refId->id)+afy_len32(v.refId->pid); break;
+	case VT_REFELT: l+=serSize(v.ref.pin->getPID())+afy_len32(v.ref.pid)+afy_len32(v.ref.eid); break;
+	case VT_REFIDELT: l+=serSize(v.refId->id)+afy_len32(v.refId->pid)+afy_len32(v.refId->eid); break;
 	case VT_RANGE: l+=serSize(v.range[0])+serSize(v.range[1]); break;
 	case VT_VARREF:
-		l=7; if (v.length!=0) {l+=mv_len32(v.refV.id); if (v.eid!=STORE_COLLECTION_ID) l+=mv_len32(v.eid);}
+		l=7; if (v.length!=0) {l+=afy_len32(v.refV.id); if (v.eid!=STORE_COLLECTION_ID) l+=afy_len32(v.eid);}
 		break;
 	case VT_ARRAY:
-		l+=mv_len32(v.length);
-		for (i=0; i<v.length; i++) l+=mv_len32(v.varray[i].eid)+serSize(v.varray[i]);
+		l+=afy_len32(v.length);
+		for (i=0; i<v.length; i++) l+=afy_len32(v.varray[i].eid)+serSize(v.varray[i]);
 		break;
 	case VT_COLLECTION:
-		l=v.nav->count(); l=1+mv_len32(l);
-		for (pv=v.nav->navigate(GO_FIRST); pv!=NULL; pv=v.nav->navigate(GO_NEXT)) l+=mv_len32(pv->eid)+serSize(*pv);
+		l=v.nav->count(); l=1+afy_len32(l);
+		for (pv=v.nav->navigate(GO_FIRST); pv!=NULL; pv=v.nav->navigate(GO_NEXT)) l+=afy_len32(pv->eid)+serSize(*pv);
 		break;
 	case VT_STRUCT:
-		l+=mv_len32(v.length);
-		for (i=0; i<v.length; i++) l+=mv_len32(v.varray[i].property)+serSize(v.varray[i]);
+		l+=afy_len32(v.length);
+		for (i=0; i<v.length; i++) l+=afy_len32(v.varray[i].property)+serSize(v.varray[i]);
 		break;
 	case VT_EXPR: l+=((Expr*)v.expr)->serSize(); break;
-	case VT_STMT: l=((Stmt*)v.stmt)->serSize(); l+=1+mv_len32(l); break;
+	case VT_STMT: l=((Stmt*)v.stmt)->serSize(); l+=1+afy_len32(l); break;
 
 	case VT_EXPRTREE:
 	case VT_RESERVED1:
 	case VT_RESERVED2:
 		return 0;		// niy
 	}
-	if (full) {i=mv_enc32zz(v.eid); l+=2+mv_len32(i)+mv_len32(v.property);}
+	if (full) {i=afy_enc32zz(v.eid); l+=2+afy_len32(i)+afy_len32(v.property);}
 	return l;
 }
 
-byte *MVStoreKernel::serialize(const PID& id,byte *buf)
+byte *AfyKernel::serialize(const PID& id,byte *buf)
 {
 	uint32_t pg=uint32_t(id.pid>>16); uint16_t idx=uint16_t(id.pid),st=uint16_t(id.pid>>48);
-	mv_enc32(buf,pg); mv_enc16(buf,idx); mv_enc16(buf,st); mv_enc32(buf,id.ident); return buf;
+	afy_enc32(buf,pg); afy_enc16(buf,idx); afy_enc16(buf,st); afy_enc32(buf,id.ident); return buf;
 }
 
-byte *MVStoreKernel::serialize(const Value& v,byte *buf,bool full)
+byte *AfyKernel::serialize(const Value& v,byte *buf,bool full)
 {
 	*buf++=v.type;
 	unsigned i; uint32_t l; const Value *pv; uint64_t u64;
@@ -198,51 +198,51 @@ byte *MVStoreKernel::serialize(const Value& v,byte *buf,bool full)
 	case VT_ANY: if (!full) *buf++=v.meta; break;
 	case VT_STREAM:
 		*buf++=v.stream.is->dataType(); u64=v.stream.is->length();
-		mv_enc64(buf,u64); buf+=v.stream.is->read(buf,(size_t)u64);
+		afy_enc64(buf,u64); buf+=v.stream.is->read(buf,(size_t)u64);
 		break;
 	case VT_STRING: case VT_URL: case VT_BSTR:
-		l=v.type==VT_BSTR?v.length:v.length+1; mv_enc32(buf,l);
+		l=v.type==VT_BSTR?v.length:v.length+1; afy_enc32(buf,l);
 		if (v.bstr!=NULL) memcpy(buf,v.bstr,v.length); buf+=v.length;
 		if (v.type!=VT_BSTR) *buf++='\0';
 		break;
-	case VT_INT: l=mv_enc32zz(v.i); mv_enc32(buf,l); break;
-	case VT_UINT: case VT_URIID: case VT_IDENTITY: mv_enc32(buf,v.ui); break;
-	case VT_INT64: case VT_INTERVAL: u64=mv_enc64zz(v.i64); mv_enc64(buf,u64); break;
-	case VT_UINT64: case VT_DATETIME: mv_enc64(buf,v.ui64); break;
+	case VT_INT: l=afy_enc32zz(v.i); afy_enc32(buf,l); break;
+	case VT_UINT: case VT_URIID: case VT_IDENTITY: afy_enc32(buf,v.ui); break;
+	case VT_INT64: case VT_INTERVAL: u64=afy_enc64zz(v.i64); afy_enc64(buf,u64); break;
+	case VT_UINT64: case VT_DATETIME: afy_enc64(buf,v.ui64); break;
 	case VT_FLOAT: *buf++=byte(v.qval.units); memcpy(buf,&v.f,sizeof(float)); buf+=sizeof(float); break;
 	case VT_DOUBLE: *buf++=byte(v.qval.units); memcpy(buf,&v.d,sizeof(double)); buf+=sizeof(double); break;
 	case VT_BOOL: *buf++=v.b; break;
 	case VT_RANGE: buf=serialize(v.range[1],serialize(v.range[0],buf)); break;
 	case VT_CURRENT: *buf++=byte(v.i); break;
 	case VT_REF: buf[-1]=VT_REFID; buf=serialize(v.pin->getPID(),buf); break;
-	case VT_REFPROP: buf[-1]=VT_REFIDPROP; buf=serialize(v.ref.pin->getPID(),buf); mv_enc32(buf,v.ref.pid); break;
-	case VT_REFELT: buf[-1]=VT_REFIDELT; buf=serialize(v.ref.pin->getPID(),buf); mv_enc32(buf,v.ref.pid); mv_enc32(buf,v.ref.eid); break;
+	case VT_REFPROP: buf[-1]=VT_REFIDPROP; buf=serialize(v.ref.pin->getPID(),buf); afy_enc32(buf,v.ref.pid); break;
+	case VT_REFELT: buf[-1]=VT_REFIDELT; buf=serialize(v.ref.pin->getPID(),buf); afy_enc32(buf,v.ref.pid); afy_enc32(buf,v.ref.eid); break;
 	case VT_REFID: buf=serialize(v.id,buf); break;
-	case VT_REFIDPROP: buf=serialize(v.refId->id,buf); mv_enc32(buf,v.refId->pid); break;
-	case VT_REFIDELT:  buf=serialize(v.refId->id,buf); mv_enc32(buf,v.refId->pid); mv_enc32(buf,v.refId->eid); break;
+	case VT_REFIDPROP: buf=serialize(v.refId->id,buf); afy_enc32(buf,v.refId->pid); break;
+	case VT_REFIDELT:  buf=serialize(v.refId->id,buf); afy_enc32(buf,v.refId->pid); afy_enc32(buf,v.refId->eid); break;
 	case VT_VARREF:
 		*buf++=v.refV.refN; *buf++=v.length|(v.eid!=STORE_COLLECTION_ID?0x80:0); 
 		*buf++=byte(v.refV.type>>8); *buf++=byte(v.refV.type);
 		*buf++=byte(v.refV.flags>>8); *buf++=byte(v.refV.flags);
-		if (v.length!=0) {mv_enc32(buf,v.refV.id); if (v.eid!=STORE_COLLECTION_ID) mv_enc32(buf,v.eid);}
+		if (v.length!=0) {afy_enc32(buf,v.refV.id); if (v.eid!=STORE_COLLECTION_ID) afy_enc32(buf,v.eid);}
 		break;
 	case VT_ARRAY:
-		mv_enc32(buf,v.length);
-		for (i=0; i<v.length; i++) {mv_enc32(buf,v.varray[i].eid); buf=serialize(v.varray[i],buf);}
+		afy_enc32(buf,v.length);
+		for (i=0; i<v.length; i++) {afy_enc32(buf,v.varray[i].eid); buf=serialize(v.varray[i],buf);}
 		break;
 	case VT_COLLECTION:
-		l=v.nav->count(); mv_enc32(buf,l);
-		for (pv=v.nav->navigate(GO_FIRST); pv!=NULL; pv=v.nav->navigate(GO_NEXT)) {mv_enc32(buf,pv->eid); buf=serialize(*pv,buf);}
+		l=v.nav->count(); afy_enc32(buf,l);
+		for (pv=v.nav->navigate(GO_FIRST); pv!=NULL; pv=v.nav->navigate(GO_NEXT)) {afy_enc32(buf,pv->eid); buf=serialize(*pv,buf);}
 		break;
 	case VT_STRUCT:
-		mv_enc32(buf,v.length);
-		for (i=0; i<v.length; i++) {mv_enc32(buf,v.varray[i].property); buf=serialize(v.varray[i],buf);}
+		afy_enc32(buf,v.length);
+		for (i=0; i<v.length; i++) {afy_enc32(buf,v.varray[i].property); buf=serialize(v.varray[i],buf);}
 		break;
 	case VT_EXPR:
 		if (v.expr!=NULL) buf=((Expr*)v.expr)->serialize(buf);
 		break;
 	case VT_STMT:
-		if (v.stmt!=NULL) {l=(uint32_t)((Stmt*)v.stmt)->serSize(); mv_enc32(buf,l); buf=((Stmt*)v.stmt)->serialize(buf);}
+		if (v.stmt!=NULL) {l=(uint32_t)((Stmt*)v.stmt)->serSize(); afy_enc32(buf,l); buf=((Stmt*)v.stmt)->serialize(buf);}
 		break;
 	case VT_EXPRTREE:
 	case VT_RESERVED1:
@@ -250,18 +250,18 @@ byte *MVStoreKernel::serialize(const Value& v,byte *buf,bool full)
 		//???
 		break;		// niy
 	}
-	if (full) {buf[0]=v.op; buf[1]=v.meta; buf+=2; l=mv_enc32zz(v.eid); mv_enc32(buf,l); mv_enc32(buf,v.property);}
+	if (full) {buf[0]=v.op; buf[1]=v.meta; buf+=2; l=afy_enc32zz(v.eid); afy_enc32(buf,l); afy_enc32(buf,v.property);}
 	return buf;
 }
 
-RC MVStoreKernel::deserialize(PID& id,const byte *&buf,const byte *const ebuf)
+RC AfyKernel::deserialize(PID& id,const byte *&buf,const byte *const ebuf)
 {
 	uint32_t u32; uint16_t u16;
 	CHECK_dec32(buf,u32,ebuf); CHECK_dec16(buf,u16,ebuf); id.pid=uint64_t(u32)<<16|u16;
 	CHECK_dec16(buf,u16,ebuf); id.setStoreID(u16); CHECK_dec32(buf,id.ident,ebuf); return RC_OK;
 }
 
-RC MVStoreKernel::deserialize(Value& val,const byte *&buf,const byte *const ebuf,MemAlloc *ma,bool fInPlace,bool full)
+RC AfyKernel::deserialize(Value& val,const byte *&buf,const byte *const ebuf,MemAlloc *ma,bool fInPlace,bool full)
 {
 	if (buf==ebuf) return RC_CORRUPTED; assert(ma!=NULL);
 	uint32_t l,i; uint64_t u64; RefVID *rv; Expr *exp; Stmt *qry; RC rc;
@@ -284,11 +284,11 @@ RC MVStoreKernel::deserialize(Value& val,const byte *&buf,const byte *const ebuf
 		else {memcpy((byte*)val.bstr,buf,l); val.flags=ma->getAType();}
 		val.length=val.type==VT_BSTR?l:l-1; buf+=l; break;
 	case VT_INT:
-		CHECK_dec32(buf,i,ebuf); val.i=mv_dec32zz(i); val.length=sizeof(int32_t); break;
+		CHECK_dec32(buf,i,ebuf); val.i=afy_dec32zz(i); val.length=sizeof(int32_t); break;
 	case VT_UINT: case VT_URIID: case VT_IDENTITY:
 		CHECK_dec32(buf,val.ui,ebuf); val.length=sizeof(uint32_t); break;
 	case VT_INT64: case VT_INTERVAL: 
-		CHECK_dec64(buf,u64,ebuf); val.i64=mv_dec64zz(u64); val.length=sizeof(int64_t); break;
+		CHECK_dec64(buf,u64,ebuf); val.i64=afy_dec64zz(u64); val.length=sizeof(int64_t); break;
 	case VT_UINT64: case VT_DATETIME:
 		CHECK_dec64(buf,val.ui64,ebuf); val.length=sizeof(uint64_t); break;
 	case VT_FLOAT:
@@ -358,12 +358,12 @@ RC MVStoreKernel::deserialize(Value& val,const byte *&buf,const byte *const ebuf
 	}
 	if (full) {
 		if (buf+4>ebuf) return RC_CORRUPTED; val.op=buf[0]; val.meta=buf[1]; buf+=2;
-		CHECK_dec32(buf,i,ebuf); val.eid=mv_dec32zz(i); CHECK_dec32(buf,val.property,ebuf);
+		CHECK_dec32(buf,i,ebuf); val.eid=afy_dec32zz(i); CHECK_dec32(buf,val.property,ebuf);
 	}
 	return RC_OK;
 }
 
-RC MVStoreKernel::streamToValue(IStream *stream,Value& val,MemAlloc *ma)
+RC AfyKernel::streamToValue(IStream *stream,Value& val,MemAlloc *ma)
 {
 	try {
 		val.setError();
@@ -393,7 +393,7 @@ RC MVStoreKernel::streamToValue(IStream *stream,Value& val,MemAlloc *ma)
 	} catch (RC rc) {return rc;} catch (...) {return RC_INVPARAM;}
 }
 
-int MVStoreKernel::cmpNoConv(const Value& arg,const Value& arg2,ulong u)
+int AfyKernel::cmpNoConv(const Value& arg,const Value& arg2,ulong u)
 {
 	ulong len; int c; Value v1,v2; assert(arg.type==arg2.type);
 	switch (arg.type) {
@@ -432,7 +432,7 @@ int MVStoreKernel::cmpNoConv(const Value& arg,const Value& arg2,ulong u)
 	}
 }
 
-int MVStoreKernel::cmpConv(const Value& arg,const Value& arg2,ulong u)
+int AfyKernel::cmpConv(const Value& arg,const Value& arg2,ulong u)
 {
 	Value val1,val2; const Value *pv1=&arg,*pv2=&arg2; assert(arg.type!=arg2.type);
 	if ((isNumeric((ValueType)arg.type) || arg.type==VT_STRING && (pv1=&val1,testStrNum(arg.str,arg.length,val1))) && (isNumeric((ValueType)arg2.type) || arg2.type==VT_STRING && (pv2=&val2,testStrNum(arg2.str,arg2.length,val2)))) {
@@ -464,7 +464,7 @@ int MVStoreKernel::cmpConv(const Value& arg,const Value& arg2,ulong u)
 	return cmp3(arg.type,arg2.type);
 }
 
-RC MVStoreKernel::convV(const Value& src,Value& dst,ushort type,MemAlloc *ma,unsigned mode)
+RC AfyKernel::convV(const Value& src,Value& dst,ushort type,MemAlloc *ma,unsigned mode)
 {
 	int l; char buf[256],*p; Value w; RC rc; TIMESTAMP ts; int64_t itv; URI *uri; Identity *ident; IdentityID iid; uint32_t ui;
 	for (const Value *ps=&src;;) {if (ps->type==type) {
@@ -837,7 +837,7 @@ noconv:
 	return RC_OK;}
 }
 
-RC MVStoreKernel::derefValue(const Value &src,Value &dst,Session *ses)
+RC AfyKernel::derefValue(const Value &src,Value &dst,Session *ses)
 {
 	PIN *pin; const RefVID *refId; const Value *cv;
 	RC rc=RC_OK; HEAP_TYPE save=(HEAP_TYPE)(src.flags&HEAP_TYPE_MASK);
@@ -869,7 +869,7 @@ RC MVStoreKernel::derefValue(const Value &src,Value &dst,Session *ses)
 	return rc;
 }
 
-RC MVStoreKernel::convURL(const Value& src,Value& dst,HEAP_TYPE alloc)
+RC AfyKernel::convURL(const Value& src,Value& dst,HEAP_TYPE alloc)
 {
 	switch (src.type) {
 	default: return RC_TYPE;
@@ -898,13 +898,13 @@ RC MVStoreKernel::convURL(const Value& src,Value& dst,HEAP_TYPE alloc)
 	return RC_OK;
 }
 
-void MVStoreKernel::freeV(Value *v,ulong nv,MemAlloc *ma)
+void AfyKernel::freeV(Value *v,ulong nv,MemAlloc *ma)
 {
 	for (ulong i=0; i<nv; i++) freeV(v[i]);
 	ma->free(v);
 }
 
-void MVStoreKernel::freeV0(Value& v)
+void AfyKernel::freeV0(Value& v)
 {
 	try {
 		HEAP_TYPE allc=(HEAP_TYPE)(v.flags&HEAP_TYPE_MASK); assert(allc!=NO_HEAP);

@@ -20,9 +20,9 @@ Written by Mark Venguerov 2004 - 2010
 #include "netmgr.h"
 #include "maps.h"
 
-using namespace MVStoreKernel;
+using namespace AfyKernel;
 
-namespace MVStoreKernel
+namespace AfyKernel
 {
 #ifndef FORCE_SPLIT
 	#define FORCE_SPLIT	false
@@ -1212,7 +1212,7 @@ size_t QueryPrc::splitLength(const Value *pv)
 	case VT_EXPR:
 		len=((Expr*)pv->expr)->serSize(); break;
 	case VT_STMT:
-		len=((Stmt*)pv->stmt)->serSize(); len+=mv_len16(len); break;
+		len=((Stmt*)pv->stmt)->serSize(); len+=afy_len16(len); break;
 	}
 	return len<=sizeof(HRefSSV)?0:ceil(len,HP_ALIGN);
 }

@@ -17,7 +17,7 @@ Written by Mark Venguerov 2004 - 2010
 #include "blob.h"
 #include "maps.h"
 
-using namespace MVStoreKernel;
+using namespace AfyKernel;
 
 RC QueryPrc::deletePINs(Session *ses,const PIN *const *pins,const PID *pids,unsigned nPins,unsigned mode,PINEx *pcb)
 {

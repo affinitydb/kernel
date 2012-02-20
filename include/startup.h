@@ -9,16 +9,17 @@ Written by Mark Venguerov 2004 - 2010
 #ifndef _STARTUP_H_
 #define _STARTUP_H_
 
-#include "mvstore.h"
+#include "affinity.h"
 
-#define	MVSTOREPREFIX				"affinity"
-#define MVSTOREDIR					"affinitydb"
+#define	STOREPREFIX					"affinity"
+#define	LOGPREFIX					"afy"
+#define STOREDIR					"affinitydb"
 #define	DATAFILESUFFIX				".db"
 #define	LOGFILESUFFIX				".txlog"
 #define	MASTERFILESUFFIX			".master"
 #define	HOME_ENV					"AFFINITY_HOME"
 
-#define	STORE_STD_URI_PREFIX		"http://www.affinitydb.org/builtin/"
+#define	STORE_STD_URI_PREFIX		"http://affinitydb.org/builtin/"
 #define	STORE_STD_QPREFIX			"afy:"
 
 #define	DEFAULT_MAX_FILES			300
@@ -70,7 +71,7 @@ class IStoreNet
 {
 public:
 	virtual	bool	isOnline() = 0;
-	virtual	bool	getPIN(uint64_t pid,unsigned short storeId,MVStore::IdentityID iid,MVStore::IPIN *pin) = 0;
+	virtual	bool	getPIN(uint64_t pid,unsigned short storeId,AfyDB::IdentityID iid,AfyDB::IPIN *pin) = 0;
 };
 
 class IStoreIO;
@@ -85,18 +86,18 @@ public:
 		NTX_START, NTX_SAVEPOINT, NTX_COMMIT, NTX_ABORT, NTX_COMMIT_SP, NTX_ABORT_SP
 	};
 	struct NotificationData {
-		MVStore::PropertyID			propID;
-		MVStore::ElementID			eid;
-		MVStore::ElementID			epos;
-		const	MVStore::Value		*oldValue;
-		const	MVStore::Value		*newValue;
+		AfyDB::PropertyID			propID;
+		AfyDB::ElementID			eid;
+		AfyDB::ElementID			epos;
+		const	AfyDB::Value		*oldValue;
+		const	AfyDB::Value		*newValue;
 	};
 	struct EventData {
 		NotificationEventType		type;
-		MVStore::ClassID			cid;
+		AfyDB::ClassID			cid;
 	};
 	struct NotificationEvent {
-		MVStore::PID				pin;
+		AfyDB::PID				pin;
 		const	EventData			*events;
 		unsigned					nEvents;
 		const	NotificationData	*data;
@@ -111,8 +112,8 @@ class ILockNotification
 {
 public:
 	enum LockType {LT_SHARED, LT_UPDATE, LT_EXCLUSIVE};
-	virtual	RC		beforeWait(MVStore::ISession *ses,const MVStore::PID& id,LockType lt) = 0;
-	virtual	void	afterWait(MVStore::ISession *ses,const MVStore::PID& id,LockType lt,RC rc) = 0;
+	virtual	RC		beforeWait(AfyDB::ISession *ses,const AfyDB::PID& id,LockType lt) = 0;
+	virtual	void	afterWait(AfyDB::ISession *ses,const AfyDB::PID& id,LockType lt,RC rc) = 0;
 };
 
 struct StartupParameters
@@ -162,15 +163,15 @@ public:
 	virtual	RC	map(StoreOp op,const char *dir,size_t ldir,const char *&mdir,const char **pwd) = 0;
 };
 
-extern "C" _EXP RC			manageStores(const char *cmd,size_t lcmd,MVStoreCtx &store,IMapDir *id,const StartupParameters *sp=NULL,MVStore::CompilationError *ce=NULL);
+extern "C" _EXP RC			manageStores(const char *cmd,size_t lcmd,AfyDBCtx &store,IMapDir *id,const StartupParameters *sp=NULL,AfyDB::CompilationError *ce=NULL);
 
-extern "C" _EXP RC			openStore(const StartupParameters& params,MVStoreCtx &store);
-extern "C" _EXP RC			createStore(const StoreCreationParameters& create,const StartupParameters& params,MVStoreCtx &store,MVStore::ISession **pLoad=NULL);
-extern "C" _EXP RC			shutdownStore(MVStoreCtx store=NULL);
+extern "C" _EXP RC			openStore(const StartupParameters& params,AfyDBCtx &store);
+extern "C" _EXP RC			createStore(const StoreCreationParameters& create,const StartupParameters& params,AfyDBCtx &store,AfyDB::ISession **pLoad=NULL);
+extern "C" _EXP RC			shutdownStore(AfyDBCtx store=NULL);
 extern "C" _EXP	void		stopThreads();
-extern "C" _EXP	RC			getStoreCreationParameters(StoreCreationParameters& params,MVStoreCtx store=NULL);
+extern "C" _EXP	RC			getStoreCreationParameters(StoreCreationParameters& params,AfyDBCtx store=NULL);
 extern "C" _EXP	unsigned	getVersion();
-extern "C" _EXP unsigned	getStoreState(MVStoreCtx=NULL);
+extern "C" _EXP unsigned	getStoreState(AfyDBCtx=NULL);
 extern "C" _EXP void		setReport(IReport *);
 extern "C" _EXP	RC			loadLang(const char *path,uint16_t& langID);
 
@@ -197,6 +198,6 @@ struct StreamInParameters
 	size_t				lPwd;
 };
 
-extern "C" _EXP	RC			createServerInputStream(MVStoreCtx ctx,const StreamInParameters *params,MVStore::IStreamIn *&in,StreamInType=SITY_NORMAL);
+extern "C" _EXP	RC			createServerInputStream(AfyDBCtx ctx,const StreamInParameters *params,AfyDB::IStreamIn *&in,StreamInType=SITY_NORMAL);
 
 #endif

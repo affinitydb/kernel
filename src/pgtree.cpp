@@ -14,7 +14,7 @@ Written by Mark Venguerov 2004 - 2010
 #include "logmgr.h"
 #include "fsmgr.h"
 
-using namespace MVStoreKernel;
+using namespace AfyKernel;
 
 TreePageMgr::TreePageMgr(StoreCtx *ctx) : TxPage(ctx),xSize(ctx->bufMgr->getPageSize()-sizeof(TreePage)-FOOTERSIZE)
 {
@@ -1016,7 +1016,7 @@ RC TreePageMgr::update(PBlock *pb,size_t len,ulong info,const byte *rec,size_t l
 	return RC_OK;
 }
 
-bool TreePageMgr::TreePage::insertValues(const byte *p1,ushort ll,MVStoreKernel::PagePtr *vp,ushort off,ulong idx,bool fVM,ushort n,const uint16_t *shs)
+bool TreePageMgr::TreePage::insertValues(const byte *p1,ushort ll,AfyKernel::PagePtr *vp,ushort off,ulong idx,bool fVM,ushort n,const uint16_t *shs)
 {
 	ushort n2=n*L_SHT; ushort l=ll,l2; byte *ptr=NULL; assert(n==1 || shs!=NULL);
 	if (fVM) l+=vp->len>=256?n2:vp->len==0?ll+n+1<256?n+1:n2+L_SHT:vp->len+n+ll<256?n:((byte*)this+vp->offset)[0]+n2;

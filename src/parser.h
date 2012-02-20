@@ -9,15 +9,15 @@ Written by Mark Venguerov 2010
 #ifndef _PARSER_H_
 #define _PARSER_H_
 
-#include "mvstore.h"
+#include "affinity.h"
 #include "session.h"
 
-using namespace MVStore;
+using namespace AfyDB;
 
 class IMapDir;
 struct StartupParameters;
 
-namespace MVStoreKernel
+namespace AfyKernel
 {
 
 enum SQType
@@ -205,7 +205,7 @@ public:
 	Stmt	*parseStmt(bool fNested=false);
 	RC		exec(const Value *params,unsigned nParams,char **result=NULL,uint64_t *nProcessed=NULL,unsigned nProcess=~0u,unsigned nSkip=0);
 	QVarID	parseQuery(class Stmt*&,bool fNested=true);
-	void	parseManage(IMapDir *,MVStoreCtx&,const StartupParameters *sp);
+	void	parseManage(IMapDir *,AfyDBCtx&,const StartupParameters *sp);
 	void	parse(Value& res,const union QVarRef *vars=NULL,unsigned nVars=0,unsigned flags=0);
 	class	ExprTree *parse(bool fCopy);
 	void	checkEnd(bool fSemi=false) {switch (lex()) {case LX_RPR: throw SY_UNBRPR; case LX_RBR: throw SY_UNBRBR; case LX_RCBR: throw SY_UNBRCBR; case LX_SEMI: if (fSemi && lex()==LX_EOE) {case LX_EOE: return;} default: throw SY_SYNTAX;}}

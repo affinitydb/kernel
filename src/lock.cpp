@@ -11,9 +11,9 @@ Written by Mark Venguerov 2004 - 2010
 #include "buffer.h"
 #include "startup.h"
 #include "queryop.h"
-#include "mvstoreimpl.h"
+#include "affinityimpl.h"
 
-using namespace MVStoreKernel;
+using namespace AfyKernel;
 
 const ulong LockMgr::lockConflictMatrix[LOCK_ALL] = {
 	0<<LOCK_IS|0<<LOCK_IX|0<<LOCK_SHARED|1<<LOCK_SIX|1<<LOCK_UPDATE|1<<LOCK_EXCLUSIVE,	//	IS

@@ -11,7 +11,7 @@ Written by Mark Venguerov 2004 - 2010
 
 #include "pagemgr.h"
 
-namespace MVStoreKernel
+namespace AfyKernel
 {
 
 #define	CURRENT_VERSION	110

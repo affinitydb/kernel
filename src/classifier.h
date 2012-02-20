@@ -16,9 +16,9 @@ Written by Mark Venguerov 2004 - 2010
 #include "session.h"
 #include "startup.h"
 
-using namespace MVStore;
+using namespace AfyDB;
 
-namespace MVStoreKernel
+namespace AfyKernel
 {
 #define	SDEL_FLAG			0x80000000
 

@@ -24,7 +24,7 @@ Written by Mark Venguerov 2004 - 2010
 
 struct StoreCreationParameters;
 
-namespace MVStoreKernel
+namespace AfyKernel
 {
 
 enum StoreState 

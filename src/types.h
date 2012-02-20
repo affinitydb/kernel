@@ -11,7 +11,7 @@ Written by Mark Venguerov 2004 - 2010
 
 #include "rc.h"
 
-using namespace MVStoreRC;
+using namespace AfyRC;
 
 #ifdef WIN32
 
@@ -183,7 +183,7 @@ using namespace std;
 #define	_set_u16(a,b) (((byte*)(a))[1]=(byte)(b),((byte*)(a))[0]=(byte)((b)>>8))
 #endif
 
-namespace MVStoreKernel
+namespace AfyKernel
 {
 
 typedef	uint32_t		CRC;
@@ -249,7 +249,7 @@ extern void		closeReport();
 
 };
 
-inline	void*	operator new(size_t s,MVStoreKernel::HEAP_TYPE allc) throw() {return MVStoreKernel::malloc(s,allc);}
-inline	void*	operator new[](size_t s,MVStoreKernel::HEAP_TYPE allc) throw() {return MVStoreKernel::malloc(s,allc);}
+inline	void*	operator new(size_t s,AfyKernel::HEAP_TYPE allc) throw() {return AfyKernel::malloc(s,allc);}
+inline	void*	operator new[](size_t s,AfyKernel::HEAP_TYPE allc) throw() {return AfyKernel::malloc(s,allc);}
 
 #endif

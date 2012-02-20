@@ -27,7 +27,7 @@ bool __sync_bool_compare_and_swap_16(volatile __uint128_t * destination, __uint1
 }
 #endif
 
-namespace MVStoreKernel
+namespace AfyKernel
 {
 
 #ifdef WIN32

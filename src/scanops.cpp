@@ -20,7 +20,7 @@ Written by Mark Venguerov 2004 - 2010
 
 #include <stdio.h>
 
-using namespace MVStoreKernel;
+using namespace AfyKernel;
 
 FullScan::~FullScan()
 {

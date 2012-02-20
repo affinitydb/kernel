@@ -17,7 +17,7 @@ Written by Mark Venguerov, Andrew Skowronski, Michael Andronov 2004 - 2010
 
 #define INVALID_FD (-1)
 
-namespace MVStoreKernel
+namespace AfyKernel
 {
 	struct FileDescLinux
 	{

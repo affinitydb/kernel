@@ -9,7 +9,7 @@ Written by Mark Venguerov 2004 - 2010
 #ifndef _UNITS_H_
 #define _UNITS_H_
 
-namespace MVStore
+namespace AfyDB
 {
 	enum Units 
 	{

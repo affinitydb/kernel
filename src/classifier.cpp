@@ -14,7 +14,7 @@ Written by Mark Venguerov 2004 - 2010
 #include "maps.h"
 #include "blob.h"
 
-using namespace MVStoreKernel;
+using namespace AfyKernel;
 
 static const IndexFormat classIndexFmt(KT_UINT,sizeof(uint64_t),KT_VARMDPINREFS);
 static const IndexFormat classPINsFmt(KT_UINT,sizeof(uint64_t),KT_VARDATA);
@@ -445,7 +445,7 @@ RC Classifier::rebuildAll(Session *ses)
 	return rc==RC_EOF?RC_OK:rc;
 }
 
-namespace MVStoreKernel
+namespace AfyKernel
 {
 	class IndexInit : public TreeStdRoot
 	{

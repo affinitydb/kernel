@@ -11,7 +11,7 @@ Written by Mark Venguerov 2004 - 2010
 #include <stdarg.h>
 #include <stdio.h>
 
-using namespace MVStoreKernel;
+using namespace AfyKernel;
 
 static IReport *iReport = NULL;
 static void *reportNS = NULL;
@@ -133,7 +133,7 @@ RC convCode(DWORD dwError)
 
 static const char *msgType[] = {"PANIC", "ERROR", "WARNING", "NOTICE", "INFO", "DEBUG"};
 
-void MVStoreKernel::report(MsgType type,const char *str,...)
+void AfyKernel::report(MsgType type,const char *str,...)
 {
 	va_list args; va_start(args,str); char buffer[600];
 	if (iReport!=NULL) {
@@ -152,11 +152,11 @@ void MVStoreKernel::report(MsgType type,const char *str,...)
 #endif
 }
 
-void MVStoreKernel::initReport()
+void AfyKernel::initReport()
 {
 }
 
-void MVStoreKernel::closeReport()
+void AfyKernel::closeReport()
 {
 }
 
@@ -206,7 +206,7 @@ RC convCode(int err)
 static bool fSyslogOpen = false;
 static int facility = LOG_USER;
 
-void MVStoreKernel::report(MsgType type,const char *str,...)
+void AfyKernel::report(MsgType type,const char *str,...)
 {
 	va_list va; va_start(va,str);
 	if (iReport!=NULL) {
@@ -233,7 +233,7 @@ void MVStoreKernel::report(MsgType type,const char *str,...)
 #endif
 }
 
-void MVStoreKernel::initReport()
+void AfyKernel::initReport()
 {
 	if (iReport==NULL) {
 		facility = LOG_USER;
@@ -243,7 +243,7 @@ void MVStoreKernel::initReport()
 	}
 }
 
-void MVStoreKernel::closeReport()
+void AfyKernel::closeReport()
 {
 	if (fSyslogOpen) {closelog(); fSyslogOpen=false;}
 }

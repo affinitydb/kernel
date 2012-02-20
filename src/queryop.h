@@ -14,7 +14,7 @@ Written by Mark Venguerov 2004 - 2010
 #include "classifier.h"
 #include "propdnf.h"
 
-namespace MVStoreKernel
+namespace AfyKernel
 {
 
 #define	DEFAULT_QUERY_MEM	0x100000ul
@@ -46,8 +46,6 @@ namespace MVStoreKernel
 #define	QOS_ADV2		0x0002
 #define	QOS_EOF1		0x0004
 #define	QOS_EOF2		0x0008
-#define	QOS_ADVN		0x0010
-#define	QOS_NEXT		0x0020
 
 struct	CondIdx;
 class	ExtSortFile;
@@ -230,12 +228,13 @@ protected:
 		ulong		state;
 		EncPINRef	epr;	
 	};
-	const	bool	fOr;
+	const	QUERY_SETOP	op;
 	ulong			nOps;
 	ulong			cur;
+	PINEx			*pqr;
 	QueryOpS		ops[1];
 public:
-	MergeIDs(QCtx *s,QueryOp **o,unsigned no,ulong qf,bool f);
+	MergeIDs(QCtx *s,QueryOp **o,unsigned no,QUERY_SETOP op,ulong qf);
 	void	*operator new(size_t s,Session *ses,ulong no) throw() {return ses->malloc(s+int(no-1)*sizeof(QueryOpS));}
 	virtual	~MergeIDs();
 	void	connect(PINEx **results,unsigned nRes);
@@ -246,20 +245,32 @@ public:
 	friend	class	QBuildCtx;
 };
 
+struct CondEJ;
+
 class MergeOp : public QueryOp
 {
 	QueryOp	*const		queryOp2;
-	const	PropertyID	propID1;
-	const	PropertyID	propID2;
 	const	QUERY_SETOP	op;
+	const	CondEJ		*ej;
+	const	unsigned	nej;
+	const	Expr *const	*conds;
+	ulong				nConds;
 	ulong				didx;
-	Value				vals[3];
 	PINEx				pexR;
 	PINEx				*pR;
 	class	PIDStore	*pids;
+	PropertyID			*props1;
+	PropertyID			*props2;
+	unsigned			*index;
+	Value	*const		pV1;
+	Value	*const		pV2;
+	Value	*const		pVS;
+	Value				vls[1];
 
+	void				cleanup(Value *pv) {for (unsigned i=0; i<nej; i++) {freeV(pv[i]); pv[i].setError();}}
 public:
-	MergeOp(QueryOp *qop1,PropertyID pid1,QueryOp *qop2,PropertyID pid2,QUERY_SETOP qo,ulong qf);
+	MergeOp(QueryOp *qop1,QueryOp *qop2,const CondEJ *ce,unsigned ne,QUERY_SETOP qo,const Expr *const *conds,unsigned nConds,ulong qf);
+	void	*operator new(size_t s,MemAlloc *ma,unsigned ne) {return ma->malloc(s+(ne*3-1)*sizeof(Value));}
 	virtual	~MergeOp();
 	void	connect(PINEx **results,unsigned nRes);
 	RC		next(const PINEx *skip=NULL);
@@ -322,10 +333,7 @@ public:
 
 class Filter : public QueryOp
 {
-	union {
-		class	Expr	**conds;
-		class	Expr	*cond;
-	};
+	const Expr *const *conds;
 	ulong			nConds;
 	CondIdx			*condIdx;
 	ulong			nCondIdx;

@@ -10,10 +10,10 @@ Written by Mark Venguerov 2004 - 2010
 #include "pgtree.h"
 #include "buffer.h"
 #include "txmgr.h"
-#include "mvstore.h"
+#include "affinity.h"
 
-using namespace MVStore;
-using namespace MVStoreKernel;
+using namespace AfyDB;
+using namespace AfyKernel;
 
 CachedObject *CachedObject::createNew(ulong id,void *mg)
 {

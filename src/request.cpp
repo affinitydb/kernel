@@ -6,11 +6,11 @@ Written by Mark Venguerov 2004 - 2010
 
 **************************************************************************************/
 
-#include "mvstoreimpl.h"
+#include "affinityimpl.h"
 #include "startup.h"
 
-using namespace	MVStore;
-using namespace MVStoreKernel;
+using namespace	AfyDB;
+using namespace AfyKernel;
 
 #define	MAX_THREADS		100
 #define	THREAD_FACTOR	10

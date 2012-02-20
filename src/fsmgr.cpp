@@ -15,7 +15,7 @@ Written by Mark Venguerov 2004 - 2010
 #include "session.h"
 #include <stdio.h>
 
-using namespace MVStoreKernel;
+using namespace AfyKernel;
 
 FSMgr::FSMgr(StoreCtx *ct) : extentMapPage(ct), freeSpacePage(ct), ctx(ct)
 {
@@ -58,7 +58,7 @@ RC FSMgr::init(FileID fid)
 	if (extentTable==NULL) {lock.unlock(); return RC_NORESOURCES;}
 	if (ctx->theCB->nDirPages>2) ctx->bufMgr->prefetch(ctx->theCB->dirPages,ctx->theCB->nDirPages,&extentDirPage);
 	for (ulong i=0; i<ctx->theCB->nDirPages; i++) {
-		pb = ctx->bufMgr->getPage((PageID)ctx->theCB->dirPages[i],&extentDirPage,0,pb);
+		pb=ctx->bufMgr->getPage((PageID)ctx->theCB->dirPages[i],&extentDirPage,0,pb);
 		if (pb==NULL) report(MSG_ERROR,"Cannot read free page dir page %d(%08X)\n",i,ctx->theCB->dirPages[i]);
 		else {
 			ExtentDirPage::ExtentDirHeader *dp = (ExtentDirPage::ExtentDirHeader*)pb->getPageBuf();
@@ -234,7 +234,7 @@ RC FSMgr::allocNewExtent(ExtentInfo*& ext,PBlock*& pb,bool fForce)
 	RC rc; bool fNewFile=false;
 	if (addr/lPage + nNewPages>MAXPAGESPERFILE) {
 		FileID fid=dataFile+1; char buf[100];
-		sprintf(buf,MVSTOREPREFIX"%u"DATAFILESUFFIX,ctx->theCB->nDataFiles);
+		sprintf(buf,STOREPREFIX"%u"DATAFILESUFFIX,ctx->theCB->nDataFiles);
 		if ((rc=ctx->fileMgr->open(fid,buf,FIO_CREATE|FIO_NEW))!=RC_OK) {
 			report(MSG_ERROR,"FSMgr::allocNewExtent cannot create new file %s: %d\n",buf,rc);
 			return rc;
