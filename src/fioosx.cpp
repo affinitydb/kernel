@@ -247,7 +247,7 @@ FileIOOSX::FileIOOSX() : slotTab(NULL),xSlotTab(FIO_MAX_OPENFILES),asyncIOCallba
 {
 	slotTab = (FileDescLinux*)malloc(sizeof(FileDescLinux)*xSlotTab,STORE_HEAP); 
 	if (slotTab!=NULL){ for (int i=0;i<xSlotTab;i++){ slotTab[i].init();}}
-	sigemptyset(&sigSIO); sigaddset(&sigSIO,SIGPISIO);
+	sigemptyset(&sigSIO); sigaddset(&sigSIO,SIGAFYSIO);
 
 }
 
@@ -267,7 +267,7 @@ void FileIOOSX::init(void (*cb)(iodesc*))
 	sigemptyset(&action.sa_mask);
 	action.sa_flags = SA_SIGINFO|SA_RESTART;
 	action.sa_sigaction = FileIOOSX::_asyncAIOCompletion;
-	if (sigaction(SIGPIAIO, &action, NULL)!=0) report(MSG_CRIT,"Cannot install AIO signal handler (%d)\n",errno);
+	if (sigaction(SIGAFYAIO, &action, NULL)!=0) report(MSG_CRIT,"Cannot install AIO signal handler (%d)\n",errno);
 }
 
 inline off64_t getFileSz(int fd)
@@ -423,7 +423,7 @@ RC FileIOOSX::listIO(int mode,int nent,iodesc* const* pcbs)
 			else{
 		       // cout << "\n!!!DEBUG===> FileIOOSX::listIO :: prepare Async sig! \n";
 			    adescs[i]->aio_sigevent.sigev_notify			= SIGEV_SIGNAL;
-				adescs[i]->aio_sigevent.sigev_signo			    = SIGPIAIO;
+				adescs[i]->aio_sigevent.sigev_signo			    = SIGAFYAIO;
 	            adescs[i]->aio_sigevent.sigev_value.sival_ptr	= (void *)pcbs[i];
 		        pcbs[i]->aio_ptr[pcbs[i]->aio_ptrpos++]	        = adescs[i];      //aiocb64*...
 			    pcbs[i]->aio_ptr[pcbs[i]->aio_ptrpos++]	        = this;

@@ -423,7 +423,7 @@ RC QBuildCtx::mergeN(QueryOp *&res,QueryOp **o,unsigned no,QUERY_SETOP op)
 RC QBuildCtx::merge2(QueryOp *&res,QueryOp **qs,const CondEJ *cej,QUERY_SETOP qo,const Expr *const *conds,unsigned nConds)
 {
 	res=NULL; if (qs[0]==NULL || qs[1]==NULL) return RC_EOF;
-	ulong fUni=qo==QRY_SEMIJOIN?QO_SEMIJOIN:0; RC rc; assert(qo!=QRY_UNION && qo!=QRY_INTERSECT);
+	ulong fUni=0; RC rc; assert(qo!=QRY_UNION && qo!=QRY_INTERSECT);
 	unsigned nej=0; const CondEJ *cid1=NULL,*cid2=NULL; bool fS1=qs[0]->sort!=NULL,fS2=qs[1]->sort!=NULL;
 	for (const CondEJ *ce=cej; ce!=NULL; ce=ce->next,nej++) {
 		if (ce->propID1==PROP_SPEC_PINID && (qs[0]->qflags&QO_IDSORT)!=0) cid1=ce;

@@ -21,11 +21,11 @@ enum LIOMODE {LIO_WAIT, LIO_NOWAIT};
 #include <aio.h>
 #include <signal.h>
 #ifndef Darwin
-#define	SIGPIAIO	(SIGRTMIN+6)
-#define	SIGPISIO	(SIGRTMIN+7)
+#define	SIGAFYAIO	(SIGRTMIN+6)
+#define	SIGAFYSIO	(SIGRTMIN+7)
 #else
-#define	SIGPIAIO	(SIGUSR1)
-#define	SIGPISIO	(SIGUSR2)
+#define	SIGAFYAIO	(SIGUSR1)
+#define	SIGAFYSIO	(SIGUSR2)
 #endif
 #endif
 

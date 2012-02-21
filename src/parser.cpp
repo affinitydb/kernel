@@ -1221,39 +1221,26 @@ RC SOutCtx::renderVarName(const QVar *qv)
 
 RC SOutCtx::renderJSON(Cursor *cr,uint64_t& cnt)
 {
-	RC rc=RC_OK; cnt=0; size_t l=1; cbuf[0]='['; Value ret;
+	RC rc=RC_OK; cnt=0; size_t l=1; cbuf[0]='['; const PINEx *ret;
 	while (rc==RC_OK && (rc=((Cursor*)cr)->next(ret))==RC_OK) {
-		const Value *props; unsigned nProps; IPIN *next=NULL; bool fMany=false;
-		switch (ret.type) {
-		case VT_REF:
-			if ((next=ret.pin->getSibling())!=NULL) {cbuf[l++]='['; fMany=true;}
-			l+=sprintf(cbuf+l,"{\"id\":\""_LX_FM"\"",ret.pin->getPID().pid);
-			props=ret.pin->getValueByIndex(0); nProps=ret.pin->getNumberOfProperties();
-			if (props!=NULL && nProps!=0) {cbuf[l]=','; cbuf[l+1]=' '; l+=2;}
-			goto render_props;
-		case VT_STRUCT:
-			cbuf[l++]='{'; props=ret.varray; nProps=ret.length;
-		render_props:
-			if (!append(cbuf,l)) rc=RC_NORESOURCES;
-			else for (unsigned i=0; i<nProps; ++i,++props) if (props->property!=STORE_INVALID_PROPID) {
+		const Value *props; unsigned nProps; PID id; bool fMany=false;
+		if (ret->getSibling()!=NULL) {cbuf[l++]='['; fMany=true;}
+		do {
+			props=ret->getValueByIndex(0); nProps=ret->getNumberOfProperties();
+			if (ret->getID(id)==RC_OK && id.pid!=STORE_INVALID_PID) {
+				l+=sprintf(cbuf+l,"{\"id\":\""_LX_FM"\"",id.pid);
+				if (props!=NULL && nProps!=0) {cbuf[l]=','; cbuf[l+1]=' '; l+=2;}
+			}
+			if (l!=0 && !append(cbuf,l)) {rc=RC_NORESOURCES; break;}
+			for (unsigned i=0; i<nProps; ++i,++props) if (props->property!=STORE_INVALID_PROPID) {
 				if ((rc=renderValue(*props,JR_PROP))!=RC_OK) break;
 				if (i+1<nProps && !append(", ",2)) {rc=RC_NORESOURCES; break;}
 			}
 			if (rc==RC_OK && !append("}",1)) rc=RC_NORESOURCES;
-			else if (next!=NULL) {
-				l=sprintf(cbuf,",{\"id\":\""_LX_FM"\"",next->getPID().pid);
-				props=next->getValueByIndex(0); nProps=next->getNumberOfProperties();
-				if (props!=NULL && nProps!=0) {cbuf[l]=','; cbuf[l+1]=' '; l+=2;}
-				next=next->getSibling(); goto render_props;
-			}
-			break;
-		default:
-			cbuf[l++]='{'; 
-			if (!append(cbuf,l) || (rc=renderValue(ret,JR_PROP))==RC_OK && !append("}",1)) rc=RC_NORESOURCES;
-			break;
-		}
+			cbuf[0]=','; cbuf[1]=' '; l=2;
+		} while (rc==RC_OK && (ret=(PINEx*)ret->getSibling())!=NULL);
 		if (fMany && !append("]",1)) rc=RC_NORESOURCES;
-		freeV(ret); cnt++; cbuf[0]=','; cbuf[1]='\n'; l=2;
+		cnt++; cbuf[0]=','; cbuf[1]='\n'; l=2;
 	}
 	if (rc==RC_EOF) rc=RC_OK;
 	return rc!=RC_OK||cnt==0||append("]",1)?rc:RC_NORESOURCES;

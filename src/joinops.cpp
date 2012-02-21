@@ -179,9 +179,9 @@ RC MergeOp::next(const PINEx *skip)
 		if ((state&QOS_EOF1)!=0) return RC_EOF;	// if not right/full outer
 		if ((state&QOS_ADV1)!=0) {
 			cleanup(pV1); state&=~QST_BOF;
-			res->epr.flags&=~PINEX_RLOAD; if ((qflags&QO_SEMIJOIN)==0) pR->epr.flags|=PINEX_RLOAD;
+			res->epr.flags&=~PINEX_RLOAD; if (op!=QRY_SEMIJOIN) pR->epr.flags|=PINEX_RLOAD;
 			if ((rc=queryOp->next(skip))!=RC_OK) {
-				state=state&~QOS_ADV1|QOS_EOF1|QOS_EOF2; return rc;		// if not right/full outer
+				state=(state&~QOS_ADV1)|(QOS_EOF1|QOS_EOF2); return rc;		// if not right/full outer
 			} else if ((state&QOS_EOF2)==0) {
 				state&=~QOS_ADV1;
 				if (nej>1) {
@@ -198,8 +198,7 @@ RC MergeOp::next(const PINEx *skip)
 		if ((state&QOS_ADV2)!=0) {
 			cleanup(pV2); res->epr.flags|=PINEX_RLOAD; pR->epr.flags&=~PINEX_RLOAD;
 			if ((rc=queryOp2->next(skip))!=RC_OK) {
-				state=state&~QOS_ADV2|QOS_EOF2; if (rc!=RC_EOF) {state|=QOS_EOF1; return rc;}
-				return RC_EOF;
+				state=(state&~QOS_ADV2)|QOS_EOF2; if (rc!=RC_EOF) state|=QST_EOF; return rc;
 			}
 			state&=~QOS_ADV2; assert((state&QOS_EOF1)==0);
 			if (nej>1) {
@@ -231,8 +230,15 @@ RC MergeOp::next(const PINEx *skip)
 		if (c>0) state|=QOS_ADV2; 
 		else if (c<0) state|=QOS_ADV1;
 		else {
-			if ((qflags&QO_SEMIJOIN)!=0) state|=(qflags&(QO_UNI1|QO_UNI2))==(QO_UNI1|QO_UNI2)?QOS_ADV1|QOS_ADV2:QOS_ADV1;
-			else switch (qflags&(QO_UNI1|QO_UNI2)) {
+			if (op==QRY_SEMIJOIN) {
+				state|=(qflags&(QO_UNI1|QO_UNI2))==(QO_UNI1|QO_UNI2)?QOS_ADV1|QOS_ADV2:QOS_ADV1;
+				if (res->epr.lref!=0 && PINRef::isColl(res->epr.buf,res->epr.lref) && (qflags&QO_UNIQUE)!=0) {
+					if (pids!=NULL) {if ((*pids)[*res]) continue;}
+					else if ((pids=new(qx->ses) PIDStore(qx->ses))==NULL) return RC_NORESOURCES;
+					if ((rc=((*pids)+=*res))!=RC_OK) return rc;
+					PINRef::changeFColl(res->epr.buf,res->epr.lref,false);
+				}
+			} else switch (qflags&(QO_UNI1|QO_UNI2)) {
 			case QO_UNI1|QO_UNI2: state|=QOS_ADV1|QOS_ADV2; break;
 			case QO_UNI1: state|=QOS_ADV2; break;
 			case QO_UNI2: state|=QOS_ADV1; break;
@@ -254,12 +260,6 @@ RC MergeOp::next(const PINEx *skip)
 				}
 #endif
 				break;
-			}
-			if (res->epr.lref!=0 && PINRef::isColl(res->epr.buf,res->epr.lref) && op<QRY_UNION && (qflags&QO_UNIQUE)!=0) {
-				if (pids!=NULL) {if ((*pids)[*res]) continue;}
-				else if ((pids=new(qx->ses) PIDStore(qx->ses))==NULL) return RC_NORESOURCES;
-				if ((rc=((*pids)+=*res))!=RC_OK) return rc;
-				PINRef::changeFColl(res->epr.buf,res->epr.lref,false);
 			}
 			if (conds!=NULL) {
 				PINEx *pp[2]={res,pR};

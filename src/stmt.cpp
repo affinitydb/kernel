@@ -291,7 +291,7 @@ RC Stmt::addOutputNoCopy(QVarID var,Value *os,unsigned nO)
 			for (unsigned i=1; i<nO; i++) if (os[i-1].property==os[i].property) return RC_INVPARAM;
 		}
 		qv->outs[qv->nOuts].vals=os; qv->outs[qv->nOuts].nValues=nO; ++qv->nOuts;
-		if (qv->nOuts>1) qv->stype=SEL_COMP_DERIVED;	// SEL_COMPOUND?
+		if (qv->nOuts>1) qv->stype=SEL_COMP_DERIVED;
 		else if (nConst==nO) qv->stype=SEL_CONST;
 		else if (nAgg==nO) qv->stype=fGroup?nO==1?SEL_VALUESET:SEL_DERIVEDSET:nO==1?SEL_VALUE:SEL_DERIVED;
 		else qv->stype=nO==1?SEL_VALUESET:nVRef==nO?SEL_PROJECTED:SEL_DERIVEDSET;
@@ -603,7 +603,7 @@ RC Stmt::processCond(ExprTree *node,QVar *qv,DynArray<const ExprTree*> *exprs)
 			}
 			break;
 		case OP_IS_A:
-			if (qv->type==QRY_SIMPLE && node->operands[1].type==VT_URIID) {
+			if (qv->type==QRY_SIMPLE && (node->flags&NOT_BOOLEAN_OP)==0 && node->operands[1].type==VT_URIID) {
 				SimpleVar *sv=(SimpleVar*)qv; ClassSpec *cs=(ClassSpec*)sv->classes;
 				for (unsigned i=0; ;++i,++cs)
 					if (i>=sv->nClasses) {cs=NULL; break;}

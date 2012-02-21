@@ -467,7 +467,7 @@ public:
 						case VT_STRUCT:
 							push_state(ST_VARRAY,os.pv,tg); continue;
 						case VT_STREAM:
-							push_state(ST_PBSTREAM,os.pv->stream.is,tg); continue;
+							push_state(ST_STREAM,os.pv->stream.is,tg); continue;
 						case VT_RESERVED1:
 						case VT_RESERVED2:
 							//???
@@ -1152,25 +1152,29 @@ private:
 		return rc;
 	}
 	RC process(Stmt *stmt) {
-		RC rc=RC_OK; ICursor *cursor=NULL; Result res={RC_OK,0,modOp[stmt->getOp()]};
-		if ((rc=stmt->execute(out!=NULL&&is.oi.rtt!=RTT_COUNT?&cursor:(ICursor**)0,is.stmt->params,is.stmt->nParams,is.stmt->limit,is.stmt->offset,is.stmt->mode,&res.cnt))==RC_OK && cursor!=NULL) {
-			assert(obuf!=NULL && enc!=NULL); Value ret; ret.setError(); RTTYPE rtt=is.oi.rtt; PIN pin(((Cursor*)cursor)->getSession(),PIN::defPID,PageAddr::invAddr,PIN_NO_FREE);
-			if (rtt==RTT_DEFAULT) {SelectType st=((Cursor*)cursor)->selectType(); rtt=st==SEL_COUNT?RTT_COUNT:st==SEL_PINSET||st==SEL_PROJECTED?RTT_PINS:RTT_VALUES;}
-			for (PIN *pp; rc==RC_OK && (rc=cursor->next(ret))==RC_OK; freeV(ret)) {
+		RC rc=RC_OK; ICursor *ic=NULL; Result res={RC_OK,0,modOp[stmt->getOp()]};
+		if ((rc=stmt->execute(out!=NULL&&is.oi.rtt!=RTT_COUNT?&ic:(ICursor**)0,is.stmt->params,is.stmt->nParams,is.stmt->limit,is.stmt->offset,is.stmt->mode,&res.cnt))==RC_OK && ic!=NULL) {
+			assert(obuf!=NULL && enc!=NULL); RTTYPE rtt=is.oi.rtt; const PINEx *ret=NULL,*sib; Value w;
+			if (rtt==RTT_DEFAULT) {SelectType st=((Cursor*)ic)->selectType(); rtt=st==SEL_COUNT?RTT_COUNT:st==SEL_PINSET||st==SEL_PROJECTED||st==SEL_COMPOUND?RTT_PINS:RTT_VALUES;}
+			while (rc==RC_OK && (rc=((Cursor*)ic)->next(ret))==RC_OK) {
 				switch (rtt) {
 				case RTT_COUNT: break;
 				case RTT_PINS: case RTT_SRCPINS: case RTT_PIDS:
-					if (ret.type==VT_REF) pp=(PIN*)ret.pin;
-					else {pin.setProps(ret.type==VT_STRUCT?ret.varray:&ret,ret.type==VT_STRUCT?ret.length:1); pp=&pin;}
-					rc=pinOut(pp,is.oi);
+					if ((sib=(PINEx*)ret->getSibling())==NULL) rc=pinOut((PIN*)ret,is.oi);
+					else {
+						// compound
+					}
 					break;
 				case RTT_VALUES:
-					if (ret.type!=VT_REF) rc=valueOut(&ret,is.oi);
-					else {Value w; w.setStruct((Value*)ret.pin->getValueByIndex(0),ret.pin->getNumberOfProperties()); rc=valueOut(&w,is.oi);}
+					if ((sib=(PINEx*)ret->getSibling())==NULL) {
+						w.setStruct((Value*)ret->getValueByIndex(0),ret->getNumberOfProperties()); rc=valueOut(&w,is.oi);
+					} else {
+						//????
+					}
 					break;
 				}
 			}
-			res.cnt=cursor->getCount(); cursor->destroy(); if (rc==RC_EOF) rc=RC_OK;
+			res.cnt=ic->getCount(); ic->destroy(); if (rc==RC_EOF) rc=RC_OK;
 		}
 		if (out!=NULL) {res.rc=rc; rc=resultOut(res);}
 		ma->truncate(start);
@@ -1231,7 +1235,7 @@ class ServerStreamIn : public ProtoBufStreamIn {
 			Session *ses=Session::getSession();
 			try {
 				if (ident!=STORE_OWNER && ses!=NULL) ses->setIdentity(ident,true);	// fMayInsert???
-				RC rc=RC_OK; ICursor *cursor=NULL; uint64_t nProcessed=0;
+				RC rc=RC_OK; ICursor *ic=NULL; uint64_t nProcessed=0;
 				switch (type) {
 				default: break;
 				case SRT_INSERT:
@@ -1246,24 +1250,28 @@ class ServerStreamIn : public ProtoBufStreamIn {
 					if (str.cb!=NULL) {if (rc==RC_OK) pinOut(pin,oi); Result res={rc,1,(MODOP)op}; resultOut(res);}
 					break;
 				case SRT_STMT:
-					if ((rc=stmt->execute(str.cb!=NULL&&oi.rtt!=RTT_COUNT?&cursor:(ICursor**)0,info->params,info->nParams,info->limit,info->offset,info->mode,&nProcessed))==RC_OK && cursor!=NULL) {
-						Value ret; ret.setError(); RTTYPE rtt=oi.rtt; PIN pin(ses,PIN::defPID,PageAddr::invAddr,PIN_NO_FREE);
-						if (rtt==RTT_DEFAULT) {SelectType st=((Cursor*)cursor)->selectType(); rtt=st==SEL_COUNT?RTT_COUNT:st==SEL_PINSET||st==SEL_PROJECTED?RTT_PINS:RTT_VALUES;}
-						for (PIN *pp; rc==RC_OK && (rc=cursor->next(ret))==RC_OK; freeV(ret)) {
+					if ((rc=stmt->execute(str.cb!=NULL&&oi.rtt!=RTT_COUNT?&ic:(ICursor**)0,info->params,info->nParams,info->limit,info->offset,info->mode,&nProcessed))==RC_OK && ic!=NULL) {
+						RTTYPE rtt=oi.rtt; const PINEx *ret=NULL,*sib; Value w;
+						if (rtt==RTT_DEFAULT) {SelectType st=((Cursor*)ic)->selectType(); rtt=st==SEL_COUNT?RTT_COUNT:st==SEL_PINSET||st==SEL_PROJECTED||st==SEL_COMPOUND?RTT_PINS:RTT_VALUES;}
+						while (rc==RC_OK && (rc=((Cursor*)ic)->next(ret))==RC_OK) {
 							switch (rtt) {
 							case RTT_COUNT: break;
 							case RTT_PINS: case RTT_SRCPINS: case RTT_PIDS:
-								if (ret.type==VT_REF) pp=(PIN*)ret.pin;
-								else {pin.setProps(ret.type==VT_STRUCT?ret.varray:&ret,ret.type==VT_STRUCT?ret.length:1); pp=&pin;}
-								rc=pinOut(pp,oi);
+								if ((sib=(PINEx*)ret->getSibling())==NULL) rc=pinOut((PIN*)ret,oi);
+								else {
+									// compound
+								}
 								break;
 							case RTT_VALUES:
-								if (ret.type!=VT_REF) rc=valueOut(&ret,oi);
-								else {Value w; w.setStruct((Value*)ret.pin->getValueByIndex(0),ret.pin->getNumberOfProperties()); rc=valueOut(&w,oi);}
+								if ((sib=(PINEx*)ret->getSibling())==NULL) {
+									w.setStruct((Value*)ret->getValueByIndex(0),ret->getNumberOfProperties()); rc=valueOut(&w,oi);
+								} else {
+									//????
+								}
 								break;
 							}
 						}
-						nProcessed=cursor->getCount(); cursor->destroy(); if (rc==RC_EOF) rc=RC_OK;
+						nProcessed=ic->getCount(); ic->destroy(); if (rc==RC_EOF) rc=RC_OK;
 					}
 					if (str.cb!=NULL) {Result res={rc,nProcessed,modOp[stmt->getOp()]}; rc=resultOut(res);}
 					break;

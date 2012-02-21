@@ -145,7 +145,7 @@ enum ClassFlags {
 enum ReturnType {
 	RT_PINS			= 1; // Specifies that a query will return entire AfyStream::PIN object(s) (see definition below).
 	RT_COUNT		= 2; // Specifies that a query will return a simple count.
-	RT_PIDS			= 3; // Specifies that a query will return AfyStream::PIN object(s) containing only MVStream::PIN::id field.
+	RT_PIDS			= 3; // Specifies that a query will return AfyStream::PIN object(s) containing only AfyStream::PIN::id field.
 	RT_SRCPINS		= 4; // Like RT_PINS, but VT_EXPR and VT_QUERY are converted to string form.
 	RT_VALUES		= 5; // Specifies that a query will return Value object(s).
 }

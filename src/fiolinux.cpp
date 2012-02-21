@@ -38,7 +38,7 @@ FileIOLinux::FileIOLinux() : slotTab(NULL),xSlotTab(FIO_MAX_OPENFILES),asyncIOCa
 {
 	slotTab = (FileDescLinux*)malloc(sizeof(FileDescLinux)*xSlotTab,STORE_HEAP); 
 	if (slotTab!=NULL){ for (int i=0;i<xSlotTab;i++){ slotTab[i].init();}}
-	sigemptyset(&sigSIO); sigaddset(&sigSIO,SIGPISIO);
+	sigemptyset(&sigSIO); sigaddset(&sigSIO,SIGAFYSIO);
 }
 
 
@@ -58,9 +58,9 @@ void FileIOLinux::init(void (*cb)(iodesc*))
 	action.sa_flags = SA_SIGINFO|SA_RESTART;
 	sigemptyset(&action.sa_mask);
 	action.sa_sigaction = FileIOLinux::_asyncAIOCompletion;
-	if (sigaction(SIGPIAIO, &action, NULL)!=0) report(MSG_CRIT,"Cannot install AIO signal handler (%d)\n",errno);
+	if (sigaction(SIGAFYAIO, &action, NULL)!=0) report(MSG_CRIT,"Cannot install AIO signal handler (%d)\n",errno);
 	action.sa_sigaction = FileIOLinux::_asyncSIOCompletion;
-	if (sigaction(SIGPISIO, &action, NULL)!=0) report(MSG_CRIT,"Cannot install SIO signal handler (%d)\n",errno);
+	if (sigaction(SIGAFYSIO, &action, NULL)!=0) report(MSG_CRIT,"Cannot install SIO signal handler (%d)\n",errno);
 #endif
 }
 
@@ -255,7 +255,7 @@ RC FileIOLinux::listIO(int mode,int nent,iodesc* const* pcbs)
 #ifndef SYNC_IO
 			if (mode==LIO_WAIT) {
 		        aio.aio_sigevent.sigev_notify			 = SIGEV_SIGNAL;
-				aio.aio_sigevent.sigev_signo			 = SIGPISIO;
+				aio.aio_sigevent.sigev_signo			 = SIGAFYSIO;
 				aio.aio_sigevent.sigev_value.sival_ptr	 = &sync;
 				aio.aio_sigevent.sigev_notify_function   = (void(*)(union sigval))0;
 				aio.aio_sigevent.sigev_notify_attributes = NULL;
@@ -269,7 +269,7 @@ RC FileIOLinux::listIO(int mode,int nent,iodesc* const* pcbs)
 				aio.aio_sigevent.sigev_value.sival_ptr	 = pcbs[i];
 #else
 		        aio.aio_sigevent.sigev_notify			 = SIGEV_SIGNAL;
-				aio.aio_sigevent.sigev_signo			 = SIGPIAIO;
+				aio.aio_sigevent.sigev_signo			 = SIGAFYAIO;
 				aio.aio_sigevent.sigev_value.sival_ptr	 = pcbs[i];
 				aio.aio_sigevent.sigev_notify_function   = (void(*)(union sigval))0;
 				aio.aio_sigevent.sigev_notify_attributes = NULL;
@@ -338,7 +338,7 @@ public:
 };
 void FileIOLinux::_asyncAIOCompletion(int sig, siginfo_t *info, void *uap)
 {
-	if (info==NULL) return; assert(sig==SIGPIAIO);
+	if (info==NULL) return; assert(sig==SIGAFYAIO);
 	IStoreIO::iodesc *pcbs=(IStoreIO::iodesc*)info->si_value.sival_ptr;
 	if (pcbs!=NULL && pcbs->aio_ptrpos>0) {
 		FileIOLinux* pThis=(FileIOLinux*)pcbs->aio_ptr[--pcbs->aio_ptrpos];
@@ -351,7 +351,7 @@ void FileIOLinux::_asyncAIOCompletion(int sig, siginfo_t *info, void *uap)
 }
 void FileIOLinux::_asyncSIOCompletion(int sig, siginfo_t *info, void *uap)
 {
-	if (info==NULL) return; assert(sig==SIGPISIO);
+	if (info==NULL) return; assert(sig==SIGAFYSIO);
 	afy_sync_io *sio=(afy_sync_io*)info->si_value.sival_ptr;
 	if (sio!=NULL) {
 		pthread_mutex_lock(&sio->lock);

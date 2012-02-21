@@ -200,7 +200,7 @@ class JoinVar : public QVar
 	CondEJ			*condEJ;
 	QVarRef			vars[2];
 	void			*operator new(size_t s,unsigned nv,MemAlloc *m) {return m->malloc(s+int(nv-2)*sizeof(QVarRef));}
-	JoinVar(unsigned nv,QVarID i,byte ty,MemAlloc *m) : QVar(i,ty,m),nVars(nv),condEJ(NULL) {}
+	JoinVar(unsigned nv,QVarID i,byte ty,MemAlloc *m) : QVar(i,ty,m),nVars(nv),condEJ(NULL) {stype=SEL_COMPOUND;}
 	virtual			~JoinVar();
 	RC				clone(MemAlloc *m,QVar*&,bool fClass) const;
 	RC				build(class QBuildCtx& qctx,class QueryOp *&qop) const;
@@ -337,6 +337,7 @@ public:
 	RC					connect();
 	SelectType			selectType() const {return stype;}
 	Session				*getSession() const {return ses;}
+	RC					next(const PINEx *&);
 	friend	class		CursorNav;
 };
 

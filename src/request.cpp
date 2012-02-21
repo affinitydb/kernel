@@ -44,7 +44,7 @@ ThreadGroup::ThreadGroup(RQType r) : nThreads(0),nPendingRequests(0),nProcessors
 //	if (completionPort==NULL) throw ...
 #else
 	first=last=NULL; pthread_mutex_init(&lock,NULL); pthread_cond_init(&wait,NULL);
-	sigemptyset(&sigSIO); sigaddset(&sigSIO,SIGPISIO); sigemptyset(&sigAIO); sigaddset(&sigAIO,SIGPIAIO);
+	sigemptyset(&sigSIO); sigaddset(&sigSIO,SIGAFYSIO); sigemptyset(&sigAIO); sigaddset(&sigAIO,SIGAFYAIO);
 #endif
 }
 

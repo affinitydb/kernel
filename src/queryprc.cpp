@@ -442,7 +442,10 @@ RC Cursor::connect()
 		else if ((results=new(ses) PINEx*[nResults])==NULL) return RC_NORESOURCES;
 		else {
 			memset(results,0,nResults*sizeof(PINEx*)); results[0]=pqr;
-			for (unsigned i=1; i<nResults; i++) if ((results[i]=new(ses) PINEx(ses))==NULL) return RC_NORESOURCES;
+			for (unsigned i=1; i<nResults; i++) {
+				if ((results[i]=new(ses) PINEx(ses))==NULL) return RC_NORESOURCES;
+				results[i-1]->sibling=results[i];
+			}
 			queryOp->connect(results,nResults);
 		}
 	}
@@ -531,6 +534,23 @@ RC Cursor::extract(PIN *&pin,unsigned idx,bool fCopy)
 	pin->stamp=pex->stamp; return RC_OK;
 }
 
+RC Cursor::next(const PINEx *&ret)
+{
+	ret=NULL; RC rc=advance(true); if (rc!=RC_OK) return rc;
+	unsigned i; PIN *pin;
+	switch (stype) {
+	case SEL_COUNT:
+		if (qr.properties==NULL && (qr.properties=new(ses) Value)==NULL) return RC_NORESOURCES;
+		qr.nProperties=1; qr.properties->setU64(cnt); qr.properties->setPropID(PROP_SPEC_VALUE); ret=pqr;
+		break;
+	case SEL_PINSET: case SEL_PROJECTED: case SEL_COMPOUND:
+		for (i=0; i<nResults; i++) if ((rc=extract(pin,i))!=RC_OK) return rc;
+	default:
+		ret=pqr; break;
+	}
+	return RC_OK;
+}
+
 RC Cursor::next(Value& ret)
 {
 	try {
@@ -549,10 +569,17 @@ RC Cursor::next(Value& ret)
 				if ((rc=extract(pin,0,true))==RC_OK) {ret.set(pin); ret.flags=SES_HEAP;}
 				break;
 			case SEL_COMPOUND: case SEL_COMP_DERIVED:
-				//???
+				if ((rc=extract(pin,0,true))==RC_OK) {
+					PIN *pin0=pin,*pin2=NULL;
+					for (unsigned i=1; i<nResults; i++) {
+						if ((rc=extract(pin2,i,true))!=RC_OK) break;
+						pin->sibling=pin2;
+					}
+					if (rc==RC_OK) {ret.set(pin0); ret.flags=SES_HEAP;}
+					else for (; pin!=NULL; pin=pin2) {pin2=pin->sibling; pin->destroy();}
+				}
 				break;
 			}
-			if (rc==RC_OK) cnt++;
 		}
 		ses->releaseAllLatches(); return rc;
 	} catch (RC rc) {return rc;} catch (...) {report(MSG_ERROR,"Exception in ICursor::next(Value&)\n"); return RC_INTERNAL;}
