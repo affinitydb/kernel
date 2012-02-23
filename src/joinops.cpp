@@ -112,27 +112,27 @@ void MergeIDs::print(SOutCtx& buf,int level) const
 
 MergeOp::MergeOp(QueryOp *qop1,QueryOp *qop2,const CondEJ *ce,unsigned ne,QUERY_SETOP qo,const Expr *const *cn,unsigned ncn,ulong qf)
 	: QueryOp(qop1,qf|QO_JOIN|QO_UNIQUE),queryOp2(qop2),op(qo),ej(ce),nej(ne),conds(cn),nConds(ncn),didx(0),pexR(qx->ses),pR(&pexR),pids(NULL),
-	props1(NULL),props2(NULL),index(NULL),pV1(vls),pV2(vls+ne),pVS(vls+ne*2)
+	index1(NULL),index2(NULL),pV1(vls),pV2(vls+ne),pVS(vls+ne*2)
 {
 	const ulong qf1=qop1->getQFlags(); qflags|=qf1&QO_IDSORT; nOuts+=qop2->getNOuts();
-//	if ((qf1&qop2->getQFlags()&QO_UNIQUE)!=0 && propID2==PROP_SPEC_PINID) qflags|=QO_UNIQUE;
-	sort=qop1->getSort(nSegs);
-	if (nej>1) {
-		// props1, props2, index
+	if ((qf1&qop2->getQFlags()&QO_UNIQUE)!=0 && ce->propID2==PROP_SPEC_PINID) qflags|=QO_UNIQUE;
+	sort=qop1->getSort(nSegs); props1.props=props2.props=NULL; props1.nProps=props2.nProps=0; props1.fFree=props2.fFree=false;
+	if (ne>1) {
+		if ((props1.props=(unsigned*)qx->ses->malloc(ne*(sizeof(unsigned)*2+sizeof(PropertyID)*2)))==NULL) throw RC_NORESOURCES;
+		props2.props=props1.props+ne; index1=(unsigned*)(props2.props+ne); index2=index1+ne; props1.fFree=true;
+		for (unsigned n=0; ce!=NULL; ce=ce->next,++n) {
+			PropertyID *ins,*pi=(PropertyID*)BIN<PropertyID>::find(ce->propID1,props1.props,props1.nProps,&ins);
+			if (pi==NULL) {if (ins<&props1.props[props1.nProps]) memmove(ins+1,ins,(byte*)&props1.props[props1.nProps]-(byte*)ins); *(pi=ins)=ce->propID1; props1.nProps++;}
+			index1[n]=(unsigned)(pi-props1.props);
+			pi=(PropertyID*)BIN<PropertyID>::find(ce->propID2,props2.props,props2.nProps,&ins);
+			if (pi==NULL) {if (ins<&props2.props[props2.nProps]) memmove(ins+1,ins,(byte*)&props2.props[props2.nProps]-(byte*)ins); *(pi=ins)=ce->propID2; props2.nProps++;}
+			index2[n]=(unsigned)(pi-props2.props);
+		}
 	}
-	if ((qf&QO_VCOPIED)!=0) {
-		if (ce!=NULL) {
-			if ((ej=(CondEJ*)qx->ses->malloc(nej*sizeof(CondEJ)))==NULL) throw RC_NORESOURCES;
-			for (unsigned i=0; i<nej; i++,ce=ce->next) {
-				memcpy(&((CondEJ*)ej)[i],ce,sizeof(CondEJ));
-				((CondEJ*)ej)[i].next=i+1<nej?&((CondEJ*)ej)[i+1]:NULL;
-			}
-		}
-		if (cn!=NULL && ncn!=0) {
-			Expr **pex; if ((conds=pex=new(qx->ses) Expr*[ncn])==NULL) throw RC_NORESOURCES;
-			memset(pex,0,ncn*sizeof(Expr));
-			for (unsigned i=0; i<ncn; i++) if ((pex[i]=Expr::clone(cn[i],qx->ses))==NULL) throw RC_NORESOURCES;
-		}
+	if ((qf&QO_VCOPIED)!=0 && cn!=NULL && ncn!=0) {
+		Expr **pex; if ((conds=pex=new(qx->ses) Expr*[ncn])==NULL) throw RC_NORESOURCES;
+		memset(pex,0,ncn*sizeof(Expr));
+		for (unsigned i=0; i<ncn; i++) if ((pex[i]=Expr::clone(cn[i],qx->ses))==NULL) throw RC_NORESOURCES;
 	}
 	for (unsigned i=0; i<ne; i++) {pV1[i].setError(); pV2[i].setError(); pVS[i].setError();}
 }
@@ -140,9 +140,7 @@ MergeOp::MergeOp(QueryOp *qop1,QueryOp *qop2,const CondEJ *ce,unsigned ne,QUERY_
 MergeOp::~MergeOp()
 {
 	if (pids!=NULL) delete pids;
-	if (props1!=NULL) qx->ses->free(props1);
-	if (props2!=NULL) qx->ses->free(props2);
-	if (index!=NULL) qx->ses->free(index);
+	if (props1.props!=NULL) qx->ses->free(props1.props);
 	cleanup(pV1); cleanup(pV2); cleanup(pVS);
 	if ((qflags&QO_VCOPIED)!=0) {
 		qx->ses->free((void*)ej);
@@ -185,7 +183,7 @@ RC MergeOp::next(const PINEx *skip)
 			} else if ((state&QOS_EOF2)==0) {
 				state&=~QOS_ADV1;
 				if (nej>1) {
-					//???
+					if ((rc=getData(&res,1,&props1,1,pV1))!=RC_OK) return rc;
 				} else if (ej->propID1==PROP_SPEC_PINID) {
 					if ((rc=res->getID(id))==RC_OK) pV1->set(id); else return rc;
 				} else if ((pV1->property=ej->propID1,queryOp->getData(*res,pV1,1,pR))!=RC_OK) {
@@ -202,7 +200,7 @@ RC MergeOp::next(const PINEx *skip)
 			}
 			state&=~QOS_ADV2; assert((state&QOS_EOF1)==0);
 			if (nej>1) {
-				//???
+				if ((rc=getData(&pR,1,&props2,1,pV2))!=RC_OK) return rc;
 			} else if (ej->propID2==PROP_SPEC_PINID) {
 				if ((rc=pR->getID(id))==RC_OK) pV2->set(id); else return rc;
 			} else if ((pV2->property=ej->propID2,queryOp2->getData(*pR,pV2,1))!=RC_OK) {
@@ -214,16 +212,18 @@ RC MergeOp::next(const PINEx *skip)
 		if (nej==1) c=cmp(*pV1,*pV2,ej->flags|CND_SORT);
 		else {
 			const CondEJ *ce=ej; 
-			for (unsigned i=0; i<nej; i++,ce=ce->next) if ((c=cmp(pV1[index[i]],pV2[index[i]],ce->flags|CND_SORT))!=0) break;
+			for (unsigned i=0; i<nej; i++,ce=ce->next) if ((c=cmp(pV1[index1[i]],pV2[index2[i]],ce->flags|CND_SORT))!=0) break;
 		}
 #if 0
 		//if (c==0) {
-			SOutCtx out(qx->ses); PID id2; pR->getID(id2);
-			if (vals[0].type==VT_BSTR) vals[0].type=VT_STRING;
-			if (vals[1].type==VT_BSTR) vals[1].type=VT_STRING;
-			out.renderPID(saveID); if (propID1!=PROP_SPEC_PINID) {out.append(":",1); out.renderValue(vals[0]);}
+			SOutCtx out(qx->ses);
+			if (pV1->type==VT_BSTR) pV1->type=VT_STRING;
+			if (pV2->type==VT_BSTR) pV2->type=VT_STRING;
+			res->getID(id); out.renderPID(id); 
+			if (ej->propID1!=PROP_SPEC_PINID) {out.append(":",1); out.renderValue(*pV1);}
 			out.append(c<0?" < ":c==0?" = ":" > ",3);
-			out.renderPID(id2); if (propID2!=PROP_SPEC_PINID) {out.append(":",1); out.renderValue(vals[1]);}
+			pR->getID(id); out.renderPID(id);
+			if (ej->propID2!=PROP_SPEC_PINID) {out.append(":",1); out.renderValue(*pV2);}
 			size_t l; byte *p=out.result(l); report(MSG_DEBUG,"%.*s\n",l,p); qx->ses->free(p);
 		//}
 #endif

@@ -423,52 +423,65 @@ RC QBuildCtx::mergeN(QueryOp *&res,QueryOp **o,unsigned no,QUERY_SETOP op)
 RC QBuildCtx::merge2(QueryOp *&res,QueryOp **qs,const CondEJ *cej,QUERY_SETOP qo,const Expr *const *conds,unsigned nConds)
 {
 	res=NULL; if (qs[0]==NULL || qs[1]==NULL) return RC_EOF;
-	ulong fUni=0; RC rc; assert(qo!=QRY_UNION && qo!=QRY_INTERSECT);
-	unsigned nej=0; const CondEJ *cid1=NULL,*cid2=NULL; bool fS1=qs[0]->sort!=NULL,fS2=qs[1]->sort!=NULL;
+	ulong ff=qo==QRY_SEMIJOIN?QO_UNIQUE:0; RC rc; assert(qo<QRY_UNION);
+	unsigned nej=0; bool fS1=qs[0]->sort!=NULL,fS2=qs[1]->sort!=NULL,fR1=false,fR2=false,fI1=false,fI2=false;
 	for (const CondEJ *ce=cej; ce!=NULL; ce=ce->next,nej++) {
-		if (ce->propID1==PROP_SPEC_PINID && (qs[0]->qflags&QO_IDSORT)!=0) cid1=ce;
+		if (ce->propID1==PROP_SPEC_PINID && (qs[0]->qflags&QO_IDSORT)!=0) fI1=true;
 		else if (fS1) for (unsigned i=0; ;i++) 
-			if (i>=qs[0]->nSegs) {fS1=false; break;}
-			else if ((qs[0]->sort[i].flags&ORDER_EXPR)==0 && qs[0]->sort[i].pid==ce->propID1
-				&& ((qs[0]->sort[i].flags^ce->flags)&SORT_MASK)==0) break;
-		if (ce->propID2==PROP_SPEC_PINID && (qs[1]->qflags&QO_IDSORT)!=0) cid2=ce;
+			if (i>=qs[0]->nSegs||(qs[0]->sort[i].flags&ORDER_EXPR)!=0) {fS1=false; break;}
+			else if (qs[0]->sort[i].pid==ce->propID1 && ((qs[0]->sort[i].flags^ce->flags)&SORT_MASK)==0) {if (i!=nej) fR1=true; break;}
+		if (ce->propID2==PROP_SPEC_PINID && (qs[1]->qflags&QO_IDSORT)!=0) fI2=true;
 		else if (fS2) for (unsigned i=0; ;i++) 
-			if (i>=qs[1]->nSegs) {fS2=false; break;}
-			else if ((qs[1]->sort[i].flags&ORDER_EXPR)==0 && qs[1]->sort[i].pid==ce->propID2
-				&& ((qs[1]->sort[i].flags^ce->flags)&SORT_MASK)==0) break;
+			if (i>=qs[1]->nSegs||(qs[1]->sort[i].flags&ORDER_EXPR)!=0) {fS2=false; break;}
+			else if (qs[1]->sort[i].pid==ce->propID2 && ((qs[1]->sort[i].flags^ce->flags)&SORT_MASK)==0) {if (i!=nej) fR2=true; break;}
 	}
-	if (!fS1 && cid1==NULL || !fS2 && cid2==NULL) {
-		OrderSegQ *oss=(OrderSegQ*)alloca(nej*sizeof(OrderSegQ)); if (oss==NULL) return RC_NORESOURCES;
-		if (!fS1) {
-			if (cid1==NULL) {
+	if (nej>1) fI1=fI2=false;
+	else {
+		if (fI1) {fS1=true; fR1=false;} else if (qo==QRY_SEMIJOIN) qs[0]->unique(false);
+		if (fI2) {fS2=true; fR2=false;} else if (qo==QRY_SEMIJOIN) qs[1]->unique(false);
+	}
+	if (!fS1 || !fS2 || fR1 || fR2) {
+		if (fS1 && fS2) {
+			if (!fR1) fS2=false; else if (!fR2) fS1=false;
+			else {
+#if 0
+				// try to re-order
+				CondEJ *ej=(CondEJ*)ses->malloc(nej*sizeof(CondEJ)); if (ej==NULL) return RC_NORESOURCES;
+				const OrderSegQ *os=qs[0]->sort;
+				for (unsigned i=0; i<nej; i++,os++) {
+					for (ce=cej; ;ce=ce->next)
+						if (ce==NULL) return RC_INTERNAL;
+						else {
+						}
+					memcpy(&ej[i],ce,sizeof(CondEJ)); ej[i].next=i+1<nej?&ej[i+1]:NULL;
+				}
+				cej=ej; ff|=QO_VCOPIED;
+#else
+				fS1=fS2=false;
+#endif
+			}
+		}
+		if (!fS1 || !fS2) {
+			OrderSegQ *oss=(OrderSegQ*)alloca(nej*sizeof(OrderSegQ)); if (oss==NULL) return RC_NORESOURCES;
+			if (!fS1 && !fI1) {
 				OrderSegQ *os=oss; memset(oss,0,nej*sizeof(OrderSegQ));
-				for (const CondEJ *ce=cej; ce!=NULL; ce=ce->next,os++) {os->pid=ce->propID1; os->flags=ce->flags;}
+				for (const CondEJ *ce=cej; ce!=NULL; ce=ce->next,os++) {os->pid=ce->propID1; os->flags=ce->flags; os->aggop=OP_ALL;}
 				if ((rc=sort(qs[0],oss,nej,NULL,true))!=RC_OK) return rc;	// cleanup???
-			} else {
-				if (qo==QRY_SEMIJOIN && cid1->propID1!=PROP_SPEC_PINID) qs[0]->unique(false);
-				if (nej>1) {
-					// other conds
-				}
 			}
-		}
-		if (!fS2) {
-			if (cid2==NULL) {
+			if (!fS2 && !fI2) {
 				OrderSegQ *os=oss; memset(oss,0,nej*sizeof(OrderSegQ));
-				for (const CondEJ *ce=cej; ce!=NULL; ce=ce->next,os++) {os->pid=ce->propID2; os->flags=ce->flags;}
+				for (const CondEJ *ce=cej; ce!=NULL; ce=ce->next,os++) {os->pid=ce->propID2; os->flags=ce->flags; os->aggop=OP_ALL;}
 				if ((rc=sort(qs[1],oss,nej,NULL,true))!=RC_OK) return rc;	// cleanup???
-			} else {
-				if (qo==QRY_SEMIJOIN && cid2->propID2!=PROP_SPEC_PINID) qs[1]->unique(false);		// ????
-				if (nej>1) {
-					// other conds
-				}
 			}
 		}
-	} else if (nej>1) {
-		// check order corresponds, re-order cej if necessary
+	} else if ((flg&QO_VCOPIED)!=0 && cej!=NULL) {
+		CondEJ *ej=(CondEJ*)ses->malloc(nej*sizeof(CondEJ)); if (ej==NULL) return RC_NORESOURCES;
+		for (unsigned i=0; i<nej; i++,cej=cej->next) {memcpy(&ej[i],cej,sizeof(CondEJ)); ej[i].next=i+1<nej?&ej[i+1]:NULL;}
+		cej=ej;
 	}
-	if ((qs[0]->qflags&QO_UNIQUE)!=0 && cej->propID1==PROP_SPEC_PINID) fUni|=QO_UNI1;
-	if ((qs[1]->qflags&QO_UNIQUE)!=0 && cej->propID2==PROP_SPEC_PINID) fUni|=QO_UNI2;
-	try {if ((res=new(ses,nej) MergeOp(qs[0],qs[1],cej,nej,qo,conds,nConds,flg|fUni))==NULL) return RC_NORESOURCES;} catch (RC rc) {return rc;}
+	if ((qs[0]->qflags&QO_UNIQUE)!=0 && cej->propID1==PROP_SPEC_PINID) ff|=QO_UNI1;
+	if ((qs[1]->qflags&QO_UNIQUE)!=0 && cej->propID2==PROP_SPEC_PINID) ff|=QO_UNI2;
+	try {if ((res=new(ses,nej) MergeOp(qs[0],qs[1],cej,nej,qo,conds,nConds,flg|ff))==NULL) return RC_NORESOURCES;} catch (RC rc) {return rc;}
 	return RC_OK;
 }
 

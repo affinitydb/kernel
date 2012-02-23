@@ -1227,7 +1227,8 @@ RC SOutCtx::renderJSON(Cursor *cr,uint64_t& cnt)
 		if (ret->getSibling()!=NULL) {cbuf[l++]='['; fMany=true;}
 		do {
 			props=ret->getValueByIndex(0); nProps=ret->getNumberOfProperties();
-			if (ret->getID(id)==RC_OK && id.pid!=STORE_INVALID_PID) {
+			if (ret->getID(id)!=RC_OK || id.pid==STORE_INVALID_PID) cbuf[l++]='{';
+			else {
 				l+=sprintf(cbuf+l,"{\"id\":\""_LX_FM"\"",id.pid);
 				if (props!=NULL && nProps!=0) {cbuf[l]=','; cbuf[l+1]=' '; l+=2;}
 			}

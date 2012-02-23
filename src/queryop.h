@@ -258,9 +258,10 @@ class MergeOp : public QueryOp
 	PINEx				pexR;
 	PINEx				*pR;
 	class	PIDStore	*pids;
-	PropertyID			*props1;
-	PropertyID			*props2;
-	unsigned			*index;
+	PropList			props1;
+	unsigned			*index1;
+	PropList			props2;
+	unsigned			*index2;
 	Value	*const		pV1;
 	Value	*const		pV2;
 	Value	*const		pVS;

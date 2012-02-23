@@ -31,7 +31,7 @@ Written by Mark Venguerov, Andrew Skowronski, Michael Andronov 2004 - 2010
 #define pwrite64 pwrite
 #define pread64 pread
 #define aio_write64 aio_write 
-#define aio_read64 aio_write 
+#define aio_read64 aio_read
 
 #define aiocb64 aiocb
 #define fdatasync(x) fsync(x)
