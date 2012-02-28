@@ -1,11 +1,26 @@
 /**************************************************************************************
 
-Copyright © 2004-2010 VMware, Inc. All rights reserved.
+Copyright © 2004-2012 VMware, Inc. All rights reserved.
 
-Written by Mark Venguerov 2004 - 2010
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+     http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,  WITHOUT
+WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the
+License for the specific language governing permissions and limitations
+under the License.
+
+Written by Mark Venguerov 2004-2012
 
 **************************************************************************************/
 
+/**
+ * query evaluation operators
+ */
 #ifndef _QUERYOP_H_
 #define _QUERYOP_H_
 
@@ -17,41 +32,48 @@ Written by Mark Venguerov 2004 - 2010
 namespace AfyKernel
 {
 
-#define	DEFAULT_QUERY_MEM	0x100000ul
+#define	DEFAULT_QUERY_MEM	0x100000ul		/**< default memory limit used by query */
 
-#define	QO_UNIQUE		0x00000001
-#define	QO_VUNIQUE		0x00000002
-#define	QO_JOIN			0x00000004
-#define	QO_STREAM		0x00000008
-#define	QO_IDSORT		0x00000010
-#define	QO_REVERSIBLE	0x00000020
-#define	QO_FORUPDATE	0x00000040
-#define	QO_CLASS		0x00000080
-#define	QO_ALLPROPS		0x00000100
-#define	QO_DELETED		0x00000200
-#define	QO_CHECKED		0x00000400
-#define QO_VCOPIED		0x00000800
-#define	QO_REORDER		0x00001000
-#define	QO_NODATA		0x00002000
-#define	QO_UNI1			0x00004000
-#define	QO_UNI2			0x00008000
+#define	QO_UNIQUE		0x00000001			/**< operator doesn't return repeating PINs */
+#define	QO_VUNIQUE		0x00000002			/**< for Sort: exclude repeating based on values rather than PIN ID */
+#define	QO_JOIN			0x00000004			/**< join operator */
+#define	QO_STREAM		0x00000008			/**< data streaming operator, e.g. a scan */
+#define	QO_IDSORT		0x00000010			/**< result is sorted according to PIN IDs */
+#define	QO_REVERSIBLE	0x00000020			/**< sort order is reversible, e.g. in index scan */
+#define	QO_FORUPDATE	0x00000040			/**< lock for update */
+#define	QO_CLASS		0x00000080			/**< initial classification data scan */
+#define	QO_ALLPROPS		0x00000100			/**< all PIN properties should be returned */
+#define	QO_DELETED		0x00000200			/**< return soft-deleted PINs */
+#define	QO_CHECKED		0x00000400			/**< access permission is checked for this PIN */
+#define QO_VCOPIED		0x00000800			/**< data is copied from Stmt to QueryOp, must be deallocated */
+#define	QO_REORDER		0x00001000			/**< reordering of data is allowed */
+#define	QO_NODATA		0x00002000			/**< no property values is necessary to filter PINs, e.g. when only local PINs are required */
+#define	QO_UNI1			0x00004000			/**< first source is unique */
+#define	QO_UNI2			0x00008000			/**< second source is unique */
 
-#define	QST_INIT		0x80000000
-#define	QST_BOF			0x40000000
-#define	QST_EOF			0x20000000
+/**
+ * query operator state flags
+ */
+#define	QST_INIT		0x80000000			/**< query operator was not initialized yet */
+#define	QST_BOF			0x40000000			/**< before first result received */
+#define	QST_EOF			0x20000000			/**< end of result set is encountered */
 
-#define	QOS_ADV			0x0001
-#define	QOS_ADV1		0x0001
-#define	QOS_ADV2		0x0002
-#define	QOS_EOF1		0x0004
-#define	QOS_EOF2		0x0008
+/**
+ * flags for merge-sort operators
+ */
+#define	QOS_ADV			0x0001				/**< next result is to be read */
+#define	QOS_ADV1		0x0001				/**< next result is to be read from first source */
+#define	QOS_ADV2		0x0002				/**< next result is to be read from second source */
+#define	QOS_EOF1		0x0004				/**< end of results from first source */
+#define	QOS_EOF2		0x0008				/**< end of results from second source */
 
 struct	CondIdx;
 class	ExtSortFile;
 class	SOutCtx;
 
-// Base query operator class/interface
-
+/**
+ * query operator abstract class
+ */
 class QueryOp
 {
 	friend		class	QBuildCtx;
@@ -95,8 +117,9 @@ public:
 	RC					getBody(PINEx& pe);
 };
 
-// Scan operators
-
+/**
+ * full store scan operator
+ */
 class FullScan : public QueryOp
 {
 	const uint32_t	mask;
@@ -117,6 +140,10 @@ public:
 	void		print(SOutCtx& buf,int level) const;
 };
 
+/**
+ * class scan operator
+ * uses class index 
+ */
 class ClassScan : public QueryOp
 {
 	SearchKey		key;
@@ -130,6 +157,10 @@ public:
 	void		print(SOutCtx& buf,int level) const;
 };
 
+/**
+ * family scan operator
+ * uses family index
+ */
 class IndexScan : public QueryOp
 {
 	ClassIndex&			index;
@@ -159,6 +190,9 @@ public:
 	friend	class		SimpleVar;
 };
 
+/**
+ * array scan - returnes PIN IDs from an array
+ */
 class ArrayScan : public QueryOp
 {
 	PID				*pids;
@@ -174,6 +208,9 @@ public:
 	void		print(SOutCtx& buf,int level) const;
 };
 
+/**
+ * free-text index scan
+ */
 class FTScan : public QueryOp
 {
 	SearchKey				word;
@@ -198,6 +235,10 @@ public:
 	friend	class	PhraseFlt;
 };
 
+/**
+ * phrase filter
+ * n.b. implementation is not finished!
+ */
 class PhraseFlt : public QueryOp
 {
 	struct	FTScanS {
@@ -217,8 +258,10 @@ public:
 	void		print(SOutCtx& buf,int level) const;
 };
 
-// Join and set operators
-
+/**
+ * PIN set operations (UNION, INTERSECT, EXCEPT)
+ * for UNION and INTERSECT more than 2 sources can be specified
+ */
 class MergeIDs : public QueryOp
 {
 protected:
@@ -246,6 +289,10 @@ public:
 
 struct CondEJ;
 
+/**
+ * merge sorted streams of PINs
+ * equi-join implementation
+ */
 class MergeOp : public QueryOp
 {
 	QueryOp	*const		queryOp2;
@@ -281,6 +328,9 @@ public:
 	friend	class	QBuildCtx;
 };
 
+/**
+ * hash-join
+ */
 class HashOp : public QueryOp
 {
 	QueryOp	*const		queryOp2;
@@ -292,6 +342,9 @@ public:
 	void	print(SOutCtx& buf,int level) const;
 };
 
+/**
+ * nested loop join implementation
+ */
 class NestedLoop : public QueryOp
 {
 	QueryOp	*const		queryOp2;
@@ -313,6 +366,9 @@ public:
 	void	print(SOutCtx& buf,int level) const;
 };
 
+/**
+ * property load operator
+ */
 class LoadOp : public QueryOp
 {
 	PINEx				**results;
@@ -331,6 +387,9 @@ public:
 	void		print(SOutCtx& buf,int level) const;
 };
 
+/**
+ * filter operator
+ */
 class Filter : public QueryOp
 {
 	const Expr *const *conds;
@@ -350,6 +409,9 @@ public:
 	friend	class	QBuildCtx;
 };
 
+/**
+ * filter operator based on an array of predefined PIN IDs
+ */
 class ArrayFilter : public QueryOp
 {
 	PID			*pids;
@@ -362,6 +424,10 @@ public:
 	void		print(SOutCtx& buf,int level) const;
 };
 
+/**
+ * sort operator
+ * performs in-memory or external sort
+ */
 class Sort : public QueryOp
 {
 	const	unsigned		nPreSorted;
@@ -414,6 +480,9 @@ private:
 	friend	class	OutRun;
 };
 
+/**
+ * path expression operator
+ */
 class PathOp : public QueryOp, public Path
 {
 	PINEx			pex,*ppx;
@@ -429,6 +498,10 @@ public:
 	void		print(SOutCtx& buf,int level) const;
 };
 
+/**
+ * transformation operator
+ * optionally also performs grouping, aggregation and group filtering
+ */
 class TransOp : public QueryOp
 {
 	const	ValueV		*dscr;

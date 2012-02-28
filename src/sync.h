@@ -1,11 +1,27 @@
 /**************************************************************************************
 
-Copyright © 2004-2010 VMware, Inc. All rights reserved.
+Copyright © 2004-2012 VMware, Inc. All rights reserved.
 
-Written by Mark Venguerov, Max Windish, Michael Andronov 2004 - 2010
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+     http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,  WITHOUT
+WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the
+License for the specific language governing permissions and limitations
+under the License.
+
+Written by Mark Venguerov, Max Windish, Michael Andronov 2004-2012
 
 **************************************************************************************/
 
+/**
+ * synchronisation functions and data structures
+ * partially platform dependent
+ */
 #ifndef _SYNC_H_
 #define _SYNC_H_
 
@@ -13,7 +29,7 @@ Written by Mark Venguerov, Max Windish, Michael Andronov 2004 - 2010
 
 #ifdef __arm__
 extern "C" {
-bool __sync_bool_compare_and_swap_8(volatile void* destination, long long unsigned comperand, long long unsigned exchange);
+bool __sync_bool_compare_and_swap_8(volatile void* destination, long long unsigned comperand, long long unsigned exchange);		// on ARM this function doesn't exists and implemented via assembler
 }
 #endif
 
@@ -23,7 +39,7 @@ At this point of time, the code for OSX is compiled in 64bit mode only.
 For 32-bit mode, the  ...swap_8() function may be needed...
 */
 extern "C" {
-bool __sync_bool_compare_and_swap_16(volatile __uint128_t * destination, __uint128_t comperand, __uint128_t exchange);
+bool __sync_bool_compare_and_swap_16(volatile __uint128_t * destination, __uint128_t comperand, __uint128_t exchange);			// on ARM this function doesn't exists and implemented via assembler
 }
 #endif
 
@@ -32,13 +48,17 @@ namespace AfyKernel
 
 #ifdef WIN32
 	#define THREAD_SIGNATURE DWORD WINAPI
-	#define	WAIT_SPIN_COUNT	18
-	#define	SPIN_COUNT		1000
+	#define	WAIT_SPIN_COUNT	18					/**< threshold between spin count and wait queue */
+	#define	SPIN_COUNT		1000				/**< number of cycles before testing for lock in spin mode */
 #else
 	#define THREAD_SIGNATURE void *
-	#define	WAIT_SPIN_COUNT	18
-	#define	SPIN_COUNT		1000
+	#define	WAIT_SPIN_COUNT	18					/**< threshold between spin count and wait queue */
+	#define	SPIN_COUNT		1000				/**< number of cycles before testing for lock in spin mode */
 #endif
+
+/**
+ * platform dependent wait functions
+ */
 inline void threadsWaitFor(int pNumThreads, HTHREAD * pThreads)
 {
 	#ifdef WIN32
@@ -51,15 +71,26 @@ inline void threadsWaitFor(int pNumThreads, HTHREAD * pThreads)
 }
 
 #ifdef WIN32
+/**
+ * compare-and-swap functions on Windows implemented as InterlockedCompareExhange()
+ * for non-blocking lists standard InterlockedSList functions are used
+ */
 template<typename T> __forceinline bool cas(volatile T *ptr,T oldV,T newV) {return InterlockedCompareExchange(ptr,newV,oldV)==oldV;}
 template<typename T> __forceinline bool casP(T *volatile *ptr,T *oldV,T *newV) {return InterlockedCompareExchangePointer(ptr,newV,oldV)==oldV;}
 template<typename T> __forceinline T casV(volatile T *ptr,T oldV,T newV) {return InterlockedCompareExchange(ptr,newV,oldV);}
 #elif !defined(__arm__)
+/**
+ * compare-and-swap functions in glibc
+ */
 #define	cas(a,b,c)									__sync_bool_compare_and_swap(a,b,c)
 #define	casP(a,b,c)									__sync_bool_compare_and_swap(a,b,c)
 #define	casV(a,b,c)									__sync_val_compare_and_swap(a,b,c)
 #define	InterlockedIncrement(a)						__sync_add_and_fetch(a,1)
 #define	InterlockedDecrement(a)						__sync_sub_and_fetch(a,1)
+/**
+ * non-blocking list implementation using cas() functions for Linux and OSX
+ * names are preserved from WIN32 API
+ */
 struct SLIST_ENTRY
 {
 	SLIST_ENTRY		*Next;
@@ -100,12 +131,17 @@ inline SLIST_ENTRY *InterlockedPopEntrySList(SLIST_HEADER *pHeader)
 	return pe;
 }
 #else		//__arm__
+/**
+ * ARM compare-and-swap functions use the same names as glibc but implemented in assembler
+ */
 #define	cas(a,b,c)									__sync_bool_compare_and_swap(a,b,c)
 #define	casP(a,b,c)									__sync_bool_compare_and_swap(a,b,c)
 #define	casV(a,b,c)									__sync_val_compare_and_swap(a,b,c)
 #define	InterlockedIncrement(a)						__sync_add_and_fetch(a,1)
 #define	InterlockedDecrement(a)						__sync_sub_and_fetch(a,1)
-
+/**
+ * non-blocking list implementation using cas() functions for ARM
+ */
 struct SLIST_ENTRY
 {
 	SLIST_ENTRY		*Next;
@@ -139,6 +175,9 @@ inline SLIST_ENTRY *InterlockedPopEntrySList(SLIST_HEADER *pHeader)
 }
 #endif
 
+/**
+ * platform dependent yield() function
+ */
 inline void threadYield()
 {
 	#ifdef WIN32
@@ -149,6 +188,9 @@ inline void threadYield()
 		::pthread_yield();
 	#endif
 }
+/**
+ * platform dependent sleep() function
+ */
 inline void threadSleep(long pMilli)
 {
 	#ifdef WIN32
@@ -159,15 +201,25 @@ inline void threadSleep(long pMilli)
 	#endif
 }
 
+/**
+ * spin counter for spin locks
+ */
 struct SpinC {
 	const long	spinCount;
 	SpinC() : spinCount(getNProcessors()>1?SPIN_COUNT:0) {}
 	static SpinC SC;
 };
 
+/**
+ * semaphore data used for queue of threads waiting for resource
+ */
 struct SemData {
 	SemData		*next;
 #ifdef WIN32
+	/**
+	 * Windows: to put a thread to wait state/to wakeup a thread SuspendThread()/ResumeThread() API calls are used
+	 * it's much faster than using standard WaitForSingleObject calls and they don't use Windows kernel resources
+	 */
 	HTHREAD		thread;
 	SemData() :	thread(0) {}
 	~SemData()	{detach();}
@@ -175,8 +227,7 @@ struct SemData {
 	void		wait() {if (thread==0) {HANDLE hProc=GetCurrentProcess(); DuplicateHandle(hProc,GetCurrentThread(),hProc,&thread,THREAD_SUSPEND_RESUME,FALSE,0);} SuspendThread(thread);}
 	void		wakeup() {for (long spinCount=SpinC::SC.spinCount; thread==(HTHREAD)0||ResumeThread(thread)!=1;) if (--spinCount<0) threadYield();}
 #elif defined(Darwin)
-	//OS X does not support un-named pthread semaphores. The named phtread
-	//semaphores are implemented on base of MACH semaphores... 
+	//OS X does not support un-named pthread semaphores. The named phtread semaphores are implemented on base of MACH semaphores... 
 	semaphore_t machsem;
 	SemData() {kern_return_t kr;
 			  kr = semaphore_create(mach_task_self(), &machsem,SYNC_POLICY_FIFO, 0);
@@ -187,6 +238,9 @@ struct SemData {
 	void		wait()   {kern_return_t kr;  while( KERN_SUCCESS != (kr = semaphore_wait(machsem)) ){ /*mach_error( "semaphore_wait: ", kr); printf("errno = %d\n",errno);*/}}
 	void		wakeup() {kern_return_t kr;  while( KERN_SUCCESS != (kr = semaphore_signal(machsem)) ){/* mach_error( "semaphore_signal: ", kr); printf("errno = %d\n",errno);*/}}
 #else
+	/**
+	 * on Linux standard semaphores are used to put a thread to wait state/to wakeup a thread
+	 */
 	sem_t		sem;
 	SemData()	{sem_init(&sem,0,0);}
 	~SemData()	{sem_destroy(&sem);}
@@ -196,6 +250,10 @@ struct SemData {
 #endif
 };
 
+/**
+ * simple semaphore implementation
+ * no protection against long waits as any random thread is woken up when resource becomes available
+ */
 class SimpleSem
 {
 	SemData* volatile	chain;
@@ -207,6 +265,9 @@ public:
 	void		unlock(SemData&);
 };
 
+/**
+ * variation of simple semaphore
+ */
 class SimpleSemNC
 {
 	SemData* volatile	chain;
@@ -219,6 +280,10 @@ public:
 	void		unlock(SemData&);
 };
 
+/**
+ * semaphore implementation with ordered waiting queue
+ * protected against long waits but more overhead than simple semaphore
+ */
 class Semaphore
 {
 	SemData*	volatile	chain;
@@ -232,6 +297,9 @@ public:
 	void		unlock(SemData&,bool fWakeupAll=false);
 };
 
+/**
+ * platform-dependent Mutex implementation
+ */
 class Mutex
 {
 #ifdef WIN32
@@ -257,6 +325,10 @@ public:
 #endif
 };
 
+/**
+ * Mutex holder
+ * releases Mutex when goes out of scope
+ */
 class MutexP
 {
 	Mutex	*lock;
@@ -266,6 +338,9 @@ public:
 	void set(Mutex *m) {if (lock!=NULL) lock->unlock(); if ((lock=m)!=NULL) m->lock();}
 };
 
+/**
+ * Spin lock implementation
+ */
 class SLock
 {
 	volatile	long	count;
@@ -285,6 +360,11 @@ public:
 	bool isLocked() const {return count!=0;}
 };
 
+/**
+ * Event object used to signal certain event to multiple threads
+ * supports waits with timeouts
+ * platform-dependent implementation
+ */
 class Event
 {
 #ifdef WIN32
@@ -332,9 +412,27 @@ public:
 #endif
 };
 
-enum RW_LockType {RW_NO_LOCK, RW_S_LOCK, RW_X_LOCK, RW_U_LOCK};
+/**
+ * Read-write lock
+ * main synchronization primitive
+ */
+
+/**
+ * RW lock types
+ */
+enum RW_LockType
+{
+	RW_NO_LOCK,		/**< lock is not locked */
+	RW_S_LOCK,		/**< lock is acquired for read access, potentially by multiple threads */
+	RW_X_LOCK,		/**< lock is acquired by write access, only one thread */
+	RW_U_LOCK		/**< 'update' access, one thread in RW_U_LOCK mode, multiple - in RW_S_LOCK; can be upgraded to RW_X_LOCK */
+};
+
 #define	RW_MASK	0x0F
 
+/**
+ * various macros for RW lock implementation
+ */
 #define	RW_WAIT					if (--spinCount<0) if (--waitSpinCount>=0) threadYield();\
 		else if (ptrdiff_t(q)!=ptrdiff_t(~0ULL)) {wait(q); q=(SemData*)~0ULL;}\
 		else for (q=queue; ;q=queue)\
@@ -350,6 +448,9 @@ enum RW_LockType {RW_NO_LOCK, RW_S_LOCK, RW_X_LOCK, RW_U_LOCK};
 #define RW_TRYLOCK(cnd,mod)		for (long c=count; ;c=count)\
 		if (cnd) return false; else if (cas(&count,c,mod)) break;
 
+/**
+ * RW lock with a waiting queue
+ */
 class RWLock
 {
 	enum {
@@ -491,6 +592,9 @@ public:
 #define RW_WAIT	if (--spinCount<0) threadYield();
 #define	RW_RESTORE
 
+/**
+ * RW spin lock, no waiting queue
+ */
 class RWSpin
 {
 	enum {
@@ -606,6 +710,10 @@ public:
 	bool	isLocked() const {return count!=0;}
 };
 
+/**
+ * RW lock holder
+ * releases the lock when goes out of scope
+ */
 class RWLockP
 {
 	RWLock	*lock;
@@ -615,6 +723,9 @@ public:
 	void set(RWLock *r,RW_LockType type=RW_NO_LOCK) {if (lock!=NULL) lock->unlock(); if ((lock=r)!=NULL&&type!=RW_NO_LOCK) r->lock(type);}
 };
 
+/**
+ * concurrent counter
+ */
 class SharedCounter
 {
 	volatile long	cnt;
@@ -628,6 +739,11 @@ public:
 	operator long() const {return cnt;}
 };
 
+/**
+ * thread local storage
+ * used to associate Session and StoreCtx references with a thread
+ * platform-dependent implementation
+ */
 class Tls
 {
 #ifdef WIN32
@@ -647,6 +763,9 @@ public:
 #endif
 };
 
+/**
+ * allocator for aligned blocks of memory
+ */
 template<HEAP_TYPE allc> class Std_Alloc
 {
 public:
@@ -659,6 +778,9 @@ public:
 	}
 };
 
+/**
+ * template for non-blocking concurrent queue of objects
+ */
 template<unsigned blockSize=0x200,class Alloc=Std_Alloc<SERVER_HEAP> > class FreeQ
 {
 	SLIST_HEADER	qfree;
@@ -682,10 +804,19 @@ public:
 };
 #endif
 
-#define	RQ_SKIP			0x0001
-#define	RQ_IN_PROGRESS	0x0002
-#define	RQ_IN_QUEUE		0x0004
+/**
+ * pool of working threads implementation
+ * used for async requests like log checkpoints, tree repair requests, i/o completion requests, etc.
+ */
 
+#define	RQ_SKIP			0x0001				/**< skip this request: not necessary to process */
+#define	RQ_IN_PROGRESS	0x0002				/**< request processing in progress */
+#define	RQ_IN_QUEUE		0x0004				/**< request is queued for execution */
+
+/**
+ * store reference
+ * indirect referencing with reference counting is used to prevent request crash during asynchronous store shutdown
+ */
 struct StoreRef
 {
 	class	StoreCtx&	ctx;
@@ -694,6 +825,9 @@ struct StoreRef
 	StoreRef(class StoreCtx& ct) : ctx(ct),cnt(0) {++cntRef;}
 };
 
+/**
+ * request abstract class
+ */
 class Request
 {
 	volatile	long	state;	
@@ -709,13 +843,22 @@ public:
 	friend	class		ThreadGroup;
 };
 
+/**
+ * request priority types
+ */
 enum RQType {RQ_NORMAL, RQ_HIGHPRTY, RQ_IO};
 
+/**
+ * request object allocator
+ */
 class RQ_Alloc {
 public:
 	static void *alloc(size_t s);
 };
 
+/**
+ * ThreadGroup defines a queue of requests with the same priority
+ */
 class ThreadGroup {
 	volatile	long	nThreads;
 	volatile	long	nPendingRequests;
@@ -742,6 +885,10 @@ public:
 	void			processRequests();
 };
 
+/**
+ * request queue implementation
+ * consists of a few ThreadGroup's
+ */
 class RequestQueue
 {
 	ThreadGroup		normal;

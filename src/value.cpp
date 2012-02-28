@@ -1,8 +1,20 @@
 /**************************************************************************************
 
-Copyright © 2004-2010 VMware, Inc. All rights reserved.
+Copyright © 2004-2012 VMware, Inc. All rights reserved.
 
-Written by Mark Venguerov 2004 - 2010
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+     http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,  WITHOUT
+WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the
+License for the specific language governing permissions and limitations
+under the License.
+
+Written by Mark Venguerov 2004-2012
 
 **************************************************************************************/
 
@@ -814,7 +826,7 @@ noconv:
 		case VT_STMT:
 			if (ps->type==VT_STRING) {
 				Session *ses=Session::getSession(); if (ses==NULL) return RC_NOSESSION; RC rc=RC_OK;
-				SInCtx in(ses,ps->str,ps->length,NULL,0,(ses->getItf()&ITF_SPARQL)!=0?SQ_SPARQL:SQ_SQL);
+				SInCtx in(ses,ps->str,ps->length,NULL,0,(ses->getItf()&ITF_SPARQL)!=0?SQ_SPARQL:SQ_PATHSQL);
 				try {Stmt *st=in.parseStmt(); if (&src==&dst) freeV(dst); dst.set(st); dst.flags=SES_HEAP; return RC_OK;}
 				catch (SynErr) {rc=RC_SYNTAX;} catch (RC rc2) {rc=rc2;}
 				return rc;

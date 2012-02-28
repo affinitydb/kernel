@@ -1,11 +1,26 @@
 /**************************************************************************************
 
-Copyright © 2004-2010 VMware, Inc. All rights reserved.
+Copyright © 2004-2012 VMware, Inc. All rights reserved.
 
-Written by Mark Venguerov 2004 - 2010
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+     http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,  WITHOUT
+WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the
+License for the specific language governing permissions and limitations
+under the License.
+
+Written by Mark Venguerov 2004-2012
 
 **************************************************************************************/
 
+/**
+ * index B-tree control structures
+ */
 #ifndef _IDXTREE_H_
 #define _IDXTREE_H_
 
@@ -19,14 +34,33 @@ namespace AfyKernel
 
 class Session;
 
-enum TREE_KT {KT_UINT, KT_INT, KT_FLOAT, KT_DOUBLE, KT_BIN, KT_REF, KT_VAR, KT_ALL};
+/**
+ * index key types
+ */
+enum TREE_KT
+{
+	KT_UINT,			/**< unsigned 64-bit integer */
+	KT_INT,				/**< signed 64-bit integer */
+	KT_FLOAT,			/**< single precision (32-bit) floating number */
+	KT_DOUBLE,			/**< double precision (64-bit) floating number */
+	KT_BIN,				/**< string (either of octets or of characters) */
+	KT_REF,				/**< PIN reference (same as KT_BIN, but special ordering) */
+	KT_VAR,				/**< variable type or multisegment */
+	KT_ALL
+};
 
+/**
+ * KT_VAR helper functions
+ */
 extern	int		cmpMSeg(const byte *s1,ushort l1,const byte *s2,ushort l2);
 extern	bool	isHyperRect(const byte *s1,ushort l1,const byte *s2,ushort l2);
 extern	bool	cmpBound(const byte *p1,ushort l1,const byte *p2,ushort l2,const IndexSeg *sg,unsigned nSegs,bool fStart);
 extern	bool	checkHyperRect(const byte *s1,ushort l1,const byte *s2,ushort l2,const IndexSeg *sg,unsigned nSegs,bool fStart);
 extern	ushort	calcMSegPrefix(const byte *s1,ushort l1,const byte *s2,ushort l2);
 
+/**
+ * union for different key types
+ */
 union IndexKeyV {
 	struct {const void *p; uint16_t l;}	ptr;
 	int64_t								i;
@@ -36,9 +70,12 @@ union IndexKeyV {
 	int	cmp(const IndexKeyV& rhs,TREE_KT) const;
 };
 
+/**
+ * search key descriptor (in-memory)
+ */
 struct SearchKey
 {
-	enum PIT_LOC {PLC_EMB, PLC_SPTR, PLC_ALLC};
+	enum PIT_LOC {PLC_EMB, PLC_SPTR, PLC_ALLC};			/**< data allocation */
 	IndexKeyV	v;
 	TREE_KT		type;
 	PIT_LOC		loc;
@@ -71,12 +108,19 @@ struct SearchKey
 	static	const ushort extKeyLen[KT_ALL];
 };
 
-#define	KT_VARKEY		0x0FFF
-#define	KT_VARDATA		0x8000
-#define	KT_MULTIDATA(a)	((a)|0x8000)
-#define	KT_VARMULTIDATA	0xFFFF
-#define	KT_VARMDPINREFS	0xFFFE
+/**
+ * index page format descriptor constants
+ */
+#define	KT_VARKEY		0x0FFF				/**< variable length key */
+#define	KT_VARDATA		0x8000				/**< variable length data */
+#define	KT_MULTIDATA(a)	((a)|0x8000)		/**< multiple data elements corresponding to 1 key */
+#define	KT_VARMULTIDATA	0xFFFF				/**< multiple data elements of variable length */
+#define	KT_VARMDPINREFS	0xFFFE				/**< multiple PIN references corresponding to one key */
 
+/**
+ * index page format descriptor
+ * can combine any key format with any data format
+ */
 struct IndexFormat
 {
 	uint32_t	dscr;
@@ -102,18 +146,27 @@ struct IndexFormat
 	bool		operator!=(const IndexFormat& rhs) const {return dscr!=rhs.dscr;}
 };
 
+/**
+ * index scan flags
+ */
 #define	SCAN_EXACT			0x8000
 #define	SCAN_BACKWARDS		0x4000
 #define	SCAN_PREFIX			0x2000
 #define	SCAN_EXCLUDE_START	0x1000
 #define	SCAN_EXCLUDE_END	0x0800
 
+/**
+ * index scan callback interface
+ */
 class IKeyCallback
 {
 public:
 	virtual	void		newKey() = 0;
 };
 
+/**
+ * index scan interface
+ */
 class TreeScan
 {
 public:
@@ -127,19 +180,30 @@ public:
 	virtual	void		destroy() = 0;
 };
 
-#define	TREE_MAX_DEPTH		12
-#define	TREE_N_HIST_BUCKETS	20
+#define	TREE_MAX_DEPTH		12				/**< maximum index B-tree depth, with typical page fanout sufficient to represent all pins in a store */
+#define	TREE_N_HIST_BUCKETS	20				/**< used for gathering index tree statistics */
 
 class	TreeFreeData;
 class	TreeFactory;
 class	StoreCtx;
 class	PBlock;
 
+/**
+ * page position in B-tree
+ */
 enum TREE_NODETYPE
 {
-	PITREE_LEAF, PITREE_INT, PITREE_LEAF2, PITREE_INT2, PITREE_1STLEV, TREE_NODETYPE_ALL
+	PITREE_LEAF,			/**< leaf page of main tree */
+	PITREE_INT,				/**< internal (non-leaf) page of main tree */
+	PITREE_LEAF2,			/**< leaf page of secondary tree (tree of values correponding to the same key) */
+	PITREE_INT2,			/**< internal page of secondary tree */
+	PITREE_1STLEV,			/**< 1 level page (parent of leaf page) of main tree */
+	TREE_NODETYPE_ALL
 };
 
+/**
+ * tree statistics
+ */
 struct CheckTreeReport
 {
 	ulong	depth;
@@ -149,25 +213,39 @@ struct CheckTreeReport
 	ulong	histogram[TREE_N_HIST_BUCKETS];
 };
 
-#define	TF_WITHDEL		0x0001
-#define	TF_SPLITINTX	0x0002
-#define	TF_NOPOST		0x0004
+/**
+ * index mode flags
+ */
+#define	TF_WITHDEL		0x0001			/**< index allows deletions */
+#define	TF_SPLITINTX	0x0002			/**< split operations don't require separate transactions */
+#define	TF_NOPOST		0x0004			/**< no tree repair operations to be posted */
 
+/**
+ * multi-key insert interface
+ */
 class IMultiKey
 {
 public:
 	virtual	RC	nextKey(const SearchKey *&nk,const void *&value,ushort& lValue,bool& fMulti) = 0;
 };
 
+/**
+ * tree descriptor re-connect interface
+ * used in asynchronous tree repair operations and in recovery
+ */
 class TreeConnect
 {
 public:
 	virtual	class Tree	*connect(uint32_t handle) = 0;
 };
 
+/**
+ * main index tree descriptor interface
+ */
 class Tree
 {
 public:
+	// index tree interface
 	virtual	TreeFactory *getFactory() const = 0;
 	virtual	IndexFormat	indexFormat() const = 0;
 	virtual	ulong		getMode() const;
@@ -183,6 +261,7 @@ public:
 	virtual TreeConnect	*persist(uint32_t& hndl) const;
 	virtual	void		destroy() = 0;
 public:
+	// index tree search and manipulation functions
 	bool				find(const SearchKey& key,void *buf,size_t &size);
 	RC					countValues(const SearchKey& key,uint64_t& nValues);
 	RC					insert(IMultiKey& mk);
@@ -198,7 +277,7 @@ public:
 protected:
 	StoreCtx			*const ctx;
 	Tree(StoreCtx *ct) : ctx(ct) {}
-	enum	TreeOp		{TO_READ,TO_INSERT,TO_UPDATE,TO_DELETE,TO_EDIT};
+	enum	TreeOp		{TO_READ,TO_INSERT,TO_UPDATE,TO_DELETE,TO_EDIT};		/**< used in recovery */
 	PBlock				*getPage(PageID pid,ulong stamp,TREE_NODETYPE type);
 	RC					insert(const SearchKey& key,const void *val,ushort lval,bool fMulti,struct TreeCtx& rtr,PageID& pid);
 	friend	class		TreePageMgr;
@@ -210,6 +289,10 @@ protected:
 	friend	struct		ECB;
 };
 
+/**
+ * tree factory interface
+ * serialization/deserialization of index information used in undo and recovery
+ */
 class TreeFactory
 {
 public:
@@ -219,6 +302,10 @@ public:
 	virtual	RC		createTree(const byte *params,byte lparams,Tree *&tree) = 0;
 };
 
+/**
+ * standard 1-root page index
+ * implements Tree interface
+ */
 class TreeStdRoot : public Tree
 {
 protected:
@@ -237,6 +324,12 @@ public:
 	virtual	void	advanceStamp(TREE_NODETYPE);
 };
 
+/**
+ * global index
+ * root page is stored in store control record
+ * access to this index is synchronized
+ * extends TreeStdRoot
+ */
 class TreeGlobalRoot : public TreeStdRoot, public TreeFactory
 {
 	mutable	RWLock		rwlock;
@@ -266,9 +359,12 @@ public:
 	RC					createTree(const byte *params,byte lparams,Tree *&tree);
 };
 
-#define	MAXFACTORIES			20
-#define	DEFAULT_PITREERQ_SIZE	256
+#define	MAXFACTORIES			20				/**< length of table of index tree factories */
+#define	DEFAULT_TREERQ_SIZE		256				/**< default size of posted tree repair request hash table */
 
+/**
+ * general B-tree index manager
+ */
 class TreeMgr
 {
 	class	StoreCtx	*const ctx;

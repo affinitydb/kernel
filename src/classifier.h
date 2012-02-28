@@ -1,11 +1,27 @@
 /**************************************************************************************
 
-Copyright © 2004-2010 VMware, Inc. All rights reserved.
+Copyright © 2004-2012 VMware, Inc. All rights reserved.
 
-Written by Mark Venguerov 2004 - 2010
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+     http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,  WITHOUT
+WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the
+License for the specific language governing permissions and limitations
+under the License.
+
+Written by Mark Venguerov 2004-2012
 
 **************************************************************************************/
 
+/**
+ * Classification control
+ * Implementation of IndexNav interface (see affinity.h)
+ */
 #ifndef _CLASSIFIER_H_
 #define _CLASSIFIER_H_
 
@@ -34,6 +50,9 @@ namespace AfyKernel
 
 enum ClassIdxOp {CI_INSERT, CI_UPDATE, CI_DELETE, CI_SDELETE, CI_UDELETE, CI_PURGE, CI_INSERTD};
 
+/**
+ * class descriptor
+ */
 class Class
 {
 	friend	class		Classifier;
@@ -78,6 +97,9 @@ public:
 	static	void		signal(void *mg) {}
 };
 
+/**
+ * index descriptor (associated with class family)
+ */
 class ClassIndex : public TreeStdRoot
 {
 	Class&			cls;
@@ -129,6 +151,10 @@ struct ClassRef
 	ClassRef(ClassID id,ushort np,ushort nots,unsigned flg) : cid(id),nIndexProps(np),notifications(nots),flags(flg) {}
 };
 
+/**
+ * reference to a class
+ * stored in memory tables, used in classification
+ */
 struct ClassRefT : public ClassRef
 {
 	const	ushort		nConds;
@@ -144,6 +170,9 @@ struct ClassRefT : public ClassRef
 	class ClassRefCmp	{public: __forceinline static int cmp(const ClassRef *cr,ClassID ci) {return cmp3(cr->cid,ci);}};
 };
 
+/**
+ * reference to a class for class creation/destruction
+ */
 struct ClassDscr : public ClassRef
 {
 	ClassDscr		*next;
@@ -154,6 +183,10 @@ struct ClassDscr : public ClassRef
 	ClassDscr(ClassID cid,ushort np,unsigned flags) : ClassRef(cid,np,0,flags),next(NULL),query(NULL),cidx(NULL),id(PIN::defPID),addr(PageAddr::invAddr) {}
 };
 
+/**
+ * an array of classes this PIN is a member of
+ * @see Classifier::classify()
+ */
 struct ClassResult
 {
 	MemAlloc			*const ma;
@@ -168,6 +201,9 @@ struct ClassResult
 	RC					insert(const ClassRef *cr,const ClassRef **cins=NULL);
 };
 
+/**
+ * node in a tree of classes used for classification
+ */
 struct PIdxNode {
 	PropertyID			pid;
 	PIdxNode			*up;
@@ -177,6 +213,9 @@ struct PIdxNode {
 	ulong				nClasses;
 };
 
+/**
+ * in-memory tree of classes for classification
+ */
 class ClassPropIndex
 {
 	friend	class	Classifier;
@@ -253,6 +292,9 @@ struct TxIndexElt
 	}
 };
 
+/**
+ * transaction cache of index operations
+ */
 class TxIndex : public SList<TxIndexElt,TxIndexElt>
 {
 	Session	*const	ses;
@@ -261,6 +303,9 @@ public:
 	RC	flush();
 };
 
+/**
+ * implementation of IndexNav interface
+ */
 class IndexNavImpl : public IndexNav, public IKeyCallback
 {
 	Session				*const	ses;
@@ -293,6 +338,9 @@ struct BuiltinURI
 
 typedef QMgr<Class,ClassID,ClassID,int,STORE_HEAP> ClassHash;
 
+/**
+ * Classification manager
+ */
 class Classifier : public ClassHash, public TreeFactory, public TreeConnect
 {
 	friend	class		Class;

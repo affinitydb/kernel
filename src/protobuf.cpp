@@ -1,8 +1,20 @@
 /**************************************************************************************
 
-Copyright © 2010 VMware, Inc. All rights reserved.
+Copyright © 2010-2012 VMware, Inc. All rights reserved.
 
-Written by Mark Venguerov 2010
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+     http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,  WITHOUT
+WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the
+License for the specific language governing permissions and limitations
+under the License.
+
+Written by Mark Venguerov 2010 - 2012
 
 **************************************************************************************/
 
@@ -299,7 +311,7 @@ private:
 		return (uint32_t)exp->serSize();
 	}
 	uint32_t length(const Stmt *stmt) {
-		if (rtt==RTT_SRCPINS) {SOutCtx out(ses,(ses->getItf()&ITF_SPARQL)!=0?SQ_SPARQL:SQ_SQL); return stmt->render(out)==RC_OK?(uint32_t)out.getCLen():0;}
+		if (rtt==RTT_SRCPINS) {SOutCtx out(ses,(ses->getItf()&ITF_SPARQL)!=0?SQ_SPARQL:SQ_PATHSQL); return stmt->render(out)==RC_OK?(uint32_t)out.getCLen():0;}
 		// properties and identities ???
 		return (uint32_t)stmt->serSize();
 	}
@@ -456,7 +468,7 @@ public:
 								if ((copied=(byte*)ses->malloc(lCopied))==NULL) return RC_NORESOURCES;
 								p=((Stmt*)os.pv->stmt)->serialize(copied); assert(copied+lCopied==p);
 							} else {
-								SOutCtx out(ses,(ses->getItf()&ITF_SPARQL)!=0?SQ_SPARQL:SQ_SQL); RC rc; size_t lC;
+								SOutCtx out(ses,(ses->getItf()&ITF_SPARQL)!=0?SQ_SPARQL:SQ_PATHSQL); RC rc; size_t lC;
 								if ((rc=((Stmt*)os.pv->stmt)->render(out))!=RC_OK) return rc;
 								copied=out.result(lC); lCopied=lC; tg=tags[VT_STRING];
 							}
@@ -1077,7 +1089,7 @@ protected:
 						if (is.idx!=is.pv->length) return RC_CORRUPTED;
 						break;
 					case ST_STMT:
-						try {SInCtx qctx(ses,is.stmt->str,is.stmt->lstr,is.stmt->uids,is.stmt->nUids,SQ_SQL,ma); stmt=NULL; stmt=qctx.parseStmt();}
+						try {SInCtx qctx(ses,is.stmt->str,is.stmt->lstr,is.stmt->uids,is.stmt->nUids,SQ_PATHSQL,ma); stmt=NULL; stmt=qctx.parseStmt();}
 						catch (SynErr) {if (stmt!=NULL) stmt->destroy(); if (sidx==1) releaseMem(); return RC_SYNTAX;}
 						catch (RC rc) {if (stmt!=NULL) stmt->destroy(); if (sidx==1) releaseMem(); return rc;}
 						// mark and release memory (save in StmtIn)

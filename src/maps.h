@@ -1,11 +1,26 @@
 /**************************************************************************************
 
-Copyright © 2004-2010 VMware, Inc. All rights reserved.
+Copyright © 2004-2012 VMware, Inc. All rights reserved.
 
-Written by Mark Venguerov 2004 - 2010
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+     http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,  WITHOUT
+WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the
+License for the specific language governing permissions and limitations
+under the License.
+
+Written by Mark Venguerov 2004-2012
 
 **************************************************************************************/
 
+/**
+ * global maps of URI and Identities control structures
+ */
 #ifndef _MAPS_H_
 #define _MAPS_H_
 
@@ -26,18 +41,28 @@ using namespace AfyDB;
 namespace AfyKernel
 {
 
-#define	UID_ID		0x01
-#define	UID_AID		0x02
-#define	UID_IRI		0x04
-#define	UID_DQU		0x08
-#define	UID_SID		0x10
+/**
+ * URI flags
+ */
+#define	UID_ID		0x01		/**< URI is PathSQL identifier, no escaping is required */
+#define	UID_AID		0x02		/**< URI contains only ASCII characters */
+#define	UID_IRI		0x04		/**< URI contains characters other than letters and digits */
+#define	UID_DQU		0x08		/**< URI contains double quotes */
+#define	UID_SID		0x10		/**< URI contains escaped characters */
 
+/**
+ * URI structure info for PathSQL rendering
+ */
 struct URIInfo
 {
 	byte			flags;
 	byte			lSuffix;
 };
 
+/**
+ * URI descriptor for in-memory caching
+ * extends CachedObject class
+ */
 class URI : public CachedObject
 {
 	URIInfo			info;
@@ -49,6 +74,10 @@ public:
 	RC				setAddr(const PageAddr& ad);
 };
 
+/**
+ * URI cache and map manager
+ * extends NamedObjMgr class
+ */
 class URIMgr : public NamedObjMgr
 {
 public:
@@ -57,6 +86,10 @@ public:
 	URI				*insert(const char *URI);
 };
 
+/**
+ * Identity descriptor for in-memory caching
+ * extends CachedObject class
+ */
 class Identity : public CachedObject
 {
 	struct IdentityInfo {
@@ -84,6 +117,10 @@ public:
 	friend	class	IdentityMgr;
 };
 
+/**
+ * Identity cache and map manager
+ * extends NamedObjMgr class
+ */
 class IdentityMgr : public NamedObjMgr
 {
 public:

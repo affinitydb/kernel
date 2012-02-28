@@ -1,10 +1,27 @@
 /**************************************************************************************
 
-Copyright © 2004-2010 VMware, Inc. All rights reserved.
+Copyright © 2004-2012 VMware, Inc. All rights reserved.
 
-Written by Mark Venguerov 2004 - 2010
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+     http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,  WITHOUT
+WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the
+License for the specific language governing permissions and limitations
+under the License.
+
+Written by Mark Venguerov 2004-2012
 
 **************************************************************************************/
+
+/**
+ * Implementation of IStream and INav interfaces
+ * BigMgr - synchronisation for 'big' collections and streams
+ */
 
 #ifndef _BLOB_H_
 #define _BLOB_H_
@@ -19,6 +36,9 @@ using namespace AfyDB;
 namespace AfyKernel
 {
 
+/**
+ * IStream implementation
+ */
 class StreamX : public IStream, public ObjDealloc
 {
 protected:
@@ -46,6 +66,9 @@ public:
 	void				destroyObj();
 };
 
+/**
+ * IStream combined with 'edit' operations
+ */
 class StreamEdit : public IStream
 {
 	IStream	*const		stream;
@@ -71,6 +94,9 @@ public:
 	void				destroy();
 };
 
+/**
+ * IStream implementation as memory buffer
+ */
 class StreamBuf : public IStream
 {
 	const	ValueType	type;
@@ -108,6 +134,9 @@ struct ElementDataHdr {
 	// uint32_t [prev][next]
 };
 
+/**
+ * Collection position descriptor
+ */
 struct ECB : public TreeCtx
 {
 	StoreCtx								*const ctx;
@@ -131,6 +160,9 @@ struct ECB : public TreeCtx
 	void	release() {if (!pb.isNull()) {cPage=pb->getPageID(); pb.release();}}
 };
 
+/**
+ * collection modification
+ */
 class Collection : public Tree
 {
 	const	ulong					maxPages;
@@ -169,6 +201,9 @@ public:
 	const static IndexFormat collFormat;
 };
 
+/**
+ * collection navigation (read-only)
+ */
 class Navigator : public INav, public Tree, public ObjDealloc
 {
 	const	PageAddr	heapAddr;
@@ -209,6 +244,9 @@ public:
 	friend	class		Collection;
 };
 
+/**
+ * big collection and BLOB synchronization
+ */
 #define	DEFAULT_BLOBREADTAB_SIZE	64
 #define	DEFAULT_BLOBREAD_BLOCK		256
 

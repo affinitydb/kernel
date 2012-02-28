@@ -1,11 +1,26 @@
 /**************************************************************************************
 
-Copyright © 2004-2010 VMware, Inc. All rights reserved.
+Copyright © 2004-2012 VMware, Inc. All rights reserved.
 
-Written by Mark Venguerov 2004 - 2010
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+     http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,  WITHOUT
+WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the
+License for the specific language governing permissions and limitations
+under the License.
+
+Written by Mark Venguerov 2004-2012
 
 **************************************************************************************/
 
+/**
+ * PIN loading and modification routines
+ */
 #ifndef _QUERYPRC_H_
 #define _QUERYPRC_H_
 
@@ -21,9 +36,9 @@ namespace AfyKernel
 /**
  * getBody() flags
  */
-#define	GB_DELETED			0x0001
-#define	GB_REREAD			0x0002
-#define	GB_FORWARD			0x0004
+#define	GB_DELETED			0x0001		/**< get soft-deleted PIN */
+#define	GB_REREAD			0x0002		/**< re-read page, don't re-lock */
+#define	GB_FORWARD			0x0004		/**< don't resolve FORWARD records */
 
 /**
  * PIN skew calculation constants
@@ -31,10 +46,13 @@ namespace AfyKernel
 #define	SKEW_PAGE_PCT			10
 #define	SKEW_FACTOR				2
 
-#define	ARRAY_THRESHOLD			256
-#define STRING_THRESHOLD		64
+#define	ARRAY_THRESHOLD			256		/**< threshold of 'big' collections */
+#define STRING_THRESHOLD		64		/**< string length threshold for SSV data */
 #define	QUERY_ARRAY_THRESHOLD	10
 
+/**
+ * passed to FT indexer
+ */
 struct ChangeInfo
 {
 	PID				id;
@@ -45,6 +63,9 @@ struct ChangeInfo
 	ElementID		eid;
 };
 
+/**
+ * bit flags used in modifyPIN()
+ */
 #define	PM_PROCESSED	0x00000001
 #define PM_COLLECTION	0x00000002
 #define	PM_FTINDEXABLE	0x00000004
@@ -72,6 +93,9 @@ struct ChangeInfo
 #define	PM_CALCULATED	0x01000000
 #define	PM_GENEIDS		0x02000000
 
+/**
+ * property information used in modifyPIN()
+ */
 struct PropInfo
 {
 	PropertyID					propID;
@@ -88,6 +112,9 @@ struct PropInfo
 	class PropInfoCmp {public: __forceinline static int	cmp(const PropInfo *pi,PropertyID pid) {return cmp3(pi->propID,pid);}};
 };
 
+/**
+ * individual modification information in modifyPIN()
+ */
 struct ModInfo
 {
 	ModInfo			*next;
@@ -107,6 +134,9 @@ struct ModInfo
 class Cursor;
 class Stmt;
 
+/**
+ * candidate SSV descriptor
+ */
 struct CandidateSSV
 {
 	PropertyID		pid;
@@ -116,6 +146,9 @@ struct CandidateSSV
 	size_t			dlen;
 };
 
+/**
+ * dynamic array of candidate SSVs
+ */
 struct CandidateSSVs
 {
 	CandidateSSV	*candidates;
@@ -144,6 +177,9 @@ struct RefTrace
 
 class Cursor;
 
+/**
+ * PIN loading and modifiaction routines
+ */
 class QueryPrc
 {
 	RC		loadProps(PINEx *pcb,unsigned mode,const PropertyID *pids=NULL,unsigned nPids=0);

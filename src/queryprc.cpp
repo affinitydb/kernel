@@ -1,8 +1,20 @@
 /**************************************************************************************
 
-Copyright © 2004-2010 VMware, Inc. All rights reserved.
+Copyright © 2004-2012 VMware, Inc. All rights reserved.
 
-Written by Mark Venguerov 2004 - 2010
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+     http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,  WITHOUT
+WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the
+License for the specific language governing permissions and limitations
+under the License.
+
+Written by Mark Venguerov 2004-2012
 
 **************************************************************************************/
 
@@ -32,7 +44,7 @@ RC SessionX::execute(const char *str,size_t lstr,char **result,const URIID *ids,
 	try {
 		assert(ses==Session::getSession()); if (ce!=NULL) {memset(ce,0,sizeof(CompilationError)); ce->msg="";}
 		if (str==NULL||lstr==0) return RC_INVPARAM; if (ses->getStore()->inShutdown()) return RC_SHUTDOWN;
-		SInCtx in(ses,str,lstr,ids,nids,(ses->itf&ITF_SPARQL)!=0?SQ_SPARQL:SQ_SQL); RC rc=RC_OK;
+		SInCtx in(ses,str,lstr,ids,nids,(ses->itf&ITF_SPARQL)!=0?SQ_SPARQL:SQ_PATHSQL); RC rc=RC_OK;
 		try {in.exec(params,nParams,result,nProcessed,nProcess,nSkip); in.checkEnd(true);}
 		catch (SynErr sy) {in.getErrorInfo(RC_SYNTAX,sy,ce); rc=RC_SYNTAX;}
 		catch (RC rc2) {in.getErrorInfo(rc=rc2,SY_ALL,ce);}

@@ -1,43 +1,80 @@
 /**************************************************************************************
 
-Copyright © 2004-2010 VMware, Inc. All rights reserved.
+Copyright © 2004-2012 VMware, Inc. All rights reserved.
 
-Written by Mark Venguerov 2004 - 2010
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+     http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,  WITHOUT
+WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the
+License for the specific language governing permissions and limitations
+under the License.
+
+Written by Mark Venguerov 2004-2012
 
 **************************************************************************************/
 
+/**
+ * recovery log manager structures
+ */
 #ifndef _LOGMGR_H_
 #define _LOGMGR_H_
 
 #include "txmgr.h"
 #include "buffer.h"
 
-#define	MINSEGSIZE			0x10000
-#define	MAXLOGRECSIZE		0x100000ul		// 1Mb
-#define	INVALIDLOGFILE		(~0ul)
-#define	LOGFILETHRESHOLD	0.75			// time to allocate new log file(s)
-#define CHECKPOINTTHRESHOLD	0x1000			// records between checkpoints
-#define	MAXPREVLOGSEGS		6				// max number of previous log segments open simultaneously
-#define	LOGRECLENMASK		0x1FFFFFFul
-#define	LOGRECFLAGSSHIFT	25
+#define	MINSEGSIZE			0x10000			/**< minimum size of log segment */
+#define	MAXLOGRECSIZE		0x100000ul		/**< maximum size of log record - 1Mb */
+#define	INVALIDLOGFILE		(~0ul)			/**< invalid log file descriptor */
+#define	LOGFILETHRESHOLD	0.75			/**< time to allocate new log file(s) */
+#define CHECKPOINTTHRESHOLD	0x1000			/**< records between checkpoints */
+#define	MAXPREVLOGSEGS		6				/**< max number of previous log segments open simultaneously */
+#define	LOGRECLENMASK		0x1FFFFFFul		/**< mask to extract log record length */
+#define	LOGRECFLAGSSHIFT	25				/**< shift to extract log record flags */
 
 namespace AfyKernel
 {
 
-enum LRType {LR_UPDATE=1, LR_CREATE, LR_BEGIN, LR_COMMIT, LR_ABORT, LR_COMPENSATE, LR_RESTORE, 
-			LR_CHECKPOINT, LR_FLUSH, LR_SHUTDOWN, LR_SESSION, LR_LUNDO, LR_COMPENSATE2, 
-			LR_DISCARD, LR_COMPENSATE3, LR_ALL};
+/**
+ * log record types
+ */
+enum LRType 
+{
+	LR_UPDATE=1,							/**< standard page update record */
+	LR_CREATE,								/**< page is created, no previous records for this page */
+	LR_BEGIN,								/**< start transaction */
+	LR_COMMIT,								/**< transaction committed */
+	LR_ABORT,								/**< transaction aborted */
+	LR_COMPENSATE,							/**< undo compensation record for LR_UPDATE */
+	LR_RESTORE,								/**< transaction restore record */
+	LR_CHECKPOINT,							/**< checkpoint record */
+	LR_FLUSH,								/**< page was flushed to disk */
+	LR_SHUTDOWN,							/**< normal shutdown record */
+	LR_SESSION,								/**< session start/terminate record for auditing, not used yet */
+	LR_LUNDO,								/**< logical undo record (undo for a group of page-level records) */
+	LR_COMPENSATE2,							/**< undo compensation record for LR_CREATE */
+	LR_DISCARD,								/**< page discarded record */
+	LR_COMPENSATE3,							/**< undo compensation record for LR_DISCARD */
+	LR_ALL
+};
 
-#define	LRC_LUNDO	0x01
+#define	LRC_LUNDO	0x01					/**< logical undo flag for LR_UPDATE and LR_CREATE records */
 
+/**
+ * log record descriptor
+ */
 struct LogRec
 {
-	uint32_t	len1;						// length of redo/undo data
-	uint32_t	info;						// type, PGID & extra info
-	TXID		txid;						// transaction ID
-	LSN			undoNext;					// next log record in undo chain
-	PageID		pageID;						// page ID
-	uint8_t		hmac[HMAC_SIZE];			// HMAC for this record
+	uint32_t	len1;						/**< length of redo/undo data */
+	uint32_t	info;						/**< type, PGID & extra info */
+	TXID		txid;						/**< transaction ID */
+	LSN			undoNext;					/**< next log record in undo chain */
+	PageID		pageID;						/**< page ID */
+	uint8_t		hmac[HMAC_SIZE];			/**< HMAC for this record */
 
 	LRType		getType() const {return (LRType)(info&0x0F);}
 	ulong		getExtra() const {return info>>4;}
@@ -47,6 +84,9 @@ struct LogRec
 	void		setLength(uint32_t l,uint32_t flags) {len1=flags<<LOGRECFLAGSSHIFT|l&LOGRECLENMASK;}
 };
 
+/**
+ * previous log segment descriptor
+ */
 struct PrevLogSeg
 {
 	ulong	logFile;
@@ -54,6 +94,13 @@ struct PrevLogSeg
 	long	nReads;
 };
 
+/**
+ * main log manager
+ * synchronises log segment read/write operatoins
+ * controls checkpoint creation, allocation/deallocation of log segments
+ * performs (sub)transaction rollbacks
+ * performs recovery
+ */
 class LogMgr
 {
 	class	StoreCtx	*const ctx;
@@ -153,6 +200,10 @@ private:
 	friend	class		LogReadCtx;
 };
 
+/**
+ * log segment read context
+ * used to read log records from log files in rollback and recovery
+ */
 class LogReadCtx
 {
 	LogMgr	*const		logMgr;

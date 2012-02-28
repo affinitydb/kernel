@@ -1,11 +1,27 @@
 /**************************************************************************************
 
-Copyright © 2004-2010 VMware, Inc. All rights reserved.
+Copyright © 2004-2012 VMware, Inc. All rights reserved.
 
-Written by Mark Venguerov 2004 - 2010
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+     http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,  WITHOUT
+WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the
+License for the specific language governing permissions and limitations
+under the License.
+
+Written by Mark Venguerov 2004-2012
 
 **************************************************************************************/
 
+/**
+ * B-tree index page structure
+ * index tree page manipulation routines
+ */
 #ifndef _PGTREE_H_
 #define _PGTREE_H_
 
@@ -18,16 +34,39 @@ namespace AfyKernel
 
 #define	XSUBPAGES		20
 
+/**
+ * index tree operation format
+ */
 #define	TRO_SHIFT		4
 #define	TRO_MASK		0x000F
 #define	TRO_EXT_DATA	0x8000
 
-enum TREE_OP {TRO_INSERT, TRO_UPDATE, TRO_DELETE, TRO_EDIT, TRO_INIT, TRO_SPLIT, TRO_MERGE,
-				TRO_SPAWN, TRO_ABSORB, TRO_ADDROOT, TRO_DELROOT, TRO_REPLACE, TRO_DROP,
-				TRO_MULTIINS, TRO_MULTIDEL, TRO_MULTINIT, TRO_ALL};
+/**
+ * index tree operations
+ */
+enum TREE_OP
+{
+	TRO_INSERT,			/**< insert new key */
+	TRO_UPDATE,			/**< update existing key (including insertion of new data for existing key) */
+	TRO_DELETE,			/**< delete key or data element */
+	TRO_EDIT,			/**< edit data */
+	TRO_INIT,			/**< initilize page */
+	TRO_SPLIT,			/**< split page */
+	TRO_MERGE,			/**< merge 2 pages */
+	TRO_SPAWN,			/**< spawn secondary sub-tree */
+	TRO_ABSORB,			/**< absorb secondary sub-tree */
+	TRO_ADDROOT,		/**< add new root page (increases tree height) */
+	TRO_DELROOT,		/**< delete root page (decreases tree height) */
+	TRO_REPLACE,		/**< replace data element with new one */
+	TRO_DROP,			/**< drop page, e.g. when index is being deleted */
+	TRO_MULTIINS,		/**< insert multiple data elements for one key */
+	TRO_MULTIDEL,		/**< delete multiple data elements for one key */
+	TRO_MULTINIT,		/**< initialize page with multiple elements */
+	TRO_ALL
+};
 
-#define	SPAWN_THR			0.8
-#define	SPAWN_N_THR			4
+#define	SPAWN_THR			0.8		/**< spawn threshold */
+#define	SPAWN_N_THR			4		/**< spawn number of keys threshold */
 
 #define	PTX_NOPRNTREL		0x0001
 #define	PTX_NOLEAFREL		0x0002
@@ -39,6 +78,9 @@ enum TREE_OP {TRO_INSERT, TRO_UPDATE, TRO_DELETE, TRO_EDIT, TRO_INIT, TRO_SPLIT,
 
 #define	L_SHT				sizeof(uint16_t)
 
+/**
+ * index tree operation context
+ */
 struct TreeCtx
 {
 	Tree					*tree;
@@ -71,12 +113,21 @@ struct TreeCtx
 	RC						postPageOp(const SearchKey& key,PageID pageID,bool fDel=false) const;
 };
 
+/**
+ * free data callback interface
+ * used when a leaf tree page is dropped
+ */
 class TreeFreeData
 {
 public:
 	virtual	RC	freeData(const byte *data,StoreCtx*) = 0;
 };
 
+/**
+ * tree page manager
+ * extends TxPage
+ * defines tree page format and manipulation routines
+ */
 class TreePageMgr : public TxPage
 {
 	const	size_t	xSize;
@@ -90,6 +141,9 @@ public:
 		PagePtr		ptr;
 		PageID		pageID;
 	};
+	/**
+	 * tree page header descriptor
+	 */
 	struct TreePageInfo {
 		IndexFormat	fmt;
 		uint16_t	nEntries;
@@ -124,17 +178,26 @@ public:
 			assert(!fmt.isSeq()); return fmt.isFixedLenKey()?lData:fmt.isFixedLenData()?key.v.ptr.l-prefLen:key.v.ptr.l-prefLen+lData;
 		}
 	};
+	/**
+	 * tree page modification information
+	 */
 	struct TreePageModify {
 		PagePtr		newData;
 		PagePtr		oldData;
 		uint16_t	newPrefSize;
 	};
+	/**
+	 * tree page initializatin information
+	 */
 	struct TreePageInit {
 		IndexFormat		fmt;
 		uint32_t		level;
 		PageID			left;
 		PageID			right;
 	};
+	/**
+	 * tree page modification - multiple data elements
+	 */
 	struct TreePageMulti {
 		IndexFormat		fmt;
 		PageID			sibling;
@@ -142,6 +205,9 @@ public:
 		uint16_t		fLastR	:1;
 		uint16_t		lData;
 	};
+	/**
+	 * tree page split information
+	 */
 	struct TreePageSplit {
 		PageID			newSibling;
 		uint16_t		nEntriesLeft;
@@ -170,6 +236,9 @@ public:
 		PageID			anchor;
 		PageID			leftMost;
 	};
+	/**
+	 * structure of index tree page
+	 */
 	struct TreePage {
 		TxPageHeader	hdr;
 		TreePageInfo	info;

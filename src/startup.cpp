@@ -1,8 +1,20 @@
 /**************************************************************************************
 
-Copyright © 2004-2010 VMware, Inc. All rights reserved.
+Copyright © 2004-2012 VMware, Inc. All rights reserved.
 
-Written by Mark Venguerov 2004 - 2010
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+     http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,  WITHOUT
+WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the
+License for the specific language governing permissions and limitations
+under the License.
+
+Written by Mark Venguerov 2004-2012
 
 **************************************************************************************/
 
@@ -41,7 +53,7 @@ RC manageStores(const char *cmd,size_t lcmd,AfyDBCtx &store,IMapDir *id,const St
 		store=NULL; if (cmd==NULL || lcmd==0) return RC_INVPARAM;
 		if (ce!=NULL) {memset(ce,0,sizeof(CompilationError)); ce->msg="";}
 		RequestQueue::startThreads(); initReport(); SInCtx::initKW();
-		SInCtx in(NULL,cmd,lcmd,NULL,0,SQ_SQL,NULL);		//??? ma!!!
+		SInCtx in(NULL,cmd,lcmd,NULL,0,SQ_PATHSQL,NULL);		//??? ma!!!
 		try {in.parseManage(id,store,sp); return RC_OK;}
 		catch (SynErr sy) {in.getErrorInfo(RC_SYNTAX,sy,ce); return RC_SYNTAX;}
 		catch (RC rc) {in.getErrorInfo(rc,SY_ALL,ce); return rc;}

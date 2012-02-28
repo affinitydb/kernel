@@ -1,10 +1,27 @@
 /**************************************************************************************
 
-Copyright © 2008-2010 VMware, Inc. All rights reserved.
+Copyright © 2008-2012 VMware, Inc. All rights reserved.
 
-Written by Mark Venguerov 2008 - 2010
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+     http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,  WITHOUT
+WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the
+License for the specific language governing permissions and limitations
+under the License.
+
+Written by Mark Venguerov 2008 - 2012
 
 **************************************************************************************/
+
+/**
+ * compressed PIN reference format descriptor
+ */
+
 #ifndef _PINREF_H_
 #define _PINREF_H_
 
@@ -18,6 +35,9 @@ namespace AfyKernel
 
 #define	XPINREFSIZE	64
 
+/**
+ * field flags
+ */
 #define PR_PID2		0x0001
 #define	PR_ADDR		0x0002
 #define	PR_ADDR2	0x0004
@@ -26,6 +46,10 @@ namespace AfyKernel
 #define	PR_COUNT	0x0020
 #define	PR_FCOLL	0x0040
 
+/**
+ * decompressed representation
+ * used to assemble data for compression and to extract data after decomression
+ */
 struct PINRef
 {
 	const ushort	stID;
@@ -51,6 +75,9 @@ struct PINRef
 	static	int			cmpPIDs(const byte *p1,unsigned l1,const byte *p2,unsigned l2);
 };
 
+/**
+ * compressed reference representaion
+ */
 struct EncPINRef
 {
 	mutable uint16_t	flags;

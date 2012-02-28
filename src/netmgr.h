@@ -1,11 +1,27 @@
 /**************************************************************************************
 
-Copyright © 2004-2010 VMware, Inc. All rights reserved.
+Copyright © 2004-2012 VMware, Inc. All rights reserved.
 
-Written by Mark Venguerov 2004 - 2010
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+     http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,  WITHOUT
+WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the
+License for the specific language governing permissions and limitations
+under the License.
+
+Written by Mark Venguerov 2004-2012
 
 **************************************************************************************/
 
+/**
+ * remote PIN reading and caching
+ * implements a cache of remote PINs (i.e. content created in other stores) similar to browser caches
+ */
 #ifndef _NETMGR_H_
 #define _NETMGR_H_
 
@@ -20,13 +36,16 @@ using namespace AfyDB;
 
 namespace AfyKernel
 {
-#define	RPIN_NOFETCH			0x8000
+#define	RPIN_NOFETCH			0x8000						/**< don't re-fetch PIN flag; prevents recursion in commitPINs() */
 
-#define	DEFAULT_RPINHASH_SIZE	0x200
-#define	DEFAULT_CACHED_RPINS	0x1000
-#define	DEFAULT_EXPIRATION		TIMESTAMP(3600000000ul)		// 1 hour
+#define	DEFAULT_RPINHASH_SIZE	0x200						/**< default remote and replicated PIN hash size */
+#define	DEFAULT_CACHED_RPINS	0x1000						/**< default number of cached remote and repliacted PIN page addresses */
+#define	DEFAULT_EXPIRATION		TIMESTAMP(3600000000ul)		/**< default cache content expiration interval (1 hour) */
 #define	RPIN_BLOCK				0x1000
 
+/**
+ * cached remote or replicated PIN in-memory descriptor
+ */
 class RPIN
 {
 	friend class	NetMgr;
@@ -55,6 +74,12 @@ public:
 
 typedef QMgr<RPIN,PID,const PID&,int,STORE_HEAP> RPINHashTab;
 
+/**
+ * remote and replicated PIN manager
+ * implements cache of PIN page addresses
+ * synchronises access to remote PINs
+ * controls cached content expiration
+ */
 class NetMgr : public RPINHashTab, public PageMgr
 {
 	friend	class		RPIN;

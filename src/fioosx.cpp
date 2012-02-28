@@ -1,8 +1,20 @@
 /**************************************************************************************
 
-Copyright © 2004-2010 VMware, Inc. All rights reserved.
+Copyright © 2004-2012 VMware, Inc. All rights reserved.
 
-Written by Mark Venguerov, Andrew Skowronski, Michael Andronov 2004 - 2010
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+     http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,  WITHOUT
+WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the
+License for the specific language governing permissions and limitations
+under the License.
+
+Written by Mark Venguerov, Andrew Skowronski, Michael Andronov 2004 - 2012
 
 **************************************************************************************/
 
@@ -272,8 +284,27 @@ void FileIOOSX::init(void (*cb)(iodesc*))
 
 inline off64_t getFileSz(int fd)
 {
-	struct stat fileStats;		
-	return fstat(fd,&fileStats)==0?fileStats.st_size:0;
+	struct stat fileStats;
+	for(;;){
+		int lrc = fstat(fd,&fileStats);
+		if ( lrc == 0 )
+			return fileStats.st_size;
+		else{
+			int ler = errno;
+			switch(ler){
+				case EIO:
+				report(MSG_DEBUG, "!!!getFileSz()::EIO: %d  fd: %d \n", errno, fd);
+				::sched_yield();
+				break;
+				
+				case EBADF:
+				case EFAULT:
+				default:
+				report(MSG_DEBUG, "!!!getFileSz()::ERR: %d  fd: %d \n", errno, fd);
+				return 0;
+			}
+	    }
+    }
 }
 
 RC FileIOOSX::open(FileID& fid,const char *fname,const char *dir,ulong flags)
@@ -491,32 +522,36 @@ RC FileIOOSX::aio_listIO( int mode, aiocb64 **adescs, int nent){
 	} SyncOpState;
 	
 	SyncOpState state;
+	struct timespec tout;
 		
     for(state = OP_SUBMIT ; ;){
 		switch (state){
 			case OP_SUBMIT:
 				le = (adescs[i]->aio_lio_opcode==LIO_WRITE?aio_write(adescs[i]):aio_read(adescs[i]));
 				if(!le) { state = SUSPEND; }
-				else    { state = AIO_RW_ERROR; }
+				else if ( errno != EAGAIN) { state = AIO_RW_ERROR; } 
 			break;
 			case SUSPEND:
-			    le = aio_suspend(adescs, nent, NULL);
+			    tout.tv_sec = 5; tout.tv_nsec = 0;
+			    le = aio_suspend(adescs, nent, &tout);
 				if (0 == le ){ state = AIO_AFTER_SUSPEND; break; }
 				
 				if ((EAGAIN == errno) || ( EINTR == errno)) break;  // to see those here is normal... just call aio_suspend() again            
                 report(MSG_DEBUG, "!!!aio_susend()::erno: %d  nent: %d mode: %d\n", errno, nent, mode);
+                state = OP_SUBMIT;
 			break; 
 			case AIO_AFTER_SUSPEND:
 			    le = aio_error(adescs[i]);
-				if(le == 0){ state = CLEAN; break; }
-			    if(le > 0){
+				if(le > 0){
 					int e = errno;
                     switch (e){
                         case EINPROGRESS: 
                             //The request not completed yet...
+                            report(MSG_DEBUG,"!AFTER_SUSPEND::SUSPEND!\n");
                             state = SUSPEND;
                             break;
                         case EAGAIN:
+                            report(MSG_DEBUG,"!AFTER_SUSPEND::EAGAIN!\n");
                             state = OP_SUBMIT;                            
                             break;
                         case ENOSYS:
@@ -526,9 +561,10 @@ RC FileIOOSX::aio_listIO( int mode, aiocb64 **adescs, int nent){
                             ::sched_yield();
                             break;
                     }
-				}else{
-					//???
 				}
+				// le == 0  -- successul return;  clean;
+				// le < 0   -- error, so still clean... 
+				state = CLEAN; break;
 			break;
 			case CLEAN:
 			    le = aio_error(adescs[i]);
@@ -539,17 +575,20 @@ RC FileIOOSX::aio_listIO( int mode, aiocb64 **adescs, int nent){
 			break;
 			case AIO_RW_ERROR:
 			    le = aio_error(adescs[i]);
-			    if ( 0 == le) { state = SUSPEND; break; } // aio done, proceed further
-				if ( EINPROGRESS == le) break;            // request is in progress, just wait?
+			    if ( 0 == le) { 
+				     state = SUSPEND; break; 
+				} // aio done, proceed further
+				if ( EINPROGRESS == le){
+					break;            // request is in progress, just wait?
+				} 
 				if ( EAGAIN == le){
-				    //aio_return(adescs[i]);   //??? shousd I do it?
+					//aio_return(adescs[i]);   //??? shousd I do it?
 				    state = OP_SUBMIT;
 				    break;	
 				}
 				if(-1 == le){
 					switch (errno){
 						case EINVAL :
-						   //  report(MSG_DEBUG, "EINVAL.cn := %d  le := %d \n", FileIOOSX::lioAQueue.aioCnt.cn, le);
 						case EAGAIN :
 							//aio_return(adescs[i]);   //??? shousd I do it?
 						    state = OP_SUBMIT;
@@ -597,9 +636,7 @@ void FileIOOSX::deleteLogFiles(const char *mask,ulong maxFile,const char *lDir,b
 		}
 		closedir(dirP);
 	}else{
-#ifdef _DEBUG
         report(MSG_DEBUG, "Error ::: FileIOOSX::deleteLogFiles fails to open dir!\n");
-#endif    
     }
 }
 };

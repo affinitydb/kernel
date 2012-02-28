@@ -1,11 +1,26 @@
 /**************************************************************************************
 
-Copyright © 2004-2010 VMware, Inc. All rights reserved.
+Copyright © 2004-2012 VMware, Inc. All rights reserved.
 
-Written by Mark Venguerov 2004 - 2010
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+     http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,  WITHOUT
+WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the
+License for the specific language governing permissions and limitations
+under the License.
+
+Written by Mark Venguerov 2004-2012
 
 **************************************************************************************/
 
+/**
+ * query builder data structures
+ */
 #ifndef _QBUILD_H_
 #define _QBUILD_H_
 
@@ -41,6 +56,9 @@ namespace AfyKernel
 #define	MODE_NO_RINDEX		0x00002000
 #define	MODE_CASCADE		0x00001000
 
+/**
+ * internal Value::flags flags
+ */
 #define	VF_SSV				0x04
 #define	VF_PREFIX			0x08
 #define	VF_REF				0x10
@@ -58,6 +76,9 @@ class	Expr;
 
 #define	ORDER_EXPR	0x8000
 
+/**
+ * internal descriptor for ordering segment
+ */
 struct OrderSegQ
 {
 	union {
@@ -71,6 +92,9 @@ struct OrderSegQ
 	RC				conv(const OrderSeg& sg,MemAlloc *ma);
 };
 
+/**
+ * dynamic array of property IDs
+ */
 struct PropList
 {
 	PropertyID		*props;
@@ -78,6 +102,9 @@ struct PropList
 	mutable	bool	fFree;
 };
 
+/**
+ * property ID holder for multiple variables
+ */
 struct PropListP
 {
 	PropList	*pls;
@@ -91,6 +118,9 @@ struct PropListP
 	RC			checkVar(uint16_t var);
 };
 
+/**
+ * dynamic array of values
+ */
 struct ValueV
 {
 	const Value	*vals;
@@ -101,6 +131,9 @@ struct ValueV
 	ValueV(const Value *pv,unsigned nv,bool fF=false) : vals(pv),nValues((uint16_t)nv),fFree(fF) {}
 };
 
+/**
+ * types of context variables
+ */
 enum QCtxVT
 {
 	QV_PARAMS, QV_CORRELATED, QV_AGGS, QV_GROUP, QV_ALL
@@ -110,6 +143,10 @@ enum QCtxVT
 #define	VAR_AGGS	((QV_AGGS+1)<<13)
 #define	VAR_GROUP	((QV_GROUP+1)<<13)
 
+/**
+ * query evaluation context
+ * shared between query operators
+ */
 class	QCtx
 {
 	int		refc;
@@ -124,7 +161,7 @@ public:
 	friend	class	Stmt;
 };
 
-// Filter, sort, etc. operators
+// used in filter, sort, etc. operators
 struct QueryWithParams
 {
 	Stmt		*qry;
@@ -132,6 +169,9 @@ struct QueryWithParams
 	Value		*params;
 };
 
+/**
+ * query builder context
+ */
 class QBuildCtx
 {
 	Session			*const	ses;

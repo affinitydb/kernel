@@ -1,11 +1,26 @@
 /**************************************************************************************
 
-Copyright © 2004-2010 VMware, Inc. All rights reserved.
+Copyright © 2004-2012 VMware, Inc. All rights reserved.
 
-Written by Mark Venguerov 2004 - 2010
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+     http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,  WITHOUT
+WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the
+License for the specific language governing permissions and limitations
+under the License.
+
+Written by Mark Venguerov 2004-2012
 
 **************************************************************************************/
-
+/**
+ * abstract cache manager
+ * used in buffer manager, cached object manager, remote PIN manager, etc.
+ */
 #ifndef _QMGR_H_
 #define _QMGR_H_
 
@@ -13,12 +28,12 @@ Written by Mark Venguerov 2004 - 2010
 
 namespace AfyKernel 
 {
-#define	QMGR_NOLOAD		0x80000000ul
-#define QMGR_UFORCE		0x40000000ul
-#define	QMGR_TRY		0x20000000ul
-#define	QMGR_INMEM		0x10000000ul
-#define	QMGR_NEW		0x08000000ul
-#define	QMGR_SCAN		0x04000000ul
+#define	QMGR_NOLOAD		0x80000000ul		/**< get a resource but don't load it if not in memory */
+#define QMGR_UFORCE		0x40000000ul		/**< force ULOCK unlock for the resource */
+#define	QMGR_TRY		0x20000000ul		/**< try to acquire resource, but don't wait if cannot */
+#define	QMGR_INMEM		0x10000000ul		/**< acquire resource only if it's already cached */
+#define	QMGR_NEW		0x08000000ul		/**< get a new resource, must be not in cache */
+#define	QMGR_SCAN		0x04000000ul		/**< resource scanning, used to control queues */
 
 #ifndef QE_ALLOC_BLOCK_SIZE
 #define QE_ALLOC_BLOCK_SIZE	0x200
@@ -26,6 +41,9 @@ namespace AfyKernel
 
 enum QID {_NONE,_T1,_T2,_B1,_B2};
 
+/**
+ * tamplate for the cache element descriptor
+ */
 template<class T,typename Key,typename KeyArg> struct QElt : public DLList {
 	void			*mgr;
 	Key				key;
@@ -47,6 +65,9 @@ template<class T,typename Key,typename KeyArg> struct QElt : public DLList {
 	bool			tryupgrade() {return lock.tryupgrade();}
 };
 
+/**
+ * template for queue manager
+ */
 template<class T,typename Key,typename KeyArg,typename Info,HEAP_TYPE allc> class QMgr
 {
 	typedef QElt<T,Key,KeyArg> QE;

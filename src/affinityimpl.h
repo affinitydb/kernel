@@ -1,13 +1,33 @@
 /**************************************************************************************
 
-Copyright © 2004-2010 VMware, Inc. All rights reserved.
+Copyright © 2004-2012 VMware, Inc. All rights reserved.
 
-Written by Mark Venguerov 2004 - 2010
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+     http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,  WITHOUT
+WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the
+License for the specific language governing permissions and limitations
+under the License.
+
+Written by Mark Venguerov 2004-2012
 
 **************************************************************************************/
 
-#ifndef _STOREIMPL_H_
-#define _STOREIMPL_H_
+/**
+ * This file contains:
+ * 1. Class definitions for implementation of IPIN and ISession interfaces (see affinity.h)
+ * 2. struct Value helper functions: copying, conversion, comparison, serialization/deserialization, deallocation
+ * 3. measurement units helper functions
+ * 4. Common code for path iterator in expressions and PathOp
+ */
+
+#ifndef _AFFINITYIMPL_H_
+#define _AFFINITYIMPL_H_
 
 #include "affinity.h"
 #include "session.h"
@@ -23,35 +43,40 @@ namespace AfyKernel
 #define	CV_NOTRUNC	0x0001
 #define	CV_NODEREF	0x0002
 
-extern	MemAlloc *createMemAlloc(size_t,bool fMulti);
-extern	RC		copyV(const Value *from,ulong nv,Value *&to,MemAlloc *ma);
-extern	RC		copyV0(Value& to,MemAlloc *ma);
-__forceinline	RC	copyV(const Value& from,Value& to,MemAlloc *ma) {return (to=from).type>=VT_STRING && ma!=NULL?copyV0(to,ma):RC_OK;}
-extern	bool	operator==(const Value& lhs, const Value& rhs);
-inline	bool	operator!=(const Value& lhs, const Value& rhs) {return !(lhs==rhs);}
-extern	size_t	serSize(const Value& val,bool full=false);
-extern	size_t	serSize(const PID &id);
-extern	byte	*serialize(const Value& val,byte *buf,bool full=false);
-extern	byte	*serialize(const PID &id,byte *buf);
-extern	RC		deserialize(Value& val,const byte *&buf,const byte *const ebuf,MemAlloc*,bool,bool full=false);
-extern	RC		deserialize(PID& id,const byte *&buf,const byte *const ebuf);
-extern	RC		streamToValue(IStream *str,Value& val,MemAlloc*);
-extern	int		cmpNoConv(const Value&,const Value&,ulong u);
-extern	int		cmpConv(const Value&,const Value&,ulong u);
-extern	bool	testStrNum(const char *s,size_t l,Value& res);
-extern	RC		convV(const Value& src,Value& dst,ushort type,MemAlloc *ma,unsigned mode=0);
-extern	RC		derefValue(const Value& src,Value& dst,Session *ses);
-extern	RC		convURL(const Value& src,Value& dst,HEAP_TYPE alloc);
-extern	RC		convUnits(QualifiedValue& q, Units u);
-extern	bool	compatible(QualifiedValue&,QualifiedValue&);
-extern	bool	compatibleMulDiv(Value&,uint16_t units,bool fDiv);
-extern	Units	getUnits(const char *suffix,size_t l);
-extern	const char *getUnitName(Units u);
-extern	const char *getLongUnitName(Units u);
-extern	void	freeV(Value *v,ulong nv,MemAlloc*);
-extern	void	freeV0(Value& v);
-__forceinline	void freeV(Value& v) {if ((v.flags&HEAP_TYPE_MASK)!=NO_HEAP) freeV0(v);}
-__forceinline	int	cmp(const Value& arg,const Value& arg2,ulong u) {return arg.type==arg2.type?cmpNoConv(arg,arg2,u):cmpConv(arg,arg2,u);}
+/**
+ * Value helper functions
+ */
+
+extern	MemAlloc *createMemAlloc(size_t,bool fMulti);																						/**< new heaps for sessions and stores */
+extern	RC		copyV(const Value *from,ulong nv,Value *&to,MemAlloc *ma);																	/**< copy array of Value structures */
+extern	RC		copyV0(Value& to,MemAlloc *ma);																								/**< deep data copy in one Value */
+__forceinline	RC	copyV(const Value& from,Value& to,MemAlloc *ma) {return (to=from).type>=VT_STRING && ma!=NULL?copyV0(to,ma):RC_OK;}		/**< inline: copy Value and check if deep data copy is necessary */
+extern	bool	operator==(const Value& lhs, const Value& rhs);																				/**< check equality of 2 Value sturcts */
+inline	bool	operator!=(const Value& lhs, const Value& rhs) {return !(lhs==rhs);}														/**< check non-equality of 2 Value structs */
+extern	size_t	serSize(const Value& val,bool full=false);																					/**< calculate size of serialized Value */
+extern	size_t	serSize(const PID &id);																										/**< calculate size of serialized PIN ID */
+extern	byte	*serialize(const Value& val,byte *buf,bool full=false);																		/**< serialize Value to buf */
+extern	byte	*serialize(const PID &id,byte *buf);																						/**< serialize PIN ID to buf */
+extern	RC		deserialize(Value& val,const byte *&buf,const byte *const ebuf,MemAlloc*,bool,bool full=false);								/**< deserialize Value from buf */
+extern	RC		deserialize(PID& id,const byte *&buf,const byte *const ebuf);																/**< deserialize PIN ID from buf */
+extern	RC		streamToValue(IStream *str,Value& val,MemAlloc*);																			/**< load a stream to memory and return as a string in Value */
+extern	int		cmpNoConv(const Value&,const Value&,ulong u);																				/**< comparison of 2 Value structs of the same type */
+extern	int		cmpConv(const Value&,const Value&,ulong u);																					/**< comparison of 2 Value structs of different types with conversion */
+extern	bool	testStrNum(const char *s,size_t l,Value& res);																				/**< test if a string is a representation of a number */
+extern	RC		convV(const Value& src,Value& dst,ushort type,MemAlloc *ma,unsigned mode=0);												/**< convert Value to another type */
+extern	RC		derefValue(const Value& src,Value& dst,Session *ses);																		/**< deference Value (VT_REFID, VT_REFIDPROP, etc.) */
+extern	RC		convURL(const Value& src,Value& dst,HEAP_TYPE alloc);																		/**< convert URL */
+extern	void	freeV(Value *v,ulong nv,MemAlloc*);																							/**< free in array of Value structs */
+extern	void	freeV0(Value& v);																											/**< free data in Value */
+__forceinline	void freeV(Value& v) {if ((v.flags&HEAP_TYPE_MASK)!=NO_HEAP) freeV0(v);}													/**< inline check if data must be freed */
+__forceinline	int	cmp(const Value& arg,const Value& arg2,ulong u) {return arg.type==arg2.type?cmpNoConv(arg,arg2,u):cmpConv(arg,arg2,u);}	/**< inline comparison of 2 Value structs */
+
+extern	RC		convUnits(QualifiedValue& q, Units u);																						/**< conversion between various compatible measurment units */
+extern	bool	compatible(QualifiedValue&,QualifiedValue&);																				/**< check if measurment units are compatible */
+extern	bool	compatibleMulDiv(Value&,uint16_t units,bool fDiv);																			/**< check if measument units can be mulitplied/divided */
+extern	Units	getUnits(const char *suffix,size_t l);																						/**< convert unit suffix to Units enumeration constant */
+extern	const char *getUnitName(Units u);																									/**< get measument unit suffix */
+extern	const char *getLongUnitName(Units u);																								/**< get full name of unit */
 
 #define PIDKeySize		(sizeof(uint64_t)+sizeof(IdentityID))
 
@@ -70,6 +95,10 @@ public:
 #define	MODP_EIDS	0x0001
 #define	MODP_NEID	0x0002
 #define MODP_NCPY	0x0004
+
+/**
+ * Common code for PathOp and PathIt
+ */
 
 class Path
 {
@@ -127,24 +156,31 @@ protected:
 #define	PIN_SSV						0x00100000	/**< pin has SSV properties and they're not loaded yet */
 #define	PIN_EMPTY					0x00080000	/**< pin with no properties */
 
+/**
+ * Class PIN implements IPIN interface
+ * @see method descriptions in affinity.h
+ */
+
 class PIN : public IPIN
 {
-	Session				*const ses;
-	mutable	PID			id;
-	Value				*properties;
-	uint32_t			nProperties;
-	uint32_t			mode;
-	mutable	PageAddr	addr;
-	PIN					*sibling;
+	Session				*const ses;			/**< Session this PIN was created in */
+	mutable	PID			id;					/**< PIN ID */
+	Value				*properties;		/**< array of PIN properties */
+	uint32_t			nProperties;		/**< number of properties */
+	uint32_t			mode;				/**< PIN flags (PIN_XXX) */
+	mutable	PageAddr	addr;				/**< page address of PIN */
+	PIN					*sibling;			/**< PIN's sibling (for results of joins) */
 	union {
-		uint32_t		stamp;
-		size_t			length;
+		uint32_t		stamp;				/**< PIN stamp after PIN is committed to persistent memory */
+		size_t			length;				/**< PIN length - calculated and used in commitPINs() */
 	};
 
 public:
 	PIN(Session *s,const PID& i,const PageAddr& a,ulong md=0,Value *vals=NULL,ulong nvals=0)
 		: ses(s),id(i),properties(vals),nProperties(nvals),mode(md),addr(a),sibling(NULL) {length=0;}
 	virtual		~PIN();
+
+	// interface implementation
 	const PID&	getPID() const;
 	bool		isLocal() const;
 	bool		isCommitted() const;
@@ -180,8 +216,10 @@ public:
 	RC			refresh(bool);
 	void		destroy();
 
+	// helper functions
 	Session		*getSes() const {return ses;}
-	void		operator delete(void *p) {if (((PIN*)p)->ses!=NULL) ((PIN*)p)->ses->free(p);/* else ???*/}
+	uint32_t	getMode() const {return mode;}
+	void		operator delete(void *p) {if (((PIN*)p)->ses!=NULL) ((PIN*)p)->ses->free(p);}
 	RC			modify(const Value *pv,ulong epos,ulong eid,ulong flags,Session *ses);
 	void		setProps(const Value *pv,unsigned nv) {properties=(Value*)pv; nProperties=nv;}
 	const PageAddr& getAddr() const {return addr;}
@@ -220,6 +258,11 @@ public:
 };
 
 inline bool isRemote(const PID& id) {return id.ident!=STORE_OWNER&&id.ident!=STORE_INVALID_IDENTITY||id.pid!=STORE_INVALID_PID&&ushort(id.pid>>48)!=StoreCtx::get()->storeID;}
+
+/**
+ * Class SessionX implements ISession interface
+ * @see method descriptions in affinity.h
+ */
 
 class SessionX : public ISession
 {
@@ -310,9 +353,6 @@ public:
 	RC			commit(bool fAll);
 	RC			rollback(bool fAll);
 
-//	RC			dumpStore(IDumpStore*&,bool);
-//	RC			storeInspector(IStoreInspector*& si,bool);
-//	void		mapStoreID(unsigned short oldStoreID);
 	RC			reservePage(uint32_t);
 
 	RC			copyValue(const Value& src,Value& dest);

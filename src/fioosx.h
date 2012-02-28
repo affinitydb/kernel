@@ -1,11 +1,26 @@
 /**************************************************************************************
 
-Copyright © 2004-2010 VMware, Inc. All rights reserved.
+Copyright © 2004-2012 VMware, Inc. All rights reserved.
 
-Written by Mark Venguerov, Andrew Skowronski, Michael Andronov 2004 - 2010
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+     http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,  WITHOUT
+WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the
+License for the specific language governing permissions and limitations
+under the License.
+
+Written by Mark Venguerov, Andrew Skowronski, Michael Andronov 2004-2012
 
 **************************************************************************************/
 
+/**
+ * OSX specific file i/o
+ */
 #ifndef _FIOOSX_H_
 #define _FIOOSX_H_
 #ifdef Darwin       // jst a reminder that the file will be used only on OSX
@@ -20,6 +35,9 @@ typedef union sigval sigval_t;
 
 namespace AfyKernel
 {
+	/**
+	 * file descriptor
+	 */
 	struct FileDescLinux
 	{
 		char				*filePath;
@@ -128,8 +146,10 @@ namespace AfyKernel
 		SharedCounter nSig;
     };   
   
-    /* Affinity 'standard' interface 
-     */
+	/**
+	 * OSX specific file i/o manager
+	 * controls file open, close, delete opeartions
+	 */
 	class FileIOOSX : public IStoreIO
 	{
 		mutable RWLock		lock;

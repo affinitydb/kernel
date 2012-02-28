@@ -1,11 +1,27 @@
 /**************************************************************************************
 
-Copyright © 2004-2010 VMware, Inc. All rights reserved.
+Copyright © 2004-2012 VMware, Inc. All rights reserved.
 
-Written by Mark Venguerov 2004 - 2010
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+     http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,  WITHOUT
+WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the
+License for the specific language governing permissions and limitations
+under the License.
+
+Written by Mark Venguerov 2004-2012
 
 **************************************************************************************/
 
+/**
+ * free text indexing and search data structures
+ * StringEnum interface implementation (see affinity.h)
+ */
 #ifndef _FTINDEX_H_
 #define	_FTINDEX_H_
 
@@ -20,19 +36,19 @@ namespace AfyKernel
 
 struct ChangeInfo;
 
-#define	MAX_WORD_SIZE			256
-#define	LOCALE_TABLE_SIZE		32
-#define FTREFSIZE				(sizeof(uint64_t)*2+sizeof(IdentityID)*2+sizeof(uint32_t)*2)
-#define	FT_QUEUE_LIMIT			1024
-#define	DEFAULT_FTRESULT_SIZE	256
-#define	DEFAULT_PHRASE_DEL		'"'
-#define	DEFAULT_MINSIZE			2
-#define	FTBUFSIZE				256
-#define	FTSTRBUFSIZE			512
+#define	MAX_WORD_SIZE			256					/**< maximum size of word for FT indexing; longer words are truncated */
+#define	LOCALE_TABLE_SIZE		32					/**< size of table of locales */
+#define	DEFAULT_PHRASE_DEL		'"'					/**< default character delimiting 'phrases' in FT query strings */
+#define	DEFAULT_MINSIZE			2					/**< default minimum word size in characters */
+#define	FTBUFSIZE				256					/**< buffer size for string tokenization */
+#define	FTSTRBUFSIZE			512					/**< stream tokenizer buffer size */
 
 #define	FTMODE_STOPWORDS		0x0002
 #define	FTMODE_SAVE_WORDS		0x0004
 
+/**
+ * FT index PIN reference
+ */
 struct FTIndexKey
 {
 	PID				id;
@@ -44,6 +60,9 @@ public:
 	void operator=(const FTIndexKey& key) {id=key.id; propID=key.propID;}
 };
 
+/**
+ * stop word table element
+ */
 struct StopWord
 {
 	HChain<StopWord>	list;
@@ -52,18 +71,27 @@ struct StopWord
 	const StrLen&		getKey() const {return word;}
 };
 
+/**
+ * word stemmer interface
+ */
 class Stemmer
 {
 public:
 	virtual const char *process(const char *,size_t&,char*) = 0;
 };
 
+/**
+ * standard stemmer for English
+ */
 class PorterStemmer : public Stemmer
 {
 public:
 	const char *process(const char *,size_t&,char*);
 };
 
+/**
+ * FT locale info, used for tokenization, stop words, stemming
+ */
 struct FTLocaleInfo
 {
 	HChain<FTLocaleInfo>	list;
@@ -80,6 +108,9 @@ struct FTLocaleInfo
 	ulong	getKey() const {return localeID;}
 };
 
+/**
+ * tokenizer interface
+ */
 class Tokenizer
 {
 public:
@@ -89,6 +120,10 @@ public:
 	virtual	bool		saveCopy() const = 0;
 };
 
+/**
+ * tokenizer for strings
+ * implements Tokenizer interface
+ */
 class StringTokenizer : public Tokenizer
 {
 	const	char			*str;
@@ -105,6 +140,10 @@ public:
 	bool		isEnd() const {return str==estr;}
 };
 
+/**
+ * stream tokenizer
+ * implements Tokenizer interface
+ */
 class StreamTokenizer : public Tokenizer
 {
 	IStream		*const	is;
@@ -124,6 +163,9 @@ public:
 	bool		saveCopy() const;
 };
 
+/**
+ * token (word) descriptor
+ */
 struct FTInfo
 {
 	PropertyID			propID;
@@ -152,6 +194,10 @@ struct FTInfo
 
 class Session;
 
+/**
+ * enumerator of all words in FT index
+ * implements StringEnum interface
+ */
 class StringEnumFTScan : public StringEnum
 {
 	Session				*const ses;
@@ -172,6 +218,10 @@ public:
 
 typedef SList<FTInfo,FTInfo>	FTList;
 
+/**
+ * free text index manager
+ * controls FT index B-tree
+ */
 class FTIndexMgr
 {
 	StoreCtx	*const		ctx;		
@@ -192,6 +242,9 @@ public:
 	const FTLocaleInfo	*getLocale() const;
 };
 
+/**
+ * default English locale functions
+ */
 extern const char	*defaultEnglishStopWords[];
 extern ulong		defaultEnglishStopWordsLen();
 extern const char	*stemPorter(const char *word,size_t& len,char *buf,size_t maxLen);

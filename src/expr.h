@@ -1,11 +1,28 @@
 /**************************************************************************************
 
-Copyright © 2004-2010 VMware, Inc. All rights reserved.
+Copyright © 2004-2012 VMware, Inc. All rights reserved.
 
-Written by Mark Venguerov 2004 - 2010
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+     http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,  WITHOUT
+WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the
+License for the specific language governing permissions and limitations
+under the License.
+
+Written by Mark Venguerov 2004-2012
 
 **************************************************************************************/
 
+/**
+ * expression construction, compilation and evaluation classes
+ * implementation of IExprTree and IExpr interfaces (see affinity.h)
+ * aggregation operation data structures
+ */
 #ifndef _EXPR_H_
 #define _EXPR_H_
 
@@ -17,6 +34,9 @@ using namespace AfyDB;
 namespace AfyKernel
 {
 
+/**
+ * various constants used in expression p-code
+ */
 #define INITEXPRSIZE	128
 
 #define	COPY_VALUES_OP	0x80000000
@@ -73,18 +93,25 @@ namespace AfyKernel
 #define	NO_DAT2			0x0010
 #define	NO_ITV2			0x0020
 
+/**
+ * expression header
+ * both in memory and in serialized compiled expressions
+ */
 struct ExprHdr
 {
-	uint32_t		lExpr;
-	uint16_t		lStack;
-	uint16_t		flags;
-	uint16_t		lProps;
-	uint8_t			nVars;
-	uint8_t			xVar;
+	uint32_t		lExpr;						/**< expression length */
+	uint16_t		lStack;						/**< stack depth necessary for expression evaluation */
+	uint16_t		flags;						/**< expression flags (see EXPR_XXX above ) */
+	uint16_t		lProps;						/**< length of table of properties refered by this expression */
+	uint8_t			nVars;						/**< number of variables refered by this expression */
+	uint8_t			xVar;						/**< max varible ID refered by the expression */
 	ExprHdr(uint32_t lE,uint16_t lS,uint16_t flg,uint16_t lP,uint8_t nV,uint8_t xV) : lExpr(lE),lStack(lS),flags(flg),lProps(lP),nVars(nV),xVar(xV) {}
 	ExprHdr(const ExprHdr& hdr) : lExpr(hdr.lExpr),lStack(hdr.lStack),flags(hdr.flags),lProps(hdr.lProps),nVars(hdr.nVars),xVar(hdr.xVar) {}
 };
 
+/**
+ * variable desriptor in property table in expression header
+ */
 struct VarHdr
 {
 	uint16_t		var;
@@ -102,6 +129,10 @@ class	SOutCtx;
 struct	PropListP;
 struct	ValueV;
 
+/**
+ * compiled (p-code) expression, implements IExpr interface
+ * expression in memory consists of expression header, followed by property table, folowed by p-code
+ */
 class Expr : public IExpr
 {
 	ExprHdr			hdr;
@@ -152,6 +183,10 @@ private:
 	friend	struct	AggAcc;
 };
 
+/**
+ * expression tree node
+ * implements IExprTree interface
+ */
 class ExprTree : public IExprTree
 {
 	MemAlloc *const	ma;
@@ -198,11 +233,17 @@ public:
 	friend	class	Expr;
 };
 
+/**
+ * compilation control flags
+ */
 #define	CV_CARD		0x0001
 #define	CV_REF		0x0002
 #define	CV_OPT		0x0004
 #define	CV_PROP		0x0008
 
+/**
+ * expression compilation context
+ */
 class ExprCompileCtx {
 	MemAlloc	*const	ma;
 	ValueV		*const	aggs;
@@ -247,6 +288,9 @@ public:
 
 typedef SList<Value,CmpValue>	Histogram;
 
+/**
+ * aggregation operation data holder
+ */
 struct AggAcc
 {
 	uint64_t	count;
@@ -264,6 +308,10 @@ struct AggAcc
 	void		reset() {count=0; sum.setError(); sum2=0.; if (hist!=NULL) hist->clear();}
 };
 
+/**
+ * path expression iterator
+ * represents path expression as a collection
+ */
 class PathIt : public INav, public Path
 {
 	const	bool	fDFS;

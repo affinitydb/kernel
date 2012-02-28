@@ -1,11 +1,26 @@
 /**************************************************************************************
 
-Copyright © 2004-2010 VMware, Inc. All rights reserved.
+Copyright © 2004-2012 VMware, Inc. All rights reserved.
 
-Written by Mark Venguerov 2004 - 2010
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+     http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,  WITHOUT
+WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the
+License for the specific language governing permissions and limitations
+under the License.
+
+Written by Mark Venguerov 2004-2012
 
 **************************************************************************************/
 
+/**
+ * IStmt and ICursor interfaces implementation
+ */
 #ifndef _QUERY_H_
 #define _QUERY_H_
 
@@ -20,17 +35,23 @@ using namespace AfyDB;
 namespace AfyKernel
 {
 
-#define	CALC_PROP_NAME	"calculated"
+#define	CALC_PROP_NAME	"calculated"		/**< prefix for derived properties names */
 
-#define	QRY_PARAMS		0x80000000
-#define	QRY_ORDEXPR		0x40000000
-#define	QRY_IDXEXPR		0x20000000
-#define	QRY_CPARAMS		0x10000000
-#define	QRY_PATH		0x08000000
+/**
+ * statement flags
+ */
+#define	QRY_PARAMS		0x80000000			/**< statement contains parameters references */
+#define	QRY_ORDEXPR		0x40000000			/**< expressions are used in ORDER BY */
+#define	QRY_IDXEXPR		0x20000000			/**< expressions used in index references */
+#define	QRY_CPARAMS		0x10000000			/**< class/family references contain parameters */
+#define	QRY_PATH		0x08000000			/**< query contains path expressions */
 
 class SOutCtx;
 class SInCtx;
 
+/**
+ * index segment reference descriptor
+ */
 struct CondIdx
 {
 	CondIdx				*next;
@@ -43,6 +64,9 @@ struct CondIdx
 	CondIdx	*clone(MemAlloc *ma) const;
 };
 
+/*
+ * equi-join element descriptor
+ */
 struct CondEJ
 {
 	CondEJ				*next;
@@ -52,6 +76,9 @@ struct CondEJ
 	CondEJ(PropertyID pid1,PropertyID pid2,ushort f) : propID1(pid1),propID2(pid2),flags(f) {}
 };
 
+/**
+ * free-text serach descriptor
+ */
 struct CondFT
 {
 	CondFT			*next;
@@ -64,18 +91,37 @@ struct CondFT
 	void	*operator new(size_t s,unsigned nps,MemAlloc *ma) throw() {return ma->malloc(s+(nps==0?0:nps-1)*sizeof(PropertyID));}
 };
 
+/**
+ * types of SELECT lists
+ */
 enum SelectType
 {
-	SEL_CONST, SEL_COUNT, SEL_VALUE, SEL_VALUESET, SEL_DERIVED, SEL_DERIVEDSET, SEL_PROJECTED, SEL_PINSET, SEL_COMPOUND, SEL_COMP_DERIVED
+	SEL_CONST,			/**< select returns constant expressions */
+	SEL_COUNT,			/**< SELECT COUNT(*) ... */
+	SEL_VALUE,			/**< SELECT expr, aggregation is used, one result is returned */
+	SEL_VALUESET,		/**< SELECT expr, no aggregation */
+	SEL_DERIVED,		/**< SELECT list of expressions, aggregation is used, one result is returned */
+	SEL_DERIVEDSET,		/**< SELECT list of expressions, no aggregation */
+	SEL_PROJECTED,		/**< SELECT with pure projection list, no derived values, no property renames */
+	SEL_PINSET,			/**< SELECT * for non-join query */
+	SEL_COMPOUND,		/**< SELECT * for join query */
+	SEL_COMP_DERIVED	/**< SELECT list of expressions for join query */
 };
 
+/**
+ * which part of query is being rendered
+ * @see SOutCtx
+ */
 enum RenderPart
 {
 	RP_FROM, RP_WHERE, RP_MATCH
 };
 
-#define	QRY_SIMPLE	QRY_ALL_SETOP
+#define	QRY_SIMPLE	QRY_ALL_SETOP	/**< QRY_SIMPLE follows all other QRY_XXX defined in affinity.h */
 
+/**
+ * abstract class describing query variable
+ */
 class QVar
 {
 protected:
@@ -128,6 +174,10 @@ public:
 	friend	class	SOutCtx;
 };
 
+/**
+ * simple query variable - no join, no set operation
+ * can refer a list of classes or class families, individual PINs, collection, path expression, subquery
+ */
 class SimpleVar : public QVar
 {
 	ClassSpec		*classes;
@@ -172,6 +222,9 @@ union QVarRef
 	QVarID	varID;
 };
 
+/**
+ * set operation (UNION, INTERSECT, EXCEPT) variable
+ */
 class SetOpVar : public QVar
 {
 	friend	class	Stmt;
@@ -191,6 +244,9 @@ class SetOpVar : public QVar
 	static	RC		deserialize(const byte *&buf,const byte *const ebuf,QVarID,byte,MemAlloc *ma,QVar*& res);
 };
 
+/**
+ * join variable
+ */
 class JoinVar : public QVar
 {
 	friend	class	Stmt;
@@ -211,6 +267,9 @@ class JoinVar : public QVar
 	const	QVar	*getRefVar(unsigned refN) const;
 };
 
+/**
+ * IStmt implementation
+ */
 class Stmt : public IStmt
 {
 	const	STMT_OP	op;
@@ -296,6 +355,9 @@ private:
 	friend class	SInCtx;
 };
 
+/**
+ * ICursor implementation
+ */
 class Cursor : public ICursor
 {
 	friend	class		Stmt;
@@ -341,8 +403,9 @@ public:
 	friend	class		CursorNav;
 };
 
-enum CNavRet	{CNR_PID, CNR_VALUE, CNR_PIN};
-
+/**
+ * query result set representation as a collection
+ */
 class CursorNav : public INav
 {
 	Cursor	*const	curs;

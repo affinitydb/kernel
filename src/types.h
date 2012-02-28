@@ -1,11 +1,26 @@
 /**************************************************************************************
 
-Copyright © 2004-2010 VMware, Inc. All rights reserved.
+Copyright © 2004-2012 VMware, Inc. All rights reserved.
 
-Written by Mark Venguerov 2004 - 2010
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+     http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,  WITHOUT
+WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the
+License for the specific language governing permissions and limitations
+under the License.
+
+Written by Mark Venguerov 2004-2012
 
 **************************************************************************************/
 
+/**
+ * definition of platform-dependent types, constants and functions
+ */
 #ifndef _TYPES_H_
 #define _TYPES_H_
 
@@ -14,6 +29,10 @@ Written by Mark Venguerov 2004 - 2010
 using namespace AfyRC;
 
 #ifdef WIN32
+
+/**
+ * Windows
+ */
 
 #include <stdint.h>
 #include <malloc.h>
@@ -74,7 +93,9 @@ inline	void	getTimestamp(TIMESTAMP& ts) {FILETIME ft; GetSystemTimeAsFileTime(&f
 #endif
 
 #elif defined(POSIX) || defined(Darwin)
-
+/**
+ * Linux, OSX (POSIX) or ARM
+ */
 #include <errno.h>
 #include <stdlib.h>
 #include <stdint.h>
@@ -186,6 +207,9 @@ using namespace std;
 namespace AfyKernel
 {
 
+/**
+ * platform independent type definitions
+ */
 typedef	uint32_t		CRC;
 typedef uint64_t		TXID;
 typedef	uint64_t		OID;
@@ -199,12 +223,19 @@ typedef uint32_t	PageID;
 typedef uint16_t	PageOff;
 typedef uint16_t	PageIdx;
 
+/**
+ * alignment helper functions
+ */
 __forceinline size_t ceil(size_t l,size_t alignment) {assert((alignment&alignment-1)==0); return l + alignment - 1 & ~(alignment - 1);}
 __forceinline size_t align(size_t sht,size_t alignment) {assert((alignment&alignment-1)==0); return (sht + alignment - 1 & ~(alignment - 1)) - sht;}
 __forceinline size_t floor(size_t l,size_t alignment) {assert((alignment&alignment-1)==0); return l & ~(alignment - 1);}
 template<class T> __forceinline T* ceil(T* p,size_t alignment) {assert((alignment&alignment-1)==0); return (T*)((size_t)p + alignment - 1 & ~(alignment - 1));}
 template<class T> __forceinline T* floor(T* p,size_t alignment) {assert((alignment&alignment-1)==0); return (T*)((size_t)p & ~(alignment - 1));}
 
+/**
+ * heap page address
+ * consists of page identifier and slot number
+ */
 struct PageAddr
 {
 	PageID		pageID;
@@ -226,10 +257,17 @@ struct PagePtr
 	ushort		len;
 };
 
-#define	MAXPAGESPERFILE	0x00FFFFFFul
+#define	MAXPAGESPERFILE	0x00FFFFFFul		/**< maximum number of pages per one data file */
 
+/**
+ * types of allocated memory
+ * stored in Value::flags
+ */
 enum HEAP_TYPE {NO_HEAP,SES_HEAP,STORE_HEAP,SERVER_HEAP,HEAP_TYPE_MASK=0x03};
 
+/** 
+ * memory allocation and deallocation helper functions
+ */
 extern	void*	malloc(size_t,HEAP_TYPE);
 extern	void*	memalign(size_t,size_t,HEAP_TYPE);
 extern	void*	realloc(void*,size_t,HEAP_TYPE);

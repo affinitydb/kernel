@@ -1,11 +1,29 @@
 /**************************************************************************************
 
-Copyright © 2004-2010 VMware, Inc. All rights reserved.
+Copyright © 2004-2012 VMware, Inc. All rights reserved.
 
-Written by Mark Venguerov 2004 - 2010
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+     http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,  WITHOUT
+WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the
+License for the specific language governing permissions and limitations
+under the License.
+
+Written by Mark Venguerov 2004-2012
 
 **************************************************************************************/
 
+/**
+ * extended PIN class
+ * can store a reference to the page containing the PIN
+ * can store PIN ID in compressed form (see pinref.h)
+ * can contain reference to transient versioning descriptor
+ */
 #ifndef _PINEX_H_
 #define _PINEX_H_
 
@@ -17,13 +35,13 @@ Written by Mark Venguerov 2004 - 2010
 namespace AfyKernel
 {
 
-#define	PINEX_TVERSION		0x0001
-#define	PINEX_LOCKED		0x0002
-#define	PINEX_XLOCKED		0x0004
-#define	PINEX_ACL_CHKED		0x0008
-#define	PINEX_ADDRSET		0x0010
-#define	PINEX_EXTPID		0x0020
-#define	PINEX_RLOAD			0x0040
+#define	PINEX_TVERSION		0x0001		/**< transient versioning set */
+#define	PINEX_LOCKED		0x0002		/**< PIN is locked in transaction */
+#define	PINEX_XLOCKED		0x0004		/**< PIN is locked for modification */
+#define	PINEX_ACL_CHKED		0x0008		/**< ACL is checked for the PIN, access is permitted */
+#define	PINEX_ADDRSET		0x0010		/**< page address is set */
+#define	PINEX_EXTPID		0x0020		/**< external PIN ID, suppress error reporting if doesn't exist */
+#define	PINEX_RLOAD			0x0040		/**< load PIN properties if PINs page is being force-unlatched */
 
 #define	PEX_PID				0x0001
 #define	PEX_PAGE			0x0002

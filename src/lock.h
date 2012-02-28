@@ -1,11 +1,26 @@
 /**************************************************************************************
 
-Copyright © 2004-2010 VMware, Inc. All rights reserved.
+Copyright © 2004-2012 VMware, Inc. All rights reserved.
 
-Written by Mark Venguerov 2004 - 2010
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+     http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,  WITHOUT
+WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the
+License for the specific language governing permissions and limitations
+under the License.
+
+Written by Mark Venguerov 2004-2012
 
 **************************************************************************************/
 
+/**
+ * transactional locking structures
+ */
 #ifndef _LOCK_H_
 #define _LOCK_H_
 
@@ -19,25 +34,28 @@ class ILockNotification;
 namespace AfyKernel
 {
 
-#define	FREE_BLOCK_SIZE			0x1000
-#define	MAX_FREE_BLOCKS			0x0100
-#define	VB_HASH_SIZE			0x0100
+#define	FREE_BLOCK_SIZE			0x1000				/**< block containing free LockHdr structures */
+#define	MAX_FREE_BLOCKS			0x0100				/**< maximum number of blocks for LockHdr structures */
+#define	VB_HASH_SIZE			0x0100				/**< transient versioning descriptor hash table size */
 
 class TVers;
 
+/**
+ * LockHdr structure - transactional PIN lock descriptor, header of the list of indiviadual transaction locks
+ */
 #ifdef _WIN64
 __declspec(align(16))
 #endif
 struct LockHdr
 {
-	TVers				*const tv;
-	DLList				grantedLocks;
-	SimpleSem			sem;
-	Session				*waiting;
-	SharedCounter		fixCount;
-	uint32_t			conflictMask;
-	uint32_t			grantedMask;
-	uint32_t			grantedCnts[LOCK_ALL];
+	TVers				*const tv;					/**< transient versioning info descriptor */
+	DLList				grantedLocks;				/**< list of granted locks */
+	SimpleSem			sem;						/**< wait queue semaphor */
+	Session				*waiting;					/**< list of sessions waiting for this lock */
+	SharedCounter		fixCount;					/**< number of sessions accessing this structure (for deallocation) */
+	uint32_t			conflictMask;				/**< bitmap of conflicting lock requests */
+	uint32_t			grantedMask;				/**< bitmap of granted lock requests */
+	uint32_t			grantedCnts[LOCK_ALL];		/**< vector of counters of granted lock requests */
 	LockHdr(TVers *t) : tv(t),waiting(NULL),fixCount(1),conflictMask(0),grantedMask(0) {memset(grantedCnts,0,sizeof(grantedCnts));}
 	void				release(class LockMgr *mgr,SemData&);
 #if defined(__x86_64__) || defined(__arm__)
@@ -46,26 +64,31 @@ struct LockHdr
 };
 #endif
 
-
+/**
+ * GrantedLock - granted lock request descriptor
+ */
 #ifdef _WIN64
 __declspec(align(16))
 #endif
 struct GrantedLock : public DLList
 {
-	GrantedLock		*txNext;
-	GrantedLock		*other;
-	LockHdr			*header;
-	Session			*ses;
-	uint32_t		count;
-	uint32_t		lt		:6;
-	uint32_t		fDel	:1;
-	uint32_t		subTxID	:25;
+	GrantedLock		*txNext;			/**< next lock in this transaction */
+	GrantedLock		*other;				/**< next granted request for this resource */
+	LockHdr			*header;			/**< header record for this resource */
+	Session			*ses;				/**< session requested this lock */
+	uint32_t		count;				/**< counter of lock requests of the same type for this transaction */
+	uint32_t		lt		:6;			/**< lock type */
+	uint32_t		fDel	:1;			/**< delete flag */
+	uint32_t		subTxID	:25;		/**< sub-tx ID within this transaction (for partial rollbacks and commits) */
 #if defined(__x86_64__) || defined(__arm__)
 }__attribute__((aligned(16)));
 #else
 };
 #endif
 
+/**
+ * Block of free lock structures descriptor
+ */
 #ifdef _WIN64
 __declspec(align(16))
 #endif
@@ -80,12 +103,18 @@ struct LockBlock
 };
 #endif
 
+/**
+ * store specific lock manager reference
+ */
 struct LockStore : public SLIST_ENTRY
 {
 	class	LockMgr		*volatile mgr;
 	LockStore(class LockMgr *mg) : mgr(mg) {}
 };
 
+/**
+ * kernel-wide lock mgr descriptor for various stores
+ */
 struct LockStoreHdr
 {
 	SLIST_HEADER stores;
@@ -95,16 +124,25 @@ struct LockStoreHdr
 	void		lockDaemon();
 };
 
+/**
+ * transient versioning table operations
+ */
 enum TVOp
 {
 	TVO_READ, TVO_INS, TVO_UPD
 };
 
+/**
+ * transient versioning resource states
+ */
 enum TVState
 {
 	TV_INS, TV_UPD, TV_DEL, TV_PRG, TV_UDL
 };
 
+/**
+ * snapshot data element descriptor
+ */
 struct DataSS
 {
 	DataSS				*nextD;
@@ -117,6 +155,9 @@ struct DataSS
 	bool				fNew;
 };
 
+/**
+ * transient versioning descriptor
+ */
 class TVers
 {
 	const	PageIdx		idx;
@@ -134,6 +175,10 @@ public:
 	friend	class		QueryPrc;
 };
 
+/**
+ * page descriptor for transient versioning
+ * implements VBlock interface (see buffer.h)
+ */
 struct PageV : public VBlock {
 	const PageID		pageID;
 	LockMgr				&mgr;
@@ -150,6 +195,11 @@ struct PageV : public VBlock {
 
 typedef SyncHashTab<PageV,PageID,&PageV::list> PageVTab;
 
+/**
+ * transaction lock manager
+ * controls transaction level locking for r/w transactions, snapshot creation and deallocation, snapshot access for r/o transaction
+ * implements deadlock detection
+ */
 class LockMgr : public Request
 {
 	class	StoreCtx	*const ctx;

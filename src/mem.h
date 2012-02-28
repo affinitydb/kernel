@@ -1,10 +1,26 @@
 /**************************************************************************************
 
-Copyright © 2010 VMware, Inc. All rights reserved.
+Copyright © 2010-2012 VMware, Inc. All rights reserved.
 
-Written by Mark Venguerov 2010
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+     http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,  WITHOUT
+WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the
+License for the specific language governing permissions and limitations
+under the License.
+
+Written by Mark Venguerov 2010-2012
 
 **************************************************************************************/
+
+/**
+ * memory allocation/deallocation control structures
+ */
 #ifndef _MEM_H_
 #define _MEM_H_
 
@@ -13,6 +29,10 @@ Written by Mark Venguerov 2010
 namespace AfyKernel
 {
 
+/**
+ * object resource release interface
+ * used when bulk object deallocation is performed
+ */
 class ObjDealloc
 {
 	friend	class	SubAlloc;
@@ -22,6 +42,11 @@ public:
 	virtual	void	destroyObj() = 0;
 };
 
+/**
+ * standard memory control interface
+ * can be implemented by session heap, store heap, server-wide heap
+ * or special sub-allocators
+ */
 class MemAlloc
 {
 public:
@@ -37,6 +62,10 @@ public:
 
 #define	SA_DEFAULT_SIZE	0x200
 
+/**
+ * memory sub-allocator
+ * implements MemAlloc interface
+ */
 class SubAlloc : public MemAlloc
 {
 protected:

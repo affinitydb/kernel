@@ -1,26 +1,48 @@
 /**************************************************************************************
 
-Copyright © 2004-2010 VMware, Inc. All rights reserved.
+Copyright © 2004-2012 VMware, Inc. All rights reserved.
 
-Written by Mark Venguerov 2004 - 2010
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+     http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,  WITHOUT
+WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the
+License for the specific language governing permissions and limitations
+under the License.
+
+Written by Mark Venguerov 2004-2012
 
 **************************************************************************************/
 
+/**
+ * data file page allocation/deallocation
+ */
 #ifndef _FSMGR_H_
 #define _FSMGR_H_
 
 #include "utils.h"
 #include "txpage.h"
 
+namespace AfyKernel
+{
+
+/**
+ * free page bitmap constants
+ */
 #define BITSPERELT		(sizeof(uint32_t)*8)
 #define	MAXBITNUMBER	0x0007FFFF
 #define	RESETBIT		0x00080000
 #define	EXTENTDIRMAGIC	0xEFAB
 #define	FREEPAGEFLAG	0x80000000
 
-namespace AfyKernel
-{
-
+/**
+ * extent directory page descritptor
+ * implements PageMgr interface
+ */
 class ExtentDirPage : public PageMgr
 {
 	friend	class	FSMgr;
@@ -49,6 +71,11 @@ class ExtentDirPage : public PageMgr
 
 #define	EXT_HDR_SIZE			(sizeof(TxPageHeader)+sizeof(uint32_t))
 
+/**
+ * extent map page descritptor
+ * map page contains a bitmap of free pages in this extent
+ * implements TxPage interface
+ */
 class ExtentMapPage : public TxPage
 {
 	friend	class	FSMgr;
@@ -68,6 +95,9 @@ class ExtentMapPage : public TxPage
 	static	size_t	contentSize(size_t lPage) {return lPage - sizeof(ExtentMapHeader) - FOOTERSIZE;}
 };
 
+/**
+ * in-memory descriptor of free space in heap pages
+ */
 class FreeSpacePage : public TxPage
 {
 	friend	class	FSMgr;
@@ -92,6 +122,10 @@ class PBlock;
 #define	EXTMAP_MODIFIED	0x0002
 #define	EXTMAP_BAD		0x0004
 
+/**
+ * database free space manager
+ * controls extent allocation
+ */
 class FSMgr
 {
 	struct ExtentInfo {

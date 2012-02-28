@@ -1,11 +1,26 @@
 /**************************************************************************************
 
-Copyright © 2004-2010 VMware, Inc. All rights reserved.
+Copyright © 2004-2012 VMware, Inc. All rights reserved.
 
-Written by Mark Venguerov 2004 - 2010
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+     http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,  WITHOUT
+WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the
+License for the specific language governing permissions and limitations
+under the License.
+
+Written by Mark Venguerov 2004-2012
 
 **************************************************************************************/
 
+/**
+ * StoreCtx and Session class definitions
+ */
 #ifndef _SESSION_H_
 #define _SESSION_H_
 
@@ -18,10 +33,17 @@ namespace AfyDB {class ISession; class ITrace; struct AllocCtrl; struct QName;};
 namespace AfyKernel
 {
 
+/**
+ * memory heap initialization connstants
+ */
 #define	SESSION_START_MEM	0x20000
 #define	STORE_START_MEM		0x4000
 #define	STORE_NEW_MEM		0x20000
 
+/**
+ * StoreCtx - main store state descriptor
+ * contains references to various managers
+ */
 class StoreCtx : public MemAlloc
 {
 	friend	class				Session;
@@ -115,41 +137,58 @@ public:
 	void						release();
 };
 
-typedef	uint64_t		TXCID;
+/**
+ * transaftion and locking releated structures and constants
+ */
 
-#define INVALID_TXID	TXID(0)
-#define	NO_TXCID		TXCID(~0ULL)
+typedef	uint64_t		TXCID;			/**< snapshot ID type */
 
+#define INVALID_TXID	TXID(0)			/**< invalid transaction ID */
+#define	NO_TXCID		TXCID(~0ULL)	/**< snapshot is not set */
+
+/**
+ * transaction state enumeration
+ */
 enum TXState {TX_NOTRAN, TX_START, TX_ACTIVE, TX_ABORTING, TX_PREPARE, TX_COMMITTING, TX_ABORTED, TX_COMMITTED, TX_ALL};
+
+/**
+ * lock types for transaction-level locks
+ */
 enum LockType {LOCK_IS,LOCK_IX,LOCK_SHARED,LOCK_SIX,LOCK_UPDATE,LOCK_EXCLUSIVE,LOCK_ALL};
 
-#define	TX_READONLY		0x80000000
-#define	TX_WASINLIST	0x40000000
-#define	TX_NONOTIFY		0x20000000
-#define	TX_SYS			0x10000000
-#define	TX_GSYS			0x08000000
-#define	TX_ATOMIC		0x04000000
-#define	TX_READLOCKS	0x02000000
-#define	TX_UNCOMMITTED	0x01000000
-#define	TX_IATOMIC		0x00800000
+/**
+ * transaction flags
+ */
+#define	TX_READONLY		0x80000000		/**< read-only transaction */
+#define	TX_WASINLIST	0x40000000		/**< transaction was in list of transaction when MiniTx was started (see txmgr.h) */
+#define	TX_NONOTIFY		0x20000000		/**< transaction doesn't send notifications */
+#define	TX_SYS			0x10000000		/**< system-level transaction */
+#define	TX_GSYS			0x08000000		/**< global system-level transaction */
+#define	TX_ATOMIC		0x04000000		/**< atomic trsansaction, e.g. one PIN change */
+#define	TX_READLOCKS	0x02000000		/**< transaction uses read locks */
+#define	TX_UNCOMMITTED	0x01000000		/**< uncommitted-read isolation level transaction */
+#define	TX_IATOMIC		0x00800000		/**< index atomic trsancasction */
 
-#define	S_REPLICATION	0x00000001
-#define	S_INSERT		0x00000002
-#define	S_RESTORE		0x00000004
+#define	S_REPLICATION	0x00000001		/**< session is a replication input session */
+#define	S_INSERT		0x00000002		/**< inserts are allowed for this identity */
+#define	S_RESTORE		0x00000004		/**< 'restore from logs' mode */
 
 #define	CPREFIX_MASK	0xFF000000
 
-#define	MAX_SUBTX_ID	0x00FFFFFF
+#define	MAX_SUBTX_ID	0x00FFFFFF		/**< maximum number of subtransactions in a transaction */
 
-#define	INITLATCHED		32
+#define	INITLATCHED		32				/**< initial size of session latched pages array */
 
-#define	INSERT_THRSH	16
+#define	INSERT_THRSH	16				/**< max number of PINs inserted into 'old' pages in a transaction */
 
 class	ClassPropIndex;
 class	PBlock;
 
 struct GrantedLock;
 
+/**
+ * header for the list of locks acquired by this transaction
+ */
 struct LockReq
 {
 	class	Session		*next;
@@ -164,6 +203,9 @@ struct LockReq
 	LockReq(Session *ses) : next(NULL),lh(NULL),back(NULL),gl(NULL),stamp(0),wait(ses),lt(LOCK_SHARED),rc(RC_OK) {}
 };
 
+/**
+ * automatic trsansaction rollback for crashed transactions
+ */
 class TxGuard
 {
 	class Session	*const ses;
@@ -172,11 +214,18 @@ public:
 	~TxGuard();
 };
 
+/**
+ * data purge type in transaction commit
+ */
 enum PurgeType
 {
 	TXP_PIN, TXP_SSV
 };
 
+/**
+ * data purge operation descriptor
+ * created at deletePINs(), executed on commit
+ */
 struct TxPurge
 {
 	PageID			pageID;
@@ -193,6 +242,9 @@ struct TxPurge
 
 typedef DynOArray<TxPurge,PageID,TxPurge::Cmp,16,2>	TxPurgeArr;
 
+/**
+ * transaction level descriptor of reusable pages, i.e. pages with enough room for inserts
+ */
 struct TxReuse
 {
 	struct ReusePage {
@@ -213,6 +265,10 @@ struct TxReuse
 class	TxIndex;
 struct	ClassDscr;
 
+/**
+ * subtransaction descriptor
+ * active subtransactions are represented as a stack
+ */
 struct SubTx
 {
 	SubTx		*next;
@@ -236,14 +292,20 @@ struct SubTx
 	void		cleanup();
 };
 
+/**
+ * latched page descriptor
+ */
 struct LatchedPage
 {
-	PBlock		*pb;
-	uint16_t	cntX;
-	uint16_t	cntS;
+	PBlock		*pb;			/**< page control block reference */
+	uint16_t	cntX;			/**< counter of exclusive lock requests */
+	uint16_t	cntS;			/**< counter of shared lock requests */
 	class	Cmp	{public: static int cmp(const LatchedPage& lp,PageID pid);};
 };
 
+/**
+ * main session context descriptor
+ */
 class Session : public MemAlloc
 {
 	StoreCtx		*ctx;
@@ -402,6 +464,10 @@ public:
 	friend	class	Stmt;
 };
 
+/**
+ * latch holder descriptor
+ * used for automatic unlatching of conflicting pages
+ */
 class LatchHolder : public DLList
 {
 public:

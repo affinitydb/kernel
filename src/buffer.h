@@ -1,11 +1,26 @@
 /**************************************************************************************
 
-Copyright © 2004-2010 VMware, Inc. All rights reserved.
+Copyright © 2004-2012 VMware, Inc. All rights reserved.
 
-Written by Mark Venguerov 2004 - 2010
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+     http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,  WITHOUT
+WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the
+License for the specific language governing permissions and limitations
+under the License.
+
+Written by Mark Venguerov 2004-2012
 
 **************************************************************************************/
 
+/**
+ * Database pages memory caching control structures
+ */
 #ifndef _BUFFER_H_
 #define _BUFFER_H_
 
@@ -13,29 +28,29 @@ Written by Mark Venguerov 2004 - 2010
 #include "pagemgr.h"
 #include "qmgr.h"
 
-#define	PAGE_HASH_SIZE		0x0400
+#define	PAGE_HASH_SIZE		0x0400				/**< size of the page hash table */
 
-#define	BLOCK_NEW_PAGE		0x0001
-#define	BLOCK_IO_READ		0x0002
-#define	BLOCK_IO_WRITE		0x0004
-#define BLOCK_DIRTY			0x0008
-#define	BLOCK_ASYNC_IO		0x0010
-#define	BLOCK_REDO_SET		0x0020
-#define	BLOCK_DISCARDED		0x0040
-#define	BLOCK_TEMP			0x0080
-#define	BLOCK_FLUSH_CHAIN	0x0100
+#define	BLOCK_NEW_PAGE		0x0001				/**< page is just created, not saved to disk yet */
+#define	BLOCK_IO_READ		0x0002				/**< page is being read from disk */
+#define	BLOCK_IO_WRITE		0x0004				/**< page is being written to disk */
+#define BLOCK_DIRTY			0x0008				/**< page is modified but not saved to persistemt memory yet */
+#define	BLOCK_ASYNC_IO		0x0010				/**< asynchronous i/o operation (in conjunction with BLOCK_IO_READ or BLOCK_IO_WRITE */
+#define	BLOCK_REDO_SET		0x0020				/**< redo LSN is set */
+#define	BLOCK_DISCARDED		0x0040				/**< page is discarded, e.g. when index tree pages are merged */
+#define	BLOCK_TEMP			0x0080				/**< temporary page, will be discarded at the end of transaction */
+#define	BLOCK_FLUSH_CHAIN	0x0100				/**< flush chaining flag for pages with dependencies (e.g. split index tree pages) */
 
-#define	PGCTL_XLOCK			0x0001
-#define	PGCTL_ULOCK			0x0002
-#define	PGCTL_COUPLE		0x0004
-#define	PGCTL_DISCARD		0x0008
-#define	PGCTL_RLATCH		0x0010
-#define	PGCTL_NOREL			0x0020
-#define	PGCTL_INREL			0x0040
+#define	PGCTL_XLOCK			0x0001				/**< exclusive page access request */
+#define	PGCTL_ULOCK			0x0002				/**< 'update' page access request */
+#define	PGCTL_COUPLE		0x0004				/**< page 'coupling': old page is released when access to the new one is acquired */
+#define	PGCTL_DISCARD		0x0008				/**< request to discard a page */
+#define	PGCTL_RLATCH		0x0010				/**< heap page latching synchronization (used in PBlockP::flags) */
+#define	PGCTL_NOREL			0x0020				/**< don't release page (used in PBlockP::flags) */
+#define	PGCTL_INREL			0x0040				/**< page being released by PBlockP */
 
-#define MAX_ASYNC_PAGES		32
-#define	FLUSH_CHAIN_THR		12
-#define	MIN_BUFFERS			8
+#define MAX_ASYNC_PAGES		32					/**< maximum number of pages being asynchronously saved to disk */
+#define	FLUSH_CHAIN_THR		12					/**< when dependency chain reaches this length, page flushing starts automatically */
+#define	MIN_BUFFERS			8					/**< minimum number of page buffers in memory */
 
 namespace AfyKernel
 {
@@ -48,6 +63,9 @@ struct DirtyPageInfo
 	LSN			redoLSN;
 };
 
+/**
+ * buffer page descriptor
+ */
 class PBlock
 {
 	typedef QElt<PBlock,PageID,PageID> QEPB;
@@ -114,6 +132,10 @@ public:
 	static	void	signal(void *mg);
 };
 
+/**
+ * holder of a reference to page descriptor
+ * when goes out of scope page is automatically released
+ */
 class PBlockP
 {
 	PBlock			*pb;
@@ -139,6 +161,10 @@ public:
 
 typedef QMgr<PBlock,PageID,PageID,PageMgr*,SERVER_HEAP> BufQMgr;
 
+/**
+ * Buffer manager
+ * @see also QMgr
+ */
 class BufMgr : public BufQMgr
 {
 	class	StoreCtx *const	ctx;

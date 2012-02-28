@@ -1,8 +1,32 @@
 /**************************************************************************************
 
-Copyright © 2004-2010 VMware, Inc. All rights reserved.
+Copyright © 2004-2012 VMware, Inc. All rights reserved.
 
-Written by Mark Venguerov 2004 - 2010
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+     http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,  WITHOUT
+WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the
+License for the specific language governing permissions and limitations
+under the License.
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+     http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,  WITHOUT
+WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the
+License for the specific language governing permissions and limitations
+under the License.
+
+Written by Mark Venguerov 2004-2012
 
 **************************************************************************************/
 
@@ -85,7 +109,7 @@ public:
 
 TreeMgr::TreeMgr(StoreCtx *ct,ulong timeout) : ctx(ct)
 {
-	if ((ptrt=new(ct) TreeRQTable(DEFAULT_PITREERQ_SIZE))==NULL) throw RC_NORESOURCES;
+	if ((ptrt=new(ct) TreeRQTable(DEFAULT_TREERQ_SIZE))==NULL) throw RC_NORESOURCES;
 	memset(factoryTable,0,sizeof(factoryTable));
 }
 
@@ -769,8 +793,8 @@ RC SearchKey::toKey(const Value **ppv,ulong nv,const IndexSeg *kds,int idx,Sessi
 				pd+=sizeof(uint64_t)-l;
 #endif
 				break;
-			case KT_FLOAT: if (pv->qval.units==Un_NDIM) kt|=KVT_FLOAT,l=sizeof(float); else kt|=0x20|KVT_FLOAT,l=sizeof(float)/*+1*/; break;			// units ???
-			case KT_DOUBLE:  if (pv->qval.units==Un_NDIM) kt|=0x10|KVT_FLOAT,l=sizeof(double); else kt|=0x30|KVT_FLOAT,l=sizeof(double)/*+1*/; break;	// units ???
+			case KT_FLOAT: if (pv->qval.units==Un_NDIM) kt|=KVT_FLOAT,l=sizeof(float); else kt|=0x20|KVT_FLOAT,l=sizeof(float)+1; break;
+			case KT_DOUBLE:  if (pv->qval.units==Un_NDIM) kt|=0x10|KVT_FLOAT,l=sizeof(double); else kt|=0x30|KVT_FLOAT,l=sizeof(double)+1; break;
 			case KT_BIN:
 				if ((l=v.ptr.l)<0x80 && (kt&0x40)==0 && pv->type==VT_STRING) kt=byte(l); else kt|=((l&0xFF00)!=0?(l0+=2,0x10):(l0+=1,0))|(pv->type-VT_STRING+KVT_STR);
 				pd=(byte*)v.ptr.p; break;
@@ -785,7 +809,9 @@ RC SearchKey::toKey(const Value **ppv,ulong nv,const IndexSeg *kds,int idx,Sessi
 				} else if ((buf=(byte*)ma->realloc(buf,xbuf))==NULL) {rc=RC_NORESOURCES; break;}
 			}
 			buf[lkey]=kt; lkey+=l0; while (l0>1) {--l0; buf[lkey-l0]=byte(l>>8*(l0-1));}
-			if (l!=0) {memcpy(buf+lkey,pd,l); lkey+=l;} if (loc==PLC_ALLC) ma->free((void*)v.ptr.p);
+			if ((kt&0x2F)==(0x20|KVT_FLOAT)) {
+				memcpy(buf+lkey,pd,l-1); buf[lkey+l-1]=(byte)pv->qval.units;} else if (l!=0) memcpy(buf+lkey,pd,l); 
+			lkey+=l; if (loc==PLC_ALLC) ma->free((void*)v.ptr.p);
 		}
 		if (pv==&w) freeV(w);
 	}

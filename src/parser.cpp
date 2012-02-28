@@ -1,8 +1,20 @@
 /**************************************************************************************
 
-Copyright © 2010 VMware, Inc. All rights reserved.
+Copyright © 2010-2012 VMware, Inc. All rights reserved.
 
-Written by Mark Venguerov 2010
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+     http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,  WITHOUT
+WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the
+License for the specific language governing permissions and limitations
+under the License.
+
+Written by Mark Venguerov 2010-2012
 
 **************************************************************************************/
 
@@ -1290,61 +1302,61 @@ void SInCtx::initKW()
 		KW			kw;
 		ushort		qlang;
 	} kwTab[] = {
-		{SELECT_S,				KW_SELECT,				1<<SQ_SQL|1<<SQ_SPARQL},
-		{FROM_S,				KW_FROM,				1<<SQ_SQL|1<<SQ_SPARQL},
-		{WHERE_S,				KW_WHERE,				1<<SQ_SQL|1<<SQ_SPARQL},
-		{ORDER_S,				KW_ORDER,				1<<SQ_SQL|1<<SQ_SPARQL},
-		{BY_S,					KW_BY,					1<<SQ_SQL|1<<SQ_SPARQL},
-		{GROUP_S,				KW_GROUP,				1<<SQ_SQL},
-		{HAVING_S,				KW_HAVING,				1<<SQ_SQL},
-		{JOIN_S,				KW_JOIN,				1<<SQ_SQL},
-		{ON_S,					KW_ON,					1<<SQ_SQL},
-		{LEFT_S,				KW_LEFT,				1<<SQ_SQL},
-		{OUTER_S,				KW_OUTER,				1<<SQ_SQL},
-		{RIGHT_S,				KW_RIGHT,				1<<SQ_SQL},
-		{CROSS_S,				KW_CROSS,				1<<SQ_SQL},
-		{INNER_S,				KW_INNER,				1<<SQ_SQL},
-		{USING_S,				KW_USING,				1<<SQ_SQL},
-		{BASE_S,				KW_BASE,				1<<SQ_SQL|1<<SQ_SPARQL},
-		{PREFIX_S,				KW_PREFIX,				1<<SQ_SQL|1<<SQ_SPARQL},
-		{UNION_S,				KW_UNION,				1<<SQ_SQL|1<<SQ_SPARQL},
-		{EXCEPT_S,				KW_EXCEPT,				1<<SQ_SQL},
-		{INTERSECT_S,			KW_INTERSECT,			1<<SQ_SQL},
-		{DISTINCT_S,			KW_DISTINCT,			1<<SQ_SQL|1<<SQ_SPARQL},
-		{VALUES_S,				KW_VALUES,				1<<SQ_SQL},
-		{AS_S,					KW_AS,					1<<SQ_SQL},
-		{NULLS_S,				KW_NULLS,				1<<SQ_SQL},
-		{TRUE_S,				KW_TRUE,				1<<SQ_SQL|1<<SQ_SPARQL},
-		{FALSE_S,				KW_FALSE,				1<<SQ_SQL|1<<SQ_SPARQL},
-		{NULL_S,				KW_NULL,				1<<SQ_SQL},
-		{ALL_S,					KW_ALL,					1<<SQ_SQL},
-		{ANY_S,					KW_ANY,					1<<SQ_SQL},
-		{SOME_S,				KW_SOME,				1<<SQ_SQL},
-		{ASC_S,					KW_ASC,					1<<SQ_SQL},
-		{DESC_S,				KW_DESC,				1<<SQ_SQL},
-		{MATCH_S,				KW_MATCH,				1<<SQ_SQL|1<<SQ_SPARQL},
-		{CURRENT_TIMESTAMP_S,	KW_NOW,					1<<SQ_SQL},
-		{CURRENT_USER_S,		KW_CUSER,				1<<SQ_SQL},
-		{CURRENT_STORE_S,		KW_CSTORE,				1<<SQ_SQL},
-		{TIMESTAMP_S,			KW_TIMESTAMP,			1<<SQ_SQL},
-		{INTERVAL_S,			KW_INTERVAL,			1<<SQ_SQL},
-		{WITH_S,				KW_WITH,				1<<SQ_SQL},
-		{INSERT_S,				KW_INSERT,				1<<SQ_SQL},
-		{DELETE_S,				KW_DELETE,				1<<SQ_SQL},
-		{UPDATE_S,				KW_UPDATE,				1<<SQ_SQL},
-		{CREATE_S,				KW_CREATE,				1<<SQ_SQL},
-		{PURGE_S,				KW_PURGE,				1<<SQ_SQL},
-		{UNDELETE_S,			KW_UNDELETE,			1<<SQ_SQL},
-		{SET_S,					KW_SET,					1<<SQ_SQL},
-		{ADD_S,					KW_ADD,					1<<SQ_SQL},
-		{MOVE_S,				KW_MOVE,				1<<SQ_SQL},
-		{RENAME_S,				KW_RENAME,				1<<SQ_SQL},
-		{EDIT_S,				KW_EDIT,				1<<SQ_SQL},
-		{CLASS_S,				KW_CLASS,				1<<SQ_SQL},
-		{START_S,				KW_START,				1<<SQ_SQL},
-		{COMMIT_S,				KW_COMMIT,				1<<SQ_SQL},
-		{ROLLBACK_S,			KW_ROLLBACK,			1<<SQ_SQL},
-		{DROP_S,				KW_DROP,				1<<SQ_SQL},
+		{SELECT_S,				KW_SELECT,				1<<SQ_PATHSQL|1<<SQ_SPARQL},
+		{FROM_S,				KW_FROM,				1<<SQ_PATHSQL|1<<SQ_SPARQL},
+		{WHERE_S,				KW_WHERE,				1<<SQ_PATHSQL|1<<SQ_SPARQL},
+		{ORDER_S,				KW_ORDER,				1<<SQ_PATHSQL|1<<SQ_SPARQL},
+		{BY_S,					KW_BY,					1<<SQ_PATHSQL|1<<SQ_SPARQL},
+		{GROUP_S,				KW_GROUP,				1<<SQ_PATHSQL},
+		{HAVING_S,				KW_HAVING,				1<<SQ_PATHSQL},
+		{JOIN_S,				KW_JOIN,				1<<SQ_PATHSQL},
+		{ON_S,					KW_ON,					1<<SQ_PATHSQL},
+		{LEFT_S,				KW_LEFT,				1<<SQ_PATHSQL},
+		{OUTER_S,				KW_OUTER,				1<<SQ_PATHSQL},
+		{RIGHT_S,				KW_RIGHT,				1<<SQ_PATHSQL},
+		{CROSS_S,				KW_CROSS,				1<<SQ_PATHSQL},
+		{INNER_S,				KW_INNER,				1<<SQ_PATHSQL},
+		{USING_S,				KW_USING,				1<<SQ_PATHSQL},
+		{BASE_S,				KW_BASE,				1<<SQ_PATHSQL|1<<SQ_SPARQL},
+		{PREFIX_S,				KW_PREFIX,				1<<SQ_PATHSQL|1<<SQ_SPARQL},
+		{UNION_S,				KW_UNION,				1<<SQ_PATHSQL|1<<SQ_SPARQL},
+		{EXCEPT_S,				KW_EXCEPT,				1<<SQ_PATHSQL},
+		{INTERSECT_S,			KW_INTERSECT,			1<<SQ_PATHSQL},
+		{DISTINCT_S,			KW_DISTINCT,			1<<SQ_PATHSQL|1<<SQ_SPARQL},
+		{VALUES_S,				KW_VALUES,				1<<SQ_PATHSQL},
+		{AS_S,					KW_AS,					1<<SQ_PATHSQL},
+		{NULLS_S,				KW_NULLS,				1<<SQ_PATHSQL},
+		{TRUE_S,				KW_TRUE,				1<<SQ_PATHSQL|1<<SQ_SPARQL},
+		{FALSE_S,				KW_FALSE,				1<<SQ_PATHSQL|1<<SQ_SPARQL},
+		{NULL_S,				KW_NULL,				1<<SQ_PATHSQL},
+		{ALL_S,					KW_ALL,					1<<SQ_PATHSQL},
+		{ANY_S,					KW_ANY,					1<<SQ_PATHSQL},
+		{SOME_S,				KW_SOME,				1<<SQ_PATHSQL},
+		{ASC_S,					KW_ASC,					1<<SQ_PATHSQL},
+		{DESC_S,				KW_DESC,				1<<SQ_PATHSQL},
+		{MATCH_S,				KW_MATCH,				1<<SQ_PATHSQL|1<<SQ_SPARQL},
+		{CURRENT_TIMESTAMP_S,	KW_NOW,					1<<SQ_PATHSQL},
+		{CURRENT_USER_S,		KW_CUSER,				1<<SQ_PATHSQL},
+		{CURRENT_STORE_S,		KW_CSTORE,				1<<SQ_PATHSQL},
+		{TIMESTAMP_S,			KW_TIMESTAMP,			1<<SQ_PATHSQL},
+		{INTERVAL_S,			KW_INTERVAL,			1<<SQ_PATHSQL},
+		{WITH_S,				KW_WITH,				1<<SQ_PATHSQL},
+		{INSERT_S,				KW_INSERT,				1<<SQ_PATHSQL},
+		{DELETE_S,				KW_DELETE,				1<<SQ_PATHSQL},
+		{UPDATE_S,				KW_UPDATE,				1<<SQ_PATHSQL},
+		{CREATE_S,				KW_CREATE,				1<<SQ_PATHSQL},
+		{PURGE_S,				KW_PURGE,				1<<SQ_PATHSQL},
+		{UNDELETE_S,			KW_UNDELETE,			1<<SQ_PATHSQL},
+		{SET_S,					KW_SET,					1<<SQ_PATHSQL},
+		{ADD_S,					KW_ADD,					1<<SQ_PATHSQL},
+		{MOVE_S,				KW_MOVE,				1<<SQ_PATHSQL},
+		{RENAME_S,				KW_RENAME,				1<<SQ_PATHSQL},
+		{EDIT_S,				KW_EDIT,				1<<SQ_PATHSQL},
+		{CLASS_S,				KW_CLASS,				1<<SQ_PATHSQL},
+		{START_S,				KW_START,				1<<SQ_PATHSQL},
+		{COMMIT_S,				KW_COMMIT,				1<<SQ_PATHSQL},
+		{ROLLBACK_S,			KW_ROLLBACK,			1<<SQ_PATHSQL},
+		{DROP_S,				KW_DROP,				1<<SQ_PATHSQL},
 	};
 	static volatile long fInit=-1;
 	while (fInit!=0) {
@@ -1355,7 +1367,7 @@ void SInCtx::initKW()
 			for (unsigned i=0; i<sizeof(opDscr)/sizeof(opDscr[0]); i++) {
 				const OpDscr& od=opDscr[i];
 				if (od.str!=NULL && byte(*od.str-'A')<=byte('Z'-'A'))
-					initKWEntry(od.str,(TLx)i,KW_OP,1<<SQ_SQL|1<<SQ_SPARQL);
+					initKWEntry(od.str,(TLx)i,KW_OP,1<<SQ_PATHSQL|1<<SQ_SPARQL);
 			}
 			fInit=0;
 		}
@@ -1556,10 +1568,10 @@ TLx SInCtx::lex()
 	case LX_VL:
 		return ptr<end&&*ptr=='|'?(++ptr,OP_CONCAT):OP_OR;
 	case OP_MINUS:
-		if (sqt==SQ_SQL && ptr<end && *ptr=='-') {while (++ptr<end && *ptr!='\n'); continue;}
+		if (sqt==SQ_PATHSQL && ptr<end && *ptr=='-') {while (++ptr<end && *ptr!='\n'); continue;}
 		return OP_MINUS;
 	case OP_DIV:
-		if (sqt==SQ_SQL && ptr<end && *ptr=='*') {
+		if (sqt==SQ_PATHSQL && ptr<end && *ptr=='*') {
 			for (unsigned level=1;;) {
 				if (++ptr>=end || *ptr=='\0') throw SY_MISCOMEND;
 				if (*ptr=='\n') {line++; lbeg=ptr+1; lmb=0;}
@@ -3010,7 +3022,7 @@ IStmt *SessionX::createStmt(const char *qs,const URIID *ids,unsigned nids,Compil
 		assert(ses==Session::getSession());
 		if (ce!=NULL) {memset(ce,0,sizeof(CompilationError)); ce->msg="";}
 		if (qs==NULL || ses->getStore()->inShutdown()) return NULL;
-		SInCtx in(ses,qs,strlen(qs),ids,nids,(ses->itf&ITF_SPARQL)!=0?SQ_SPARQL:SQ_SQL);
+		SInCtx in(ses,qs,strlen(qs),ids,nids,(ses->itf&ITF_SPARQL)!=0?SQ_SPARQL:SQ_PATHSQL);
 		try {Stmt *st=in.parseStmt(); in.checkEnd(true); return st;}
 		catch (SynErr sy) {in.getErrorInfo(RC_SYNTAX,sy,ce);}
 		catch (RC rc) {in.getErrorInfo(rc,SY_ALL,ce);}

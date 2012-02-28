@@ -1,11 +1,26 @@
 /**************************************************************************************
 
-Copyright © 2004-2010 VMware, Inc. All rights reserved.
+Copyright © 2004-2012 VMware, Inc. All rights reserved.
 
-Written by Mark Venguerov 2004 - 2010
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+     http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,  WITHOUT
+WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the
+License for the specific language governing permissions and limitations
+under the License.
+
+Written by Mark Venguerov 2004-2012
 
 **************************************************************************************/
 
+/**
+ * various data structures and helper functions
+ */
 #ifndef _UTILS_H_
 #define _UTILS_H_
 
@@ -18,8 +33,9 @@ namespace AfyDB {struct Value; struct DateTime;}
 namespace AfyKernel
 {
 
-// Next Power of 2 (H. Warren, Hacker's Delight, 2003, p.48)
-
+/**
+ * Next Power of 2 (H. Warren, Hacker's Delight, 2003, p.48)
+ */
 __forceinline unsigned nextP2(unsigned x)
 {
 	x = x - 1;
@@ -31,8 +47,9 @@ __forceinline unsigned nextP2(unsigned x)
 	return x + 1;
 }
 
-// Number of 1-bits (H. Warren, Hacker's Delight, 2003, p.66)
-
+/**
+ * Number of 1-bits in 32-bit number (H. Warren, Hacker's Delight, 2003, p.66)
+ */
 __forceinline int pop(unsigned x)
 {
 	x = x - (x >> 1 & 0x55555555);
@@ -41,16 +58,9 @@ __forceinline int pop(unsigned x)
 	return x+(x>>16)&0x3f;
 }
 
-__forceinline int nlz(unsigned x)
-{
-	x|=x>>1; x|=x>>2; x|=x>>4; x|=x>>8; return pop(~(x|x>>16));
-}
-
-__forceinline int ntz(unsigned x)
-{
-	return pop(~x&x-1);
-}
-
+/**
+ * Number of 1-bits in 16-bit number
+ */
 __forceinline int pop16(unsigned short x)
 {
 	x = x - (x >> 1 & 0x5555);
@@ -59,6 +69,9 @@ __forceinline int pop16(unsigned short x)
 	return x + (x>>8) & 0x1f;
 }
 
+/**
+ * Number of 1-bits in 16-bit number
+ */
 __forceinline int pop8(unsigned char x)
 {
 	x = x - (x >> 1 & 0x55);
@@ -66,11 +79,33 @@ __forceinline int pop8(unsigned char x)
 	return x + (x>>4) & 0x0f; 
 }
 
+/**
+ * Number of leading zeros in 32-bit number (H. Warren, Hacker's Delight, 2003)
+ */
+__forceinline int nlz(unsigned x)
+{
+	x|=x>>1; x|=x>>2; x|=x>>4; x|=x>>8; return pop(~(x|x>>16));
+}
+
+/**
+ * Number of trailing zeros in 32-bit number (H. Warren, Hacker's Delight, 2003)
+ */
+__forceinline int ntz(unsigned x)
+{
+	return pop(~x&x-1);
+}
+
+/**
+ * 3-way comparison, returns -1,0,1 (H. Warren, Hacker's Delight, 2003)
+ */
 template<typename T> __forceinline int cmp3(T x,T y)
 {
 	return (x>y)-(x<y);
 }
 
+/**
+ * sign function, returns -1,0,1 (H. Warren, Hacker's Delight, 2003)
+ */
 template<typename T> __forceinline int sign(T x)
 {
 	return (x>0)-(x<0);
@@ -83,22 +118,35 @@ template<typename T> __forceinline int sign(T x)
 #define	ULLONG_MAX	0xffffffffffffffffLL
 #endif
 
+/**
+ * helpers for string tables and number conversions
+ */
 #define	S_L(a)	byte(sizeof(a)-1),a
 #define	isD(a)	(unsigned((byte)(a)-'0')<=9u)
 struct Len_Str {size_t l; const char *s;};
 
 #define	TN_CHECK(a,b,c) (a)<(c/10)||(a)==(c/10)&&(b)<=(c%10)
 
+/**
+ * standard printf formats for TIMESTAMPS and intervals
+ */
 #define	DATETIMEFORMAT		"%04d-%02d-%02d %02d:%02d:%02d"
 #define	INTERVALFORMAT		"%d:%02d:%02d"
 #define FRACTIONALFORMAT	".%06d"
 
+/**
+ * case insensitive comparison for strings of ASCII letters
+ * second string must be in upper case
+ */
 __forceinline bool cmpncase(const char *p1,const char *p2,size_t l)
 {
 	for (size_t i=0; i<l; ++i,++p1,++p2) if ((*p1&~0x20)!=*p2) return false;
 	return true;
 }
 
+/**
+ * various conversion helper functions
+ */
 extern	RC		strToNum(const char *str,size_t lstr,AfyDB::Value& res,const char **pend=NULL,bool fInt=false);
 extern	RC		strToTimestamp(const char *str,size_t lstr,TIMESTAMP& res);
 extern	RC		strToInterval(const char *str,size_t lstr,int64_t& res);
@@ -108,6 +156,9 @@ extern	RC		convDateTime(class Session *ses,TIMESTAMP dt,AfyDB::DateTime& dts,boo
 extern	RC		convDateTime(class Session *ses,const AfyDB::DateTime& dts,TIMESTAMP& dt,bool fUTC=true);
 extern	RC		getDTPart(TIMESTAMP dt,unsigned& res,int part);
 
+/**
+ * int128 number compression and decompression macros
+ */
 #undef afy_rot
 #undef afy_rev
 #ifdef WIN32
@@ -202,6 +253,9 @@ public:
 	__forceinline static RC merge(T&,T&,MemAlloc*) {return RC_OK;}
 };
 
+/**
+ * binary array search template
+ */
 template<typename T,typename Key=T,class C=DefCmp<Key>,typename N=unsigned> class BIN
 {
 public:
@@ -232,6 +286,9 @@ public:
 	}
 };
 
+/**
+ * CRC32 calculation
+ */
 class CRC32
 {
 	uint32_t	CRCTable[256];
@@ -247,6 +304,10 @@ public:
 	static	CRC32	_CRC;
 };
 
+/**
+ * UTF8 helper functions
+ * conversions, type character, etc.
+ */
 class UTF8
 {
 	const static byte	slen[256];
@@ -344,6 +405,10 @@ public:
 	static int wdigit(ulong ch) {return ch-0xFF10<=9u?ch-0xFF10:-1;}
 };
 
+/**
+ * double-linked circular list
+ * trades space for O(1) insertion and deletion operations
+ */
 struct DLList
 {
 	DLList	*prev;
@@ -359,6 +424,9 @@ public:
 	void	reset() {prev=next=this;}
 };
 
+/**
+ * hash-table chain element template
+ */
 template<class T> class HChain : public DLList
 {
 	T* const	obj;
@@ -399,6 +467,9 @@ public:
 	};
 };
 
+/**
+ * string reference key for hash tables
+ */
 class StrRefKey
 {
 	friend class StrKey;
@@ -411,6 +482,9 @@ public:
 	bool operator!=(const char *key2) const {return strcmp(str,key2)!=0;}
 };
 
+/**
+ * string key (copied, zero terminated) for hash tables
+ */
 class StrKey
 {
 	char	*str;
@@ -428,6 +502,9 @@ public:
 	void set(char *s) {if (str!=NULL) free(str,STORE_HEAP); str=s;}
 };
 
+/**
+ * string with length
+ */
 struct StrLen
 {
 	const	char	*str;
@@ -443,6 +520,9 @@ public:
 	void operator=(const StrLen& key) {str=key.str; len=key.len;}
 };
 
+/**
+ * simple hash table template
+ */
 template<class T,typename Key,HChain<T> T::*pList> class HashTab
 {
 	struct HashTabElt {
@@ -495,6 +575,9 @@ public:
 			while ((t = hashTab[i].list.removeFirst())!=NULL) delete t;
 	}
 	friend class it;
+	/**
+	 * hash table iterator
+	 */
 	class it : public HChain<T>::it {
 		const HashTab&		hashTab;
 		ulong				idx;
@@ -508,6 +591,9 @@ public:
 			}
 		}
 	};
+	/**
+	 * hash table search context
+	 */
 	class Find {
 		const HashTab&	hashTab;
 		const Key		key;
@@ -523,6 +609,9 @@ public:
 	};
 };
 
+/**
+ * 'synchronised' hash table template (supports concurrent access)
+ */
 template<class T,typename Key,HChain<T> T::*pList,typename FKey=Key,typename FKeyArg=Key> class SyncHashTab
 {
 	struct HashTabElt {
@@ -610,6 +699,9 @@ public:
 	}
 	friend class it;
 	HChain<T>	*start(ulong idx) const {assert(idx<hashSize); return &hashTab[idx].list;}
+	/**
+	 * synchronised hash table iterator
+	 */
 	class it : public HChain<T>::it {
 		const SyncHashTab&	hashTab;
 		ulong				idx;
@@ -623,6 +715,9 @@ public:
 			}
 		}
 	};
+	/**
+	 * synchronized hash table search context
+	 */
 	class Find {
 		SyncHashTab&		hashTab;
 		const FKey			key;
@@ -650,6 +745,9 @@ public:
 	};
 };
 
+/**
+ * skip list template
+ */
 enum SListOp {SLO_LT, SLO_GT, SLO_NOOP, SLO_INSERT, SLO_DELETE, SLO_ERROR};
 
 template<typename T,class SL,int xHeight=16,unsigned int factor=4> class SList
@@ -711,6 +809,11 @@ public:
 	void	clear() {alloc.release(); current=&node0; level=0; count=0; for (int i=0; i<xHeight; i++) node0.ptrs[i]=NULL;}
 };
 
+
+/**
+ * compressed page set descriptor
+ * (n.b. bitmaps are not implemented yet!)
+ */
 #define SZ_BMP (sizeof(uint32_t)*8)
 
 class PageSet
@@ -792,6 +895,9 @@ public:
 	};
 };
 
+/**
+ * dynamic unordered array template
+ */
 template<typename T,int initSize=10,unsigned factor=1> class DynArray
 {
 	MemAlloc	*const ma;
@@ -818,6 +924,9 @@ private:
 	}
 };
 
+/**
+ * dynamic ordered array template; supports binary search
+ */
 template<typename T,typename Key=T,class C=DefCmp<Key>,unsigned initX=16,unsigned factor=1> class DynOArray
 {
 	MemAlloc	*const ma;
@@ -862,6 +971,10 @@ public:
 	void clear() {if (ts!=NULL) {ma->free(ts); ts=NULL;} nTs=xTs=0;}
 };
 
+/**
+ * dynamic ordered array template; supports binary search
+ * contains pre-allocated buffer
+ */
 template<typename T,typename Key=T,class C=DefCmp<Key>,int initSize=16,unsigned factor=1> class DynOArrayBuf
 {
 	MemAlloc	*const ma;

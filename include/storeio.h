@@ -1,10 +1,26 @@
 /**************************************************************************************
 
-Copyright © 2004-2010 VMware, Inc. All rights reserved.
+Copyright © 2004-2012 VMware, Inc. All rights reserved.
 
-Written by Andrew Skowronski and Mark Venguerov 2004 - 2010
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+     http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,  WITHOUT
+WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the
+License for the specific language governing permissions and limitations
+under the License.
+
+Written by Andrew Skowronski and Mark Venguerov 2004-2012
 
 **************************************************************************************/
+
+/**
+ * store IO abstract interface
+ */
 
 #ifndef _STOREIO_H_
 #define _STOREIO_H_
@@ -56,7 +72,7 @@ class IStoreIO
 {
 public:
 	struct iodesc {
-		AfyKernel::FileID	aio_fildes;		//!< In call to listIO set to file handle, as returned by open method.  Implementation may change to true file handle
+		AfyKernel::FileID		aio_fildes;		//!< In call to listIO set to file handle, as returned by open method.  Implementation may change to true file handle
 		off64_t					aio_offset;		//!< Offset in bytes from beginning of file
 		void					*aio_buf;	    //!< Buffer to read or write.  Normally needs to be aligned according to disk sector size (performance and O_DIRECT requirement).
 		size_t					aio_nbytes;		//!< Size of buffer
@@ -184,7 +200,7 @@ public:
 
 /*!Function to retrieve an instance of the default Kernel file i/o implementation 
 */
-extern "C"  _EXP IStoreIO *	getStoreIO();
+extern "C" AFY_EXP IStoreIO *	getStoreIO();
 
 #endif
 

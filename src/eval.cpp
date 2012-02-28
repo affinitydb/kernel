@@ -1,8 +1,20 @@
 /**************************************************************************************
 
-Copyright © 2004-2010 VMware, Inc. All rights reserved.
+Copyright © 2004-2012 VMware, Inc. All rights reserved.
 
-Written by Mark Venguerov 2004 - 2010
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+     http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,  WITHOUT
+WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the
+License for the specific language governing permissions and limitations
+under the License.
+
+Written by Mark Venguerov 2004-2012
 
 **************************************************************************************/
 
@@ -1166,21 +1178,27 @@ RC Expr::calc(ExprOp op,Value& arg,const Value *moreArgs,int nargs,unsigned flag
 		break;
 	case OP_MEMBERSHIP:
 		if (arg.type==VT_REFID) {
-			PINEx pex(Session::getSession(),arg.id);
+			if ((ses=Session::getSession())==NULL) return RC_NOSESSION;
+			ClassResult clr(ses,ses->getStore()); PINEx pex(ses,arg.id); 
 			if ((rc=pex.getSes()->getStore()->queryMgr->getBody(pex))!=RC_OK) return rc;
+			if ((rc=ses->getStore()->classMgr->classify(&pex,clr))!=RC_OK) return rc;
+			if (clr.nClasses==0) arg.setError();
+			else {
 			// load
+			}
 		} else if (arg.type==VT_REF) {
-#if 0
-			if ((((PIN*)arg.pin)->mode&(PIN_HIDDEN|PIN_NO_INDEX))==0) {
+			if ((((PIN*)arg.pin)->getMode()&(PIN_HIDDEN|PIN_NO_INDEX))==0) {
 				ses=((PIN*)arg.pin)->getSes(); ClassResult clr(ses,ses->getStore()); PINEx pex((PIN*)arg.pin);
 				if ((rc=ses->getStore()->classMgr->classify(&pex,clr))!=RC_OK) return rc;
+				freeV(arg); arg.setError();
 				if (clr.nClasses!=0) {
+#if 0
 					if ((clss=new(ses) ClassID[clr.nClasses])==NULL) return RC_NORESOURCES;
 					for (unsigned i=0; i<clr.nClasses; i++) clss[i]=clr.classes[i]->cid;
 					nclss=clr.nClasses;
+#endif
 				}
 			}
-#endif
 		} else return RC_TYPE;
 		break;
 	default:
