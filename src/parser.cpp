@@ -1143,7 +1143,7 @@ RC SOutCtx::renderValue(const Value& v,JRType jr) {
 		if ((v.meta&META_PROP_EVAL)==0 && !append("$(",2) || (rc=((Expr*)v.expr)->render(0,*this))==RC_OK && (v.meta&META_PROP_EVAL)==0 && !append(")",1)) rc=RC_NORESOURCES;
 		break;
 	case VT_STMT:
-		if ((v.meta&META_PROP_EVAL)==0 && !append("${",2) || (rc=((Stmt*)v.stmt)->render(*this))==RC_OK && (v.meta&META_PROP_EVAL)==0 && !append("}",1)) rc=RC_NORESOURCES;
+		if (!((v.meta&META_PROP_EVAL)==0?append("${",2):append("(",1)) || (rc=((Stmt*)v.stmt)->render(*this))==RC_OK && !append((v.meta&META_PROP_EVAL)==0?"}":")",1)) rc=RC_NORESOURCES;
 		break;
 	case VT_VARREF:
 		switch (v.refV.flags&VAR_TYPE_MASK) {
@@ -2160,7 +2160,16 @@ void SInCtx::parse(Value& res,const QVarRef *vars,unsigned nVars,unsigned pflags
 				if (lx2==LX_PATHQ) {
 					if (ops.top(2)->lx!=OP_PATH || ops.top().flag!=(lx==LX_FILTER?1:0)) throw SY_SYNTAX;
 				} else if (lx==LX_FILTER && oprs.top().type==VT_VARREF) {
-					// check unbound
+					Value *pv=oprs.top(1);
+					if (pv->refV.flags!=0xFFFF) {
+						// check bound
+					} else if (pv->length==0) {
+						assert(pv->refV.refN<dnames); Len_Str *ls=(Len_Str*)&dnames[pv->refV.refN]; assert(ls->s!=NULL);
+						pv->refV.refN=0; pv->refV.flags=0; ops.push(OpF(OP_PATH,0));
+						Value save=v; v.set(ls->s,(uint32_t)ls->l); mapURI(); vv.setURIID(v.uid); oprs.push(vv); v=save;
+					} else {
+						//...
+					}
 				} else throw SY_SYNTAX;
 			}
 			ops.push(OpF(lx,opf)); break;
@@ -2551,13 +2560,18 @@ void SInCtx::resolveVars(QVarRef *qv,Value& vv,Value *par)
 				if (var!=INVALID_QVAR_ID) {ls->s=NULL; ls->l=var|0x80000000;} else {mapURI(); ls->s=NULL; ls->l=v.uid;}	// check there is only one var in stmt
 				 v=save;
 			}
-			if ((ls->l&0x80000000)!=0) vv.refV.refN=byte(ls->l&~0x80000000);
-			else if (qv->var->type<QRY_UNION) throw SY_MISNAME;
-			else if (vv.length==0) {vv.refV.refN=0; vv.refV.id=(URIID)ls->l; vv.length=1;} 
-			else {
-				// path
-				throw RC_INTERNAL;
+			if ((ls->l&0x80000000)!=0) {
+				vv.refV.refN=byte(ls->l&~0x80000000);
+				if (par!=NULL) {
+					ExprTree *pe=(ExprTree*)par->exprt; assert(par->type==VT_EXPRTREE && pe->op==OP_PATH);
+					if (pe->nops==2 || pe->nops==3 && (pe->operands[2].type==VT_INT||pe->operands[2].type==VT_UINT)) {
+						par->type=VT_VARREF; par->length=1; par->eid=pe->nops==2?STORE_COLLECTION_ID:pe->operands[2].ui;
+						par->refV=vv.refV; par->refV.id=pe->operands[1].uid; pe->destroy();
 			}				
+				}
+			} else if (qv->var->type<QRY_UNION) throw SY_MISNAME;
+			else if (vv.length==0) {vv.refV.refN=0; vv.refV.id=(URIID)ls->l; vv.length=1;} 
+			else throw RC_INTERNAL;			
 		} else if (vv.length==1) {
 			Value save=v; v.setURIID(vv.refV.id); QVarID var=findVar(v,qv,1); v=save;
 			if (var==INVALID_QVAR_ID) {if (qv->var->type<QRY_UNION) throw SY_MISNAME;}
