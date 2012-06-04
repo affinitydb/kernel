@@ -30,19 +30,21 @@ using namespace AfyKernel;
 RC StoreCB::open(StoreCtx *ctx,const char *fname,const char *pwd,bool fForce)
 {
 	assert(ctx!=NULL&&ctx->fileMgr!=NULL&&ctx->cryptoMgr!=NULL&&fname!=NULL);
-	RC rc = RC_OK; FileID fid = 0; TIMESTAMP ts; getTimestamp(ts);
-	if ((rc = ctx->fileMgr->open(fid,fname))!=RC_OK) return rc;
+	RC rc=RC_OK; FileID fid=0; TIMESTAMP ts; getTimestamp(ts); byte keybuf[PWD_ENC_SIZE];
+	if ((rc=ctx->fileMgr->open(fid,fname))!=RC_OK) return rc;
 	size_t lPage=getPageSize(); ctx->bufSize=(uint32_t)ceil(STORECBSIZE,lPage);
-	StoreCB *theCB = ctx->theCB = (StoreCB*)allocAligned(ctx->bufSize,lPage);
+	StoreCB *theCB=ctx->theCB=(StoreCB*)allocAligned(ctx->bufSize,lPage);
 	if (theCB==NULL) rc=RC_NORESOURCES;
 	else if ((rc=ctx->fileMgr->io(FIO_READ,PageIDFromPageNum(fid,0),theCB,ctx->bufSize))==RC_OK) {
-		const char *key=pwd!=NULL&&*pwd!='\0'?pwd:DEFAULTHMACKEY; byte keybuf[PWD_ENC_SIZE];
-		memcpy(keybuf,theCB->hdr.salt1,sizeof(uint32_t)+PWD_LSALT);
-		PWD_ENCRYPT crypt((byte*)key,strlen(key),keybuf); 
-		memcpy(ctx->HMACKey0,crypt.encrypted()+sizeof(uint32_t)+PWD_LSALT,HMAC_KEY_SIZE);
-		HMAC hmac(ctx->HMACKey0,HMAC_KEY_SIZE); hmac.add((byte*)theCB+HMAC_SIZE,STORECBSIZE-HMAC_SIZE);
-		if (memcmp(theCB->hdr.hmac,hmac.result(),HMAC_SIZE)!=0) rc=RC_CORRUPTED;
-		else {
+		if (pwd!=NULL && *pwd!='\0' || theCB->fHMAC!=0) {
+			const char *key=pwd!=NULL&&*pwd!='\0'?pwd:DEFAULTHMACKEY;
+			memcpy(keybuf,theCB->hdr.salt1,sizeof(uint32_t)+PWD_LSALT);
+			PWD_ENCRYPT crypt((byte*)key,strlen(key),keybuf);
+			memcpy(ctx->HMACKey0,crypt.encrypted()+sizeof(uint32_t)+PWD_LSALT,HMAC_KEY_SIZE);
+			HMAC hmac(ctx->HMACKey0,HMAC_KEY_SIZE); hmac.add((byte*)theCB+HMAC_SIZE,STORECBSIZE-HMAC_SIZE);
+			if (memcmp(theCB->hdr.hmac,hmac.result(),HMAC_SIZE)!=0) rc=RC_CORRUPTED;
+		}
+		if (rc==RC_OK) {
 			if (pwd!=NULL && *pwd!='\0') {
 				memcpy(keybuf,theCB->hdr.salt2,sizeof(uint32_t)+PWD_LSALT);
 				PWD_ENCRYPT crypt2((byte*)pwd,strlen(pwd),keybuf); 
@@ -58,7 +60,8 @@ RC StoreCB::open(StoreCtx *ctx,const char *fname,const char *pwd,bool fForce)
 				ctx->storeID=theCB->storeID; ctx->keyPrefix=StoreCtx::genPrefix(theCB->storeID);
 				memcpy(ctx->HMACKey,theCB->HMACKey,HMAC_KEY_SIZE);
 				memcpy(ctx->encKey,theCB->encKey,ENC_KEY_SIZE);
-				ctx->fEncrypted = theCB->fIsEncrypted!=0;
+				ctx->fEncrypted=theCB->fIsEncrypted!=0;
+				ctx->fHMAC=theCB->fHMAC!=0;
 			}
 		}
 	}
@@ -83,40 +86,44 @@ RC StoreCB::create(StoreCtx *ctx,const char *fname,const StoreCreationParameters
 	else if ((rc=ctx->fileMgr->allocateExtent(fid,1,addr))==RC_OK) {
 		assert(addr==0); assert(sizeof(StoreCB)<=STORECBSIZE);
 		memset(theCB,0,ctx->bufSize);
-		theCB->magic = STORECBMAGIC;
-		theCB->version = STORE_VERSION;
-		theCB->lPage = cpar.pageSize;
-		theCB->nPagesPerExtent = cpar.fileExtentSize;
-		theCB->maxSize = cpar.maxSize;
-		theCB->logSegSize = (uint32_t)cpar.logSegSize;	// round to sectors (**2?)
-		theCB->nMaster = cpar.nControlRecords;
-		theCB->pctFree = cpar.pctFree<=0.f?DEFAULTPCTFREE:cpar.pctFree;
-		theCB->storeID = ctx->storeID = cpar.storeId;
-		theCB->fIsEncrypted = ushort(cpar.fEncrypted ? ~0 : 0);
-		theCB->filler = 0;
-		if (cpar.fEncrypted) {
-			ctx->cryptoMgr->randomBytes(theCB->encKey,ENC_KEY_SIZE);
-			memcpy(ctx->encKey,theCB->encKey,ENC_KEY_SIZE); ctx->fEncrypted=true;
-		}
-		ctx->cryptoMgr->randomBytes(theCB->HMACKey,HMAC_KEY_SIZE);
-		memcpy(ctx->HMACKey,theCB->HMACKey,HMAC_KEY_SIZE);
-		const char *key=cpar.password!=NULL&&*cpar.password!='\0'?cpar.password:DEFAULTHMACKEY;
-		PWD_ENCRYPT crypt((byte*)key,strlen(key));
-		memcpy(theCB->hdr.salt1,crypt.encrypted(),sizeof(uint32_t)+PWD_LSALT);
-		memcpy(ctx->HMACKey0,crypt.encrypted()+sizeof(uint32_t)+PWD_LSALT,HMAC_KEY_SIZE);
-		if (cpar.password!=NULL && *cpar.password!='\0') {
-			if ((ctx->theCBEnc=(StoreCB*)allocAligned(ctx->bufSize,cpar.pageSize))==NULL) rc=RC_NORESOURCES;
-			else {
-				PWD_ENCRYPT crypt2((byte*)cpar.password,strlen(cpar.password));
-				memcpy(theCB->hdr.salt2,crypt2.encrypted(),sizeof(uint32_t)+PWD_LSALT);
-				memcpy(ctx->encKey0,crypt2.encrypted()+sizeof(uint32_t)+PWD_LSALT,ENC_KEY_SIZE);
+		theCB->magic=STORECBMAGIC;
+		theCB->version=STORE_VERSION;
+		theCB->lPage=cpar.pageSize;
+		theCB->nPagesPerExtent=cpar.fileExtentSize;
+		theCB->maxSize=cpar.maxSize;
+		theCB->logSegSize=(uint32_t)cpar.logSegSize;	// round to sectors (**2?)
+		theCB->nMaster=cpar.nControlRecords;
+		theCB->pctFree=cpar.pctFree<=0.f?DEFAULTPCTFREE:cpar.pctFree;
+		theCB->storeID=ctx->storeID=cpar.storeId;
+		theCB->fIsEncrypted=uint8_t(cpar.fEncrypted ? ~0 : 0);
+		theCB->fHMAC=uint8_t(cpar.fPageIntegrity ? ~0 : 0);
+		theCB->filler=0;
+		if (cpar.fEncrypted || cpar.fPageIntegrity || cpar.password!=NULL && *cpar.password!='\0') {
+			ctx->fHMAC=true;
+			ctx->cryptoMgr->randomBytes(theCB->HMACKey,HMAC_KEY_SIZE);
+			memcpy(ctx->HMACKey,theCB->HMACKey,HMAC_KEY_SIZE);
+			const char *key=cpar.password!=NULL&&*cpar.password!='\0'?cpar.password:DEFAULTHMACKEY;
+			PWD_ENCRYPT crypt((byte*)key,strlen(key));
+			memcpy(theCB->hdr.salt1,crypt.encrypted(),sizeof(uint32_t)+PWD_LSALT);
+			memcpy(ctx->HMACKey0,crypt.encrypted()+sizeof(uint32_t)+PWD_LSALT,HMAC_KEY_SIZE);
+			if (cpar.fEncrypted) {
+				ctx->cryptoMgr->randomBytes(theCB->encKey,ENC_KEY_SIZE);
+				memcpy(ctx->encKey,theCB->encKey,ENC_KEY_SIZE); ctx->fEncrypted=true;
+			}
+			if (cpar.password!=NULL && *cpar.password!='\0') {
+				if ((ctx->theCBEnc=(StoreCB*)allocAligned(ctx->bufSize,cpar.pageSize))==NULL) rc=RC_NORESOURCES;
+				else {
+					PWD_ENCRYPT crypt2((byte*)cpar.password,strlen(cpar.password));
+					memcpy(theCB->hdr.salt2,crypt2.encrypted(),sizeof(uint32_t)+PWD_LSALT);
+					memcpy(ctx->encKey0,crypt2.encrypted()+sizeof(uint32_t)+PWD_LSALT,ENC_KEY_SIZE);
+				}
 			}
 		}
-		ctx->keyPrefix = StoreCtx::genPrefix(cpar.storeId);
-		theCB->nDataFiles = 1;
-		theCB->state = ~0u;
-		theCB->xPropID = PROP_SPEC_LAST;
-		for (int i=0; i<MA_ALL; i++) theCB->mapRoots[i] = INVALID_PAGEID;
+		ctx->keyPrefix=StoreCtx::genPrefix(cpar.storeId);
+		theCB->nDataFiles=1;
+		theCB->state=~0u;
+		theCB->xPropID=PROP_SPEC_LAST;
+		for (int i=0; i<MA_ALL; i++) theCB->mapRoots[i]=INVALID_PAGEID;
 		if (rc==RC_OK) rc=update(ctx,false);
 	}
 	if (rc!=RC_OK) close(ctx);
@@ -125,7 +132,7 @@ RC StoreCB::create(StoreCtx *ctx,const char *fname,const StoreCreationParameters
 
 void StoreCB::preload(StoreCtx *ctx) const
 {
-	static const PGID mapRootsPGIDs[MA_ALL] = {
+	static const PGID mapRootsPGIDs[MA_ALL]={
 		PGID_INDEX,PGID_INDEX,PGID_INDEX,PGID_INDEX,PGID_INDEX,PGID_INDEX,PGID_INDEX,
 		PGID_INDEX,PGID_INDEX,PGID_HEAPDIR,PGID_HEAPDIR,PGID_HEAPDIR,PGID_HEAPDIR,
 		PGID_ALL,PGID_ALL,PGID_ALL,PGID_ALL,PGID_ALL,PGID_ALL,PGID_ALL,PGID_ALL};
@@ -149,9 +156,11 @@ RC StoreCB::update(StoreCtx *ctx,bool fSetLogEnd)
 		memcpy(theCB=ctx->theCBEnc,ctx->theCB,STORECBSIZE); AES aes(ctx->encKey0,ENC_KEY_SIZE);
 		aes.encrypt((byte*)theCB+sizeof(CryptInfo),STORECBSIZE-sizeof(CryptInfo),(uint32_t*)theCB->hdr.salt1+1);
 	}
-	HMAC hmac(ctx->HMACKey0,HMAC_KEY_SIZE);
-	hmac.add((byte*)theCB+HMAC_SIZE,STORECBSIZE-HMAC_SIZE);
-	memcpy(theCB->hdr.hmac,hmac.result(),HMAC_SIZE);
+	if (ctx->fHMAC!=0) {
+		HMAC hmac(ctx->HMACKey0,HMAC_KEY_SIZE);
+		hmac.add((byte*)theCB+HMAC_SIZE,STORECBSIZE-HMAC_SIZE);
+		memcpy(theCB->hdr.hmac,hmac.result(),HMAC_SIZE);
+	}
 	rc=ctx->fileMgr->io(FIO_WRITE,0,theCB,ctx->bufSize,true);
 	return rc;
 }

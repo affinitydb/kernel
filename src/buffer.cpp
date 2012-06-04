@@ -173,6 +173,12 @@ PBlock *BufMgr::newPage(PageID pid,PageMgr *pageMgr,PBlock *old,ulong flags,Sess
 	return pb;
 }
 
+static int __cdecl sortPages(const void *pv1,const void *pv2)
+{
+	const myaio **ma1=(const myaio **)pv1,**ma2=(const myaio **)pv2;
+	int c=cmp3((*ma1)->aio_fildes,(*ma2)->aio_fildes); return c!=0?c:cmp3((*ma1)->aio_offset,(*ma2)->aio_offset);
+}
+
 RC BufMgr::flushAll(uint64_t timeout)
 {
 	if (ctx->theCB->state==SST_NO_SHUTDOWN) return RC_OK;
@@ -195,6 +201,7 @@ RC BufMgr::flushAll(uint64_t timeout)
 				}
 			pageLock.unlock(); 
 			if (cnt!=0) {
+				if (cnt>1) qsort(pcbs,cnt,sizeof(myaio*),sortPages);
 				if (flushLSN.isNull() || (rc=ctx->logMgr->flushTo(flushLSN))==RC_OK) rc=ctx->fileMgr->listIO(LIO_WAIT,cnt,pcbs);
 				for (int i=0; i<cnt; i++) pcbs[i]->aio_pb->writeResult(rc);
 			} else {
@@ -243,6 +250,7 @@ void BufMgr::prefetch(const PageID *pages,int nPages,PageMgr *pageMgr,PageMgr *c
 		pb->fillaio(LIO_READ,BufMgr::asyncReadNotify); ++asyncReadCount; pcbs[cnt++]=pb->aio;
 	}
 	if (cnt>0) {
+		if (cnt>1) qsort(pcbs,cnt,sizeof(myaio*),sortPages);
 		RC rc=ctx->fileMgr->listIO(LIO_NOWAIT,cnt,pcbs);
 		if (rc!=RC_OK) report(MSG_ERROR,"Read-ahead failed: %d\n",rc);
 	}
@@ -310,6 +318,7 @@ void BufMgr::writeAsyncPages(const PageID *asyncPages,ulong nAsyncPages)
 		}
 	}
 	if (cnt>0) {
+		if (cnt>1) qsort(pcbs,cnt,sizeof(myaio*),sortPages);
 		if (!flushLSN.isNull() && (rc=ctx->logMgr->flushTo(flushLSN))!=RC_OK)
 			for (ulong i=0; i<cnt; i++) {--asyncWriteCount; pcbs[i]->aio_pb->writeResult(rc);}
 		 else 

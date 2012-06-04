@@ -82,6 +82,7 @@ using namespace AfyKernel;
 #define	USING_S				"USING"
 #define	WITH_S				"WITH"
 #define	INTO_S				"INTO"
+#define	UNIQUE_S			"UNIQUE"
 
 #define	INSERT_S			"INSERT"
 #define	UPDATE_S			"UPDATE"
@@ -245,6 +246,7 @@ const OpDscr SInCtx::opDscr[] =
 	{0,		LX_ERR,		0,NULL,				{33, 32},	{2,	2}	},		 //LX_PATHQ
 	{0,		LX_ERR,		0,NULL,				{0,	  0},	{0,	0}	},		 //LX_SELF
 	{0,		LX_ERR,		0,NULL,				{40,  3},	{2,	2}	},		 //LX_SPROP
+	{0,		LX_ERR,		0,NULL,				{0,	  0},	{0,	0}	},		 //LX_TPID
 };
 
 const static Len_Str typeName[VT_ALL] = 
@@ -270,6 +272,18 @@ const static Len_Str stmtKWs[STMT_OP_ALL] =
 const static Len_Str opKWs[OP_FIRST_EXPR] =
 {
 	{S_L(" "SET_S" ")}, {S_L(" "ADD_S" ")}, {S_L(" "ADD_S" ")}, {S_L(" "MOVE_S" ")}, {S_L(" "MOVE_S" ")}, {S_L(" "DELETE_S" ")}, {S_L(" "EDIT_S" ")}, {S_L(" "RENAME_S" ")}
+};
+
+const static struct
+{
+	Len_Str		ls;
+	uint32_t	flg;
+} PINoptions[] =
+{
+	{{S_L("NO_REPLICATION")},	PIN_NO_REPLICATION},
+	{{S_L("NO_INDEX")},			PIN_NO_INDEX},
+	{{S_L("NOTIFY")},			PIN_NOTIFY},
+	{{S_L("HIDDEN")},			PIN_HIDDEN},
 };
 
 static RC renderElement(ElementID eid,SOutCtx& out,bool fBefore=false)
@@ -346,13 +360,47 @@ RC Stmt::render(SOutCtx& out) const
 		// isolation level
 		break;
 	case STMT_INSERT:
-		if (values!=NULL) for (i=0; i<nValues; i++) {
-			const Value& v=values[i];
-			if (v.property!=STORE_INVALID_PROPID) {
-				if (i!=0 && !out.append(", ",2)) return RC_NORESOURCES;
-				if ((rc=out.renderName(v.property))!=RC_OK) return rc;
-				if (!out.append("=",1)) return RC_NORESOURCES;
-				if ((rc=out.renderValue(v))!=RC_OK) return rc;
+		if ((mode&MODE_PART)!=0 && out.append(PART_S" ",sizeof(PART_S))) return RC_NORESOURCES;
+		if (ei!=NULL) {
+			if (ei->id!=~0ULL) {
+				size_t l=sprintf(out.cbuf,PID_PREFIX":"_LX_FM" ",ei->id);
+				if (!out.append(out.cbuf,l)) return RC_NORESOURCES;
+			}
+			if (ei->into!=NULL && ei->nInto!=0) {
+				if (!out.append(INTO_S" ",sizeof(INTO_S))) return RC_NORESOURCES;
+				for (i=0; i<ei->nInto; i++) {
+					const ClassSpec &cs=ei->into[i];
+					if (i>0 && !out.append(" & ",3)) return RC_NORESOURCES;
+					if ((cs.classID&CLASS_PARAM_REF)!=0) {
+						size_t l=sprintf(out.cbuf,PARAM_PREFIX"%u",cs.classID&~CLASS_PARAM_REF);
+						if (!out.append(out.cbuf,l)) return RC_NORESOURCES;
+					} else if ((rc=out.renderName(cs.classID))!=RC_OK) return rc;
+					if (cs.params!=NULL && cs.nParams>0) {
+						for (ulong j=0; j<cs.nParams; j++) {
+							out.append(j==0?"(":",",1);
+							if ((rc=out.renderValue(cs.params[j]))!=RC_OK) return rc;
+						}
+						out.append(")",1);
+					}
+				}
+			}
+			if (ei->mode!=0) {
+				bool fOpt=false;
+				for (unsigned i=0; i<sizeof(PINoptions)/sizeof(PINoptions[0]); i++) if ((ei->mode&PINoptions[i].flg)!=0) {
+					if (fOpt) {if (!out.append(",",1)) return RC_NORESOURCES;}
+					else {fOpt=true; if (!out.append(OPTIONS_S"(",sizeof(OPTIONS_S))) return RC_NORESOURCES;}
+					if (!out.append(PINoptions[i].ls.s,PINoptions[i].ls.l)) return RC_NORESOURCES;
+				}
+				if (fOpt && !out.append(") ",2)) return RC_NORESOURCES;
+			}
+			if (ei->values!=NULL) for (i=0; i<ei->nValues; i++) {
+				const Value& v=ei->values[i];
+				if (v.property!=STORE_INVALID_PROPID) {
+					if (i!=0 && !out.append(", ",2)) return RC_NORESOURCES;
+					if ((rc=out.renderName(v.property))!=RC_OK) return rc;
+					if (!out.append("=",1)) return RC_NORESOURCES;
+					if ((rc=out.renderValue(v))!=RC_OK) return rc;
+				}
 			}
 		}
 		if (fFrom) rc=top->render(out);
@@ -360,38 +408,41 @@ RC Stmt::render(SOutCtx& out) const
 	case STMT_UPDATE:
 		if (nVars==1 && top->getType()==QRY_SIMPLE)
 			if ((rc=top->render(RP_FROM,out))==RC_OK) fFrom=false; else break;
-		if (values!=NULL) for (i=0; i<nValues; i++) {
-			const Value& v=values[i];
-			if (v.property!=STORE_INVALID_PROPID && v.op<=OP_CONCAT) {
-				unsigned op=v.op>=(uint8_t)OP_FIRST_EXPR?OP_SET:v.op==(uint8_t)OP_ADD_BEFORE?OP_ADD:v.op==(uint8_t)OP_MOVE_BEFORE?OP_MOVE:(ExprOp)v.op;
-				if (op==prev) {if (!out.append(", ",2)) return RC_NORESOURCES;}
-				else if (out.append(opKWs[op].s,opKWs[op].l)) prev=op; else return RC_NORESOURCES;
-				if ((rc=out.renderName(v.property))!=RC_OK) return rc;
-				if (v.eid!=STORE_COLLECTION_ID && op!=OP_RENAME && (rc=renderElement(v.eid,out,v.op==OP_ADD_BEFORE))!=RC_OK) return rc;
-				if ((v.meta&META_PROP_IFEXIST)!=0) {if (!out.append("?",1)) return RC_NORESOURCES;}
-				else if ((v.meta&META_PROP_IFNOTEXIST)!=0 && !out.append("!",1)) return RC_NORESOURCES;
-				switch (op) {
-				case OP_SET:
-					if (v.op>=OP_FIRST_EXPR && !out.append(SInCtx::opDscr[v.op].str,SInCtx::opDscr[v.op].lstr)) return RC_NORESOURCES;
-				case OP_ADD:
-					if (!out.append("=",1)) return RC_NORESOURCES;
-					if ((rc=out.renderValue(v))!=RC_OK) return rc;
-				case OP_DELETE: break;
-				case OP_MOVE: case OP_MOVE_BEFORE:
-					if (v.op==OP_MOVE) {
-						if (!out.append(" "AFTER_S" ",sizeof(AFTER_S)+1)) return RC_NORESOURCES;
-					} else {
-						if (!out.append(" "BEFORE_S" ",sizeof(BEFORE_S)+1)) return RC_NORESOURCES;
+		if (ei!=NULL) {
+			//...
+			if (ei->values!=NULL) for (i=0; i<ei->nValues; i++) {
+				const Value& v=ei->values[i];
+				if (v.property!=STORE_INVALID_PROPID && v.op<=OP_CONCAT) {
+					unsigned op=v.op>=(uint8_t)OP_FIRST_EXPR?OP_SET:v.op==(uint8_t)OP_ADD_BEFORE?OP_ADD:v.op==(uint8_t)OP_MOVE_BEFORE?OP_MOVE:(ExprOp)v.op;
+					if (op==prev) {if (!out.append(", ",2)) return RC_NORESOURCES;}
+					else if (out.append(opKWs[op].s,opKWs[op].l)) prev=op; else return RC_NORESOURCES;
+					if ((rc=out.renderName(v.property))!=RC_OK) return rc;
+					if (v.eid!=STORE_COLLECTION_ID && op!=OP_RENAME && (rc=renderElement(v.eid,out,v.op==OP_ADD_BEFORE))!=RC_OK) return rc;
+					if ((v.meta&META_PROP_IFEXIST)!=0) {if (!out.append("?",1)) return RC_NORESOURCES;}
+					else if ((v.meta&META_PROP_IFNOTEXIST)!=0 && !out.append("!",1)) return RC_NORESOURCES;
+					switch (op) {
+					case OP_SET:
+						if (v.op>=OP_FIRST_EXPR && !out.append(SInCtx::opDscr[v.op].str,SInCtx::opDscr[v.op].lstr)) return RC_NORESOURCES;
+					case OP_ADD:
+						if (!out.append("=",1)) return RC_NORESOURCES;
+						if ((rc=out.renderValue(v))!=RC_OK) return rc;
+					case OP_DELETE: break;
+					case OP_MOVE: case OP_MOVE_BEFORE:
+						if (v.op==OP_MOVE) {
+							if (!out.append(" "AFTER_S" ",sizeof(AFTER_S)+1)) return RC_NORESOURCES;
+						} else {
+							if (!out.append(" "BEFORE_S" ",sizeof(BEFORE_S)+1)) return RC_NORESOURCES;
+						}
+						if ((rc=renderElement(v.ui,out))!=RC_OK) return rc;
+						break;
+					case OP_RENAME:
+						if (!out.append("=",1)) return RC_NORESOURCES;
+						if ((rc=out.renderName(v.ui))!=RC_OK) return rc;
+						break;
+					case OP_EDIT:
+						//???
+						break;
 					}
-					if ((rc=renderElement(v.ui,out))!=RC_OK) return rc;
-					break;
-				case OP_RENAME:
-					if (!out.append("=",1)) return RC_NORESOURCES;
-					if ((rc=out.renderName(v.ui))!=RC_OK) return rc;
-					break;
-				case OP_EDIT:
-					//???
-					break;
 				}
 			}
 		}
@@ -431,9 +482,7 @@ RC QVar::render(SOutCtx& out) const
 		if (!out.append(COUNT_S"("STAR_S")",sizeof(COUNT_S)+sizeof(STAR_S))) return RC_NORESOURCES;
 	} else if (outs!=NULL && nOuts!=0) for (unsigned j=0; j<nOuts; j++) {
 		const ValueV& o=outs[j]; rc=RC_OK; const QVar *save=out.cvar; out.cvar=this;
-		if (nOuts>1) {
-				//???
-		}
+		if (nOuts>1 && !out.append("@{",2)) return RC_NORESOURCES;
 		for (unsigned i=0; i<o.nValues; i++) {
 			const Value &v=o.vals[i]; bool fAs=true; const char *p;
 			if (i!=0 && !out.append(", ",2)) return RC_NORESOURCES;
@@ -458,9 +507,7 @@ RC QVar::render(SOutCtx& out) const
 				{if (!out.append(" "AS_S" ",sizeof(AS_S)+1)) return RC_NORESOURCES; rc=out.renderName(v.property);}
 			if (rc!=RC_OK) return rc;
 		}
-		if (nOuts>1) {
-			//???
-		}
+		if (nOuts>1 && !out.append("},",j+1<nOuts?2:1)) return RC_NORESOURCES;
 		out.cvar=save;
 	} else {
 		// check dscr in children (if join)
@@ -941,6 +988,7 @@ char *SOutCtx::renderAll()
 
 RC SOutCtx::renderName(uint32_t id,const char *prefix,const QVar *qv,bool fQ,bool fEsc) {
 	URI *uri=NULL; RC rc=RC_OK;
+	if (id==PROP_SPEC_SELF) return append("@",1)?RC_OK:RC_NORESOURCES;
 	if ((flags&SOM_VAR_NAMES)!=0 && qv!=NULL) {
 		if ((rc=renderVarName(qv))!=RC_OK) return rc;
 		prefix=URIID_PREFIX;
@@ -1007,9 +1055,9 @@ RC SOutCtx::renderName(uint32_t id,const char *prefix,const QVar *qv,bool fQ,boo
 }
 
 RC SOutCtx::renderPID(const PID& id,bool fJ) {
-	size_t l=sprintf(cbuf,fJ?"{\"$ref\":\""_LX_FM"\"}":PID_PREFIX _LX_FM,id.pid);
+	size_t l=sprintf(cbuf,fJ?"{\"$ref%s\":\""_LX_FM"\"}":PID_PREFIX"%s"_LX_FM,id.ident==STORE_INVALID_IDENTITY?":":"",id.pid);
 	if (!append(cbuf,l))  return RC_NORESOURCES;
-	if (!fJ && id.ident!=STORE_OWNER) {
+	if (!fJ && id.ident!=STORE_OWNER && id.ident!=STORE_INVALID_IDENTITY) {
 		Identity *ident=(Identity*)ses->getStore()->identMgr->ObjMgr::find(id.ident); if (ident==NULL) return RC_NOTFOUND;
 		const char *s=ident->getName(); bool f=append(IDENTITY_PREFIX,1) && append(s,strlen(s));
 		ident->release(); if (!f) return RC_NORESOURCES;
@@ -1018,7 +1066,7 @@ RC SOutCtx::renderPID(const PID& id,bool fJ) {
 }
 
 RC SOutCtx::renderValue(const Value& v,JRType jr) {
-	RC rc=RC_OK; unsigned long u; Identity *ident; const char *s; size_t l; const Value *cv; int ll; const QVar *qv; Value vv;
+	RC rc=RC_OK; unsigned long u; Identity *ident; const char *s; size_t l; const Value *cv; int ll; const QVar *qv; Value vv; bool ff;
 	if (jr!=JR_NO) {
 		if (v.type>VT_DOUBLE && !isString((ValueType)v.type) && v.type!=VT_ARRAY && v.type!=VT_COLLECTION && v.type!=VT_STRUCT && v.type!=VT_REFID)
 			{if ((rc=convV(v,vv,VT_STRING,ses,CV_NODEREF))==RC_OK) {vv.setPropID(v.property); vv.eid=v.eid; rc=renderValue(vv,jr); freeV(vv);} return rc;}
@@ -1148,13 +1196,13 @@ RC SOutCtx::renderValue(const Value& v,JRType jr) {
 	case VT_VARREF:
 		switch (v.refV.flags&VAR_TYPE_MASK) {
 		case 0:
-			qv=NULL;
-			if (v.length==0 && (cvar==NULL || cvar->getType()>=QRY_UNION)) return v.refV.refN!=0?RC_CORRUPTED:append("@",1)?RC_OK:RC_NORESOURCES;
-			if (v.length==0 || (flags&SOM_VAR_NAMES)!=0) {
+			qv=NULL; ff=v.length==0||v.refV.id==PROP_SPEC_SELF;
+			if (ff && (cvar==NULL || cvar->getType()>=QRY_UNION)) return v.refV.refN!=0?RC_CORRUPTED:append("@",1)?RC_OK:RC_NORESOURCES;
+			if (ff || (flags&SOM_VAR_NAMES)!=0) {
 				if ((qv=cvar!=NULL?cvar->getRefVar(v.refV.refN):(QVar*)0)==NULL) return RC_CORRUPTED;
-				if (v.length==0) return (rc=renderVarName(qv))!=RC_OK||append(".*",2)?rc:RC_NORESOURCES;
+				if (ff) return (rc=renderVarName(qv))!=RC_OK||append(".@",2)?rc:RC_NORESOURCES;
 			}
-			if (v.length!=0 && (rc=renderName(v.refV.id,NULL,qv))==RC_OK) rc=renderElement(v.eid,*this);
+			if ((rc=renderName(v.refV.id,NULL,qv))==RC_OK) rc=renderElement(v.eid,*this);
 			break;
 		case VAR_PARAM:
 			l=sprintf(cbuf,PARAM_PREFIX"%d",v.refV.refN); if (!append(cbuf,l)) return RC_NORESOURCES;
@@ -1538,16 +1586,22 @@ TLx SInCtx::lex()
 		errpos=ptr; throw lx==LX_DQUOTE?SY_MISDQU:SY_MISQUO;
 	case LX_SELF:
 		if (ptr>=end) return LX_SELF;
-		if (!isxdigit(*(byte*)ptr)) return charLex[(byte)*ptr]==LX_LCBR?OP_PIN:LX_SELF;
+		if (*ptr==':') {
+			if (++ptr>=end || !isxdigit(*(byte*)ptr)) throw SY_SYNTAX;
+			lx=LX_TPID;
+		} else {
+			if (!isxdigit(*(byte*)ptr)) return charLex[(byte)*ptr]==LX_LCBR?OP_PIN:LX_SELF;
+			lx=LX_CON;
+		}
 		pid.pid=0; pid.ident=STORE_OWNER; beg=ptr;
 		do {ch=*ptr++; pid.pid=pid.pid<<4|(ch<='9'?ch-'0':ch<='F'?ch-'A'+10:ch-'a'+10);}
 		while (ptr<end && isxdigit(*(byte*)ptr));
 		if (ptr-beg>16) throw SY_TOOBIG;
-		if (ptr<end && *ptr=='!') {
+		if (lx==LX_CON && ptr<end && *ptr=='!') {
 			if ((++ptr,lex())!=LX_IDENT || v.type!=VT_STRING) throw SY_MISIDENT;
 			mapIdentity(); assert(v.type==VT_IDENTITY); pid.ident=v.iid;
 		}
-		v.set(pid); return LX_CON;
+		v.set(pid); return lx;
 	case LX_DOLLAR:
 		if (ptr<end) {
 			switch (charLex[(byte)*ptr]) {
@@ -1740,7 +1794,7 @@ void SInCtx::mapURI(const char *prefix,size_t lPrefix)
 		}
 		if (fCopy) {
 			if (lBase+lPrefix+v.length+2>lBaseBuf && (base=(char*)
-				ma->realloc(base,lBaseBuf=lBase+lPrefix+v.length+1))==NULL) throw RC_NORESOURCES;
+				ma->realloc(base,lBaseBuf=lBase+lPrefix+v.length+2))==NULL) throw RC_NORESOURCES;
 			if (prefix!=NULL) {memcpy(base+lBase,prefix,lPrefix); if (fAddDel) base[lBase+lPrefix++]='/';}
 			memcpy(base+lBase+lPrefix,str,v.length); base[lBase+lPrefix+v.length]=0; str=base+lBase;
 		}
@@ -1753,7 +1807,7 @@ struct OpF
 {
 	TLx lx; byte flag; 
 	OpF() : lx(LX_BOE),flag(0) {} 
-	OpF(TLx l,byte f) : lx(l),flag(f) {}
+	OpF(TLx l,byte f) : lx(l),flag(f) {} 
 };
 
 void SInCtx::parse(Value& res,const QVarRef *vars,unsigned nVars,unsigned pflags)
@@ -1766,19 +1820,36 @@ void SInCtx::parse(Value& res,const QVarRef *vars,unsigned nVars,unsigned pflags
 		const OpDscr *od=&opDscr[lx]; opf=0; assert(lx<sizeof(opDscr)/sizeof(opDscr[0]));
 		switch (lx) {
 		case LX_IDENT:
-			if (ops.top().lx==OP_PATH) {if (v.type!=VT_URIID) mapURI();}
-			else if ((mode&SIM_SELECT)!=0 && v.type==VT_STRING && (v.flags&HEAP_TYPE_MASK)==NO_HEAP) {
-				for (i=0;;i++)
-					if (i>=dnames) {Len_Str &ls=dnames.add(); ls.s=v.str; ls.l=v.length; break;}
-					else if (dnames[i].l==v.length && !strncasecmp(dnames[i].s,v.str,v.length)) break;
-					v.setVarRef((byte)i); v.refV.flags=0xFFFF; 
-			} else if (vars!=NULL && (var=findVar(v,vars,nVars))!=INVALID_QVAR_ID) {freeV(v); v.setVarRef(var);} 
-			else if (nVars<=1) {mapURI(); assert(v.type==VT_URIID); URIID uid=v.uid; v.setVarRef(0,uid);}
-			else throw SY_MISNAME;
+			if (est!=0) goto error_no_op;
+			if (ops.top().lx!=OP_PATH) {
+				vv=v; v.setError(); nextLex=lex(); Value save=v; v=vv;
+				if (nextLex==LX_PERIOD) {
+					if ((mode&SIM_SELECT)!=0 && v.type==VT_STRING && (v.flags&HEAP_TYPE_MASK)==NO_HEAP) {
+						for (i=0;;i++)
+							if (i>=dnames) {Len_Str &ls=dnames.add(); ls.s=v.str; ls.l=v.length; break;}
+							else if (dnames[i].l==v.length && !strncasecmp(dnames[i].s,v.str,v.length)) break;
+						v.setVarRef((byte)i); v.refV.flags=0xFFFF;
+					} else if (vars!=NULL && (var=findVar(v,vars,nVars))!=INVALID_QVAR_ID) {
+						freeV(v); v.setVarRef(var);
+					} else {
+						if (v.type!=VT_URIID) mapURI(); URIID uid=v.uid; v.setVarRef(0,uid);
+					}
+				} else if (nVars<=1) {mapURI(); assert(v.type==VT_URIID); URIID uid=v.uid; v.setVarRef(0,uid);}
+				else {freeV(save); throw SY_MISNAME;}
+				oprs.push(v); v=save; est=1; continue;
+			}
+			if (v.type!=VT_URIID) mapURI();
 		case LX_CON:
 			if (est!=0) goto error_no_op; oprs.push(v); v.setError(); est=1; continue;
 		case LX_SELF: 
-			if (est!=0) goto error_no_op; v.setVarRef(0); oprs.push(v); v.setError(); est=1; continue;
+			if (est!=0) goto error_no_op; 
+			if ((nextLex=lex())==LX_PERIOD || nextLex==LX_LCBR || nextLex==LX_LBR) throw SY_SYNTAX;
+			if (ops.top().lx==OP_PATH) vv.setURIID(PROP_SPEC_SELF); else vv.setVarRef(0); 
+			oprs.push(vv); est=1; continue;
+		case LX_TPID:
+			if (est!=0) goto error_no_op;
+			if ((mode&SIM_INSERT)==0) throw SY_SYNTAX;
+			oprs.push(v); v.setError(); est=1; continue;
 		case LX_PREFIX: throw SY_MISQN2;
 		case LX_QUERY:
 			stmt=parseStmt(true);
@@ -1788,7 +1859,7 @@ void SInCtx::parse(Value& res,const QVarRef *vars,unsigned nVars,unsigned pflags
 			if ((lx=lex())==LX_IDENT) {
 				mapURI(); assert(v.type==VT_URIID);
 				if (est==0) {oprs.push(v); est=1; v.setError(); continue;}
-			} else if (est==0) throw SY_MISPROP;
+			} else if (est==0 || lx!=LX_LPR) throw SY_MISPROP;
 			nextLex=lx; od=&opDscr[lx=OP_PATH]; est=0; break;
 		case LX_EXCL:
 			if (est!=0) goto error_no_op;
@@ -1876,7 +1947,10 @@ void SInCtx::parse(Value& res,const QVarRef *vars,unsigned nVars,unsigned pflags
 			if (est!=0) est=0; else od=&opDscr[lx=OP_NEG]; break;
 		case OP_MUL:
 			if (est!=0) est=0;
-			else switch (nextLex=lex()) {
+			else if (ops.top().lx==OP_PATH) {
+				if ((nextLex=lex())==LX_PERIOD || nextLex==LX_LCBR || nextLex==LX_LBR) throw SY_SYNTAX;
+				vv.setURIID(PROP_SPEC_SELF); oprs.push(vv); est=1; continue;
+			} else switch (nextLex=lex()) {
 			case LX_RPR:
 				if (ops.top().lx!=OP_COUNT || (mode&(SIM_SELECT|SIM_HAVING))==0) throw SY_MISCON;
 				vv.setError(); oprs.push(vv); est=1; continue;
@@ -2160,16 +2234,8 @@ void SInCtx::parse(Value& res,const QVarRef *vars,unsigned nVars,unsigned pflags
 				if (lx2==LX_PATHQ) {
 					if (ops.top(2)->lx!=OP_PATH || ops.top().flag!=(lx==LX_FILTER?1:0)) throw SY_SYNTAX;
 				} else if (lx==LX_FILTER && oprs.top().type==VT_VARREF) {
-					Value *pv=oprs.top(1);
-					if (pv->refV.flags!=0xFFFF) {
-						// check bound
-					} else if (pv->length==0) {
-						assert(pv->refV.refN<dnames); Len_Str *ls=(Len_Str*)&dnames[pv->refV.refN]; assert(ls->s!=NULL);
-						pv->refV.refN=0; pv->refV.flags=0; ops.push(OpF(OP_PATH,0));
-						Value save=v; v.set(ls->s,(uint32_t)ls->l); mapURI(); vv.setURIID(v.uid); oprs.push(vv); v=save;
-					} else {
-						//...
-					}
+					Value *pv=oprs.top(1); assert(pv->length!=0 && pv->refV.flags!=0xFFFF);
+					pv->length=0; vv.setURIID(pv->refV.id); oprs.push(vv); ops.push(OpF(OP_PATH,0));
 				} else throw SY_SYNTAX;
 			}
 			ops.push(OpF(lx,opf)); break;
@@ -2335,7 +2401,7 @@ QVarID SInCtx::parseFrom(Stmt *stmt)
 			if ((var=stmt->addVariable())!=INVALID_QVAR_ID && (rc=stmt->setPIDs(var,&v.id,1))!=RC_OK) throw rc;
 			break;
 		case LX_IDENT: case LX_COLON:
-			var=parseClasses(stmt,lx==LX_COLON); break;
+			var=parseClassVar(stmt,lx==LX_COLON); break;
 		default: throw SY_UNKVAR;
 		}
 		if (var==INVALID_QVAR_ID) throw SY_INVVAR;
@@ -2439,10 +2505,28 @@ TLx SInCtx::parseOrderOrGroup(Stmt *stmt,QVarID var,Value *os,unsigned nO)
 	return lx;
 }
 
-QVarID SInCtx::parseClasses(Stmt *stmt,bool fColon)
+QVarID SInCtx::parseClassVar(Stmt *stmt,bool fColon)
 {
 	DynArray<ClassSpec> css(ma); unsigned i; RC rc=RC_OK; SynErr sy=SY_ALL;
-	TLx lx; QVarID var=INVALID_QVAR_ID;
+	TLx lx; QVarID var=INVALID_QVAR_ID; parseClasses(css,fColon);
+	var=stmt->addVariable(css,css);		// NoCopy?
+	for (i=css; i--!=0; ) if (css[i].params!=NULL) freeV((Value*)css[i].params,css[i].nParams,ses);
+	if ((lx=lex())!=LX_LCBR) nextLex=lx;
+	else {
+		DynArray<PID> pids(ma);
+		do {
+			if (lex()!=LX_CON || v.type!=VT_REFID) throw SY_MISPID;
+			if ((rc=pids+=v.id)!=RC_OK) throw rc;
+		} while ((lx=lex())==LX_COMMA);
+		if (lx!=LX_RCBR) throw SY_MISRCBR;
+		if ((rc=stmt->setPIDs(var,pids,pids))!=RC_OK) throw rc;
+	}
+	return var;
+}
+
+void SInCtx::parseClasses(DynArray<ClassSpec> &css,bool fColon,bool fInto)
+{
+	unsigned i; RC rc=RC_OK; SynErr sy=SY_ALL; TLx lx;
 	for (;;) {
 		if (!fColon) {mapURI(); assert(v.type==VT_URIID);}
 		else {
@@ -2473,24 +2557,18 @@ QVarID SInCtx::parseClasses(Stmt *stmt,bool fColon)
 			} while (rc==RC_OK && (lx=lex())==LX_COMMA);
 			if (rc!=RC_OK || sy!=SY_ALL) break; if (lx!=LX_RPR) {sy=SY_MISRPR; break;}
 			lx=lex();
+		} else if (lx==LX_LBR) {
+			// condition like in path expr seg
 		}
+		if (fInto && lx==LX_IDENT && v.type==VT_STRING && v.length==sizeof(UNIQUE_S)-1 && cmpncase(v.str,UNIQUE_S,sizeof(UNIQUE_S)-1))
+			{cs.classID|=CLASS_UNIQUE; lx=lex();}
 		if (lx!=OP_AND) {nextLex=lx; break;}
 		if ((lx=lex())!=LX_IDENT) {if (lx==LX_COLON) fColon=true; else {sy=SY_UNKVAR; break;}}
 	}
-	if (rc==RC_OK && sy==SY_ALL) var=stmt->addVariable(css,css);		// NoCopy?
-	for (i=css; i--!=0; ) if (css[i].params!=NULL) freeV((Value*)css[i].params,css[i].nParams,ses);
-	if (sy!=SY_ALL) throw sy; if (rc!=RC_OK) throw rc;
-	if ((lx=lex())!=LX_LCBR) nextLex=lx;
-	else {
-		DynArray<PID> pids(ma);
-		do {
-			if (lex()!=LX_CON || v.type!=VT_REFID) throw SY_MISPID;
-			if ((rc=pids+=v.id)!=RC_OK) throw rc;
-		} while ((lx=lex())==LX_COMMA);
-		if (lx!=LX_RCBR) throw SY_MISRCBR;
-		if ((rc=stmt->setPIDs(var,pids,pids))!=RC_OK) throw rc;
+	if (rc!=RC_OK || sy!=SY_ALL) {
+		for (i=css; i--!=0; ) if (css[i].params!=NULL) freeV((Value*)css[i].params,css[i].nParams,ses);
+		if (sy!=SY_ALL) throw sy; if (rc!=RC_OK) throw rc;
 	}
-	return var;
 }
 
 ExprTree *SInCtx::parseCondition(const QVarRef *vars,unsigned nVars)
@@ -2558,26 +2636,29 @@ void SInCtx::resolveVars(QVarRef *qv,Value& vv,Value *par)
 			if (ls->s!=NULL) {
 				Value save=v; v.set(ls->s,(uint32_t)ls->l); QVarID var=findVar(v,qv,1);
 				if (var!=INVALID_QVAR_ID) {ls->s=NULL; ls->l=var|0x80000000;} else {mapURI(); ls->s=NULL; ls->l=v.uid;}	// check there is only one var in stmt
-				 v=save;
+				v=save;
 			}
 			if ((ls->l&0x80000000)!=0) {
 				vv.refV.refN=byte(ls->l&~0x80000000);
 				if (par!=NULL) {
 					ExprTree *pe=(ExprTree*)par->exprt; assert(par->type==VT_EXPRTREE && pe->op==OP_PATH);
 					if (pe->nops==2 || pe->nops==3 && (pe->operands[2].type==VT_INT||pe->operands[2].type==VT_UINT)) {
-						par->type=VT_VARREF; par->length=1; par->eid=pe->nops==2?STORE_COLLECTION_ID:pe->operands[2].ui;
-						par->refV=vv.refV; par->refV.id=pe->operands[1].uid; pe->destroy();
-			}				
+						par->type=VT_VARREF; par->refV=vv.refV; par->eid=pe->nops==2?STORE_COLLECTION_ID:pe->operands[2].ui;
+						par->length=(par->refV.id=pe->operands[1].uid)==PROP_SPEC_SELF?0:1; pe->destroy();
+					}
 				}
-			} else if (qv->var->type<QRY_UNION) throw SY_MISNAME;
+			} else if (qv->var->type<QRY_UNION||par!=NULL&&((ExprTree*)par->exprt)->operands[1].uid==PROP_SPEC_SELF) throw SY_MISNAME;
 			else if (vv.length==0) {vv.refV.refN=0; vv.refV.id=(URIID)ls->l; vv.length=1;} 
 			else throw RC_INTERNAL;			
 		} else if (vv.length==1) {
 			Value save=v; v.setURIID(vv.refV.id); QVarID var=findVar(v,qv,1); v=save;
-			if (var==INVALID_QVAR_ID) {if (qv->var->type<QRY_UNION) throw SY_MISNAME;}
+			if (var==INVALID_QVAR_ID) {if (qv->var->type<QRY_UNION||par!=NULL&&((ExprTree*)par->exprt)->operands[1].uid==PROP_SPEC_SELF) throw SY_MISNAME;}
 			else if (par==NULL) {vv.length=0; vv.refV.refN=var;}
-			else {ExprTree *pe=(ExprTree*)par->exprt;	par->setVarRef(var,pe->operands[1].uid); if (pe->nops>=3) par->eid=pe->operands[2].ui; ma->free(pe);}
-		}
+			else {
+				ExprTree *pe=(ExprTree*)par->exprt; par->setVarRef(var,pe->operands[1].uid==PROP_SPEC_SELF?STORE_INVALID_PROPID:pe->operands[1].uid); 
+				if (pe->nops>=3) par->eid=pe->operands[2].ui; pe->destroy();
+			}
+		} else if (qv->var->type<QRY_UNION) throw SY_MISNAME;
 	}
 }
 
@@ -2626,8 +2707,9 @@ inline bool checkProp(URIID uid,bool fNew)
 
 Stmt *SInCtx::parseStmt(bool fNested)
 {
-	Stmt *stmt=NULL; TLx lx; uint8_t op; unsigned md,msave=mode&SIM_DML_EXPR; DynArray<Value,40> props(ma); 
+	Stmt *stmt=NULL; TLx lx; uint8_t op; unsigned md,msave=mode&(SIM_DML_EXPR|SIM_INSERT),iflg;
 	SynErr sy=SY_ALL; RC rc=RC_OK; Value w; ElementID eid,eid2; QVarID var; Class *cls; Value vals[3];
+	DynArray<Value,40> props(ma); DynArray<ClassSpec> classes(ma); uint64_t iid;
 	switch (lx=fNested?lex():parsePrologue()) {
 	default: throw SY_SYNTAX;
 	case LX_EOE: break;
@@ -2636,67 +2718,79 @@ Stmt *SInCtx::parseStmt(bool fNested)
 		md=0;
 		switch (op=v.op) {
 		case KW_SELECT:
-			nextLex=lx; stmt=NULL; parseQuery(stmt,false); break;
+			nextLex=lx; parseQuery(stmt,false); break;
 		case KW_INSERT:
-			mode|=SIM_DML_EXPR;
-			if ((lx=lex())==LX_IDENT && msave!=0 && v.type==VT_STRING && v.length==sizeof(PART_S)-1 && cmpncase(v.str,PART_S,sizeof(PART_S)-1))
-				{md=MODE_PART; lx=lex();}
-			if (lx==LX_KEYW && v.op==KW_AS) {
-				// read id
-				lx=lex();
-			}
-			if (lx==LX_IDENT && v.type==VT_STRING && v.length==sizeof(INTO_S)-1 && cmpncase(v.str,INTO_S,sizeof(INTO_S)-1)) {
-				//read classes with & and UNIQUE if family
-				lx=lex();
-			}
-			if (lx==LX_IDENT && v.type==VT_STRING && v.length==sizeof(OPTIONS_S)-1 && cmpncase(v.str,OPTIONS_S,sizeof(OPTIONS_S)-1)) {
-				if (lex()!=LX_LPR) throw SY_MISLPR;
-				//...
-				lx=lex();
-			}
-			if (lx==LX_KEYW && (v.op==KW_SELECT || v.op==KW_FROM || v.op==KW_WHERE || v.op==KW_MATCH)) nextLex=lx;
-			else if (lx==LX_LPR) {
-				do {
-					if (lex()!=LX_IDENT) throw SY_MISPROP;
-					mapURI(); assert(v.type==VT_URIID);
-					if (!checkProp(v.uid,true)) throw SY_INVPROP;
-					v.property=v.uid; if ((rc=props+=v)!=RC_OK) throw rc;
-				} while ((lx=lex())==LX_COMMA);
-				if (lx!=LX_RPR) throw SY_MISRPR;
-				if (lex()!=LX_KEYW || v.op!=KW_VALUES) throw SY_SYNTAX;
-				if (lex()!=LX_LPR) throw SY_MISLPR; unsigned i=0;
-				do {
-					if (i>=props) {sy=SY_MANYARG; break;}
-					if ((lx=lex())==LX_KEYW && v.op==KW_NULL) props-=i;
-					else {
-						nextLex=lx; parse(w); Value *pv=(Value*)&props[i++];
-						if (w.type==VT_VARREF) w.meta|=META_PROP_EVAL;
-						w.property=pv->property; rc=copyV(w,*pv,ma); freeV(w);
-					}
-				} while (rc==RC_OK && (lx=lex())==LX_COMMA);
-				if (rc==RC_OK && sy==SY_ALL) {if (lx!=LX_RPR) sy=SY_MISRPR; else if (i<props) sy=SY_FEWARG;}
-			} else for (;;lx=lex()) {
-				if (lx!=LX_IDENT) {if (props!=0) sy=SY_MISPROP; else if (lx!=LX_EOE) {if (lx==LX_SEMI) nextLex=lx; else sy=SY_MISPROP;} break;}
-				mapURI(); assert(v.type==VT_URIID); URIID uid=v.uid;
-				if (!checkProp(uid,true)) {sy=SY_INVPROP; break;}
-				if (lex()!=OP_EQ) {sy=SY_MISEQ; break;}
-				if ((lx=lex())!=LX_KEYW || v.op!=KW_NULL) {
-					nextLex=lx; parse(w);
-					if ((w.flags&HEAP_TYPE_MASK)!=ma->getAType() && (rc=copyV(w,w,ma))!=RC_OK) break;
-					if (w.type==VT_VARREF) w.meta|=META_PROP_EVAL;
-					w.property=uid; if ((rc=props+=w)!=RC_OK) break;
+			mode|=SIM_DML_EXPR|SIM_INSERT; iflg=0; iid=~0ULL;
+			try {
+				if ((lx=lex())==LX_IDENT && msave!=0 && v.type==VT_STRING && v.length==sizeof(PART_S)-1 && cmpncase(v.str,PART_S,sizeof(PART_S)-1))
+					{md=MODE_PART; lx=lex();}
+				if (lx==LX_TPID) {iid=v.id.pid; lx=lex();}
+				if (lx==LX_IDENT && v.type==VT_STRING && v.length==sizeof(INTO_S)-1 && cmpncase(v.str,INTO_S,sizeof(INTO_S)-1)) {
+					if ((lx=lex())==LX_IDENT || lx==LX_COLON) parseClasses(classes,lx==LX_COLON,true); else throw SY_SYNTAX;
+					lx=lex();
 				}
-				if ((lx=lex())!=LX_COMMA) {nextLex=lx; break;}
-			}
-			mode=mode&~SIM_DML_EXPR|msave;
-			if (rc==RC_OK && sy==SY_ALL) {
+				if (lx==LX_IDENT && v.type==VT_STRING && v.length==sizeof(OPTIONS_S)-1 && cmpncase(v.str,OPTIONS_S,sizeof(OPTIONS_S)-1)) {
+					if (lex()!=LX_LPR) throw SY_MISLPR;
+					do {
+						if (lex()!=LX_IDENT || v.type!=VT_STRING) throw SY_MISCON;
+						for (unsigned i=0; ;i++)
+							if (i>=sizeof(PINoptions)/sizeof(PINoptions[0])) throw SY_SYNTAX;
+							else if (v.length==PINoptions[i].ls.l && cmpncase(v.str,PINoptions[i].ls.s,v.length)) {iflg|=PINoptions[i].flg; break;}
+					} while ((lx=lex())==LX_COMMA);
+					if (lx!=LX_RPR) throw SY_MISRPR;
+					lx=lex();
+				}
+				if (lx==LX_KEYW && (v.op==KW_SELECT || v.op==KW_FROM || v.op==KW_WHERE || v.op==KW_MATCH)) nextLex=lx;
+				else if (lx==LX_LPR) {
+					do {
+						if (lex()!=LX_IDENT) throw SY_MISPROP;
+						mapURI(); assert(v.type==VT_URIID);
+						if (!checkProp(v.uid,true)) throw SY_INVPROP;
+						v.property=v.uid; if ((rc=props+=v)!=RC_OK) throw rc;
+					} while ((lx=lex())==LX_COMMA);
+					if (lx!=LX_RPR) throw SY_MISRPR;
+					if (lex()!=LX_KEYW || v.op!=KW_VALUES) throw SY_SYNTAX;
+					if (lex()!=LX_LPR) throw SY_MISLPR; unsigned i=0;
+					do {
+						if (i>=props) {sy=SY_MANYARG; break;}
+						if ((lx=lex())==LX_KEYW && v.op==KW_NULL) props-=i;
+						else {
+							nextLex=lx; parse(w); Value *pv=(Value*)&props[i++];
+							if (w.type==VT_VARREF) w.meta|=META_PROP_EVAL;
+							w.property=pv->property; rc=copyV(w,*pv,ma); freeV(w);
+						}
+					} while (rc==RC_OK && (lx=lex())==LX_COMMA);
+					if (rc==RC_OK && sy==SY_ALL) {if (lx!=LX_RPR) sy=SY_MISRPR; else if (i<props) sy=SY_FEWARG;}
+				} else for (;;lx=lex()) {
+					if (lx!=LX_IDENT) {if (props!=0) sy=SY_MISPROP; else if (lx!=LX_EOE) {if (lx==LX_SEMI) nextLex=lx; else sy=SY_MISPROP;} break;}
+					mapURI(); assert(v.type==VT_URIID); URIID uid=v.uid;
+					if (!checkProp(uid,true)) {sy=SY_INVPROP; break;}
+					if (lex()!=OP_EQ) {sy=SY_MISEQ; break;}
+					if ((lx=lex())!=LX_KEYW || v.op!=KW_NULL) {
+						nextLex=lx; parse(w);
+						if ((w.flags&HEAP_TYPE_MASK)!=ma->getAType() && (rc=copyV(w,w,ma))!=RC_OK) break;
+						if (w.type==VT_VARREF) w.meta|=META_PROP_EVAL;
+						w.property=uid; if ((rc=props+=w)!=RC_OK) break;
+					}
+					if ((lx=lex())!=LX_COMMA) {nextLex=lx; break;}
+				}
+				mode=mode&~(SIM_DML_EXPR|SIM_INSERT)|msave; if (rc!=RC_OK) throw rc; if (sy!=SY_ALL) throw sy;
 				uint32_t nVals=0; Value *vals=props.get(nVals);
 				if (nVals!=0) vals=PIN::normalize(vals,nVals,PIN_NO_FREE,ses!=NULL?ses->getStore()->getPrefix():0,ma);
 				rc=(stmt=new(ma) Stmt(md,ma,STMT_INSERT))==NULL?RC_NORESOURCES:nVals==0?RC_OK:stmt->setValuesNoCopy(vals,nVals);
-				if (rc!=RC_OK) freeV(vals,nVals,ma);
-				else if ((lx=lex())!=LX_KEYW || v.op!=KW_SELECT && v.op!=KW_FROM && v.op!=KW_WHERE && v.op!=KW_MATCH) nextLex=lx;
-				else try {if (v.op!=KW_SELECT) nextLex=lx; parseSelect(stmt,v.op!=KW_SELECT);} catch (...) {stmt->destroy(); throw;}
-			} else for (unsigned i=0; i<props; i++) freeV(*(Value*)&props[i]);
+				if (rc!=RC_OK) {freeV(vals,nVals,ma); throw rc;}
+				if (classes!=0 || iflg!=0 || iid!=~0ULL) {
+					ExtraInfo *ei=stmt->ei; if (ei==NULL && (ei=new(ma) ExtraInfo)==NULL) throw RC_NORESOURCES;
+					ei->into=classes.get(ei->nInto); ei->mode=iflg; ei->id=iid; stmt->ei=ei;
+				}
+				if ((nextLex=lex())==LX_KEYW && (v.op==KW_SELECT || v.op==KW_FROM || v.op==KW_WHERE || v.op==KW_MATCH))
+					{if (v.op==KW_SELECT) nextLex=LX_ERR; parseSelect(stmt,v.op!=KW_SELECT);}
+			} catch (...) {
+				if (stmt!=NULL) stmt->destroy();
+				for (unsigned i=0; i<props; i++) freeV(*(Value*)&props[i]);
+				for (unsigned i=0; i<classes; i++) if (classes[i].params!=NULL) freeV((Value*)classes[i].params,classes[i].nParams,ma);
+				throw;
+			}
 			break;
 		case KW_UPDATE:
 			if ((stmt=new(ma) Stmt(0,ma,STMT_UPDATE))==NULL) throw RC_NORESOURCES;
@@ -2707,7 +2801,7 @@ Stmt *SInCtx::parseStmt(bool fNested)
 				//...
 				lx=lex();
 			} else if (lx==LX_IDENT||lx==LX_COLON) {
-				try {var=parseClasses(stmt,lx==LX_COLON);} catch (...) {stmt->destroy(); throw;} lx=lex();
+				try {var=parseClassVar(stmt,lx==LX_COLON);} catch (...) {stmt->destroy(); throw;} lx=lex();
 			} else if (lx==OP_MUL) {
 				if ((var=stmt->addVariable())==INVALID_QVAR_ID) rc=RC_NORESOURCES; lx=lex();
 			}
@@ -2984,6 +3078,8 @@ void SInCtx::parseManage(IMapDir *id,AfyDBCtx& ctx,const StartupParameters *sp)
 						if (v.type==VT_INT || v.type==VT_UINT) cparams.storeId=(uint16_t)v.ui; else throw SY_MISNUM;
 					} else if (vv.length==sizeof("ENCRYPTED")-1 && cmpncase(vv.str,"ENCRYPTED",vv.length)) {
 						if (v.type==VT_BOOL) cparams.fEncrypted=v.b; else throw SY_MISLGC;
+					} else if (vv.length==sizeof("PAGEINTEGRITY")-1 && cmpncase(vv.str,"PAGEINTEGRITY",vv.length)) {
+						if (v.type==VT_BOOL) cparams.fPageIntegrity=v.b; else throw SY_MISLGC;
 					} else if (vv.length==sizeof("MAXSIZE")-1 && cmpncase(vv.str,"MAXSIZE",vv.length)) {
 						if (v.type==VT_INT || v.type==VT_UINT) cparams.maxSize=v.ui;
 						else if (v.type==VT_INT64 || v.type==VT_UINT64) cparams.maxSize=v.ui64;

@@ -155,6 +155,7 @@ protected:
 #define	PIN_PROJECTED				0x00200000	/**< pin is a result of a projection of a stored pin */
 #define	PIN_SSV						0x00100000	/**< pin has SSV properties and they're not loaded yet */
 #define	PIN_EMPTY					0x00080000	/**< pin with no properties */
+#define	PIN_PINEX					0x00040000	/**< pin is a part of PINEx class (see pinex.h) */
 
 /**
  * Class PIN implements IPIN interface
@@ -341,7 +342,7 @@ public:
 	bool		isCached(const PID& id);
 	IPIN		*createUncommittedPIN(Value *values=NULL,unsigned nValues=0,unsigned mode=0,const PID *original=NULL);
 	RC			createPIN(PID& res,const Value values[],unsigned nValues,unsigned mode=0,const AllocCtrl* =NULL);
-	RC			commitPINs(IPIN * const *newPins,unsigned nNew,unsigned mode=0,const AllocCtrl* =NULL,const Value *params=NULL,unsigned nParams=0);
+	RC			commitPINs(IPIN * const *newPins,unsigned nNew,unsigned mode=0,const AllocCtrl* =NULL,const Value *params=NULL,unsigned nParams=0,const ClassSpec *into=NULL,unsigned nInto=0);
 	RC			modifyPIN(const PID& id,const Value *values,unsigned nValues,unsigned mode=0,const ElementID *eids=NULL,unsigned *pNFailed=NULL,const Value *params=NULL,unsigned nParams=0);
 	RC			deletePINs(IPIN **pins,unsigned nPins,unsigned mode=0);
 	RC			deletePINs(const PID *pids,unsigned nPids,unsigned mode=0);

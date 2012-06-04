@@ -809,8 +809,7 @@ RC SearchKey::toKey(const Value **ppv,ulong nv,const IndexSeg *kds,int idx,Sessi
 				} else if ((buf=(byte*)ma->realloc(buf,xbuf))==NULL) {rc=RC_NORESOURCES; break;}
 			}
 			buf[lkey]=kt; lkey+=l0; while (l0>1) {--l0; buf[lkey-l0]=byte(l>>8*(l0-1));}
-			if ((kt&0x2F)==(0x20|KVT_FLOAT)) {
-				memcpy(buf+lkey,pd,l-1); buf[lkey+l-1]=(byte)pv->qval.units;} else if (l!=0) memcpy(buf+lkey,pd,l); 
+			if ((kt&0xAF)==(0xA0|KVT_FLOAT)) {memcpy(buf+lkey,pd,l-1); buf[lkey+l-1]=(byte)pv->qval.units;} else if (l!=0) memcpy(buf+lkey,pd,l); 
 			lkey+=l; if (loc==PLC_ALLC) ma->free((void*)v.ptr.p);
 		}
 		if (pv==&w) freeV(w);

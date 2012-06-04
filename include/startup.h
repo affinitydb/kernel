@@ -141,6 +141,14 @@ public:
 	virtual	void	txNotify(TxEventType,uint64_t txid) = 0;
 };
 
+/**
+ * replication interface
+ */
+class IStoreReplication
+{
+public:
+};
+
 class ILockNotification
 {
 public:
@@ -167,11 +175,13 @@ struct StartupParameters
 	IStoreIO				*io;								/**< I/O interface, if not standard (e.g. S3) */
 	ILockNotification		*lockNotification;
 	size_t					logBufSize;							/**< size of log buffer in memory */
+	IStoreReplication		*replication;						/**< replication interface */
 	StartupParameters(unsigned md=STARTUP_MODE_DESKTOP,const char *dir=NULL,unsigned xFiles=DEFAULT_MAX_FILES,unsigned nBuf=DEFAULT_BLOCK_NUM,
 						unsigned asyncTimeout=DEFAULT_ASYNC_TIMEOUT,IStoreNet *net=NULL,IStoreNotification *notItf=NULL,
-						const char *pwd=NULL,const char *logDir=NULL,IStoreIO *pio=NULL,ILockNotification *lno=NULL,size_t lbs=DEFAULT_LOGBUF_SIZE) 
+						const char *pwd=NULL,const char *logDir=NULL,IStoreIO *pio=NULL,ILockNotification *lno=NULL,size_t lbs=DEFAULT_LOGBUF_SIZE,
+						IStoreReplication *repl=NULL) 
 		: mode(md),directory(dir),maxFiles(xFiles),nBuffers(nBuf),shutdownAsyncTimeout(asyncTimeout),
-		network(net),notification(notItf),password(pwd),logDirectory(logDir),io(pio),lockNotification(lno),logBufSize(lbs) {}
+		network(net),notification(notItf),password(pwd),logDirectory(logDir),io(pio),lockNotification(lno),logBufSize(lbs),replication(repl) {}
 };
 
 /**
@@ -190,11 +200,12 @@ struct StoreCreationParameters
 	uint64_t		maxSize;									/**< maximum store size in bytes; for quotas in multi-tenant environments */
 	float			pctFree;									/**< percentage of free space on pages when new PINs are allocated */
 	size_t			logSegSize;									/**< size of log segment */
+	bool			fPageIntegrity;								/**< calculate page HMAC even when store is not encrypted */
 	StoreCreationParameters(unsigned nCtl=0,unsigned lPage=DEFAULT_PAGE_SIZE,
 		unsigned extSize=DEFAULT_EXTENT_SIZE,const char *ident=NULL,unsigned short stId=0,const char *pwd=NULL,
-									bool fEnc=false,uint64_t xSize=0,float pctF=-1.f,size_t lss=DEFAULT_LOGSEG_SIZE)
+									bool fEnc=false,uint64_t xSize=0,float pctF=-1.f,size_t lss=DEFAULT_LOGSEG_SIZE,bool fPI=false)
 		: nControlRecords(nCtl),pageSize(lPage),fileExtentSize(extSize),identity(ident),
-		storeId(stId),password(pwd),fEncrypted(fEnc),maxSize(xSize),pctFree(pctF),logSegSize(lss) {}
+		storeId(stId),password(pwd),fEncrypted(fEnc),maxSize(xSize),pctFree(pctF),logSegSize(lss),fPageIntegrity(fPI) {}
 };
 
 /**

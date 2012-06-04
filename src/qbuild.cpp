@@ -58,7 +58,7 @@ RC QBuildCtx::process(QueryOp *&qop)
 
 	if (qv->groupBy==NULL || qv->nGroupBy==0) switch (qv->dtype) {
 	case DT_DISTINCT: case DT_DEFAULT:
-		if ((qop->qflags&QO_UNIQUE)==0 && (qv->stype==SEL_PINSET||qv->stype==SEL_COMPOUND/*||qv->stype==SEL_PROJECTED||qv->stype==SEL_PROJECTED1*/)) {
+		if ((qop->qflags&QO_UNIQUE)==0 && (qv->stype==SEL_PINSET||qv->stype==SEL_COMPOUND||qv->stype==SEL_AUGMENTED)) {
 			QueryOp *q=new(ses,0,propsReq.nPls) Sort(qop,NULL,0,flg|QO_UNIQUE,0,NULL,0/*propsReq,nPropsReq*/);
 			if (q==NULL) {delete qop; qop=NULL; return RC_NORESOURCES;}
 			qop=q;
@@ -644,6 +644,10 @@ RC QBuildCtx::out(QueryOp *&qop,const QVar *qv)
 		outs=vv;
 	}
 	if (qv->stype==SEL_CONST) {if (qop!=NULL) {delete qop; qop=NULL;} return (qop=new(ses) TransOp(qx,outs,nOuts,flg|QO_UNIQUE))!=NULL?RC_OK:RC_NORESOURCES;}
+	if (nOuts==1 && outs[0].nValues==1 && qv->groupBy==NULL && qv->aggrs.vals==NULL) {
+		const Value &v=outs[0].vals[0];
+		if (v.type==VT_VARREF && (v.refV.flags&VAR_TYPE_MASK)==0 && (v.length==0 || v.refV.id==PROP_SPEC_SELF)) return RC_OK;
+	}
 	
 	PropListP plp(ses);
 	for (unsigned i=0; i<nOuts; i++) for (unsigned j=0; j<outs[i].nValues; j++) {
@@ -666,7 +670,7 @@ RC QBuildCtx::out(QueryOp *&qop,const QVar *qv)
 			// get them from gb/nG
 		}
 	} else if ((rc=load(qop,plp))!=RC_OK) return rc;
-	unsigned f=flg; if (qv->stype!=SEL_PINSET && qv->stype!=SEL_PROJECTED && qv->stype!=SEL_COMPOUND) f|=QO_UNIQUE;
+	unsigned f=flg; if (qv->stype!=SEL_PINSET && qv->stype!=SEL_AUGMENTED && qv->stype!=SEL_COMPOUND) f|=QO_UNIQUE;
 	try {return (qop=new(ses) TransOp(qop,outs,nOuts,qv->aggrs,qv->groupBy,qv->nGroupBy,qv->having,f))!=NULL?RC_OK:RC_NORESOURCES;}
 	catch (RC rc) {return rc;}
 }

@@ -149,6 +149,7 @@ public:
 #define	SIM_SELECT			0x0010			/**< expression is part of SELECT list - special parsing for identifiers */
 #define	SIM_DML_EXPR		0x0020			/**< expression in INSERT or UPDATE statements, can contain nested INSERTs */
 #define	SIM_HAVING			0x0040			/**< expression in HAVING - aggregates with '*' are allowed */
+#define	SIM_INSERT			0x0080			/**< expression in INSERT, can contain references to other INSERTs */
 
 /**
  * lexem enumeration
@@ -160,7 +161,7 @@ enum Lexem {
 		
 	LX_COLON=OP_ALL, LX_LBR, LX_RBR, LX_LCBR, LX_RCBR, LX_PERIOD, LX_QUEST, LX_EXCL,
 	LX_EXPR, LX_QUERY, LX_URSHIFT, LX_PREFIX, LX_IS, LX_BETWEEN, LX_BAND, LX_HASH,
-	LX_SEMI, LX_CONCAT, LX_FILTER, LX_REPEAT, LX_PATHQ, LX_SELF, LX_SPROP,
+	LX_SEMI, LX_CONCAT, LX_FILTER, LX_REPEAT, LX_PATHQ, LX_SELF, LX_SPROP, LX_TPID,
 		
 	LX_NL, LX_SPACE, LX_DQUOTE, LX_QUOTE, LX_LT, LX_GT, LX_VL, LX_DOLLAR,
 	LX_ERR, LX_UTF8, LX_DIGIT, LX_LETTER, LX_ULETTER, LX_XLETTER,
@@ -290,7 +291,8 @@ private:
 	TLx		parsePrologue();																		/**< parse prologue, i.e. BASE ... PREFIX ... PREFIX ... */
 	QVarID	parseSelect(Stmt *res,bool fMod=false);													/**< parse SELECT statement */
 	QVarID	parseFrom(Stmt *stmt);																	/**< parse FROM clause */
-	QVarID	parseClasses(Stmt *stmt,bool fColon=false);												/**< parse classes variables in FROM clause */
+	QVarID	parseClassVar(Stmt *stmt,bool fColon=false);											/**< parse classes variables in FROM clause */
+	void	parseClasses(DynArray<ClassSpec> &css,bool fColon=false,bool fInto=false);				/**< parse a list of classes in FROM or INTO */
 	TLx		parseOrderOrGroup(Stmt *stmt,QVarID var,Value *os=NULL,unsigned nO=0);					/**< parse ORDER BY or GROUP BY clause */
 	ExprTree *parseCondition(const union QVarRef *vars,unsigned nVars);								/**< parse condition expresion (either in WHERE or in ON or in HAVING) */
 	RC		splitWhere(Stmt *stmt,QVar *qv,ExprTree *pe);											/**< down-propagate individual variable conditions in join, associate variables in JOIN on or WHERE conditions */

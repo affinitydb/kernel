@@ -237,7 +237,8 @@ RC PIN::getPINValue(Value& res,Session *ses) const
 		default: return pv!=&res?copyV(*pv,res,ses):RC_OK;
 		case VT_EXPR:
 			{exp=(Expr*)pv->expr; save=(HEAP_TYPE)(pv->flags&HEAP_TYPE_MASK);
-			res.type=VT_ERROR; PINEx pex(this),*pp=&pex;
+			res.type=VT_ERROR; PINEx pex(ses),*pp=&pex;
+			if ((mode&PIN_PINEX)!=0) pp=(PINEx*)this; else pex=this;
 			rc=Expr::eval(&exp,1,res,&pp,1,NULL,0,ses);
 			if (pv==&res && save!=NO_HEAP) if (save==SES_HEAP) ses->free(exp); else free(exp,save);}
 // leaking???
@@ -265,7 +266,7 @@ IPIN *PIN::clone(const Value *overwriteValues,unsigned nOverwriteValues,unsigned
 	try {
 		if (ses!=NULL && ses->getStore()->inShutdown()) return NULL; if ((this->mode&PIN_CLASS)!=0) return NULL;
 		mode|=this->mode&(PIN_REPLICATED|PIN_NO_REPLICATION|PIN_NO_INDEX);
-		PIN *newp=new(ses) PIN(ses,defPID,PageAddr::invAddr,mode); if (newp==NULL) return NULL;
+		PIN *newp=new(ses) PIN(ses,defPID,PageAddr::invAddr,mode&~MODE_NEW_COMMIT); if (newp==NULL) return NULL;
 		newp->properties=(Value*)malloc(nProperties*sizeof(Value),SES_HEAP);
 		if (newp->properties==NULL) {delete newp; return NULL;}
 		for (unsigned i=0; (newp->nProperties=i)<nProperties; i++)
@@ -296,7 +297,7 @@ IPIN *PIN::project(const PropertyID *props,unsigned nProps,const PropertyID *new
 	try {
 		if (ses!=NULL && ses->getStore()->inShutdown()) return NULL; if ((this->mode&PIN_CLASS)!=0) return NULL;
 		mode|=this->mode&(PIN_REPLICATED|PIN_NO_REPLICATION|PIN_NO_INDEX);
-		PIN *newp=new(ses) PIN(ses,defPID,PageAddr::invAddr,mode|PIN_PROJECTED); if (newp==NULL) return NULL;
+		PIN *newp=new(ses) PIN(ses,defPID,PageAddr::invAddr,mode&~MODE_NEW_COMMIT|PIN_PROJECTED); if (newp==NULL) return NULL;
 		if (props!=NULL && nProps>0) {
 			newp->properties=(Value*)malloc(nProps*sizeof(Value),SES_HEAP);
 			if (newp->properties==NULL) {delete newp; return NULL;}
@@ -505,8 +506,9 @@ bool PIN::testClassMembership(ClassID classID,const Value *params,unsigned nPara
 	try {
 		if (ses==NULL) return false; assert(ses==Session::getSession());
 		if (ses->getStore()->inShutdown()) return false;
-		TxGuard txg(ses); PINEx pex(this);
-		return ses->getStore()->queryMgr->test(&pex,classID,ValueV(params,nParams),true);
+		TxGuard txg(ses); PINEx pex(ses),*ppe=&pex;
+		if ((mode&PIN_PINEX)!=0) ppe=(PINEx*)this; else pex=this;
+		return ses->getStore()->queryMgr->test(ppe,classID,ValueV(params,nParams),true);
 	} catch (RC) {} catch (...) {report(MSG_ERROR,"Exception in IPIN::testClassMembership(ClassID=%08X)\n",classID);}
 	return false;
 }
@@ -525,8 +527,9 @@ RC PIN::isMemberOf(ClassID *&clss,unsigned& nclss)
 	try {
 		clss=NULL; nclss=0; if (id.pid==STORE_INVALID_PID) return RC_INVPARAM;
 		if ((mode&(PIN_HIDDEN|PIN_NO_INDEX))==0) {
-			ClassResult clr(ses,ses->getStore()); PINEx pex(this);
-			RC rc=ses->getStore()->classMgr->classify(&pex,clr); if (rc!=RC_OK) return rc;
+			ClassResult clr(ses,ses->getStore()); PINEx pex(ses),*ppe=&pex;
+			if ((mode&PIN_PINEX)!=0) ppe=(PINEx*)this; else pex=this;
+			RC rc=ses->getStore()->classMgr->classify(ppe,clr); if (rc!=RC_OK) return rc;
 			if (clr.nClasses!=0) {
 				if ((clss=new(ses) ClassID[clr.nClasses])==NULL) return RC_NORESOURCES;
 				for (unsigned i=0; i<clr.nClasses; i++) clss[i]=clr.classes[i]->cid;
@@ -906,12 +909,12 @@ IPIN *SessionX::createUncommittedPIN(Value* values,unsigned nValues,unsigned md,
 	return NULL;
 }
 
-RC SessionX::commitPINs(IPIN *const *pins,unsigned nPins,unsigned md,const AllocCtrl *actrl,const Value *params,unsigned nParams)
+RC SessionX::commitPINs(IPIN *const *pins,unsigned nPins,unsigned md,const AllocCtrl *actrl,const Value *params,unsigned nParams,const ClassSpec *into,unsigned nInto)
 {
 	try {
 		assert(ses==Session::getSession()); 
 		StoreCtx *ctx=ses->getStore(); if (ctx->inShutdown()) return RC_SHUTDOWN; if (ctx->isServerLocked()) return RC_READONLY;
-		TxGuard txg(ses); return ctx->queryMgr->commitPINs(ses,(PIN*const*)pins,nPins,md,ValueV(params,nParams),actrl);	// MODE_ENAV???
+		TxGuard txg(ses); return ctx->queryMgr->commitPINs(ses,(PIN*const*)pins,nPins,md,ValueV(params,nParams),actrl,NULL,into,nInto);	// MODE_ENAV???
 	} catch (RC rc) {return rc;} catch (...) {report(MSG_ERROR,"Exception in ISession::commitPINs(...)\n"); return RC_INTERNAL;}
 }
 

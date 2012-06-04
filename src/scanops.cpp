@@ -99,7 +99,7 @@ RC FullScan::next(const PINEx *)
 		if (heapPageID==INVALID_PAGEID) {
 			if (dirPageID==INVALID_PAGEID) {
 				if (it!=NULL) {
-					if ((heapPageID=(++*it))!=INVALID_PAGEID) continue;
+					if ((heapPageID=(++*it))!=INVALID_PAGEID) {slot=0; continue;}
 					if (&it->getPageSet()!=&stx->defHeap) ((PageSet*)&it->getPageSet())->destroy();
 					qx->ses->free(it); it=NULL; stx=stx->next;
 				}

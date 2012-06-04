@@ -30,7 +30,7 @@ using namespace AfyKernel;
 static int nLogOpen = 0;
 
 LogMgr::LogMgr(StoreCtx *c,size_t logBufS,bool fAL,const char *lDir) : ctx(c),sectorSize(getSectorSize()),lPage(c->fileMgr->getPageSize()),
-	logSegSize(max(ceil(c->theCB->logSegSize,sectorSize),(size_t)MINSEGSIZE)),bufLen(max(ceil(logBufS,sectorSize),sectorSize*4)),
+	logSegSize(max(ceil(c->theCB->logSegSize,sectorSize),(size_t)MINSEGSIZE)),bufLen(max(ceil(logBufS,sectorSize),sectorSize*4)),LRsize(c->fHMAC?sizeof(LogRecHM):sizeof(LogRec)),
 	logBufBeg(NULL),logBufEnd(NULL),ptrWrite(NULL),ptrInsert(NULL),ptrRead(NULL),maxLSN(c->theCB->logEnd),minLSN(c->theCB->logEnd),prevLSN(0),
 	writtenLSN(c->theCB->logEnd),wrapLSN(0),fFull(false),fRecovery(false),fAnalizing(false),recFileSize(0),maxAllocated(0),prevTruncate(~0),
 	nRecordsSinceCheckpoint(0),newPage(NULL),currentLogFile(~0ul),logFile(INVALID_FILEID),nReadLogSegs(0),pcb(new(c) myaio),fArchive(fAL),
@@ -169,7 +169,7 @@ LSN LogMgr::insert(Session *ses,LRType type,ulong extra,PageID pid,const LSN *un
 		{if (pb!=NULL) pb->setRedo(maxLSN); if (pb2!=NULL) pb2->setRedo(maxLSN); return maxLSN;}
 
 	assert((extra&0xF0000000)==0);
-	assert(sizeof(LogRec)+lData<MAXLOGRECSIZE); 
+	assert(LRsize+lData<MAXLOGRECSIZE); 
 	assert((fInit||type==LR_SHUTDOWN) && logBufBeg!=NULL);
 
 	bool fSpec=fRecovery||type==LR_FLUSH||type==LR_SHUTDOWN||type==LR_CHECKPOINT;
@@ -182,7 +182,7 @@ LSN LogMgr::insert(Session *ses,LRType type,ulong extra,PageID pid,const LSN *un
 		}
 	}
 
-	LogRec logRec; 
+	LogRecHM logRec; 
 
 	logRec.setInfo(type,extra);
 	logRec.setLength((uint32_t)lData,flags);
@@ -194,32 +194,34 @@ LSN LogMgr::insert(Session *ses,LRType type,ulong extra,PageID pid,const LSN *un
 		if (type!=LR_FLUSH) bufferLock.lock(); else if (!bufferLock.trylock()) return LSN(0);
 	}
 
-	HMAC hmac(ctx->getHMACKey(),HMAC_KEY_SIZE); bool fDel=false;
-	if (pData==NULL || lData==0)
-		hmac.add((const byte*)&logRec,sizeof(LogRec)-HMAC_SIZE);
-	else {
-		const byte *encKey=ctx->getEncKey();
-		if (encKey!=NULL) {
-			AES aes(encKey,ENC_KEY_SIZE); uint32_t IV[4];
-			maxLSNLock.lock(RW_S_LOCK);
-			IV[0]=uint32_t(maxLSN.lsn>>48); IV[1]=uint32_t(maxLSN.lsn>>32);
-			IV[2]=uint32_t(maxLSN.lsn>>16); IV[3]=uint32_t(maxLSN.lsn);
-			maxLSNLock.unlock();
-			ulong lpad=(ceil((ulong)lData,AES_BLOCK_SIZE)-(ulong)lData-1&AES_BLOCK_SIZE-1)+1;
-			ulong lbuf=(ulong)lData+lpad;
-			byte *buf=lbuf<=MAX_LOCAL_BUF_SIZE?(byte*)alloca(lbuf):(byte*)0;
-			if (buf==NULL) {
-				buf=(byte*)malloc(lbuf,ses!=NULL?SES_HEAP:STORE_HEAP);
-				if (buf==NULL) return LSN(0);	// ???
-				fDel=true;
+	bool fDel=false;
+	if (ctx->fHMAC) {
+		HMAC hmac(ctx->getHMACKey(),HMAC_KEY_SIZE);
+		if (pData==NULL || lData==0)
+			hmac.add((const byte*)&logRec,sizeof(LogRec));
+		else {
+			const byte *encKey=ctx->getEncKey();
+			if (encKey!=NULL) {
+				AES aes(encKey,ENC_KEY_SIZE); uint32_t IV[4];
+				maxLSNLock.lock(RW_S_LOCK);
+				IV[0]=uint32_t(maxLSN.lsn>>48); IV[1]=uint32_t(maxLSN.lsn>>32);
+				IV[2]=uint32_t(maxLSN.lsn>>16); IV[3]=uint32_t(maxLSN.lsn);
+				maxLSNLock.unlock();
+				ulong lpad=(ceil((ulong)lData,AES_BLOCK_SIZE)-(ulong)lData-1&AES_BLOCK_SIZE-1)+1;
+				ulong lbuf=(ulong)lData+lpad;
+				byte *buf=lbuf<=MAX_LOCAL_BUF_SIZE?(byte*)alloca(lbuf):(byte*)0;
+				if (buf==NULL) {
+					buf=(byte*)malloc(lbuf,ses!=NULL?SES_HEAP:STORE_HEAP);
+					if (buf==NULL) return LSN(0);	// ???
+					fDel=true;
+				}
+				memcpy(buf,pData,lData); memset(buf+lData,lpad,lpad);
+				aes.encrypt(buf,lbuf,IV); pData=buf; logRec.setLength((uint32_t)(lData=lbuf),flags);
 			}
-			memcpy(buf,pData,lData); memset(buf+lData,lpad,lpad);
-			aes.encrypt(buf,lbuf,IV); pData=buf; logRec.setLength((uint32_t)(lData=lbuf),flags);
+			hmac.add((const byte*)&logRec,sizeof(LogRec)); hmac.add((const byte*)pData,lData);
 		}
-		hmac.add((const byte*)&logRec,sizeof(LogRec)-HMAC_SIZE);
-		hmac.add((const byte*)pData,lData);
+		memcpy(logRec.hmac,hmac.result(),HMAC_SIZE);
 	}
-	memcpy(logRec.hmac,hmac.result(),HMAC_SIZE);
 
 	lock.lock(RW_X_LOCK);
 
@@ -236,7 +238,7 @@ LSN LogMgr::insert(Session *ses,LRType type,ulong extra,PageID pid,const LSN *un
 	}
 
 
-	const void *pChunk=&logRec; size_t lChunk=sizeof(LogRec),lTotal=sizeof(LogRec)+lData; RC rc; bool fWrap=false;
+	const void *pChunk=&logRec; size_t lChunk=LRsize,lTotal=LRsize+lData; RC rc; bool fWrap=false;
 	for (;;) {
 		size_t available=ptrInsert<ptrWrite?ptrWrite-ptrInsert:ptrInsert>ptrWrite||!fFull?logBufEnd-ptrInsert:0;
 		if (available>0) {
@@ -465,22 +467,22 @@ RC LogReadCtx::readChunk(LSN lsn,void *buf,size_t l)
 
 RC LogReadCtx::read(LSN& lsn)
 {
-	RC rc=readChunk(lsn,&logRec,sizeof(LogRec)); if (rc!=RC_OK) return rc;
+	RC rc=readChunk(lsn,&logRec,logMgr->LRsize); if (rc!=RC_OK) return rc;
 
 	if (logRec.getType()==0) {
 		rc = RC_EOF;
-		for (unsigned i=0; i<sizeof(LogRec)/sizeof(uint32_t); i++)
+		for (unsigned i=0; i<logMgr->LRsize/sizeof(uint32_t); i++)
 			if (((uint32_t*)&logRec)[i]!=0) {rc = RC_CORRUPTED; break;}
 	}
 
 	ulong lbuf=logRec.getLength(); flags=logRec.getFlags();
 	if (lbuf>logMgr->logSegSize) rc=RC_CORRUPTED;
 	if (rc==RC_OK && lbuf!=0) {
-		if (lbuf+sizeof(LogRec)>MAXLOGRECSIZE) rc=RC_CORRUPTED;
+		if (lbuf+logMgr->LRsize>MAXLOGRECSIZE) rc=RC_CORRUPTED;
 		else if (lbuf>xlrec) {
 			if ((rbuf=(byte*)ses->realloc(rbuf,lbuf))==NULL) rc=RC_NORESOURCES; else xlrec=lbuf;
 		}
-		if (rc==RC_OK) rc=readChunk(lsn+sizeof(LogRec),rbuf,lbuf);
+		if (rc==RC_OK) rc=readChunk(lsn+logMgr->LRsize,rbuf,lbuf);
 	}
 
 	if (fLocked) {logMgr->lock.unlock(); fLocked=false;}
@@ -488,10 +490,13 @@ RC LogReadCtx::read(LSN& lsn)
 	fCheck=true;
 
 	if (rc==RC_OK) {
-		HMAC hmac(logMgr->ctx->getHMACKey(),HMAC_KEY_SIZE);
-		hmac.add((const byte*)&logRec,sizeof(LogRec)-HMAC_SIZE);
-		if (lbuf!=0) hmac.add(rbuf,lbuf);
-		if (memcmp(logRec.hmac,hmac.result(),HMAC_SIZE)==0 && (type=logRec.getType())<LR_ALL) {
+		type=logRec.getType(); bool fCorrupted=type>=LR_ALL;
+		if (!fCorrupted && logMgr->ctx->fHMAC) {
+			HMAC hmac(logMgr->ctx->getHMACKey(),HMAC_KEY_SIZE);
+			hmac.add((const byte*)&logRec,sizeof(LogRec)); if (lbuf!=0) hmac.add(rbuf,lbuf);
+			fCorrupted=memcmp(logRec.hmac,hmac.result(),HMAC_SIZE)!=0;
+		}
+		if (!fCorrupted) {
 			const byte *encKey=logMgr->ctx->getEncKey(); lrec=lbuf;
 			if (encKey!=NULL && rbuf!=NULL && lbuf!=0) {
 				AES aes(encKey,ENC_KEY_SIZE); uint32_t IV[4];
@@ -499,15 +504,15 @@ RC LogReadCtx::read(LSN& lsn)
 				IV[2]=uint32_t(lsn.lsn>>16); IV[3]=uint32_t(lsn.lsn);
 				aes.decrypt(rbuf,lbuf,IV); lrec-=rbuf[lbuf-1];
 			}
-			lsn+=sizeof(LogRec)+lbuf; lsn.align();
+			lsn+=logMgr->LRsize+lbuf; lsn.align();
 		} else {
-			rc=RC_CORRUPTED; LSN end(lsn); end+=sizeof(LogRec)+lbuf; end.align();
+			rc=RC_CORRUPTED; LSN end(lsn); end+=logMgr->LRsize+lbuf; end.align();
 			size_t offset = floor(logMgr->LSNToFileOffset(end),logMgr->sectorSize);
-			if (offset<sizeof(LogRec)+lbuf) {
+			if (offset<logMgr->LRsize+lbuf) {
 				rc=RC_EOF; const uint32_t *p=(const uint32_t*)(offset>lbuf?rbuf:rbuf+lbuf-offset);
 				for (ulong i=(ulong)min((ulong)offset,lbuf)/sizeof(uint32_t); i>0; i--) if (*p++!=0) {rc=RC_CORRUPTED; break;}
 				if (rc==RC_EOF && offset>lbuf) {
-					p=(const uint32_t*)((byte*)&logRec+sizeof(LogRec)+lbuf-offset);
+					p=(const uint32_t*)((byte*)&logRec+logMgr->LRsize+lbuf-offset);
 					for (ulong j=ulong((offset-lbuf)/sizeof(uint32_t)); j>0; j--) if (*p++!=0) {rc=RC_CORRUPTED; break;}
 				}
 			}

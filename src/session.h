@@ -90,6 +90,7 @@ public:
 	byte						encKey[ENC_KEY_SIZE];
 	byte						HMACKey[HMAC_KEY_SIZE];
 	bool						fEncrypted;
+	bool						fHMAC;
 	
 	volatile	long			state;
 	MemAlloc					*mem;
@@ -103,7 +104,7 @@ public:
 	StoreCtx(ulong md) : fLocked(false),bufMgr(NULL),classMgr(NULL),cryptoMgr(NULL),fileMgr(NULL),
 		fsMgr(NULL),ftMgr(NULL),lockMgr(NULL),logMgr(NULL),uriMgr(NULL),identMgr(NULL),netMgr(NULL),
 		heapMgr(NULL),hdirMgr(NULL),ssvMgr(NULL),trpgMgr(NULL),treeMgr(NULL),queryMgr(NULL),txMgr(NULL),bigMgr(NULL),mode(md),sesCnt(0),
-		storeID(0),bufSize(0),keyPrefix(0),theCB(NULL),theCBEnc(NULL),cbLSN(0),fEncrypted(false),state(0),mem(NULL),ref(NULL) {
+		storeID(0),bufSize(0),keyPrefix(0),theCB(NULL),theCBEnc(NULL),cbLSN(0),fEncrypted(false),fHMAC(false),state(0),mem(NULL),ref(NULL) {
 			memset(pageMgrTab,0,sizeof(pageMgrTab));
 			memset(encKey0,0,sizeof(encKey0)); memset(HMACKey0,0,sizeof(HMACKey0));
 			memset(encKey,0,sizeof(encKey)); memset(HMACKey,0,sizeof(HMACKey));

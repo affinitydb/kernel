@@ -870,22 +870,23 @@ RC Expr::calc(ExprOp op,Value& arg,const Value *moreArgs,int nargs,unsigned flag
 		if (op==OP_IS_A) {
 			if (moreArgs->type==VT_STMT) return ((Stmt*)moreArgs->stmt)->cmp(arg,op,flags);
 			if (arg.type==VT_REFID) ses=Session::getSession(); else if (arg.type==VT_REF) ses=((PIN*)arg.pin)->getSes(); else return RC_FALSE;
-			if (ses==NULL) return RC_NOSESSION; PINEx pex(ses);
-			if (arg.type==VT_REF) new(&pex) PINEx((const PIN*)arg.pin); else {pex=arg.id; if ((rc=ses->getStore()->queryMgr->getBody(pex))!=RC_OK) return rc;}
+			if (ses==NULL) return RC_NOSESSION; PINEx pex(ses),*ppe=&pex;
+			if (arg.type==VT_REFID) {pex=arg.id; if ((rc=ses->getStore()->queryMgr->getBody(pex))!=RC_OK) return rc;}
+			else if ((((PIN*)arg.pin)->getMode()&PIN_PINEX)!=0) ppe=(PINEx*)(PIN*)arg.pin; else pex=(PIN*)arg.pin;
 			switch (moreArgs->type) {
 			default: return RC_TYPE;
-			case VT_URIID: return ses->getStore()->queryMgr->test(&pex,moreArgs->uid,ValueV(nargs>2?&moreArgs[1]:NULL,nargs-2),nargs<=2)?RC_TRUE:RC_FALSE;
+			case VT_URIID: return ses->getStore()->queryMgr->test(ppe,moreArgs->uid,ValueV(nargs>2?&moreArgs[1]:NULL,nargs-2),nargs<=2)?RC_TRUE:RC_FALSE;
 			case VT_ARRAY:
 				for (len=moreArgs->length,rc=RC_FALSE; len!=0;) {
 					arg2=&moreArgs->varray[--len];
 					if (arg2->type==VT_URIID &&
-						ses->getStore()->queryMgr->test(&pex,arg2->uid,ValueV(nargs>2?&moreArgs[1]:NULL,nargs-2),nargs<=2)) return RC_TRUE;
+						ses->getStore()->queryMgr->test(ppe,arg2->uid,ValueV(nargs>2?&moreArgs[1]:NULL,nargs-2),nargs<=2)) return RC_TRUE;
 				}
 				return RC_FALSE;
 			case VT_COLLECTION:
 				for (arg2=moreArgs->nav->navigate(GO_FIRST),rc=RC_FALSE; arg2!=NULL; arg2=moreArgs->nav->navigate(GO_NEXT))
 					if (arg2->type==VT_URIID &&
-							ses->getStore()->queryMgr->test(&pex,arg2->uid,ValueV(nargs>2?&moreArgs[1]:NULL,nargs-2),nargs<=2)) return RC_TRUE;
+							ses->getStore()->queryMgr->test(ppe,arg2->uid,ValueV(nargs>2?&moreArgs[1]:NULL,nargs-2),nargs<=2)) return RC_TRUE;
 				moreArgs->nav->navigate(GO_FINDBYID,STORE_COLLECTION_ID); return rc;
 			}
 		} else switch (moreArgs->type) {
@@ -1183,23 +1184,26 @@ RC Expr::calc(ExprOp op,Value& arg,const Value *moreArgs,int nargs,unsigned flag
 			if ((rc=pex.getSes()->getStore()->queryMgr->getBody(pex))!=RC_OK) return rc;
 			if ((rc=ses->getStore()->classMgr->classify(&pex,clr))!=RC_OK) return rc;
 			if (clr.nClasses==0) arg.setError();
+			else if ((args=new(ses) Value[clr.nClasses])==NULL) return RC_NORESOURCES;
 			else {
-			// load
+				for (ulong i=0; i<clr.nClasses; i++) {args[i].setURIID(clr.classes[i]->cid); args[i].eid=i;}
+				arg.set(args,clr.nClasses); arg.flags=SES_HEAP;
 			}
-		} else if (arg.type==VT_REF) {
-			if ((((PIN*)arg.pin)->getMode()&(PIN_HIDDEN|PIN_NO_INDEX))==0) {
-				ses=((PIN*)arg.pin)->getSes(); ClassResult clr(ses,ses->getStore()); PINEx pex((PIN*)arg.pin);
-				if ((rc=ses->getStore()->classMgr->classify(&pex,clr))!=RC_OK) return rc;
-				freeV(arg); arg.setError();
-				if (clr.nClasses!=0) {
-#if 0
-					if ((clss=new(ses) ClassID[clr.nClasses])==NULL) return RC_NORESOURCES;
-					for (unsigned i=0; i<clr.nClasses; i++) clss[i]=clr.classes[i]->cid;
-					nclss=clr.nClasses;
-#endif
+		} else if (arg.type!=VT_REF) return RC_TYPE;
+		else if ((((PIN*)arg.pin)->getMode()&(PIN_HIDDEN|PIN_NO_INDEX))!=0) {freeV(arg); arg.setError();}
+		else {
+			ses=((PIN*)arg.pin)->getSes(); ClassResult clr(ses,ses->getStore()); PINEx pex(ses),*ppe=&pex;
+			if ((((PIN*)arg.pin)->getMode()&PIN_PINEX)!=0) ppe=(PINEx*)(PIN*)arg.pin; else pex=(PIN*)arg.pin;
+			if ((rc=ses->getStore()->classMgr->classify(&pex,clr))!=RC_OK) return rc;
+			freeV(arg); arg.setError();
+			if (clr.nClasses!=0) {
+				if ((args=new(ses) Value[clr.nClasses])==NULL) return RC_NORESOURCES;
+				else {
+					for (ulong i=0; i<clr.nClasses; i++) {args[i].setURIID(clr.classes[i]->cid); args[i].eid=i;}
+					arg.set(args,clr.nClasses); arg.flags=SES_HEAP;
 				}
 			}
-		} else return RC_TYPE;
+		}
 		break;
 	default:
 		return RC_INTERNAL;

@@ -212,20 +212,21 @@ class QueryPrc
 
 private:
 	IStoreNotification	*const	notification;
+	IStoreReplication	*const	replication;
 	StoreCtx			*const	ctx;
 	size_t				bigThreshold;
 	PropertyID			*calcProps;
 	unsigned			nCalcProps;
 	RWLock				cPropLock;
 public:
-	QueryPrc(StoreCtx *,IStoreNotification *notItf);
+	QueryPrc(StoreCtx *,IStoreNotification *notItf,IStoreReplication *repl);
 
 	RC		loadPIN(Session *ses,const PID& id,PIN *&pin,unsigned mode=0,PINEx *pcb=NULL,VersionID=STORE_CURRENT_VERSION);
 	RC		loadValue(Session *ses,const PID& id,PropertyID pid,ElementID eid,Value& res,ulong mode=0);
 	RC		loadValues(Value *pv,unsigned nv,const PID& id,Session *ses,ulong mode=0);
 	RC		getPINValue(const PID& id,Value& res,ulong mode,Session *ses);
 	RC		diffPIN(const PIN *pin,PINEx& cb,Value *&diffProps,ulong& nDiffProps,Session *ses);
-	RC		commitPINs(Session *ses,PIN *const *pins,unsigned nPins,unsigned mode,const ValueV& params,const AllocCtrl *actrl=NULL,size_t *pSize=NULL);
+	RC		commitPINs(Session *ses,PIN *const *pins,unsigned nPins,unsigned mode,const ValueV& params,const AllocCtrl *actrl=NULL,size_t *pSize=NULL,const ClassSpec *into=NULL,unsigned nInto=0);
 	RC		modifyPIN(Session *ses,const PID& id,const Value *v,unsigned nv,PINEx *pcb,const ValueV& params,PIN *pin=NULL,unsigned mode=0,const ElementID *eids=NULL,unsigned* =NULL);
 	RC		deletePINs(Session *ses,const PIN *const *pins,const PID *pids,unsigned nPins,unsigned mode,PINEx *pcb=NULL);
 	RC		undeletePINs(Session *ses,const PID *pids,unsigned nPins);

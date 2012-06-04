@@ -190,6 +190,9 @@ RC QueryPrc::deletePINs(Session *ses,const PIN *const *pins,const PID *pids,unsi
 					sft.release(); ftl=NULL;
 				}
 			}
+			if (replication!=NULL) {
+				// replication
+			}
 			if (fNotify) {
 				IStoreNotification::NotificationEvent evt={pid,NULL,0,ndata,nProps,fRepSes};
 				if ((evt.events=(IStoreNotification::EventData*)ses->malloc((clr.nClasses+1)*sizeof(IStoreNotification::EventData)))!=NULL) {

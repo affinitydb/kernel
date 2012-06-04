@@ -56,9 +56,8 @@ class PINEx : public PIN, public LatchHolder
 public:
 	mutable	EncPINRef				epr;
 public:
-	PINEx(Session *s) : PIN(s,PIN::defPID,PageAddr::invAddr),LatchHolder(s),hpin(NULL),tv(NULL) {epr.flags=0; epr.lref=0;}
-	PINEx(Session *s,const PID& pid,const Value *pv=NULL,unsigned nv=0) : PIN(s,pid,PageAddr::invAddr,0,(Value*)pv,nv),LatchHolder(s),hpin(NULL),tv(NULL) {epr.flags=0; epr.lref=0;}
-	PINEx(const PIN *pin) : PIN(pin->ses,pin->id,pin->addr,pin->mode|PIN_NO_FREE,pin->properties,pin->nProperties),LatchHolder(pin->ses),hpin(NULL),tv(NULL) {stamp=pin->stamp; epr.flags=0; epr.lref=0;}
+	PINEx(Session *s) : PIN(s,PIN::defPID,PageAddr::invAddr),LatchHolder(s),hpin(NULL),tv(NULL) {epr.flags=0; epr.lref=0; mode|=PIN_PINEX;}
+	PINEx(Session *s,const PID& pid,const Value *pv=NULL,unsigned nv=0) : PIN(s,pid,PageAddr::invAddr,0,(Value*)pv,nv),LatchHolder(s),hpin(NULL),tv(NULL) {epr.flags=0; epr.lref=0; mode|=PIN_PINEX;}
 	~PINEx()	{pb.release(ses); free();}
 	void		cleanup() {id=PIN::defPID; addr=PageAddr::invAddr; pb.release(ses); hpin=NULL; free(); tv=NULL; epr.flags=0; epr.lref=0;}
 	void		setProps(const Value *props,unsigned nProps,unsigned f=PIN_NO_FREE) {properties=(Value*)props; nProperties=nProps; mode|=f;}
@@ -69,6 +68,7 @@ public:
 	void		moveTo(PINEx &);
 	void		operator=(const PID& pid) const {id=pid;}
 	void		operator=(const PageAddr& ad) const {addr=ad;}
+	void		operator=(const PIN *pin);
 	const		PageAddr& getAddr() const {return addr;}
 	RC			getID(PID& pid) const {RC rc=RC_OK; if (id.pid==STORE_INVALID_PID) rc=epr.lref==0?RC_NOTFOUND:unpack(); pid=id; return rc;}
 	unsigned	getState() const {return (epr.lref==0&&id.pid==STORE_INVALID_PID?0:hpin!=NULL?PEX_PAGE|PEX_PID:PEX_PID)|(properties==NULL?0:(mode&PIN_PROJECTED)!=0?PEX_PROPS:PEX_PROPS|PEX_ALLPROPS);}

@@ -75,7 +75,7 @@ RC MergeIDs::next(const PINEx *skip)
 		}
 		if ((ops[0].state&QOS_ADV)!=0) for (;;) if ((rc=ops[0].qop->next())!=RC_DELETED && rc!=RC_NOACCESS && rc!=RC_NOTFOUND) {
 			if (rc!=RC_OK) {state|=QST_EOF; return rc;} if ((ops[1].state&QOS_EOF2)!=0) return RC_OK;
-			if (res->epr.lref!=0 || pqr->pack()==RC_OK) break;
+			if (res->epr.lref!=0 || res->pack()==RC_OK) break;
 		}
 		ops[0].state|=QOS_ADV; ops[1].state|=QOS_ADV;
 		if ((cmp=res->epr.cmp(pqr->epr))>0) ops[0].state&=~QOS_ADV; else if (cmp<0) {ops[1].state&=~QOS_ADV; return RC_OK;}
@@ -124,7 +124,7 @@ void MergeIDs::print(SOutCtx& buf,int level) const
 
 MergeOp::MergeOp(QueryOp *qop1,QueryOp *qop2,const CondEJ *ce,unsigned ne,QUERY_SETOP qo,const Expr *const *cn,unsigned ncn,ulong qf)
 	: QueryOp(qop1,qf|QO_JOIN|QO_UNIQUE),queryOp2(qop2),op(qo),ej(ce),nej(ne),conds(cn),nConds(ncn),didx(0),pexR(qx->ses),pR(&pexR),pids(NULL),
-	index1(NULL),index2(NULL),pV1(vls),pV2(vls+ne),pVS(vls+ne*2)
+	index1(NULL),index2(NULL),cpbuf(qop1->getQCtx()->ses),pV1(vls),pV2(vls+ne),pVS(vls+ne*2)
 {
 	const ulong qf1=qop1->getQFlags(); qflags|=qf1&QO_IDSORT; nOuts+=qop2->getNOuts();
 	if ((qf1&qop2->getQFlags()&QO_UNIQUE)!=0 && ce->propID2==PROP_SPEC_PINID) qflags|=QO_UNIQUE;
@@ -187,12 +187,14 @@ RC MergeOp::next(const PINEx *skip)
 	}
 	for (;;) {
 		if ((state&QOS_EOF1)!=0) return RC_EOF;	// if not right/full outer
+		bool fPrev1=false,fPrev2=false;
 		if ((state&QOS_ADV1)!=0) {
 			cleanup(pV1); state&=~QST_BOF;
 			res->epr.flags&=~PINEX_RLOAD; if (op!=QRY_SEMIJOIN) pR->epr.flags|=PINEX_RLOAD;
 			if ((rc=queryOp->next(skip))!=RC_OK) {
 				state=(state&~QOS_ADV1)|(QOS_EOF1|QOS_EOF2); return rc;		// if not right/full outer
-			} else if ((state&QOS_EOF2)==0) {
+			}
+			if ((state&QOS_EOF2)==0) {
 				state&=~QOS_ADV1;
 				if (nej>1) {
 					if ((rc=getData(&res,1,&props1,1,pV1))!=RC_OK) return rc;
@@ -202,6 +204,9 @@ RC MergeOp::next(const PINEx *skip)
 					if (rc!=RC_NOACCESS && rc!=RC_DELETED && rc!=RC_NOTFOUND) return rc;
 					state|=QOS_ADV1; continue;
 				}
+			}
+			if ((state&QOS_CHK1)!=0) {
+				// check against pVS, set fPrev1
 			}
 		}
 		if ((state&QOS_EOF2)!=0) return RC_EOF;	// if not left/full outer
@@ -219,6 +224,14 @@ RC MergeOp::next(const PINEx *skip)
 				if (rc!=RC_NOACCESS && rc!=RC_DELETED && rc!=RC_NOTFOUND) return rc;
 				state|=QOS_ADV2; continue;
 			}
+			if ((state&QOS_CHK2)!=0) {
+				// check against pVS, set fPrev2
+			}
+		}
+		if (fPrev1 || fPrev2) {
+			// add to buffer
+			// check condition
+			// return
 		}
 		int c=0; assert((state&(QOS_ADV1|QOS_ADV2))==0);
 		if (nej==1) c=cmp(*pV1,*pV2,ej->flags|CND_SORT);
@@ -255,22 +268,9 @@ RC MergeOp::next(const PINEx *skip)
 			case QO_UNI1: state|=QOS_ADV2; break;
 			case QO_UNI2: state|=QOS_ADV1; break;
 			case 0:
-				state|=QOS_ADV2;
-#if 0
-				if ((state&QOS_NEXT)==0) {
-					vals[2].setError(propID1); res->moveTo(saveR);
-					while ((rc=queryOp->next(skip))==RC_OK) {
-						if (propID1==PROP_SPEC_PINID) {
-							if ((rc=res->getID(id))!=RC_OK) return rc;
-							vals[2].set(id); break;
-						}
-						if (queryOp->getData(*res,&vals[2],1)==RC_OK) break;
-						if (rc!=RC_NOACCESS && rc!=RC_DELETED && rc!=RC_NOTFOUND) return rc;
-					}
-					if (rc==RC_OK) {if (cmp(vals[0],vals[2],CND_SORT)!=0) state|=QOS_NEXT; else state=state&~QOS_ADV2|QOS_ADVN;}
-					PINEx tmp(qx->ses); res->moveTo(tmp); saveR.moveTo(*res); tmp.moveTo(saveR);
-				}
-#endif
+				state|=QOS_ADV1|QOS_CHK1|QOS_ADV2|QOS_CHK2;
+				//save to join buffer
+				{Value *tmp=pVS; pVS=pV1; pV1=tmp;}
 				break;
 			}
 			if (conds!=NULL) {

@@ -166,16 +166,16 @@ RC TxMgr::commit(Session *ses,bool fAll,bool fFlush)
 			}
 			if ((ulong)ses->tx.defHeap!=0) {
 				if ((rc=ctx->heapMgr->addPagesToMap(ses->tx.defHeap,ses))!=RC_OK) {cleanup(ses); return rc;}	// rollback?
-				ses->tx.defHeap.cleanup(); assert(!ses->firstLSN.isNull());
+				ses->tx.defHeap.cleanup(); assert(!ses->firstLSN.isNull() || (ctx->mode&STARTUP_NO_RECOVERY)!=0);
 				if ((ulong)ses->tx.defClass!=0) {
 					if ((rc=ctx->heapMgr->addPagesToMap(ses->tx.defClass,ses,true))!=RC_OK) {cleanup(ses); return rc;}	// rollback?
-					ses->tx.defClass.cleanup(); assert(!ses->firstLSN.isNull());
+					ses->tx.defClass.cleanup(); assert(!ses->firstLSN.isNull() || (ctx->mode&STARTUP_NO_RECOVERY)!=0);
 				}
 			}
 			bool fUnlock=false;
 			if ((ulong)ses->tx.defFree!=0) {
 				if ((rc=ctx->fsMgr->freeTxPages(ses->tx.defFree))!=RC_OK) {cleanup(ses); return rc;}			// rollback?
-				ses->tx.defFree.cleanup(); fUnlock=true; assert(!ses->firstLSN.isNull());
+				ses->tx.defFree.cleanup(); fUnlock=true; assert(!ses->firstLSN.isNull() || (ctx->mode&STARTUP_NO_RECOVERY)!=0);
 			}
 			if (ses->tx.txClass!=NULL && (rc=ses->getStore()->classMgr->classTx(ses,ses->tx.txClass))!=RC_OK) {cleanup(ses); return rc;}			// rollback?
 			if (ses->tx.txIndex!=NULL) {
@@ -190,7 +190,7 @@ RC TxMgr::commit(Session *ses,bool fAll,bool fFlush)
 				ctx->ssvMgr->HeapPageMgr::reuse(ses->reuse.ssvPages[i].pid,ses->reuse.ssvPages[i].space,ctx);
 			ses->txState=ses->txState&~0xFFFFul|TX_COMMITTED;
 			if (ses->repl!=NULL) {
-				// pass replication stream
+				// pass replication stream to ctx->queryMgr->replication
 			}
 		}
 		cleanup(ses);

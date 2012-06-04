@@ -66,6 +66,8 @@ namespace AfyKernel
 #define	QOS_ADV2		0x0002				/**< next result is to be read from second source */
 #define	QOS_EOF1		0x0004				/**< end of results from first source */
 #define	QOS_EOF2		0x0008				/**< end of results from second source */
+#define	QOS_CHK1		0x0010				/**< check next result from first source is the same as previous */
+#define	QOS_CHK2		0x0020				/**< check next result from second source is the same as previous */
 
 struct	CondIdx;
 class	ExtSortFile;
@@ -309,9 +311,10 @@ class MergeOp : public QueryOp
 	unsigned			*index1;
 	PropList			props2;
 	unsigned			*index2;
-	Value	*const		pV1;
-	Value	*const		pV2;
-	Value	*const		pVS;
+	SubAlloc			cpbuf;
+	Value				*pV1;
+	Value				*pV2;
+	Value				*pVS;
 	Value				vls[1];
 
 	void				cleanup(Value *pv) {for (unsigned i=0; i<nej; i++) {freeV(pv[i]); pv[i].setError();}}

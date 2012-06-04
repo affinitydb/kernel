@@ -381,7 +381,8 @@ message AfyStream
 	}
 	// For dump & load, to retain internal page layout and integrity of IDs.
 	message ReservedPages {
-		repeated uint32	pageID		= 1; // A page ID.
+		optional uint32	nPages		= 1; // Number of pages to reserve.
+		repeated uint32	pageID		= 2; // A page ID.
 	}
 	optional StringMap	owner		= 1; // Owner of the store returning results (output stream only).
 	optional uint32		storeID		= 2; // Store ID of the store returning results (output stream only).
@@ -394,6 +395,6 @@ message AfyStream
 	repeated Compound	compound	= 9; // A few PINs returned as a set.
 	repeated Status		status		= 10; // [Not available yet.] To obtain status of a transaction running asynchronously in the server. Applies to "server mode" only.
 	repeated uint32		flush		= 11; // To request immediate partial output at any known point in the stream (e.g. to obtain PIDs during a transaction).
-	repeated ReservedPages resPages	= 12; // [Future.] For dump & load.
+	repeated ReservedPages resPages	= 12; // For dump & load.
 	repeated Value		values		= 13; // Query result as a stream of values (RT_VALUES).
 }

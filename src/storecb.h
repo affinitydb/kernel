@@ -120,7 +120,8 @@ struct StoreCB
 	uint32_t		nMaster;					/**< number of master resords */
 	float			pctFree;					/**< free space precentage for heap pages */
 	uint16_t		storeID;					/**< store ID, 0 - 65535, set when store is created */
-	uint16_t		fIsEncrypted;				/**< encryption flag */
+	uint8_t			fIsEncrypted;				/**< encryption flag */
+	uint8_t			fHMAC;						/**< page HMAC flag */
 	uint32_t		filler;						/**< 64-bit alignment */
 	uint8_t			encKey[ENC_KEY_SIZE];		/**< encryption key */
 	uint8_t			HMACKey[HMAC_KEY_SIZE];		/**< HMAC calculation key */

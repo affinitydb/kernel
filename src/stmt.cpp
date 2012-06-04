@@ -39,7 +39,15 @@ Stmt::~Stmt()
 		for (unsigned i=0; i<nOrderBy; i++) if ((orderBy[i].flags&ORDER_EXPR)!=0) ma->free(orderBy[i].expr);
 		ma->free(orderBy);
 	}
-	if (values!=NULL) freeV(values,nValues,ma);
+	if (ei!=NULL) {
+		if (ei->values!=NULL) freeV(ei->values,ei->nValues,ma);
+		if (ei->into!=NULL) {
+			for (unsigned i=0; i<ei->nInto; i++)
+				if (ei->into[i].params!=NULL) freeV((Value*)ei->into[i].params,ei->into[i].nParams,ma);
+			ma->free(ei->into);
+		}
+		ma->free(ei);
+	}
 }
 
 STMT_OP Stmt::getOp() const
@@ -271,7 +279,7 @@ RC Stmt::addOutputNoCopy(QVarID var,Value *os,unsigned nO)
 	if (!fGroup && qv->nOuts==0 && nO==1 && os[0].type==VT_EXPRTREE && ((ExprTree*)os[0].exprt)->op==OP_COUNT && ((ExprTree*)os[0].exprt)->operands[0].type==VT_ANY) {
 		qv->stype=SEL_COUNT; freeV(os[0]);
 	} else {
-		unsigned nConst=0,nAgg=0,nVRef=0; StoreCtx *ctx=NULL;
+		unsigned nConst=0,nAgg=0; StoreCtx *ctx=NULL; bool fSelf=false;
 		for (unsigned i=0; i<nO; i++) {
 			Value &vv=os[i]; RC rc; assert(vv.type!=VT_VARREF || vv.refV.flags!=0xFFFF);
 			if (vv.type==VT_EXPRTREE) {
@@ -289,14 +297,14 @@ RC Stmt::addOutputNoCopy(QVarID var,Value *os,unsigned nO)
 					qv->aggrs.nValues++; qv->aggrs.fFree=true;
 				} else if ((rc=Expr::compile(et,exp,ma,false,&qv->aggrs))==RC_OK) {et->destroy(); vv.expr=exp; vv.type=VT_EXPR; vv.meta|=META_PROP_EVAL;}
 				else return rc;
-			}
+			} else if (vv.type==VT_VARREF && (vv.length==0||vv.refV.id==PROP_SPEC_SELF) && (vv.refV.flags&VAR_TYPE_MASK)==0) fSelf=true;
 			if (vv.property==PROP_SPEC_ANY) {
 				if (vv.type==VT_VARREF && vv.length==1) vv.property=vv.refV.id;
 				else if (nO==1) vv.property=PROP_SPEC_VALUE;
 				else if ((rc=(ctx!=NULL?ctx:(ctx=StoreCtx::get()))->queryMgr->getCalcPropID(i,vv.property))!=RC_OK) return rc;
 			}
-			if (vv.type==VT_VARREF && (vv.refV.flags&VAR_TYPE_MASK)!=VAR_PARAM) {if (vv.length==1 && vv.refV.id==vv.property) nVRef++;}
-			else if (vv.op!=OP_COUNT && (vv.type!=VT_STMT && vv.type!=VT_EXPR || (vv.meta&META_PROP_EVAL)==0)) nConst++;	// if no vars
+			if ((vv.type!=VT_VARREF || (vv.refV.flags&VAR_TYPE_MASK)==VAR_PARAM) &&
+				vv.op!=OP_COUNT && (vv.type!=VT_STMT && vv.type!=VT_EXPR || (vv.meta&META_PROP_EVAL)==0)) nConst++;	// if no vars
 		}
 		if (nO>1) {
 			qsort(os,nO,sizeof(Value),cmpPropIDs);
@@ -306,7 +314,7 @@ RC Stmt::addOutputNoCopy(QVarID var,Value *os,unsigned nO)
 		if (qv->nOuts>1) qv->stype=SEL_COMP_DERIVED;
 		else if (nConst==nO) qv->stype=SEL_CONST;
 		else if (nAgg==nO) qv->stype=fGroup?nO==1?SEL_VALUESET:SEL_DERIVEDSET:nO==1?SEL_VALUE:SEL_DERIVED;
-		else qv->stype=nO==1?SEL_VALUESET:nVRef==nO?SEL_PROJECTED:SEL_DERIVEDSET;
+		else qv->stype=nO==1?fSelf?SEL_PINSET:SEL_VALUESET:fSelf?SEL_AUGMENTED:SEL_DERIVEDSET;
 	}
 	return RC_OK;
 }
@@ -478,24 +486,28 @@ RC Stmt::setOrder(const OrderSeg *segs,unsigned nSegs)
 	} catch (RC rc) {return rc;} catch (...) {report(MSG_ERROR,"Exception in IStmt::setOrder()\n"); return RC_INTERNAL;}
 }
 
-RC Stmt::setValues(const Value *vals,unsigned nVals)
+RC Stmt::setValues(const Value *vals,unsigned nVals,const ClassSpec *into,unsigned nInto,unsigned mode)
 {
 	try {
 		RC rc=RC_OK; Expr *exp;
-		if (values!=NULL) {freeV(values,nValues,ma); values=NULL; nValues=nNested=0;}
+		if (ei!=NULL) {
+			freeV(ei->values,ei->nValues,ma);
+			// other
+			ma->free(ei); ei=NULL;
+		}
 		if (vals!=NULL && nVals!=0) {
-			if ((values=new(ma) Value[nVals])==NULL) rc=RC_NORESOURCES;
-			else for (nValues=0; rc==RC_OK && nValues<nVals; nValues++) {
-				const Value& from=vals[nValues]; Value& to=values[nValues]; unsigned j;
+			if ((ei=new(ma) ExtraInfo)==NULL || (ei->values=new(ma) Value[nVals])==NULL) rc=RC_NORESOURCES;
+			else for (ei->nValues=0; rc==RC_OK && ei->nValues<nVals; ei->nValues++) {
+				const Value& from=vals[ei->nValues]; Value& to=ei->values[ei->nValues]; unsigned j;
 				if (from.type!=VT_EXPRTREE) {
 					if ((from.meta&META_PROP_EVAL)!=0) switch (from.type) {
-					case VT_STMT: if (((Stmt*)from.stmt)->op==STMT_INSERT) nNested+=((Stmt*)from.stmt)->nNested+1;
+					case VT_STMT: if (((Stmt*)from.stmt)->op==STMT_INSERT && ((Stmt*)from.stmt)->ei!=NULL) ei->nNested+=((Stmt*)from.stmt)->ei->nNested+1;
 					case VT_EXPR: case VT_VARREF: mode|=MODE_WITH_EVAL; break;
 					case VT_ARRAY:
 						for (j=0; j<to.length; j++) {
 							const Value *pv=&to.varray[j];
 							if ((pv->meta&META_PROP_EVAL)!=0) switch (pv->type) {
-							case VT_STMT: if (pv->stmt->getOp()==STMT_INSERT) nNested+=((Stmt*)pv->stmt)->nNested+1;
+							case VT_STMT: if (pv->stmt->getOp()==STMT_INSERT && ((Stmt*)pv->stmt)->ei!=NULL) ei->nNested+=((Stmt*)pv->stmt)->ei->nNested+1;
 							case VT_EXPR: case VT_VARREF: mode|=MODE_WITH_EVAL; break;
 							}
 						}
@@ -512,36 +524,43 @@ RC Stmt::setValues(const Value *vals,unsigned nVals)
 	} catch (RC rc) {return rc;} catch (...) {report(MSG_ERROR,"Exception in IStmt::setValues()\n"); return RC_INTERNAL;}
 }
 
-RC Stmt::setValuesNoCopy(Value *vals,unsigned nVals)
+RC Stmt::setValuesNoCopy(Value *vals,unsigned nVals,ClassSpec *into,unsigned nInto,unsigned mode)
 {
-	RC rc=RC_OK; Expr *exp;
-	if (values!=NULL) {freeV(values,nValues,ma); values=NULL; nValues=nNested=0;}
+	RC rc=RC_OK; Expr *exp; unsigned nNested=0;
+	if (ei!=NULL) {
+		freeV(ei->values,ei->nValues,ma);
+		//...
+		ma->free(ei);
+	}
+	if (vals==NULL && into==NULL && mode==0) return RC_OK;
+	if ((ei=new(ma) ExtraInfo)==NULL) return RC_NORESOURCES;
 	for (unsigned i=0,j; i<nVals; i++) if (vals[i].type==VT_EXPRTREE) {
 		ExprTree *et=(ExprTree*)vals[i].exprt;
 		if ((rc=Expr::compile(et,exp,ma,false))!=RC_OK) return rc;
 		vals[i].expr=exp; vals[i].type=VT_EXPR;
 		vals[i].meta|=META_PROP_EVAL; mode|=MODE_WITH_EVAL; et->destroy();
 	} else if ((vals[i].meta&META_PROP_EVAL)!=0) switch (vals[i].type) {
-	case VT_STMT: if (vals[i].stmt->getOp()==STMT_INSERT) nNested+=((Stmt*)vals[i].stmt)->nNested+1;
+	case VT_STMT: if (vals[i].stmt->getOp()==STMT_INSERT && ((Stmt*)vals[i].stmt)->ei!=NULL) nNested+=((Stmt*)vals[i].stmt)->ei->nNested+1;
 	case VT_EXPR: case VT_VARREF: mode|=MODE_WITH_EVAL; break;
 	case VT_ARRAY:
 		for (j=0; j<vals[i].length; j++) {
 			const Value *pv=&vals[i].varray[j];
 			if ((pv->meta&META_PROP_EVAL)!=0) switch (pv->type) {
-			case VT_STMT: if (pv->stmt->getOp()==STMT_INSERT) nNested+=((Stmt*)pv->stmt)->nNested+1;
+			case VT_STMT: if (pv->stmt->getOp()==STMT_INSERT && ((Stmt*)pv->stmt)->ei!=NULL) nNested+=((Stmt*)pv->stmt)->ei->nNested+1;
 			case VT_EXPR: case VT_VARREF: mode|=MODE_WITH_EVAL; break;
 			}
 		}
 		break;
 	}
-	if (rc==RC_OK) {values=(Value*)vals; nValues=nVals;}
+	if (rc==RC_OK) {ei->values=(Value*)vals; ei->nValues=nVals;}
 	return rc;
 }
 
 RC Stmt::getNested(PIN **ppins,PIN *pins,unsigned& cnt,Session *ses,PIN *parent) const
 {
-	Value *pv=new(ses) Value[nValues]; if (pv==NULL) return RC_NORESOURCES; RC rc;
-	unsigned nVals=nValues; memcpy(pv,values,nVals*sizeof(Value)); 
+	if (ei==NULL) {cnt=0; return RC_OK;}
+	Value *pv=new(ses) Value[ei->nValues]; if (pv==NULL) return RC_NORESOURCES; RC rc;
+	unsigned nVals=ei->nValues; memcpy(pv,ei->values,nVals*sizeof(Value)); 
 	for (unsigned i=0; i<nVals; i++) pv[i].flags=NO_HEAP;
 	if ((mode&MODE_PART)!=0 && parent!=NULL) {
 		assert(cnt!=0); Value prnt; prnt.set(parent); prnt.setPropID(PROP_SPEC_PARENT);
@@ -702,7 +721,7 @@ RC Stmt::processCond(ExprTree *node,QVar *qv,DynArray<const ExprTree*> *exprs)
 					// expr ???
 				} else for (ci=((SimpleVar*)qv)->condIdx; ;ci=ci->next) {
 					if (ci==NULL) {
-						IndexSeg ks={pid,flags,lPref,pv->refV.type!=VT_ANY?(ValueType)pv->refV.type:(flags&ORD_NCASE)!=0||node->op==OP_BEGINS?VT_STRING:VT_ANY,node->op};
+						IndexSeg ks={pid,flags,lPref,(uint8_t)(pv->refV.type!=VT_ANY?(ValueType)pv->refV.type:(flags&ORD_NCASE)!=0||node->op==OP_BEGINS?VT_STRING:VT_ANY),(uint8_t)node->op};
 						if ((ci=new(qv->ma) CondIdx(ks,pv->refV.refN,ma,NULL))!=NULL) {
 							if (((SimpleVar*)qv)->condIdx==NULL) ((SimpleVar*)qv)->condIdx=ci; else ((SimpleVar*)qv)->lastCondIdx->next=ci;
 							((SimpleVar*)qv)->lastCondIdx=ci; ((SimpleVar*)qv)->nCondIdx++; return RC_FALSE;
@@ -858,9 +877,19 @@ Stmt *Stmt::clone(STMT_OP sop,MemAlloc *nma,bool fClass) const
 			if ((orderBy[i].flags&ORDER_EXPR)!=0 && (stmt->orderBy[i].expr=Expr::clone(orderBy[i].expr,nma))==NULL) 
 				{stmt->destroy(); return NULL;}
 	}
-	if (values!=NULL && nValues>0) {
-		RC rc=copyV(values,nValues,stmt->values,nma); if (rc!=RC_OK) {stmt->destroy(); return NULL;}
-		stmt->nValues=nValues; stmt->nNested=nNested;
+	if (ei!=NULL) {
+		if ((stmt->ei=new(nma) ExtraInfo)==NULL) {stmt->destroy(); return NULL;}
+		stmt->ei->mode=ei->mode; stmt->ei->id=ei->id;
+		if (ei->values!=NULL && ei->nValues!=0) {
+			if (copyV(ei->values,ei->nValues,stmt->ei->values,nma)!=RC_OK) {stmt->destroy(); return NULL;}
+			stmt->ei->nValues=ei->nValues; stmt->ei->nNested=ei->nNested;
+		}
+		if (ei->into!=NULL && ei->nInto!=0) {
+			if ((stmt->ei->into=new(nma) ClassSpec[ei->nInto])==NULL) {stmt->destroy(); return NULL;}
+			memcpy(stmt->ei->into,ei->into,ei->nInto*sizeof(ClassSpec));
+			for (unsigned i=0; i<ei->nInto; ++i,++stmt->ei->nInto) if (ei->into[i].params!=NULL && ei->into[i].nParams!=0)
+				if (copyV(ei->into[i].params,ei->into[i].nParams,*(Value**)&stmt->ei->into[i].params,nma)!=RC_OK) {stmt->destroy(); return NULL;}
+		}
 	}
 	return stmt;
 }
@@ -1316,12 +1345,25 @@ RC JoinVar::deserialize(const byte *&buf,const byte *const ebuf,QVarID id,byte t
 }
 
 size_t Stmt::serSize() const {
-	size_t len=1+afy_len32(mode)+afy_len32(nVars)+afy_len32(nOrderBy)+afy_len32(nValues)+afy_len32(nNested);
+	size_t len=1+afy_len32(mode)+afy_len32(nVars)+afy_len32(nOrderBy)+1;
 	for (QVar *qv=vars; qv!=NULL; qv=qv->next) len+=qv->serSize();
 	if (orderBy!=NULL && nOrderBy!=0) for (unsigned i=0; i<nOrderBy; i++) {
 		const OrderSegQ& sq=orderBy[i]; len+=2+afy_len16(sq.flags)+afy_len32(sq.lPref)+((sq.flags&ORDER_EXPR)!=0?sq.expr->serSize():afy_len32(sq.pid));
 	}
-	if (values!=NULL && nValues!=0) for (unsigned i=0; i<nValues; i++) len+=AfyKernel::serSize(values[i],true);
+	if (ei!=NULL) {
+		if (ei->values!=NULL && ei->nValues!=0) {
+			len+=afy_len32(ei->nValues); if (ei->nNested!=0) len+=afy_len32(ei->nNested);
+			for (unsigned i=0; i<ei->nValues; i++) len+=AfyKernel::serSize(ei->values[i],true);
+		}
+		if (ei->into!=NULL && ei->nInto!=0) {
+			len+=afy_len32(ei->nInto);
+			for (unsigned i=0; i<ei->nInto; i++) {
+				const ClassSpec &cs=ei->into[i]; len+=afy_len32(cs.classID)+afy_len32(cs.nParams);
+				for (unsigned i=0; i<cs.nParams; i++) len+=AfyKernel::serSize(cs.params[i]);
+			}
+		}
+		if (ei->mode!=0) len+=afy_len32(ei->mode); if (ei->id!=~0ULL) len+=afy_len64(ei->id);
+	}
 	return len;
 }
 
@@ -1335,8 +1377,25 @@ byte *Stmt::serialize(byte *buf) const
 		afy_enc16(buf,sq.flags); afy_enc32(buf,sq.lPref);
 		if ((sq.flags&ORDER_EXPR)!=0) buf=sq.expr->serialize(buf); else afy_enc32(buf,sq.pid);
 	}
-	afy_enc32(buf,nValues); afy_enc32(buf,nNested);
-	if (values!=NULL && nValues!=0) for (unsigned i=0; i<nValues; i++) buf=AfyKernel::serialize(values[i],buf,true);
+	if (ei==NULL) *buf++=0;
+	else {
+		byte f=ei->values==NULL||ei->nValues==0?0x00:ei->nNested==0?0x01:0x03;
+		if (ei->into!=NULL && ei->nInto!=0) f|=0x04; if (ei->mode!=0) f|=0x08;
+		if (ei->id!=~0ULL) f|=0x10; *buf++=f;
+		if ((f&0x01)!=0) {
+			afy_enc32(buf,ei->nValues); if ((f&0x02)!=0) afy_enc32(buf,ei->nNested);
+			for (unsigned i=0; i<ei->nValues; i++) buf=AfyKernel::serialize(ei->values[i],buf,true);
+		}
+		if ((f&0x04)!=0) {
+			afy_enc32(buf,ei->nInto);
+			for (unsigned i=0; i<ei->nInto; i++) {
+				const ClassSpec &cs=ei->into[i]; afy_enc32(buf,cs.classID); afy_enc32(buf,cs.nParams);
+				for (unsigned i=0; i<cs.nParams; i++) buf=AfyKernel::serialize(cs.params[i],buf);
+			}
+		}
+		if ((f&0x08)!=0) afy_enc32(buf,ei->mode);
+		if ((f&0x10)!=0) afy_enc64(buf,ei->id);
+	}
 	return buf;
 }
 
@@ -1369,12 +1428,42 @@ RC Stmt::deserialize(Stmt *&res,const byte *&buf,const byte *const ebuf,MemAlloc
 			}
 		}
 		if (rc==RC_OK) {
-			CHECK_dec32(buf,stmt->nValues,ebuf); CHECK_dec32(buf,stmt->nNested,ebuf);
-			if (stmt->nValues!=0) {
-				if ((stmt->values=new(ma) Value[stmt->nValues])==NULL) rc=RC_NORESOURCES;
-				else {
-					memset(stmt->values,0,sizeof(Value)*stmt->nValues);
-					for (unsigned i=0; i<stmt->nValues; i++) if ((rc=AfyKernel::deserialize(stmt->values[i],buf,ebuf,ma,false,true))!=RC_OK) break;	
+			if (buf>=ebuf) rc=RC_CORRUPTED;
+			else {
+				const byte f=*buf++; ExtraInfo *ei;
+				if (f!=0) {
+					if ((ei=new(ma) ExtraInfo)==NULL) rc=RC_NORESOURCES;
+					else {
+						stmt->ei=ei;
+						if ((f&0x01)!=0) {
+							CHECK_dec32(buf,ei->nValues,ebuf);
+							if ((f&0x02)!=0) {CHECK_dec32(buf,ei->nNested,ebuf);}
+							if ((ei->values=new(ma) Value[ei->nValues])==NULL) rc=RC_NORESOURCES;
+							else {
+								memset(ei->values,0,sizeof(Value)*ei->nValues);
+								for (unsigned i=0; i<ei->nValues; i++) if ((rc=AfyKernel::deserialize(ei->values[i],buf,ebuf,ma,false,true))!=RC_OK) break;	
+							}
+						}
+						if (rc==RC_OK && (f&0x04)!=0) {
+							CHECK_dec32(buf,ei->nInto,ebuf);
+							if ((ei->into=new(ma) ClassSpec[ei->nInto])==NULL) rc=RC_NORESOURCES;
+							else {
+								memset(ei->into,0,ei->nInto*sizeof(ClassSpec));
+								for (unsigned i=0; rc==RC_OK && i<ei->nInto; i++) {
+									ClassSpec &cs=ei->into[i];
+									CHECK_dec32(buf,cs.classID,ebuf); CHECK_dec32(buf,cs.nParams,ebuf);
+									if (cs.nParams!=0) {
+										if ((cs.params=new(ma) Value[cs.nParams])==NULL) {rc=RC_NORESOURCES; break;}
+										memset((void*)cs.params,0,cs.nParams*sizeof(Value));
+										for (unsigned j=0; j<cs.nParams; j++)
+											if ((rc=AfyKernel::deserialize(*(Value*)&cs.params[j],buf,ebuf,ma,false))!=RC_OK) break;
+									}
+								}
+							}
+						}
+						if (rc==RC_OK && (f&0x08)!=0) {CHECK_dec32(buf,ei->mode,ebuf);}
+						if (rc==RC_OK && (f&0x10)!=0) {CHECK_dec64(buf,ei->id,ebuf);}
+					}
 				}
 			}
 		}

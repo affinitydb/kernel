@@ -1163,7 +1163,7 @@ RC QueryPrc::modifyPIN(Session *ses,const PID& id,const Value *v,unsigned nv,PIN
 
 	if (cid!=STORE_INVALID_CLASSID && (md.flags&MF_ADDACL)!=0) rc=ctx->classMgr->setFlags(cid,CLASS_ACL,CLASS_ACL);
 
-	if (rc==RC_OK && (pinDescr&(HOH_HIDDEN|HOH_REPLICATED))==HOH_REPLICATED && (md.flags&MF_REPSES)==0) {		// and replication enabled
+	if (rc==RC_OK && replication!=NULL && (pinDescr&(HOH_HIDDEN|HOH_REPLICATED))==HOH_REPLICATED && (md.flags&MF_REPSES)==0) {
 		// replication
 	}
 
@@ -1407,7 +1407,7 @@ RC QueryPrc::setFlag(Session *ses,const PID& id,PageAddr *addr,ushort flag,bool 
 			Value *vals=NULL; ClassResult clr(ses,ctx);
 			if (cb.hpin->nProps>0 && (rc=ctx->classMgr->classify(&cb,clr))==RC_OK && clr.nClasses>0)
 				rc=ctx->classMgr->index(ses,&cb,clr,CI_UDELETE);
-			if (rc==RC_OK && (dscr&(HOH_REPLICATED|HOH_NOREPLICATION))==HOH_REPLICATED) {	// and replication enabled	HIDDEN?
+			if (rc==RC_OK && replication!=NULL && (dscr&(HOH_REPLICATED|HOH_NOREPLICATION))==HOH_REPLICATED) {
 				// replicate
 			}
 			if (rc==RC_OK && (fNotify||clr.classes!=NULL)) {

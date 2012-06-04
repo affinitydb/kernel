@@ -240,6 +240,7 @@ public:
 #define	CV_REF		0x0002
 #define	CV_OPT		0x0004
 #define	CV_PROP		0x0008
+#define	CV_NDATA	0x0010
 
 /**
  * expression compilation context

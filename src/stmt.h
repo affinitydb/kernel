@@ -102,10 +102,25 @@ enum SelectType
 	SEL_VALUESET,		/**< SELECT expr, no aggregation */
 	SEL_DERIVED,		/**< SELECT list of expressions, aggregation is used, one result is returned */
 	SEL_DERIVEDSET,		/**< SELECT list of expressions, no aggregation */
-	SEL_PROJECTED,		/**< SELECT with pure projection list, no derived values, no property renames */
+	SEL_AUGMENTED,		/**< SELECT @,... */
 	SEL_PINSET,			/**< SELECT * for non-join query */
 	SEL_COMPOUND,		/**< SELECT * for join query */
 	SEL_COMP_DERIVED	/**< SELECT list of expressions for join query */
+};
+
+/**
+ * extra parameters used in STMT_INSERT and STMT_UPDATE
+ */
+struct ExtraInfo
+{
+	Value			*values;	/**< values of a new PIN or modifiers for update */
+	unsigned		nValues;	/**< number of values for insert or modifiers for update */
+	unsigned		nNested;	/**< number of nested PINs to be inserterd */
+	ClassSpec		*into;		/**< class membership constraints */
+	unsigned		nInto;		/**< number of class membership constraints */
+	unsigned		mode;		/**< PIN creation flags */
+	uint64_t		id;			/**< root PIN id for cross-references in graph insert */
+	ExtraInfo() : values(NULL),nValues(0),nNested(0),into(NULL),nInto(0),mode(0),id(~0ULL) {}
 };
 
 /**
@@ -281,11 +296,9 @@ class Stmt : public IStmt
 	unsigned		nVars;
 	OrderSegQ		*orderBy;
 	unsigned		nOrderBy;
-	Value			*values;
-	unsigned		nValues;
-	unsigned		nNested;
+	ExtraInfo		*ei;
 public:
-	Stmt(ulong md,MemAlloc *m,STMT_OP sop=STMT_QUERY) : op(sop),mode(md),ma(m),top(NULL),nTop(0),vars(NULL),nVars(0),orderBy(NULL),nOrderBy(0),values(NULL),nValues(0),nNested(0) {}
+	Stmt(ulong md,MemAlloc *m,STMT_OP sop=STMT_QUERY) : op(sop),mode(md),ma(m),top(NULL),nTop(0),vars(NULL),nVars(0),orderBy(NULL),nOrderBy(0),ei(NULL) {}
 	virtual	~Stmt();
 	QVarID	addVariable(const ClassSpec *classes=NULL,unsigned nClasses=0,IExprTree *cond=NULL);
 	QVarID	addVariable(const PID& pid,PropertyID propID,IExprTree *cond=NULL);
@@ -306,8 +319,8 @@ public:
 	RC		setJoinProperties(QVarID var,const PropertyID *props,unsigned nProps);
 	RC		setGroup(QVarID,const OrderSeg *order,unsigned nSegs,IExprTree *having=NULL);
 	RC		setOrder(const OrderSeg *order,unsigned nSegs);
-	RC		setValues(const Value *values,unsigned nValues);
-	RC		setValuesNoCopy(Value *values,unsigned nValues);
+	RC		setValues(const Value *values,unsigned nValues,const ClassSpec *into=NULL,unsigned nInto=0,unsigned mode=0);
+	RC		setValuesNoCopy(Value *values,unsigned nValues,ClassSpec *into=NULL,unsigned nInto=0,unsigned mode=0);
 	STMT_OP	getOp() const;
 	RC		execute(ICursor **result=NULL,const Value *params=NULL,unsigned nParams=0,unsigned nReturn=~0u,unsigned nSkip=0,unsigned long mode=0,uint64_t *nProcessed=NULL,TXI_LEVEL=TXI_DEFAULT) const;
 	RC		asyncexec(IStmtCallback *cb,const Value *params=NULL,unsigned nParams=0,unsigned nProcess=~0u,unsigned nSkip=0,unsigned long mode=0,TXI_LEVEL=TXI_DEFAULT) const;

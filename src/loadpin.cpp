@@ -35,7 +35,7 @@ RC QueryPrc::loadPIN(Session *ses,const PID& id,PIN *&pin,unsigned mode,PINEx *p
 		{if (rc==RC_DELETED && pin!=NULL) pin->mode|=PIN_DELETED; return rc;}
 
 	if (pin!=NULL) {pin->id=id; pin->addr=pcb->addr; pin->mode=pcb->mode;}
-	else if ((pin=new(ses) PIN(ses,pcb->id,pcb->addr,pcb->mode))==NULL) return RC_NORESOURCES;
+	else if ((pin=new(ses) PIN(ses,pcb->id,pcb->addr,pcb->mode&~PIN_PINEX))==NULL) return RC_NORESOURCES;
 	pin->stamp=pcb->stamp;
 	if ((rc=loadProps(pcb,mode|LOAD_SSV))==RC_OK) {
 		assert((pcb->mode&PIN_SSV)==0);

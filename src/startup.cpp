@@ -210,7 +210,7 @@ RC openStore(const StartupParameters& params,AfyDBCtx &cctx)
 		ctx->identMgr=new(ctx) IdentityMgr(ctx);
 		ctx->uriMgr=new(ctx) URIMgr(ctx);
 		ctx->ftMgr=new(ctx) FTIndexMgr(ctx);
-		ctx->queryMgr=new(ctx) QueryPrc(ctx,params.notification);
+		ctx->queryMgr=new(ctx) QueryPrc(ctx,params.notification,params.replication);
 		ctx->classMgr=new(ctx) Classifier(ctx,params.shutdownAsyncTimeout);
 		ctx->bigMgr=new(ctx) BigMgr(ctx);
 
@@ -257,6 +257,9 @@ RC createStore(const StoreCreationParameters& create,const StartupParameters& pa
 {
 	StoreCtx *ctx=NULL; RC rc=testEnv(); if (rc!=RC_OK) return rc;
 	try {
+		if (create.password!=params.password &&
+			(create.password==NULL || params.password==NULL || strcmp(create.password,params.password)!=0)) return RC_INVPARAM;
+
 		RequestQueue::startThreads(); initReport(); cctx=NULL;
 
 		if ((ctx=StoreCtx::createCtx(params.mode,true))==NULL) return RC_NORESOURCES;
@@ -324,7 +327,7 @@ RC createStore(const StoreCreationParameters& create,const StartupParameters& pa
 		ctx->identMgr=new(ctx) IdentityMgr(ctx);
 		ctx->uriMgr=new(ctx) URIMgr(ctx);
 		ctx->ftMgr=new(ctx) FTIndexMgr(ctx);
-		ctx->queryMgr=new(ctx) QueryPrc(ctx,params.notification);
+		ctx->queryMgr=new(ctx) QueryPrc(ctx,params.notification,params.replication);
 		ctx->classMgr=new(ctx) Classifier(ctx,params.shutdownAsyncTimeout);
 		ctx->bigMgr=new(ctx) BigMgr(ctx);
 
@@ -385,6 +388,9 @@ RC getStoreCreationParameters(StoreCreationParameters& params,AfyDBCtx ctx)
 		params.password=NULL;
 		params.fEncrypted=ctx->theCB->fIsEncrypted!=0;
 		params.maxSize=ctx->theCB->maxSize;
+		params.pctFree=ctx->theCB->pctFree;
+		params.logSegSize=ctx->theCB->logSegSize;
+		params.fPageIntegrity=ctx->theCB->fHMAC!=0;
 		return RC_OK;
 	} catch (RC rc) {return rc;} catch (...) {report(MSG_ERROR,"Exception in getStoreCreationParameters\n"); return RC_INTERNAL;}
 }

@@ -67,7 +67,7 @@ namespace AfyKernel
 	};
 };
 
-RC QueryPrc::commitPINs(Session *ses,PIN *const *pins,unsigned nPins,unsigned mode,const ValueV& params,const AllocCtrl *actrl,size_t *pSize)
+RC QueryPrc::commitPINs(Session *ses,PIN *const *pins,unsigned nPins,unsigned mode,const ValueV& params,const AllocCtrl *actrl,size_t *pSize,const ClassSpec *into,unsigned nInto)
 {
 	if (pins==NULL || nPins==0) return RC_OK; if (ses==NULL) return RC_NOSESSION;
 	if (ctx->isServerLocked() || ses->inReadTx()) return RC_READTX;
@@ -165,7 +165,9 @@ RC QueryPrc::commitPINs(Session *ses,PIN *const *pins,unsigned nPins,unsigned mo
 			default: break;
 			case VT_EXPR: case VT_STMT: if ((pv->meta&META_PROP_EVAL)==0) break;
 			case VT_VARREF: case VT_EXPRTREE:
-				if ((rc=eval(ses,pv,*pv,NULL,0,&params,1,ses,true))!=RC_OK) goto finish; //pin->PINex
+				{PINEx pex(ses),*ppe=&pex; if ((pin->mode&PIN_PINEX)!=0) ppe=(PINEx*)pin; else pex=pin;
+				if ((rc=eval(ses,pv,*pv,&ppe,1,&params,1,ses,true))!=RC_OK) goto finish;
+				if (pv->type==VT_REF && pv->pin==(PIN*)ppe) pv->pin=pin;}	// VT_REFPROP, VT_REFELT?
 				pv->property=pid; break;
 			}
 			if (pv->type==VT_ARRAY || pv->type==VT_COLLECTION) {
@@ -449,9 +451,20 @@ finish:
 		}
 		if (fProc && (pin->mode&PIN_HIDDEN)==0) {
 			if ((pin->mode&PIN_NO_INDEX)==0) {
-				PINEx pex(pin);
-				if ((rc=ctx->classMgr->classify(&pex,clr))==RC_OK && clr.nClasses>0)
-					rc=ctx->classMgr->index(ses,&pex,clr,(pin->mode&PIN_DELETED)!=0?CI_INSERTD:CI_INSERT);
+				PINEx pex(ses),*ppe=&pex; if ((pin->mode&PIN_PINEX)!=0) ppe=(PINEx*)pin; else pex=pin;
+				if ((rc=ctx->classMgr->classify(ppe,clr))==RC_OK && clr.nClasses>0)
+					rc=ctx->classMgr->index(ses,ppe,clr,(pin->mode&PIN_DELETED)!=0?CI_INSERTD:CI_INSERT);
+				if (rc==RC_OK && into!=NULL) for (unsigned i=0; i<nInto; i++) {
+					const ClassID cid=into[i].classID&STORE_MAX_URIID; bool fFound=false;
+					for (unsigned j=0; j<clr.nClasses; j++) if (clr.classes[j]->cid==cid) {
+						if ((into[i].classID&CLASS_UNIQUE)==0 && (clr.classes[j]->nIndexProps==0 || into[i].nParams==0)) fFound=true;
+						else {
+							// check params, uniquness
+						}
+						break;
+					}
+					if (!fFound) {rc=RC_CONSTRAINT; break;}
+				}
 				if (rc==RC_OK && (pin->mode&(PIN_DELETED|COMMIT_FTINDEX))==COMMIT_FTINDEX) {
 					const Value *doc=pin->findProperty(PROP_SPEC_DOCUMENT); SubAlloc sa(ses); FTList ftl(sa);
 					ChangeInfo inf={pin->id,doc==NULL?PIN::defPID:doc->type==VT_REF?doc->pin->getPID():
@@ -468,7 +481,7 @@ finish:
 				}
 			}
 			if (rc==RC_OK && (pin->mode&PIN_DELETED)==0) {
-				if ((pin->mode&(PIN_NO_REPLICATION|PIN_REPLICATED))==PIN_REPLICATED) rc=ses->replicate(pin);			// and replication is active
+				if (replication!=NULL && (pin->mode&(PIN_NO_REPLICATION|PIN_REPLICATED))==PIN_REPLICATED) rc=ses->replicate(pin);
 				if (rc==RC_OK && ctx->queryMgr->notification!=NULL && ((pin->mode&PIN_NOTIFY)!=0||(clr.notif&CLASS_NOTIFY_NEW)!=0)) {
 					IStoreNotification::NotificationEvent evt={pin->id,NULL,0,NULL,0,fRepSes};
 					if ((evt.events=(IStoreNotification::EventData*)mem.malloc((clr.nClasses+1)*sizeof(IStoreNotification::EventData)))!=NULL) {

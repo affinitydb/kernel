@@ -69,7 +69,8 @@ enum RC
 	RC_INVOP,				/**< invalid operation for this object */
 	RC_SYNTAX,				/**< syntactic error in query or expression */
 	RC_TOOBIG,				/**< object (pin, property, collection) is too big */
-	RC_PAGEFULL				/**< no space on page for the object (either pin or index entry) */
+	RC_PAGEFULL,			/**< no space on page for the object (either pin or index entry) */
+	RC_CONSTRAINT			/**< PIN doesn't satisfy membership constraints or not unique */			
 };
 
 };

@@ -98,8 +98,9 @@ namespace AfyDB
 	#define	PROP_SPEC_KEY				AfyDB::PropertyID(25)			/**< Future implementation */
 	#define	PROP_SPEC_VERSION			AfyDB::PropertyID(26)			/**< Chain of versions */
 	#define	PROP_SPEC_WEIGHT			AfyDB::PropertyID(27)			/**< Future implementation */
-	#define	PROP_SPEC_PROTOTYPE			AfyDB::PropertyID(28)			/**< JavaScript-like inheritance */
-	#define	PROP_SPEC_WINDOW			AfyDB::PropertyID(29)			/**< Stream windowing control (size of class-related window) */
+	#define	PROP_SPEC_SELF				AfyDB::PropertyID(28)			/**< pseudo-property: the PIN itself */
+	#define	PROP_SPEC_PROTOTYPE			AfyDB::PropertyID(29)			/**< JavaScript-like inheritance */
+	#define	PROP_SPEC_WINDOW			AfyDB::PropertyID(30)			/**< Stream windowing control (size of class-related window) */
 
 	#define	PROP_SPEC_MAX				PROP_SPEC_WINDOW
 	
@@ -182,7 +183,6 @@ namespace AfyDB
 	#define	CLASS_VIEW					0x0002		/**< Class membership is not to be indexed */
 	#define	CLASS_CLUSTERED				0x0004		/**< PINs belonging to class are clustered for more efficient sequential scan */
 	#define	CLASS_INDEXED				0x0008		/**< Class membership is indexed (set by the kernel) */
-	#define	CLASS_UNIQUE				0x0010		/**< Unique family */
 
 	/**
 	 * class-related notification flags
@@ -832,16 +832,17 @@ namespace AfyDB
 		QRY_SEMIJOIN, QRY_JOIN, QRY_LEFT_OUTER_JOIN, QRY_RIGHT_OUTER_JOIN, QRY_FULL_OUTER_JOIN, QRY_UNION, QRY_EXCEPT, QRY_INTERSECT, QRY_ALL_SETOP
 	};
 
-	#define	CLASS_PARAM_REF		0x80000000
+	#define	CLASS_PARAM_REF		0x80000000		/**< classID field in ClassSpec specifies parameter number containing actual ClassID */
+	#define	CLASS_UNIQUE		0x40000000		/**< for commitPINs(): check uniqueness of data in this family before insert */
 
 	/**
 	 * Class specification for query variables
 	 */
 	struct AFY_EXP ClassSpec
 	{
-		ClassID			classID;
-		unsigned		nParams;
-		const	Value	*params;
+		ClassID			classID;			/**< class ID */
+		unsigned		nParams;			/**< number of parameters for family reference */
+		const	Value	*params;			/**< parameter values for family reference */
 	};
 
 	/**
@@ -849,33 +850,33 @@ namespace AfyDB
 	 */
 	struct AFY_EXP PathSeg
 	{
-		PropertyID		pid;
-		ElementID		eid;
-		IExpr			*filter;
-		ClassID			cid;
-		unsigned		rmin;
-		unsigned		rmax;
-		bool			fLast;
+		PropertyID		pid;				/**< property ID */
+		ElementID		eid;				/**< collection element ID, may be STORE_FIRST_ELEMENT or STORE_LAST_ELEMENT; if is equal to STORE_COLLECTION_ID the whole collection is used */
+		IExpr			*filter;			/**< filter expression; applied to PINs refered by this segment collection or single reference */
+		ClassID			cid;				/**< class the above PINs must be members of */
+		unsigned		rmin;				/**< minimum number of repetitions of this segment in valid path */
+		unsigned		rmax;				/**< maximum number of repetitions of this segment in valid path */
+		bool			fLast;				/**< filtering must be applied only to the last segment */
 	};
 
 	/**
 	 * Ordering modifier flags
 	 */
-	#define	ORD_DESC			0x01
-	#define	ORD_NCASE			0x02
-	#define	ORD_NULLS_BEFORE	0x04
-	#define	ORD_NULLS_AFTER		0x08
+	#define	ORD_DESC			0x01		/**< descending order */
+	#define	ORD_NCASE			0x02		/**< case insensitive comparison of VT_STRING data */
+	#define	ORD_NULLS_BEFORE	0x04		/**< NULLs are sorted before non-null data */
+	#define	ORD_NULLS_AFTER		0x08		/**< NULLS are sorted after non-null data */
 
 	/**
 	 * Ordering segment specification
 	 */
 	struct AFY_EXP OrderSeg
 	{
-		IExprTree	*expr;
-		PropertyID	pid;
-		uint8_t		flags;
-		uint8_t		var;
-		uint16_t	lPrefix;
+		IExprTree	*expr;					/**< ordering expression, must be NULL is pid is set */
+		PropertyID	pid;					/**< ordering property, must be STORE_INVALID_PROPID if expr is not NULL */
+		uint8_t		flags;					/**< bit flags (see ORD_XXX above) */
+		uint8_t		var;					/**< in joins, variable number */
+		uint16_t	lPrefix;				/**< prefix length to be used for comparisons of VT_STRING data */
 	};
 
 	/**
@@ -934,9 +935,9 @@ namespace AfyDB
 		virtual	RC		setJoinProperties(QVarID var,const PropertyID *props,unsigned nProps) = 0;						/**< set properties for natural join or USING(...) */
 		virtual	RC		setGroup(QVarID,const OrderSeg *order,unsigned nSegs,IExprTree *having=NULL) = 0;				/**< set GROUP BY clause */
 		virtual	RC		setOrder(const OrderSeg *order,unsigned nSegs) = 0;												/**< set statement-wide result ordering */
-		virtual	RC		setValues(const Value *values,unsigned nValues) =  0;											/**< set Value structures for STMT_INSERT and STMT_UPDATE statements */
+		virtual	RC		setValues(const Value *values,unsigned nValues,const ClassSpec *into=NULL,unsigned nInto=0,unsigned mode=0) =  0;		/**< set Value structures, class filter and PIN flags for STMT_INSERT and STMT_UPDATE statements */
 
-		virtual	STMT_OP	getOp() const = 0;																				/**< get statement type */
+		virtual	STMT_OP	getOp() const = 0;																										/**< get statement type */
 
 		virtual	RC		execute(ICursor **result=NULL,const Value *params=NULL,unsigned nParams=0,unsigned nProcess=~0u,unsigned nSkip=0,		/**< execute statement, return result set iterator or number of affected PINs */
 										unsigned long mode=0,uint64_t *nProcessed=NULL,TXI_LEVEL=TXI_DEFAULT) const = 0;
@@ -990,6 +991,9 @@ namespace AfyDB
 		virtual	void	destroy() = 0;
 	};
 
+	/**
+	 * Free-text index scanning interface
+	 */
 	class StringEnum
 	{
 	public:
@@ -1088,7 +1092,7 @@ namespace AfyDB
 		virtual	bool		isCached(const PID& id) = 0;														/**< check if a PIN is in remote PIN cache by its ID */
 		virtual	RC			createPIN(PID& res,const Value values[],unsigned nValues,unsigned mode=0,const AllocCtrl* =NULL) = 0;		/**< create and commit PIN */
 		virtual	IPIN		*createUncommittedPIN(Value* values=0,unsigned nValues=0,unsigned mode=0,const PID *original=NULL) = 0;		/**< create uncommitted PIN, to be used in commitPINs() */
-		virtual	RC			commitPINs(IPIN *const *pins,unsigned nPins,unsigned mode=0,const AllocCtrl* =NULL,const Value *params=NULL,unsigned nParams=0) = 0;	/**< commit to persistent memory a set of uncommitted PINs; assignes PIN IDs */
+		virtual	RC			commitPINs(IPIN *const *pins,unsigned nPins,unsigned mode=0,const AllocCtrl* =NULL,const Value *params=NULL,unsigned nParams=0,const ClassSpec *into=NULL,unsigned nInto=0) = 0;	/**< commit to persistent memory a set of uncommitted PINs; assignes PIN IDs */
 		virtual	RC			modifyPIN(const PID& id,const Value *values,unsigned nValues,unsigned mode=0,const ElementID *eids=NULL,unsigned *pNFailed=NULL,const Value *params=NULL,unsigned nParams=0) = 0;	/**< modify committed or uncommitted PIN */
 		virtual	RC			deletePINs(IPIN **pins,unsigned nPins,unsigned mode=0) = 0;							/**< (soft-)delete or purge committed PINs from persistent memory */
 		virtual	RC			deletePINs(const PID *pids,unsigned nPids,unsigned mode=0) = 0;						/**< (soft-)delete or purge committed PINs from persistent memory by their IDs */

@@ -69,6 +69,7 @@ const BuiltinURI Classifier::builtinURIs[PROP_SPEC_MAX+1] = {
 	{S_L("key"),				PROP_SPEC_KEY},
 	{S_L("version"),			PROP_SPEC_VERSION},
 	{S_L("weight"),				PROP_SPEC_WEIGHT},
+	{S_L("self"),				PROP_SPEC_SELF},
 	{S_L("prototype"),			PROP_SPEC_PROTOTYPE},
 	{S_L("window"),				PROP_SPEC_WINDOW},
 };
@@ -914,7 +915,7 @@ enum SubSetV {NewV,DelV,AllPrevV,AllCurV,UnchagedV};
 RC Classifier::index(Session *ses,PINEx *pin,const ClassResult& clr,ClassIdxOp op,const struct PropInfo **ppi,unsigned npi,const PageAddr *oldAddr)
 {
 	RC rc=RC_OK; const bool fMigrated=op==CI_UPDATE && pin->addr!=*oldAddr;
-	Class *cls=NULL; ClassIndex *cidx; byte ext[XPINREFSIZE],ext2[XPINREFSIZE];
+	Class *cls=NULL; ClassIndex *cidx; byte ext[XPINREFSIZE],ext2[XPINREFSIZE]; pin->epr.flags|=PINEX_RLOAD;
 	PINRef pr(ctx->storeID,pin->id,pin->addr); byte lext=pr.enc(ext),lext2=0; const Value *psegs[10],**pps=psegs; ulong xSegs=10;
 	struct SegInfo {PropertyID pid; const PropInfo *pi; SubSetV ssv; ModInfo *mi; Value v; const Value *cv; uint32_t flags,idx,prev; bool fLoaded;} keysegs[10],*pks=keysegs;
 	for (ulong i=0; rc==RC_OK && i<clr.nClasses; PINRef::changeFColl(ext,lext,false),i++) {
@@ -937,6 +938,7 @@ RC Classifier::index(Session *ses,PINEx *pin,const ClassResult& clr,ClassIdxOp o
 		else if ((cls=getClass(cr->cid))==NULL || (cidx=cls->getIndex())==NULL)
 			report(MSG_ERROR,"Family %d not found\n",cr->cid);
 		else {
+			if (pin->pb.isNull() && (rc=ctx->queryMgr->getBody(*pin,TVO_UPD,GB_REREAD))!=RC_OK) return rc;
 			const unsigned nSegs=cidx->nSegs; ClassIdxOp kop=op;
 			unsigned nModSegs=0,phaseMask=op!=CI_UPDATE||!fMigrated?0:PHASE_UPDATE,phaseMask2=PHASE_INSERT|PHASE_DELETE|PHASE_UPDATE|PHASE_UPDCOLL;
 			if (nSegs>xSegs) {
@@ -1276,7 +1278,7 @@ RC IndexNavImpl::getValue(const Value *&pv,unsigned& nValues)
 		if (scan==NULL||ses->getStore()->inShutdown()) return RC_EOF;
 		if (!fFree && (rc=scan->getKey().getValues(v,nVals,cidx->getIndexSegs(),nVals,ses))==RC_OK) fFree=true;
 		pv=v; nValues=nVals;
-	} catch (RC rc2) {rc=rc2;} catch (...) {report(MSG_ERROR,"Exception in IndexNav::getKey()\n"); rc=RC_INTERNAL;}
+	} catch (RC rc2) {rc=rc2;} catch (...) {report(MSG_ERROR,"Exception in IndexNav::getValue()\n"); rc=RC_INTERNAL;}
 	try {if (scan!=NULL) scan->release();} catch(...) {}
 	return rc;
 }
@@ -1294,14 +1296,14 @@ const Value *IndexNavImpl::next()
 			scan->destroy(); scan=NULL; cidx->release(); cidx=NULL;
 		}
 		return NULL;
-	} catch (RC) {} catch (...) {report(MSG_ERROR,"Exception in ValueEnum::next()\n");}
+	} catch (RC) {} catch (...) {report(MSG_ERROR,"Exception in IndexNav::next()\n");}
 	try {if (scan!=NULL) scan->release();} catch(...) {}
 	return NULL;
 }
 
 unsigned IndexNavImpl::nValues()
 {
-	try {return nVals;} catch (...) {report(MSG_ERROR,"Exception in IndexNav::destroy()\n"); return ~0u;} 
+	try {return nVals;} catch (...) {report(MSG_ERROR,"Exception in IndexNav::nValues()\n"); return ~0u;} 
 }
 
 void IndexNavImpl::destroy()

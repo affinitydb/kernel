@@ -128,13 +128,16 @@ using namespace AfyKernel;
 #define	STA_CODE_TAG	_V(1)
 #define	STA_CID_TAG		_V(2)
 
-#define	RESPG_PAGE_TAG	_V(1)
+#define	RESPG_NPGS_TAG	_V(1)
+#define	RESPG_PAGE_TAG	_V(2)
 
-const static byte tags[VT_ALL] = {
+const static byte tags[VT_ALL] = 
+{
 	0, _V(5), _V(6), _V(7), _V(8), _L(4), _S(9), _D(10), _V(16), _D(11), _D(12), _V(6), _V(6), _L(3), _L(4), _L(3), _V(6),
 	_L(13), _L(13), _L(15), _L(15), _L(15), _L(15), _L(4), _L(4), _L(14), _L(14), _L(14), _L(14), 0, _V(6), 0, 0
 };
-const static byte types[VT_ALL] = {
+const static byte types[VT_ALL] = 
+{
 		VT_ERROR, VT_INT, VT_UINT, VT_INT64, VT_UINT64, VT_RESERVED2, VT_FLOAT, VT_DOUBLE, VT_BOOL, VT_DATETIME, VT_INTERVAL, VT_URIID, VT_IDENTITY,
 		VT_STRING, VT_BSTR, VT_URL, VT_RESERVED1, VT_REFID, VT_REFID, VT_REFIDPROP, VT_REFIDPROP, VT_REFIDELT, VT_REFIDELT,
 		VT_EXPR, VT_STMT, VT_ARRAY, VT_ARRAY, VT_STRUCT, VT_RANGE, VT_ERROR, VT_CURRENT, VT_REF, VT_ERROR,
@@ -373,7 +376,7 @@ public:
 					case 0:
 						sz=length(os.pin->id); pinSize=1+afy_len16(sz)+sz;
 						if (rtt!=RTT_PIDS) {
-							if (os.pin->mode!=0) pinSize+=1+afy_len32(os.pin->mode);
+							if ((os.pin->mode&~PIN_PINEX)!=0) pinSize+=1+afy_len32(os.pin->mode);
 							if (os.pin->stamp!=0) pinSize+=1+afy_len32(os.pin->stamp);
 							if (os.pin->nProperties!=0) pinSize+=1+afy_len32(os.pin->nProperties);
 							if (os.pin->properties!=NULL) for (i=0; i<os.pin->nProperties; i++)
@@ -393,7 +396,7 @@ public:
 					case 3:
 						os.state++; push_state(ST_PID,&os.pin->id,ID_TAG); continue;
 					case 4:
-						os.state++; if (rtt!=RTT_PIDS && os.pin->mode!=0) VAR_OUT(MODE_TAG,afy_enc32,os.pin->mode);
+						os.state++; if (rtt!=RTT_PIDS && (os.pin->mode&~PIN_PINEX)!=0) VAR_OUT(MODE_TAG,afy_enc32,os.pin->mode);
 					case 5:
 						os.state++; if (rtt!=RTT_PIDS && os.pin->stamp!=0) VAR_OUT(STAMP_TAG,afy_enc32,os.pin->stamp);
 					case 6:
@@ -525,8 +528,7 @@ public:
 					case 3:
 						if (os.pv->type==VT_COLLECTION) {
 							// release after each?
-							while ((cv=os.pv->nav->navigate(GO_NEXT))!=NULL)
-								{push_state(ST_VALUE,cv,VARRAY_V_TAG); goto again;}
+							while ((cv=os.pv->nav->navigate(GO_NEXT))!=NULL) {push_state(ST_VALUE,cv,VARRAY_V_TAG,true); goto again;}
 							os.pv->nav->navigate(GO_FINDBYID,STORE_COLLECTION_ID);
 						} else while (os.idx<os.pv->length)
 							{push_state(ST_VALUE,&os.pv->varray[os.idx++],VARRAY_V_TAG,os.pv->type!=VT_STRUCT); goto again;}
@@ -636,22 +638,21 @@ class ProtoBufStreamOut : public IStreamOut
 	Value				res;
 	Result				result;
 	bool				fRes;
+	//uint64_t			sht;
 public:
-	ProtoBufStreamOut(Session *s,Cursor *pr=NULL,ulong md=0) : ses(s),enc(s,md),ic(pr),fRes(false) 
+	ProtoBufStreamOut(Session *s,Cursor *pr=NULL,ulong md=0) : ses(s),enc(s,md),ic(pr),fRes(false)//,sht(0)
 		{res.setError(); result.rc=RC_OK; result.cnt=0; result.op=MODOP_QUERY;}
 	~ProtoBufStreamOut() {if (ic!=NULL) ic->destroy(); freeV(res);}
 	RC next(unsigned char *buf,size_t& lbuf) {
-		if (ses->getStore()->inShutdown()) return RC_SHUTDOWN;
-		size_t left=lbuf; RC rc;
-		while (ic!=NULL && left) {
-			if ((rc=enc.encode(buf+lbuf-left,left))!=RC_TRUE) {ses->releaseAllLatches(); return rc;}
+		if (buf==NULL || lbuf==0) return RC_INVPARAM; if (ses->getStore()->inShutdown()) return RC_SHUTDOWN;
+		size_t left=lbuf; RC rc=RC_OK;
+		while (ic!=NULL) {
+			if (left==0 || (rc=enc.encode(buf+lbuf-left,left))!=RC_TRUE) {ses->releaseAllLatches(); /*sht+=lbuf;*/ return rc;}
 			if ((rc=ic->next(res))!=RC_OK) {result.cnt=ic->getCount(); ic->destroy(); ic=NULL;}
 			else if (res.type==VT_REF) enc.set((PIN*)res.pin); else enc.set(&res);		// join ???
 		}
-    if (left) {
-  		if (!fRes) {enc.set(&result); fRes=true;} //result.rc=???
-  		rc=enc.encode(buf+lbuf-left,left); lbuf-=left;
-    }
+		if (!fRes) {enc.set(&result); fRes=true;} //result.rc=???
+		if (left==0) rc=RC_OK; else if ((rc=enc.encode(buf+lbuf-left,left))==RC_TRUE) lbuf-=left; //sht+=lbuf;
 		return rc!=RC_TRUE&&rc!=RC_EOF?rc:lbuf!=0?RC_OK:RC_EOF;
 	}
 	void destroy() {try {this->~ProtoBufStreamOut(); ses->free(this);} catch (...) {}}
@@ -706,6 +707,7 @@ class ProtoBufStreamIn : public IStreamIn {
 protected:
 	Session	*const	ses;
 	const	size_t	lobuf;
+	const	StreamInType	stype;
 	SubAlloc		*ma;
 	byte			*obuf;
 	EncodePB		*enc;
@@ -804,7 +806,7 @@ private:
 	virtual	RC allocMem() = 0;
 	virtual void releaseMem() = 0;
 protected:
-	ProtoBufStreamIn(Session *s,SubAlloc *m,size_t lo=0) : ses(s),lobuf(lo==0?DEFAULT_OBUF_SIZE:lo),ma(m),obuf(NULL),enc(NULL),obleft(0),
+	ProtoBufStreamIn(Session *s,SubAlloc *m,size_t lo=0,StreamInType st=SITY_NORMAL) : ses(s),lobuf(lo==0?DEFAULT_OBUF_SIZE:lo),stype(st),ma(m),obuf(NULL),enc(NULL),obleft(0),
 		inState(ST_TAG),sidx(0),lField(0),val(0),vsht(0),offset(0),left(0),sbuf(NULL),defType(VT_ANY),pins(NULL),pinoi(NULL),nPins(0),xPins(0),limit(DEFAULT_PIN_BATCH_SIZE),
 		mapBuf(NULL),lMapBuf(0),lSave(0),owner(STORE_OWNER),storeID(0),mapAlloc(s) {
 		is.type=ST_PBSTREAM; is.op=MODOP_INSERT; is.oi.cid=0; is.oi.fCid=false; is.oi.rtt=RTT_DEFAULT; is.tag=~0u; is.idx=0; is.msgEnd=~0ULL; is.fieldMask=0; is.obj=NULL;
@@ -850,8 +852,8 @@ protected:
 						if (offset+(in-buf0)+left>is.msgEnd) return RC_CORRUPTED;
 						sbuf=(byte*)&buf; inState=ST_READ; continue;
 					case ST_LEN:
-						assert((is.tag&7)==2);
-						lField=val; if (offset+(in-buf0)+lField>is.msgEnd) return RC_CORRUPTED;
+						lField=val; assert((is.tag&7)==2);
+						if (offset+(in-buf0)+lField>is.msgEnd) return RC_CORRUPTED;
 						break;
 					case ST_READ:
 						assert((is.tag&7)==0);
@@ -877,7 +879,7 @@ protected:
 						storeID=(uint16_t)val; advance(); continue;
 					case PIN_TAG:
 						if ((rc=allocMem())!=RC_OK) return rc;
-						if ((pin=new(ma) PIN(ses,PIN::defPID,PageAddr::invAddr,PIN_NO_FREE))==NULL) {releaseMem(); return RC_NORESOURCES;}
+						if ((pin=new(ma) PIN(ses,PIN::defPID,PageAddr::invAddr,0))==NULL) {releaseMem(); return RC_NORESOURCES;}
 						push_state(ST_PIN,pin,in-buf0); continue;
 					case STMT_TAG:
 						if ((rc=allocMem())!=RC_OK) return rc;
@@ -889,6 +891,9 @@ protected:
 					case FLUSH_TAG:
 						if ((rc=flush())!=RC_OK) return rc;
 						advance(); continue;
+					case RESPAGES_TAG:
+						if (stype!=SITY_DUMPLOAD) set_skip(); else push_state(ST_RESPAGES,NULL,in-buf0);
+						continue;
 					}
 				case ST_STRMAP:
 					switch (is.tag) {
@@ -909,7 +914,7 @@ protected:
 					case ID_TAG:
 						const_cast<PID&>(is.pin->id)=PIN::defPID;
 						push_state(ST_PID,const_cast<PID*>(&is.pin->id),in-buf0); continue;
-					case MODE_TAG: is.pin->mode=(uint32_t)val; break;
+					case MODE_TAG: is.pin->mode=((uint32_t)val)&~PIN_PINEX; break;
 					case STAMP_TAG: is.pin->stamp=(uint32_t)val; break;
 					case NVALUES_TAG:
 						if (is.idx>(uint32_t)val) return RC_CORRUPTED;
@@ -1024,7 +1029,22 @@ protected:
 					}
 					break;
 				case ST_RESPAGES:
-					//...
+					switch (is.tag) {
+					default: set_skip(); continue;
+					case RESPG_NPGS_TAG:
+//						if ((is.pv->length=(uint32_t)val)<is.idx) return RC_CORRUPTED;
+//						if (is.pv->length>is.idx) {
+//							if ((is.pv->varray=(Value*)ma->realloc((void*)is.pv->varray,is.pv->length*sizeof(Value)))==NULL) return RC_NORESOURCES;
+//							memset((void*)(is.pv->varray+is.idx),0,(is.pv->length-is.idx)*sizeof(Value));
+//						}
+						break;
+					case RESPG_PAGE_TAG:
+//						if ((is.fieldMask&1<<((RESPG_NPGS_TAG>>3)-1))==0) {
+//							// add 1 elt, set Value to 0
+//						} else if (is.idx>=is.pv->length) return RC_CORRUPTED;
+//						defType=VT_ANY; push_state(ST_VALUE,initV((Value*)&is.pv->varray[is.idx++]),in-buf0); continue;
+						break;
+					}
 					break;
 				case ST_UID:
 					//...
@@ -1044,6 +1064,7 @@ protected:
 						break;
 					case ST_PIN:
 						if (is.idx!=is.pin->nProperties) {if (sidx==1) releaseMem(); return RC_CORRUPTED;}
+						if (stype==SITY_NORMAL && is.op==MODOP_INSERT) is.pin->id=PIN::defPID;
 						if (sidx!=1) {/*???*/}
 						else {
 							if (pins!=NULL && nPins!=0) {
@@ -1095,6 +1116,9 @@ protected:
 						// mark and release memory (save in StmtIn)
 						if (sidx!=1) {/*???*/}
 						else if ((rc=process(stmt))!=RC_OK) return rc;
+						break;
+					case ST_RESPAGES:
+						//
 						break;
 					}
 					is=stateStack[--sidx]; 
@@ -1167,7 +1191,7 @@ private:
 		RC rc=RC_OK; ICursor *ic=NULL; Result res={RC_OK,0,modOp[stmt->getOp()]};
 		if ((rc=stmt->execute(out!=NULL&&is.oi.rtt!=RTT_COUNT?&ic:(ICursor**)0,is.stmt->params,is.stmt->nParams,is.stmt->limit,is.stmt->offset,is.stmt->mode,&res.cnt))==RC_OK && ic!=NULL) {
 			assert(obuf!=NULL && enc!=NULL); RTTYPE rtt=is.oi.rtt; const PINEx *ret=NULL,*sib; Value w;
-			if (rtt==RTT_DEFAULT) {SelectType st=((Cursor*)ic)->selectType(); rtt=st==SEL_COUNT?RTT_COUNT:st==SEL_PINSET||st==SEL_PROJECTED||st==SEL_COMPOUND?RTT_PINS:RTT_VALUES;}
+			if (rtt==RTT_DEFAULT) {SelectType st=((Cursor*)ic)->selectType(); rtt=st==SEL_COUNT?RTT_COUNT:st==SEL_PINSET||st==SEL_AUGMENTED||st==SEL_COMPOUND?RTT_PINS:RTT_VALUES;}
 			while (rc==RC_OK && (rc=((Cursor*)ic)->next(ret))==RC_OK) {
 				switch (rtt) {
 				case RTT_COUNT: break;
@@ -1216,7 +1240,7 @@ private:
 	RC allocMem() {return RC_OK;}
 	void releaseMem() {}
 public:
-	SyncStreamIn(Session *s,IStreamIn *o=NULL,size_t lo=0) : SubAlloc(s),ProtoBufStreamIn(s,this,lo),out(o),txLevel(0) {
+	SyncStreamIn(Session *s,IStreamIn *o=NULL,size_t lo=0,StreamInType st=SITY_NORMAL) : SubAlloc(s),ProtoBufStreamIn(s,this,lo,st),out(o),txLevel(0) {
 		if (o!=NULL && ((obuf=(byte*)malloc(lobuf))==NULL || (enc=new(this) EncodePB(s,0))==NULL)) throw RC_NORESOURCES;
 		obleft=lobuf; ma->mark(start);
 	}
@@ -1264,7 +1288,7 @@ class ServerStreamIn : public ProtoBufStreamIn {
 				case SRT_STMT:
 					if ((rc=stmt->execute(str.cb!=NULL&&oi.rtt!=RTT_COUNT?&ic:(ICursor**)0,info->params,info->nParams,info->limit,info->offset,info->mode,&nProcessed))==RC_OK && ic!=NULL) {
 						RTTYPE rtt=oi.rtt; const PINEx *ret=NULL,*sib; Value w;
-						if (rtt==RTT_DEFAULT) {SelectType st=((Cursor*)ic)->selectType(); rtt=st==SEL_COUNT?RTT_COUNT:st==SEL_PINSET||st==SEL_PROJECTED||st==SEL_COMPOUND?RTT_PINS:RTT_VALUES;}
+						if (rtt==RTT_DEFAULT) {SelectType st=((Cursor*)ic)->selectType(); rtt=st==SEL_COUNT?RTT_COUNT:st==SEL_PINSET||st==SEL_AUGMENTED||st==SEL_COMPOUND?RTT_PINS:RTT_VALUES;}
 						while (rc==RC_OK && (rc=((Cursor*)ic)->next(ret))==RC_OK) {
 							switch (rtt) {
 							case RTT_COUNT: break;
@@ -1371,7 +1395,7 @@ class ServerStreamIn : public ProtoBufStreamIn {
 	Mutex						lock;
 	SharedCounter				active;
 public:
-	ServerStreamIn(Session *s,IStreamInCallback *icb,size_t lo) : ProtoBufStreamIn(s,NULL,lo),cb(icb) {
+	ServerStreamIn(Session *s,StreamInType st,IStreamInCallback *icb,size_t lo) : ProtoBufStreamIn(s,NULL,lo,st),cb(icb) {
 		if (icb!=NULL) {
 			if ((obuf=(byte*)ses->malloc(lobuf))==NULL || (enc=new(ses) EncodePB(s,0))==NULL) throw RC_NORESOURCES;
 			obleft=lobuf;
@@ -1387,12 +1411,11 @@ public:
 RC Session::replicate(const PIN *pin)
 {
 	if (repl==NULL && (repl=new(this) SubAlloc(this))==NULL) return RC_NORESOURCES;
-	EncodePB enc(this); enc.set(pin); size_t lbuf=0; RC rc=RC_OK;
-	do {
-		byte *buf=(byte*)repl->getBuffer(lbuf); if (buf==NULL || lbuf==0) return RC_NORESOURCES;
-		rc=enc.encode(buf,lbuf); repl->setLeft(lbuf);
-	} while (rc==RC_OK);
-	return rc==RC_TRUE?RC_OK:rc;
+	EncodePB enc(this); enc.set(pin); size_t lbuf=0; RC rc=RC_OK; byte *buf;
+	do {buf=(byte*)repl->getBuffer(lbuf); if (buf==NULL || lbuf==0) return RC_NORESOURCES;}
+	while ((rc=enc.encode(buf,lbuf))==RC_OK);
+	if (rc==RC_TRUE) {repl->setLeft(lbuf); rc=RC_OK;}
+	return rc;
 }
 
 RC Stmt::execute(IStreamOut*& result,const Value *params,unsigned nParams,unsigned nReturn,unsigned nSkip,unsigned long mode,TXI_LEVEL txi) const
@@ -1424,6 +1447,6 @@ RC createServerInputStream(AfyDBCtx ctx,const StreamInParameters *params,IStream
 		if (params!=NULL && params->identity!=NULL && params->lIdentity!=0) {
 			// login
 		}
-		return (in=new(ses) ServerStreamIn(ses,params!=NULL?params->cb:(IStreamInCallback*)0,params!=NULL?params->lBuffer:0))!=NULL?RC_OK:RC_NORESOURCES;
+		return (in=new(ses) ServerStreamIn(ses,stype,params!=NULL?params->cb:(IStreamInCallback*)0,params!=NULL?params->lBuffer:0))!=NULL?RC_OK:RC_NORESOURCES;
 	} catch (RC rc) {return rc;} catch (...) {report(MSG_ERROR,"Exception in createServerInputStream()\n"); return RC_INTERNAL;}
 }

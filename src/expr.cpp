@@ -340,8 +340,8 @@ RC ExprCompileCtx::compileValue(const Value& v,ulong flg) {
 	if (fCollectRefs) {
 		switch (v.type) {
 		case VT_EXPRTREE: return compileNode((const ExprTree*)v.exprt);
-		case VT_VARREF: if ((v.refV.flags&VAR_TYPE_MASK)!=0||v.length==0) break;
-			return addExtRef(v.refV.id,v.refV.refN,((flg&CV_CARD)?PROP_ORD:0)|((flg&CV_OPT)!=0?PROP_OPTIONAL:0),pdx);
+		case VT_VARREF: if ((v.refV.flags&VAR_TYPE_MASK)!=0) break;
+			return (flg&CV_NDATA)==0?addExtRef(v.length!=0?v.refV.id:PROP_SPEC_SELF,v.refV.refN,((flg&CV_CARD)?PROP_ORD:0)|((flg&CV_OPT)!=0?PROP_OPTIONAL:0),pdx):RC_OK;
 		case VT_URIID: return addExtRef(v.uid,0,PROP_OPTIONAL|PROP_NO_LOAD,pdx);
 		case VT_IDENTITY: return addExtRef(v.iid,0xFFFF,PROP_OPTIONAL|PROP_NO_LOAD,pdx);
 		case VT_REFIDPROP: case VT_REFIDELT: return addExtRef(v.refId->pid,0,PROP_OPTIONAL|PROP_NO_LOAD,pdx);	// Identity in PINID?
@@ -364,17 +364,19 @@ RC ExprCompileCtx::compileValue(const Value& v,ulong flg) {
 			} else {
 				if ((p=alloc(4))!=NULL) {p[0]=OP_PARAM|fc; p[1]=0xFF; p[2]=byte(pdx); p[3]=v.refV.refN;} else return RC_NORESOURCES;
 			}
-		} else if (v.length==0) {
-			if ((p=alloc(2))==NULL) return RC_NORESOURCES; p[0]=OP_VAR|fc; p[1]=v.refV.refN;
 		} else {
-			byte op=OP_PROP; unsigned eid=0;
-			if ((rc=addExtRef(v.refV.id,v.refV.refN,((flg&CV_CARD)?PROP_ORD:0)|((flg&CV_OPT)!=0?PROP_OPTIONAL:0),pdx))!=RC_OK) return rc;
-			const bool fExt=v.refV.refN>3||pdx>0x3F; l=fExt?5:2;
-			if (v.eid!=STORE_COLLECTION_ID) {op=OP_ELT; eid=afy_enc32zz(v.eid); l+=afy_len32(eid);}
-			if ((p=alloc(l))==NULL) return RC_NORESOURCES; p[0]=op|fc;
-			if (!fExt) {p[1]=byte(v.refV.refN<<6|pdx); p+=2;}
-			else {p[1]=0xFF; p[2]=v.refV.refN; p[3]=byte(pdx); p[4]=byte(pdx>>8); p+=5;}
-			if (op==OP_ELT) afy_enc32(p,eid);
+			if ((flg&CV_NDATA)!=0) pdx=0;
+			else if ((rc=addExtRef(v.length!=0?v.refV.id:PROP_SPEC_SELF,v.refV.refN,((flg&CV_CARD)?PROP_ORD:0)|((flg&CV_OPT)!=0?PROP_OPTIONAL:0),pdx))!=RC_OK) return rc;
+			if (v.length==0) {
+				if ((p=alloc(2))==NULL) return RC_NORESOURCES; p[0]=OP_VAR|fc; p[1]=v.refV.refN;
+			} else {
+				byte op=OP_PROP; unsigned eid=0; const bool fExt=v.refV.refN>3||pdx>0x3F; l=fExt?5:2;
+				if (v.eid!=STORE_COLLECTION_ID) {op=OP_ELT; eid=afy_enc32zz(v.eid); l+=afy_len32(eid);}
+				if ((p=alloc(l))==NULL) return RC_NORESOURCES; p[0]=op|fc;
+				if (!fExt) {p[1]=byte(v.refV.refN<<6|pdx); p+=2;}
+				else {p[1]=0xFF; p[2]=v.refV.refN; p[3]=byte(pdx); p[4]=byte(pdx>>8); p+=5;}
+				if (op==OP_ELT) afy_enc32(p,eid);
+			}
 		}
 		break;
 	case VT_CURRENT:
@@ -503,8 +505,9 @@ RC ExprCompileCtx::compileCondition(const ExprTree *node,ulong mode,uint32_t lbl
 		if ((node->flags&NOT_BOOLEAN_OP)!=0) mode^=CND_NOT|1;
 		if ((rc=putCondCode(ExprOp(OP_IS_A|0x80),mode,lbl,true,node->nops))==RC_OK) {assert(fCollectRefs || lStack>=node->nops); lStack-=node->nops-((mode&CND_VBOOL)!=0?1:0);}
 		break;
-	case OP_NE: if ((node->flags&NULLS_NOT_INCLUDED_OP)==0) flg|=CV_OPT; goto bool_op;
-	case OP_BEGINS: case OP_ENDS: case OP_REGEX: case OP_ISLOCAL: case OP_CONTAINS:
+	case OP_ISLOCAL: if (node->operands[0].type==VT_VARREF && node->operands[0].length==0) flg|=CV_NDATA; goto bool_op;
+	case OP_NE: if ((node->flags&NULLS_NOT_INCLUDED_OP)==0) flg|=CV_OPT;
+	case OP_BEGINS: case OP_ENDS: case OP_REGEX: case OP_CONTAINS:
 	case OP_EQ: case OP_LT: case OP_LE: case OP_GT: case OP_GE:
 	bool_op: 
 		assert(node->nops<=2);

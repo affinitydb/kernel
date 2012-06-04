@@ -74,7 +74,6 @@ struct LogRec
 	TXID		txid;						/**< transaction ID */
 	LSN			undoNext;					/**< next log record in undo chain */
 	PageID		pageID;						/**< page ID */
-	uint8_t		hmac[HMAC_SIZE];			/**< HMAC for this record */
 
 	LRType		getType() const {return (LRType)(info&0x0F);}
 	ulong		getExtra() const {return info>>4;}
@@ -82,6 +81,11 @@ struct LogRec
 	uint32_t	getLength() const {return len1&LOGRECLENMASK;}
 	void		setInfo(LRType type,ulong extra) {info=extra<<4|type;}
 	void		setLength(uint32_t l,uint32_t flags) {len1=flags<<LOGRECFLAGSSHIFT|l&LOGRECLENMASK;}
+};
+
+struct LogRecHM : public LogRec
+{
+	uint8_t		hmac[HMAC_SIZE];			/**< (optional) HMAC for this record */
 };
 
 /**
@@ -112,6 +116,7 @@ class LogMgr
 	const	size_t		lPage;
 	const	size_t		logSegSize;
 	const	size_t		bufLen;
+	const	size_t		LRsize;
 	byte				*logBufBeg;
 	byte				*logBufEnd;
 	byte				*ptrWrite;
@@ -219,7 +224,7 @@ class LogReadCtx
 	RC					readChunk(LSN lsn,void *buf,size_t l);
 	void				finish();
 public:
-	LogRec				logRec;
+	LogRecHM			logRec;
 	LRType				type;
 	ulong				flags;
 	byte				*rbuf;
