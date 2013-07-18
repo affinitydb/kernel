@@ -1,6 +1,6 @@
 /**************************************************************************************
 
-Copyright © 2004-2012 VMware, Inc. All rights reserved.
+Copyright © 2004-2013 GoPivotal, Inc. All rights reserved.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -28,7 +28,7 @@ Written by Mark Venguerov 2004-2012
 #include "types.h"
 #include "mem.h"
 
-using namespace AfyDB;
+using namespace Afy;
 
 namespace AfyKernel
 {
@@ -41,34 +41,40 @@ namespace AfyKernel
 #define	LOAD_REF			0x1000
 #define	LOAD_COLLECTION		0x0800
 #define	LOAD_ENAV			0x0400
+#define	LOAD_RAW			0x0200
 
 /**
  * Internal MODE_* flags
  */
-#define	MODE_WITH_EVAL		0x80000000
+#define	MODE_COUNT			0x80000000
+#define	MODE_MANY_PINS		0x40000000
 #define	MODE_PREFIX_READ	0x40000000
 #define	MODE_OLDLEN			0x20000000
+#define	MODE_SAME_PROPS		0x20000000
 #define	MODE_REFRESH		0x10000000
-#define	MODE_COUNT			0x08000000
 
 #define	MODE_CLASS			0x00008000
-#define	MODE_NODEL			0x00004000
+#define	MODE_NODEL			0x00004000		
 #define	MODE_NO_RINDEX		0x00002000
+#define	MODE_COMPOUND		0x00002000
+#define	MODE_CHECKBI		0x00002000
 #define	MODE_CASCADE		0x00001000
+#define	MODE_FSM			0x00001000
 
 /**
- * internal Value::flags flags
+ * internal Value::flags flags (maximum 0x40)
  */
-#define	VF_SSV				0x04
 #define	VF_PREFIX			0x08
 #define	VF_REF				0x10
 #define	VF_STRING			0x20
+#define	VF_SSV				0x40
 
 #define	SORT_MASK			(ORD_DESC|ORD_NCASE|ORD_NULLS_BEFORE|ORD_NULLS_AFTER)
 
 struct	CondIdx;
 struct	CondEJ;
 struct	CondFT;
+struct	EvalCtx;
 class	Session;
 class	QVar;
 class	Stmt;
@@ -132,16 +138,19 @@ struct ValueV
 };
 
 /**
- * types of context variables
+ * types of context variables (in Value.refV.flags)
  */
 enum QCtxVT
 {
-	QV_PARAMS, QV_CORRELATED, QV_AGGS, QV_GROUP, QV_ALL
+	QV_PARAMS, QV_CORRELATED, QV_AGGS, QV_GROUP, QV_REXP, QV_SELF, QV_ALL
 };
 
 #define	VAR_CORR	((QV_CORRELATED+1)<<13)
 #define	VAR_AGGS	((QV_AGGS+1)<<13)
 #define	VAR_GROUP	((QV_GROUP+1)<<13)
+#define	VAR_REXP	((QV_REXP+1)<<13)
+#define	VAR_SELF	((QV_SELF+1)<<13)
+#define	VAR_NAMED	((QV_ALL+1)<<13)
 
 /**
  * query evaluation context
@@ -152,8 +161,9 @@ class	QCtx
 	int		refc;
 	void	operator	delete(void *) {}
 public:
-	QCtx(Session *s) : refc(0),ses(s) {memset(vals,0,sizeof(vals));}
+	QCtx(Session *s,EvalCtx *ect=NULL) : refc(0),ses(s),ectx(ect) {memset(vals,0,sizeof(vals));}
 	Session	*const	ses;
+	const	EvalCtx	*ectx;
 	ValueV	vals[QV_ALL];
 	void	ref() {refc++;}
 	void	destroy();
@@ -177,18 +187,18 @@ class QBuildCtx
 	Session			*const	ses;
 	QCtx			*const	qx;
 	const Stmt				*stmt;
-	ulong					nSkip;
-	ulong					mode;
-	ulong					flg;
+	unsigned				nSkip;
+	unsigned				mode;
+	unsigned				flg;
 	PropListP				propsReq;
 	const OrderSegQ			*sortReq;
 	unsigned				nSortReq;
 	class	QueryOp			*src[256];
-	ulong					nqs;
+	unsigned				nqs;
 	QueryWithParams			condQs[256];
-	ulong					ncqs;
+	unsigned				ncqs;
 public:
-	QBuildCtx(Session *s,const ValueV& prs,const Stmt *st,ulong nsk,ulong f);
+	QBuildCtx(Session *s,EvalCtx *ectx,const Stmt *st,unsigned nsk,unsigned f);
 	~QBuildCtx();
 	RC	process(QueryOp *&qop);
 private:

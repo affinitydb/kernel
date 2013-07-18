@@ -1,6 +1,6 @@
 /**************************************************************************************
 
-Copyright © 2004-2012 VMware, Inc. All rights reserved.
+Copyright © 2004-2013 GoPivotal, Inc. All rights reserved.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -36,7 +36,7 @@ Written by Mark Venguerov 2004-2012
 #define	DEFAULT_IDENTNAME_SIZE	128
 #define	DEFAULT_CACHED_IDENTS	256
 
-using namespace AfyDB;
+using namespace Afy;
 
 namespace AfyKernel
 {
@@ -67,7 +67,7 @@ class URI : public CachedObject
 {
 	URIInfo			info;
 public:
-	URI(ulong id,class URIMgr& mg) : CachedObject(id,*(NamedObjMgr*)&mg) {info.flags=info.lSuffix=0;}
+	URI(unsigned id,class URIMgr& mg) : CachedObject(id,*(NamedObjMgr*)&mg) {info.flags=info.lSuffix=0;}
 	const	char	*getURI() const {return getName();}
 	const	URIInfo	getInfo() const {return info;}
 	RC				deserializeCachedObject(const void *buf,size_t size);
@@ -84,6 +84,7 @@ public:
 	URIMgr(class StoreCtx *ct,int hashSize=DEFAULT_URIHASH_SIZE,int nameHashSize=DEFAULT_URINAME_SIZE,unsigned xObj=DEFAULT_CACHED_URIS);
 	CachedObject	*create();
 	URI				*insert(const char *URI);
+	char			*getURI(URIID uid,class Session *ses);
 };
 
 /**
@@ -106,7 +107,7 @@ class Identity : public CachedObject
 	bool			fPwd;
 	bool			fMayInsert;
 public:
-	Identity(ulong id,const byte *p,const PageAddr& certAddr,size_t lc,class IdentityMgr& mg) 
+	Identity(unsigned id,const byte *p,const PageAddr& certAddr,size_t lc,class IdentityMgr& mg) 
 		: CachedObject(id,*(NamedObjMgr*)&mg),certificate(certAddr),lCert(lc),fPwd(p!=NULL),fMayInsert(true)
 			{if (fPwd) memcpy(pwd,p,PWD_ENC_SIZE);}
 	const	byte	*getPwd() const {return fPwd?pwd:(const byte*)0;}

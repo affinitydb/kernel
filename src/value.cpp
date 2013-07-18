@@ -1,6 +1,6 @@
 /**************************************************************************************
 
-Copyright © 2004-2012 VMware, Inc. All rights reserved.
+Copyright © 2004-2013 GoPivotal, Inc. All rights reserved.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -18,14 +18,13 @@ Written by Mark Venguerov 2004-2012
 
 **************************************************************************************/
 
-#include "affinityimpl.h"
+#include "pin.h"
 #include "queryprc.h"
 #include "stmt.h"
 #include "parser.h"
 #include "expr.h"
 #include "maps.h"
 #include "blob.h"
-#include <stdio.h>
 #include <string.h>
 #include <math.h>
 
@@ -34,69 +33,96 @@ using namespace AfyKernel;
 RC AfyKernel::copyV0(Value &v,MemAlloc *ma)
 {
 	try {
-		ulong i; RC rc; Value w; size_t ll; assert(ma!=NULL);
+		unsigned i; RC rc; Value w; size_t ll; assert(ma!=NULL);
 		switch (v.type) {
-		default: break;
-		case VT_STRING: case VT_BSTR: case VT_URL: case VT_RESERVED2:
+		default: return RC_OK;
+		case VT_STRING: case VT_BSTR: case VT_URL:
 			if (v.str==NULL) break;
 			ll=v.length+(v.type==VT_BSTR?0:1);
 			if ((w.bstr=(byte*)ma->malloc(ll))==NULL) {v.type=VT_ERROR; return RC_NORESOURCES;}
 			memcpy((byte*)w.bstr,v.bstr,v.length);
 			if (v.type==VT_STRING||v.type==VT_URL) const_cast<char*>(w.str)[v.length]=0;
-			v.bstr=w.bstr; v.flags=ma->getAType(); break;
+			v.bstr=w.bstr; break;
 		case VT_COLLECTION:
 			if (v.nav!=NULL && (ma->getAType()!=SES_HEAP || (v.nav=v.nav->clone())==NULL)) {v.type=VT_ERROR; return RC_NORESOURCES;}
-			v.flags=ma->getAType(); break;
+			break;
 		case VT_ARRAY: case VT_STRUCT:
 			assert(v.varray!=NULL && v.length>0);
 			if ((w.varray=(Value*)ma->malloc(v.length*sizeof(Value)))==NULL) {v.type=VT_ERROR; return RC_NORESOURCES;}
 			for (i=0; i<v.length; i++)
 				if ((rc=copyV(v.varray[i],const_cast<Value&>(w.varray[i]),ma))!=RC_OK) {freeV((Value*)w.varray,i,ma); v.type=VT_ERROR; return rc;}
-			v.varray=w.varray; v.flags=ma->getAType(); break;
+			v.varray=w.varray; break;
 		case VT_RANGE:
 			assert(v.range!=NULL && v.length==2);
 			w.range=(Value*)ma->malloc(2*sizeof(Value));
 			if (w.range==NULL) {v.type=VT_ERROR; return RC_NORESOURCES;}
 			if ((rc=copyV(v.range[0],w.range[0],ma))!=RC_OK) {ma->free((Value*)w.range); v.type=VT_ERROR; return rc;}
 			if ((rc=copyV(v.range[1],w.range[1],ma))!=RC_OK) {freeV(const_cast<Value&>(w.range[0])); ma->free((Value*)w.range); v.type=VT_ERROR; return rc;}
-			v.range=w.range; v.flags=ma->getAType(); break;
+			v.range=w.range; break;
 		case VT_REFIDPROP: case VT_REFIDELT:
 			w.refId=(RefVID*)ma->malloc(sizeof(RefVID));
 			if (w.refId==NULL) {v.type=VT_ERROR; return RC_NORESOURCES;}
-			*const_cast<RefVID*>(w.refId)=*v.refId; v.refId=w.refId; v.flags=ma->getAType(); break;
+			*const_cast<RefVID*>(w.refId)=*v.refId; v.refId=w.refId; break;
 		case VT_STMT:
-			if (v.stmt!=NULL && (v.stmt=((Stmt*)v.stmt)->clone(STMT_OP_ALL,ma,false))==NULL) {v.type=VT_ERROR; return RC_NORESOURCES;}
-			v.flags=ma->getAType(); break;
+			if (v.stmt!=NULL && (v.stmt=((Stmt*)v.stmt)->clone(STMT_OP_ALL,ma))==NULL) {v.type=VT_ERROR; return RC_NORESOURCES;}
+			break;
 		case VT_EXPR:
 			if (v.expr!=NULL && (v.expr=Expr::clone((Expr*)v.expr,ma))==NULL) {v.type=VT_ERROR; return RC_NORESOURCES;}
-			v.flags|=ma->getAType(); break;
+			break;
 		case VT_EXPRTREE:
 			if (v.exprt!=NULL && (v.exprt=((ExprTree*)v.exprt)->clone())==NULL) {v.type=VT_ERROR; return RC_NORESOURCES;}
-			v.flags=ma->getAType(); break;
+			break;
 		case VT_STREAM:
 			v.stream.prefix=NULL;
 			if (v.stream.is!=NULL && (ma->getAType()!=SES_HEAP || (v.stream.is=v.stream.is->clone())==NULL)) {v.type=VT_ERROR; return RC_NORESOURCES;}
-			v.flags=ma->getAType(); break;
+			break;
 		}
-		return RC_OK;
+		setHT(v,ma->getAType()); return RC_OK;
 	} catch (RC rc) {return rc;} catch (...) {report(MSG_ERROR,"Exception in copyV(...)\n"); return RC_INTERNAL;}
 }
 
-RC AfyKernel::copyV(const Value *from,ulong nv,Value *&to,MemAlloc *ma)
+RC AfyKernel::copyV(const Value *from,unsigned nv,Value *&to,MemAlloc *ma)
 {
 	if (ma==NULL) ma=Session::getSession();
 	if (from==NULL||nv==0) to=NULL;
 	else if ((to=new(ma) Value[nv])==NULL) return RC_NORESOURCES;
-	else for (ulong i=0; i<nv; i++) {
+	else for (unsigned i=0; i<nv; i++) {
 		RC rc=copyV(from[i],to[i],ma);
 		if (rc!=RC_OK) {while (i--!=0) freeV(to[i]); ma->free(to); return rc;}
 	}
 	return RC_OK;
 }
 
+RC AfyKernel::copyPath(const PathSeg *src,unsigned nSegs,PathSeg *&dst,MemAlloc *ma)
+{
+	if ((dst=new(ma) PathSeg[nSegs])==NULL) return RC_NORESOURCES;
+	memcpy(dst,src,nSegs*sizeof(PathSeg)); RC rc;
+	for (unsigned i=0; i<nSegs; i++) {
+		if (src[i].nPids>1) {
+			if ((dst[i].pids=new(ma) PropertyID[dst[i].nPids])==NULL) return RC_NORESOURCES;
+			memcpy(dst[i].pids,src[i].pids,dst[i].nPids*sizeof(PropertyID));
+		}
+		if (src[i].filter!=NULL && (dst[i].filter=Expr::clone((Expr*)src[i].filter,ma))==NULL) return RC_NORESOURCES;
+		if (src[i].params!=NULL && (rc=copyV(src[i].params,src[i].nParams,dst[i].params,ma))!=RC_OK) return rc;
+	}
+	return RC_OK;
+}
+
+void AfyKernel::destroyPath(PathSeg *path,unsigned nSegs,MemAlloc *ma)
+{
+	if (path!=NULL) {
+		for (unsigned i=0; i<nSegs; i++) {
+			if (path[i].nPids>1) ma->free(path[i].pids);
+			if (path[i].filter!=NULL) path[i].filter->destroy();
+			if (path[i].params!=NULL) freeV(path[i].params,path[i].nParams,ma);
+		}
+		ma->free((void*)path);
+	}
+}
+
 bool AfyKernel::operator==(const Value& lhs, const Value& rhs)
 {
-	ulong i;
+	unsigned i;
 	if (lhs.property!=rhs.property || lhs.eid!=rhs.eid || lhs.op!=rhs.op || lhs.meta!=rhs.meta) return false;		// flags???
 	if (lhs.type!=rhs.type) switch (lhs.type) {
 	default: return false;
@@ -107,9 +133,9 @@ bool AfyKernel::operator==(const Value& lhs, const Value& rhs)
 	if (lhs.length!=rhs.length) return false;
 	switch (lhs.type) {
 	default: break;
-	case VT_STRING: case VT_BSTR: case VT_URL: case VT_RESERVED2: return memcmp(lhs.bstr,rhs.bstr,lhs.length)==0;
+	case VT_STRING: case VT_BSTR: case VT_URL: return memcmp(lhs.bstr,rhs.bstr,lhs.length)==0;
 	case VT_INT: case VT_UINT: case VT_URIID: case VT_IDENTITY: return lhs.ui==rhs.ui;
-	case VT_INT64: case VT_UINT64: case VT_DATETIME: case VT_INTERVAL: return lhs.ui64==rhs.ui64;
+	case VT_INT64: case VT_UINT64: case VT_DATETIME: case VT_INTERVAL: case VT_ENUM: return lhs.ui64==rhs.ui64;
 	case VT_FLOAT: return lhs.f==rhs.f && lhs.qval.units==rhs.qval.units;
 	case VT_DOUBLE: return lhs.d==rhs.d && lhs.qval.units==rhs.qval.units;
 	case VT_BOOL: return lhs.b==rhs.b;
@@ -150,7 +176,7 @@ size_t AfyKernel::serSize(const Value& v,bool full)
 	size_t l=1; uint32_t i; uint64_t u64; const Value *pv;
 	switch (v.type) {
 	default: l=0; break;
-	case VT_ANY: if (!full) l++; break;
+	case VT_ANY: break;
 	case VT_STREAM: u64=v.stream.is->length(); l+=1+afy_len64(u64)+(size_t)u64; break;
 	case VT_STRING: case VT_URL: l+=afy_len32(v.length+1)+v.length+1; break;
 	case VT_BSTR: l+=afy_len32(v.length)+v.length; break;
@@ -158,6 +184,7 @@ size_t AfyKernel::serSize(const Value& v,bool full)
 	case VT_UINT: case VT_URIID: case VT_IDENTITY: l+=afy_len32(v.ui); break;
 	case VT_INT64: case VT_INTERVAL: u64=afy_enc64zz(v.i64); l+=afy_len64(u64); break;
 	case VT_UINT64: case VT_DATETIME: l+=afy_len64(v.ui64); break;
+	case VT_ENUM: l+=afy_len32(v.enu.enumid)+afy_len32(v.enu.eltid); break;
 	case VT_FLOAT: l=2+sizeof(float); break;
 	case VT_DOUBLE: l=2+sizeof(double); break;
 	case VT_BOOL: case VT_CURRENT: l=2; break;
@@ -187,8 +214,7 @@ size_t AfyKernel::serSize(const Value& v,bool full)
 	case VT_STMT: l=((Stmt*)v.stmt)->serSize(); l+=1+afy_len32(l); break;
 
 	case VT_EXPRTREE:
-	case VT_RESERVED1:
-	case VT_RESERVED2:
+	case VT_MAP:
 		return 0;		// niy
 	}
 	if (full) {i=afy_enc32zz(v.eid); l+=2+afy_len32(i)+afy_len32(v.property);}
@@ -203,11 +229,10 @@ byte *AfyKernel::serialize(const PID& id,byte *buf)
 
 byte *AfyKernel::serialize(const Value& v,byte *buf,bool full)
 {
-	*buf++=v.type;
+	*buf++=v.type|v.fcalc<<7;
 	unsigned i; uint32_t l; const Value *pv; uint64_t u64;
 	switch (v.type) {
-	default:
-	case VT_ANY: if (!full) *buf++=v.meta; break;
+	default: break;
 	case VT_STREAM:
 		*buf++=v.stream.is->dataType(); u64=v.stream.is->length();
 		afy_enc64(buf,u64); buf+=v.stream.is->read(buf,(size_t)u64);
@@ -221,8 +246,9 @@ byte *AfyKernel::serialize(const Value& v,byte *buf,bool full)
 	case VT_UINT: case VT_URIID: case VT_IDENTITY: afy_enc32(buf,v.ui); break;
 	case VT_INT64: case VT_INTERVAL: u64=afy_enc64zz(v.i64); afy_enc64(buf,u64); break;
 	case VT_UINT64: case VT_DATETIME: afy_enc64(buf,v.ui64); break;
-	case VT_FLOAT: *buf++=byte(v.qval.units); memcpy(buf,&v.f,sizeof(float)); buf+=sizeof(float); break;
-	case VT_DOUBLE: *buf++=byte(v.qval.units); memcpy(buf,&v.d,sizeof(double)); buf+=sizeof(double); break;
+	case VT_ENUM: afy_enc32(buf,v.enu.enumid); afy_enc32(buf,v.enu.eltid); break;
+	case VT_FLOAT: *buf++=byte(v.qval.units); __una_set((float*)buf,v.f); buf+=sizeof(float); break;
+	case VT_DOUBLE: *buf++=byte(v.qval.units); __una_set((double*)buf,v.d); buf+=sizeof(double); break;
 	case VT_BOOL: *buf++=v.b; break;
 	case VT_RANGE: buf=serialize(v.range[1],serialize(v.range[0],buf)); break;
 	case VT_CURRENT: *buf++=byte(v.i); break;
@@ -233,7 +259,7 @@ byte *AfyKernel::serialize(const Value& v,byte *buf,bool full)
 	case VT_REFIDPROP: buf=serialize(v.refId->id,buf); afy_enc32(buf,v.refId->pid); break;
 	case VT_REFIDELT:  buf=serialize(v.refId->id,buf); afy_enc32(buf,v.refId->pid); afy_enc32(buf,v.refId->eid); break;
 	case VT_VARREF:
-		*buf++=v.refV.refN; *buf++=v.length|(v.eid!=STORE_COLLECTION_ID?0x80:0); 
+		*buf++=v.refV.refN; if ((*buf++=v.length)!=0 && v.eid!=STORE_COLLECTION_ID) buf[-1]|=0x80; 
 		*buf++=byte(v.refV.type>>8); *buf++=byte(v.refV.type);
 		*buf++=byte(v.refV.flags>>8); *buf++=byte(v.refV.flags);
 		if (v.length!=0) {afy_enc32(buf,v.refV.id); if (v.eid!=STORE_COLLECTION_ID) afy_enc32(buf,v.eid);}
@@ -257,8 +283,7 @@ byte *AfyKernel::serialize(const Value& v,byte *buf,bool full)
 		if (v.stmt!=NULL) {l=(uint32_t)((Stmt*)v.stmt)->serSize(); afy_enc32(buf,l); buf=((Stmt*)v.stmt)->serialize(buf);}
 		break;
 	case VT_EXPRTREE:
-	case VT_RESERVED1:
-	case VT_RESERVED2:
+	case VT_MAP:
 		//???
 		break;		// niy
 	}
@@ -277,11 +302,11 @@ RC AfyKernel::deserialize(Value& val,const byte *&buf,const byte *const ebuf,Mem
 {
 	if (buf==ebuf) return RC_CORRUPTED; assert(ma!=NULL);
 	uint32_t l,i; uint64_t u64; RefVID *rv; Expr *exp; Stmt *qry; RC rc;
-	val.type=(ValueType)*buf++; val.flags=NO_HEAP; val.meta=0; val.op=OP_SET;
-	val.property=STORE_INVALID_PROPID; val.eid=STORE_COLLECTION_ID;
-	switch (val.type) {
+	val.type=(ValueType)*buf++; setHT(val); val.meta=0; val.op=OP_SET;
+	val.property=STORE_INVALID_URIID; val.eid=STORE_COLLECTION_ID; val.fcalc=(val.type&0x80)>>7;
+	switch (val.type&=0x7F) {
 	default: return RC_CORRUPTED;
-	case VT_ANY: if (!full) {if (buf>=ebuf) return RC_CORRUPTED; val.meta=*buf++;} break;
+	case VT_ANY: break;
 	case VT_STREAM:
 		if (buf+1>ebuf) return RC_CORRUPTED;
 		val.type=*buf++; CHECK_dec64(buf,u64,ebuf);
@@ -303,13 +328,15 @@ RC AfyKernel::deserialize(Value& val,const byte *&buf,const byte *const ebuf,Mem
 		CHECK_dec64(buf,u64,ebuf); val.i64=afy_dec64zz(u64); val.length=sizeof(int64_t); break;
 	case VT_UINT64: case VT_DATETIME:
 		CHECK_dec64(buf,val.ui64,ebuf); val.length=sizeof(uint64_t); break;
+	case VT_ENUM:
+		CHECK_dec32(buf,val.enu.enumid,ebuf); CHECK_dec32(buf,val.enu.eltid,ebuf); val.length=sizeof(VEnum); break;
 	case VT_FLOAT:
 		if (buf+sizeof(float)+1>ebuf) return RC_CORRUPTED;
-		val.qval.units=*buf++; memcpy(&val.f,buf,sizeof(float));
+		val.qval.units=*buf++; val.f=__una_get(*(float*)buf);
 		buf+=val.length=sizeof(float); break;
 	case VT_DOUBLE: 
 		if (buf+sizeof(double)+1>ebuf) return RC_CORRUPTED; 
-		val.qval.units=*buf++; memcpy(&val.d,buf,sizeof(double));
+		val.qval.units=*buf++; val.d=__una_get(*(double*)buf);
 		buf+=val.length=sizeof(double); break;
 	case VT_BOOL:
 		if (buf>=ebuf) return RC_CORRUPTED; val.b=*buf++!=0; val.length=1; break;
@@ -364,8 +391,7 @@ RC AfyKernel::deserialize(Value& val,const byte *&buf,const byte *const ebuf,Mem
 		CHECK_dec32(buf,val.length,ebuf);
 		if ((rc=Stmt::deserialize(qry,buf,buf+val.length,ma))!=RC_OK) return rc;
 		val.stmt=qry; val.flags=ma->getAType(); break;
-	case VT_RESERVED1:
-	case VT_RESERVED2:
+	case VT_MAP:
 		return RC_CORRUPTED;	// niy
 	}
 	if (full) {
@@ -405,9 +431,9 @@ RC AfyKernel::streamToValue(IStream *stream,Value& val,MemAlloc *ma)
 	} catch (RC rc) {return rc;} catch (...) {return RC_INVPARAM;}
 }
 
-int AfyKernel::cmpNoConv(const Value& arg,const Value& arg2,ulong u)
+int AfyKernel::cmpNoConv(const Value& arg,const Value& arg2,unsigned u)
 {
-	ulong len; int c; Value v1,v2; assert(arg.type==arg2.type);
+	unsigned len; int c; Value v1,v2; assert(arg.type==arg2.type);
 	switch (arg.type) {
 	default: return -3;
 	case VT_INT: return cmp3(arg.i,arg2.i);
@@ -416,6 +442,9 @@ int AfyKernel::cmpNoConv(const Value& arg,const Value& arg2,ulong u)
 	case VT_INT64: return cmp3(arg.i64,arg2.i64);
 	case VT_DATETIME:
 	case VT_UINT64: return cmp3(arg.ui64,arg2.ui64);
+	case VT_ENUM:
+		if (arg.enu.enumid==arg2.enu.enumid) return cmp3(arg.enu.eltid,arg2.enu.eltid);
+		return (u&CND_SORT)!=0?cmp3(arg.enu.enumid,arg2.enu.enumid):(u&CND_NE)!=0?-1:-2;
 	case VT_FLOAT:
 		if (arg.qval.units==arg2.qval.units) return cmp3(arg.f,arg2.f);
 		v1.qval.d=arg.f; v1.qval.units=arg.qval.units; v2.qval.d=arg2.f; v2.qval.units=arg2.qval.units; 
@@ -427,13 +456,13 @@ int AfyKernel::cmpNoConv(const Value& arg,const Value& arg2,ulong u)
 	case VT_URIID: return arg.uid==arg2.uid?0:(u&CND_SORT)!=0?arg.uid<arg2.uid?-1:1:(u&CND_NE)!=0?-1:-2;
 	case VT_IDENTITY: return arg.iid==arg2.iid?0:(u&CND_SORT)!=0?arg.iid<arg2.iid?-1:1:(u&CND_NE)!=0?-1:-2;
 	case VT_STRING:
-		if (testStrNum(arg.str,arg.length,v1) && testStrNum(arg2.str,arg2.length,v2)) return cmp(v1,v2,u);
+		if (testStrNum(arg.str,arg.length,v1) && testStrNum(arg2.str,arg2.length,v2)) return cmp(v1,v2,u,NULL);
 	case VT_URL: case VT_BSTR:
 		if (arg.str==NULL||arg.length==0) return arg2.str==NULL||arg2.length==0?0:-1;
 		if (arg2.str==NULL||arg2.length==0) return 1;
 		len=arg.length<=arg2.length?arg.length:arg2.length;
 		c=sign(arg.type==VT_BSTR||(u&(CND_EQ|CND_NE))!=0&&(u&CND_NCASE)==0?memcmp(arg.bstr,arg2.bstr,len):
-					(u&CND_NCASE)!=0?strncasecmp(arg.str,arg2.str,len):strncmp(arg.str,arg2.str,len));
+											(u&CND_NCASE)!=0?strncasecmp(arg.str,arg2.str,len):strncmp(arg.str,arg2.str,len));
 		return c!=0?c:cmp3(arg.length,arg2.length);
 	case VT_REF: return (u&CND_SORT)!=0?cmpPIDs(arg.pin->getPID(),arg2.pin->getPID()):arg.pin->getPID()==arg2.pin->getPID()?0:(u&CND_NE)!=0?-1:-2;
 	case VT_REFPROP: return arg.ref.pin->getPID()==arg2.ref.pin->getPID()&&arg.ref.pid==arg.ref.pid?0:(u&CND_NE)!=0?-1:-2;								// CND_SORT
@@ -444,7 +473,7 @@ int AfyKernel::cmpNoConv(const Value& arg,const Value& arg2,ulong u)
 	}
 }
 
-int AfyKernel::cmpConv(const Value& arg,const Value& arg2,ulong u)
+int AfyKernel::cmpConv(const Value& arg,const Value& arg2,unsigned u,MemAlloc *ma)
 {
 	Value val1,val2; const Value *pv1=&arg,*pv2=&arg2; assert(arg.type!=arg2.type);
 	if ((isNumeric((ValueType)arg.type) || arg.type==VT_STRING && (pv1=&val1,testStrNum(arg.str,arg.length,val1))) && (isNumeric((ValueType)arg2.type) || arg2.type==VT_STRING && (pv2=&val2,testStrNum(arg2.str,arg2.length,val2)))) {
@@ -468,6 +497,15 @@ int AfyKernel::cmpConv(const Value& arg,const Value& arg2,ulong u)
 		}
 		int cmp=cmpNoConv(*pv1,*pv2,u); return fRev?-cmp:cmp;
 	}
+	if (arg.type==VT_STRING && !isString((ValueType)arg2.type)) {
+		if (convV(arg2,val2,VT_STRING,ma)==RC_OK) {
+			int c=sign(memcmp(arg.str,val2.str,min(arg.length,val2.length))); if (c==0) c=cmp3(arg.length,val2.length); freeV(val2); return c;
+		}
+	} else if (arg2.type==VT_STRING && !isString((ValueType)arg.type)) {
+		if (convV(arg,val1,VT_STRING,ma)==RC_OK) {
+			int c=sign(memcmp(val1.str,arg2.str,min(val1.length,arg2.length))); if (c==0) c=cmp3(val1.length,arg2.length); freeV(val1); return c;
+		}
+	}
 	if (isString((ValueType)arg.type) && isString((ValueType)arg2.type)) {
 		int c=sign(memcmp(arg.bstr,arg2.bstr,min(arg.length,arg2.length))); return c==0?cmp3(arg.length,arg2.length):c;
 	} else {
@@ -478,25 +516,29 @@ int AfyKernel::cmpConv(const Value& arg,const Value& arg2,ulong u)
 
 RC AfyKernel::convV(const Value& src,Value& dst,ushort type,MemAlloc *ma,unsigned mode)
 {
-	int l; char buf[256],*p; Value w; RC rc; TIMESTAMP ts; int64_t itv; URI *uri; Identity *ident; IdentityID iid; uint32_t ui;
+	size_t l; char buf[256],*p; Value w; RC rc; TIMESTAMP ts; int64_t itv; URI *uri; Identity *ident; IdentityID iid; uint32_t ui;
 	for (const Value *ps=&src;;) {if (ps->type==type) {
 noconv:
-		if (ps!=&dst) {if ((rc=copyV(*ps,dst,ma))!=RC_OK) {dst.setError(src.property); return rc;}}
+		if (ps!=&dst) {if ((rc=copyV(*ps,dst,ma))!=RC_OK) {dst.setError(ps->property); return rc;}}
 	} else if (type>=VT_ALL) {
 		if (((type&0xFF)!=VT_DOUBLE && (type&0xFF)!=VT_FLOAT || (type>>8)>=Un_ALL)) return RC_INVPARAM;
-		if (src.type==VT_DOUBLE || src.type==VT_FLOAT) {dst=src; if (dst.type==VT_FLOAT) {dst.d=dst.f; dst.type=VT_DOUBLE;}}
-		else if ((rc=convV(src,dst,VT_DOUBLE,ma,mode))!=RC_OK) return rc;
-		if ((rc=convUnits(dst.qval,(Units)(type>>8)))!=RC_OK) return rc;
+		if (ps->type==VT_INTERVAL && (type>>8)==Un_s) {
+			dst.d=(double)ps->i64/1000000.; dst.type=VT_DOUBLE; dst.qval.units=Un_s;
+		} else {
+			if (ps->type==VT_DOUBLE || ps->type==VT_FLOAT) {if (ps!=&dst) dst=*ps; if (dst.type==VT_FLOAT) {dst.d=dst.f; dst.type=VT_DOUBLE;}}
+			else if ((rc=convV(*ps,dst,VT_DOUBLE,ma,mode))!=RC_OK) return rc;
+			if ((rc=convUnits(dst.qval,(Units)(type>>8)))!=RC_OK) return rc;
+		}
 		if ((type&0xFF)==VT_FLOAT) {dst.f=(float)dst.d; dst.type=VT_FLOAT;}
 		return RC_OK;
 	} else if ((mode&CV_NODEREF)==0 && isRef((ValueType)ps->type) && type!=VT_URL && !isRef((ValueType)type)) {
 		if ((rc=derefValue(*ps,dst,Session::getSession()))!=RC_OK) return rc;
-		ps=&dst; continue;
+		ps=&dst; mode|=CV_NODEREF; continue;
 	} else {
-		if (ps!=&dst) {dst.eid=ps->eid; dst.flags=NO_HEAP;}
-		if ((mode&CV_NOTRUNC)!=0 && isInteger((ValueType)type)) switch (src.type) {
-		case VT_FLOAT: if (::floor(src.f)!=src.f) return RC_TYPE; break;
-		case VT_DOUBLE: if (::floor(src.d)!=src.d) return RC_TYPE; break;
+		if (ps!=&dst) {dst.eid=ps->eid; setHT(dst);}
+		if ((mode&CV_NOTRUNC)!=0 && isInteger((ValueType)type)) switch (ps->type) {
+		case VT_FLOAT: if (::floor(ps->f)!=ps->f) return RC_TYPE; break;
+		case VT_DOUBLE: if (::floor(ps->d)!=ps->d) return RC_TYPE; break;
 		}
 		switch (type) {
 		default: return RC_TYPE;
@@ -506,29 +548,29 @@ noconv:
 			case VT_INT:
 				if ((l=sprintf(buf,"%d",ps->i))<0) return RC_INTERNAL;
 				if ((p=(char*)ma->malloc(l+1))==NULL) return RC_NORESOURCES;
-				memcpy(p,buf,l+1); dst.set(p,(unsigned long)l); dst.flags=ma->getAType(); break;
+				memcpy(p,buf,l+1); dst.set(p,(unsigned)l); dst.flags=ma->getAType(); break;
 			case VT_UINT:
 				ui=ps->ui;
 			ui_to_str:
 				if ((l=sprintf(buf,"%u",ui))<0) return RC_INTERNAL;
 				if ((p=(char*)ma->malloc(l+1))==NULL) return RC_NORESOURCES;
-				memcpy(p,buf,l+1); dst.set(p,(unsigned long)l); dst.flags=ma->getAType(); break;
+				memcpy(p,buf,l+1); dst.set(p,(unsigned)l); dst.flags=ma->getAType(); break;
 			case VT_INT64:
 				if ((l=sprintf(buf,_LD_FM,ps->i64))<0) return RC_INTERNAL;
 				if ((p=(char*)ma->malloc(l+1))==NULL) return RC_NORESOURCES;
-				memcpy(p,buf,l+1); dst.set(p,(unsigned long)l); dst.flags=ma->getAType(); break;
+				memcpy(p,buf,l+1); dst.set(p,(unsigned)l); dst.flags=ma->getAType(); break;
 			case VT_UINT64:
 				if ((l=sprintf(buf,_LU_FM,ps->ui64))<0) return RC_INTERNAL;
 				if ((p=(char*)ma->malloc(l+1))==NULL) return RC_NORESOURCES;
-				memcpy(p,buf,l+1); dst.set(p,(unsigned long)l); dst.flags=ma->getAType(); break;
+				memcpy(p,buf,l+1); dst.set(p,(unsigned)l); dst.flags=ma->getAType(); break;
 			case VT_FLOAT:
 				if ((l=sprintf(buf,"%g",ps->f))<0) return RC_INTERNAL;
 				if ((p=(char*)ma->malloc(l+1))==NULL) return RC_NORESOURCES;
-				memcpy(p,buf,l+1); dst.set(p,(unsigned long)l); dst.flags=ma->getAType(); break;
+				memcpy(p,buf,l+1); dst.set(p,(unsigned)l); dst.flags=ma->getAType(); break;
 			case VT_DOUBLE:
 				if ((l=sprintf(buf,"%g",ps->d))<0) return RC_INTERNAL;
 				if ((p=(char*)ma->malloc(l+1))==NULL) return RC_NORESOURCES;
-				memcpy(p,buf,l+1); dst.set(p,(unsigned long)l); dst.flags=ma->getAType(); break;
+				memcpy(p,buf,l+1); dst.set(p,(unsigned)l); dst.flags=ma->getAType(); break;
 			case VT_BOOL: 
 				if (ps->b) dst.set("true",4); else dst.set("false",5); break;
 			case VT_STREAM:
@@ -547,16 +589,16 @@ noconv:
 			case VT_DATETIME:
 				ts=ps->ui64;
 			dt_to_str:
-				if ((rc=convDateTime(Session::getSession(),ts,buf,l))!=RC_OK) return rc;
+				if ((rc=Session::getSession()->convDateTime(ts,buf,l))!=RC_OK) return rc;
 				if ((p=(char*)ma->malloc(l+1))==NULL) return RC_NORESOURCES;
-				memcpy(p,buf,l+1); dst.set(p,(unsigned long)l); dst.flags=ma->getAType(); break;
+				memcpy(p,buf,l+1); dst.set(p,(unsigned)l); dst.flags=ma->getAType(); break;
 			case VT_INTERVAL:
-				if ((rc=convInterval(ps->i64,buf,l))!=RC_OK) return rc;
+				if ((rc=Session::convInterval(ps->i64,buf,l))!=RC_OK) return rc;
 				if ((p=(char*)ma->malloc(l+1))==NULL) return RC_NORESOURCES;
-				memcpy(p,buf,l+1); dst.set(p,(unsigned long)l); dst.flags=ma->getAType(); break;
+				memcpy(p,buf,l+1); dst.set(p,(unsigned)l); dst.flags=ma->getAType(); break;
 				break;
 			case VT_URIID:
-				if (ps->uid==STORE_INVALID_PROPID) dst.set("",0);
+				if (ps->uid==STORE_INVALID_URIID) dst.set("",0);
 				else if ((uri=(URI*)StoreCtx::get()->uriMgr->ObjMgr::find(ps->uid))==NULL) return RC_NOTFOUND;
 				else {dst.set(strdup(uri->getName(),ma)); dst.flags=ma->getAType(); uri->release();}
 				break;
@@ -569,16 +611,13 @@ noconv:
 				break;
 			case VT_STMT:
 				if ((p=ps->stmt->toString())==NULL) return RC_NORESOURCES;
-				if (&dst==ps && ps->flags!=NO_HEAP) freeV(dst);
-				dst.set(p); dst.flags=SES_HEAP; break;
+				if (&dst==ps) freeV(dst); dst.set(p); setHT(dst,SES_HEAP); break;
 			case VT_EXPR:
 				if ((p=ps->expr->toString())==NULL) return RC_NORESOURCES;
-				if (&dst==ps && ps->flags!=NO_HEAP) freeV(dst);
-				dst.set(p); dst.flags=SES_HEAP; break;
+				if (&dst==ps) freeV(dst); dst.set(p); setHT(dst,SES_HEAP); break;
 			default:
-				{SOutCtx so(Session::getSession()); if ((rc=so.renderValue(src))!=RC_OK) return rc;
-				if (&dst==ps && ps->flags!=NO_HEAP) freeV(dst);
-				size_t l; char *p=(char*)so.result(l); dst.set(p,(uint32_t)l); dst.flags=SES_HEAP;}
+				{SOutCtx so(Session::getSession()); if ((rc=so.renderValue(*ps))!=RC_OK) return rc;
+				if (&dst==ps) freeV(dst); size_t l; char *p=(char*)so.result(l); dst.set(p,(uint32_t)l); setHT(dst,SES_HEAP);}
 				break;
 			}
 			break;
@@ -612,9 +651,6 @@ noconv:
 			case VT_CURRENT:		//????
 				if ((p=(char*)ma->malloc(sizeof(TIMESTAMP)))==NULL) return RC_NORESOURCES;
 				getTimestamp(*(TIMESTAMP*)p); dst.set((unsigned char*)p,sizeof(TIMESTAMP)); dst.flags=ma->getAType(); break;
-			case VT_RESERVED1:
-			case VT_RESERVED2:
-				return RC_INTERNAL;
 			case VT_STRUCT:
 				//???
 				return RC_INTERNAL;
@@ -625,9 +661,8 @@ noconv:
 			default: return RC_TYPE;
 			case VT_UINT: goto noconv;
 			case VT_STRING: 
-				if ((rc=strToNum(ps->str,ps->length,w))!=RC_OK) return rc;
-				if (&dst==ps && ps->flags!=NO_HEAP) freeV(dst);
-				if (w.type!=VT_INT&&w.type!=VT_UINT) {ps=&w; continue;}
+				if ((rc=Session::strToNum(ps->str,ps->length,w))!=RC_OK) return rc;
+				if (&dst==ps) freeV(dst); if (w.type!=VT_INT&&w.type!=VT_UINT) {ps=&w; continue;}
 				dst=w; break;
 			case VT_INT64: dst.i=int32_t(ps->i64); dst.length=sizeof(int32_t); break;
 			case VT_UINT64: dst.i=int32_t(ps->ui64); dst.length=sizeof(int32_t); break;
@@ -640,9 +675,8 @@ noconv:
 			default: return RC_TYPE;
 			case VT_INT: goto noconv;
 			case VT_STRING:
-				if ((rc=strToNum(ps->str,ps->length,w))!=RC_OK) return rc;
-				if (&dst==ps && ps->flags!=NO_HEAP) freeV(dst);
-				if (w.type!=VT_INT&&w.type!=VT_UINT) {ps=&w; continue;}
+				if ((rc=Session::strToNum(ps->str,ps->length,w))!=RC_OK) return rc;
+				if (&dst==ps) freeV(dst); if (w.type!=VT_INT&&w.type!=VT_UINT) {ps=&w; continue;}
 				dst=w; break;
 			case VT_INT64: dst.ui=uint32_t(ps->i64); dst.length=sizeof(uint32_t); break;
 			case VT_UINT64: dst.ui=uint32_t(ps->ui64); dst.length=sizeof(uint32_t); break;
@@ -655,9 +689,8 @@ noconv:
 			default: return RC_TYPE;
 			case VT_UINT64: goto noconv;
 			case VT_STRING:
-				if ((rc=strToNum(ps->str,ps->length,w))!=RC_OK) return rc;
-				if (&dst==ps && ps->flags!=NO_HEAP) freeV(dst);
-				if (w.type!=VT_INT64&&w.type!=VT_UINT64) {ps=&w; continue;}
+				if ((rc=Session::strToNum(ps->str,ps->length,w))!=RC_OK) return rc;
+				if (&dst==ps) freeV(dst); if (w.type!=VT_INT64&&w.type!=VT_UINT64) {ps=&w; continue;}
 				dst=w; break;
 			case VT_INT: dst.i64=int64_t(ps->i); dst.length=sizeof(int64_t); break;
 			case VT_UINT: dst.i64=int64_t(ps->ui); dst.length=sizeof(int64_t); break;
@@ -670,9 +703,8 @@ noconv:
 			default: return RC_TYPE;
 			case VT_INT64: goto noconv;
 			case VT_STRING:
-				if ((rc=strToNum(ps->str,ps->length,w))!=RC_OK) return rc;
-				if (&dst==ps && ps->flags!=NO_HEAP) freeV(dst);
-				if (w.type!=VT_INT64&&w.type!=VT_UINT64) {ps=&w; continue;}
+				if ((rc=Session::strToNum(ps->str,ps->length,w))!=RC_OK) return rc;
+				if (&dst==ps) freeV(dst); if (w.type!=VT_INT64&&w.type!=VT_UINT64) {ps=&w; continue;}
 				dst=w; break;
 			case VT_INT: dst.ui64=uint64_t(ps->i); dst.length=sizeof(uint64_t); break;
 			case VT_UINT: dst.ui64=uint64_t(ps->ui); dst.length=sizeof(uint64_t); break;
@@ -685,9 +717,8 @@ noconv:
 			switch (ps->type) {
 			default: return RC_TYPE;
 			case VT_STRING:
-				if ((rc=strToNum(ps->str,ps->length,w))!=RC_OK) return rc;
-				if (&dst==ps && ps->flags!=NO_HEAP) freeV(dst);
-				if (w.type!=VT_FLOAT) {ps=&w; continue;}
+				if ((rc=Session::strToNum(ps->str,ps->length,w))!=RC_OK) return rc;
+				if (&dst==ps) freeV(dst); if (w.type!=VT_FLOAT) {ps=&w; continue;}
 				dst=w; break;
 			case VT_INT: dst.f=float(ps->i); dst.length=sizeof(float); break;
 			case VT_UINT: dst.f=float(ps->ui); dst.length=sizeof(float); break;
@@ -701,9 +732,8 @@ noconv:
 			switch (ps->type) {
 			default: return RC_TYPE;
 			case VT_STRING:
-				if ((rc=strToNum(ps->str,ps->length,w))!=RC_OK) return rc;
-				if (&dst==ps && ps->flags!=NO_HEAP) freeV(dst);
-				if (w.type!=VT_DOUBLE) {ps=&w; continue;}
+				if ((rc=Session::strToNum(ps->str,ps->length,w))!=RC_OK) return rc;
+				if (&dst==ps) freeV(dst); if (w.type!=VT_DOUBLE) {ps=&w; continue;}
 				dst=w; break;
 			case VT_INT: dst.d=double(ps->i); dst.length=sizeof(double); break;
 			case VT_UINT: dst.d=double(ps->ui); dst.length=sizeof(double); break;
@@ -718,7 +748,7 @@ noconv:
 			case VT_REF: goto noconv;
 			//case VT_URL:
 				// ...
-			//	if (&dst==ps && ps->flags!=NO_HEAP) freeV(dst);
+			//	if (&dst==ps) freeV(dst);
 				// ...
 			//	break;
 			//case VT_REFID:
@@ -733,12 +763,11 @@ noconv:
 			case VT_REFID: goto noconv;
 			//case VT_URL:
 				// ...
-			//	if (&dst==ps && ps->flags!=NO_HEAP) freeV(dst);
+			//	if (&dst==ps) freeV(dst);
 				// ...
 			//	break;
 			case VT_REF:
-				w.id=ps->pin->getPID(); if (&dst==ps) freeV(dst);
-				dst.id=w.id; dst.flags=NO_HEAP; break;
+				w.id=ps->pin->getPID(); if (&dst==ps) freeV(dst); dst.id=w.id; setHT(dst); break;
 			//case VT_STRUCT:
 			}
 			break;
@@ -747,19 +776,17 @@ noconv:
 			if (ps->length==4 && cmpncase(ps->str,"TRUE",4)==0) w.b=true;
 			else if (ps->length==5 && cmpncase(ps->str,"FALSE",5)==0) w.b=false;
 			else return RC_TYPE;
-			if (&dst==ps && ps->flags!=NO_HEAP) freeV(dst);
-			dst.b=w.b; dst.length=1; dst.flags=NO_HEAP; break;
+			if (&dst==ps) freeV(dst); dst.b=w.b; dst.length=1; setHT(dst); break;
 			break;
 		case VT_DATETIME:
 			switch (ps->type) {
 			default: return RC_TYPE;
 			case VT_UINT64: goto noconv;
 			case VT_STRING:
-				if ((rc=strToTimestamp(ps->str,ps->length,ts))!=RC_OK) return rc;
-				if (&dst==ps && ps->flags!=NO_HEAP) freeV(dst);
-				dst.ui64=ts; break;
+				if ((rc=Session::getSession()->strToTimestamp(ps->str,ps->length,ts))!=RC_OK) return rc;
+				if (&dst==ps) freeV(dst); dst.ui64=ts; setHT(dst); break;
 			case VT_CURRENT:
-				getTimestamp(ts); dst.ui64=ts; break;
+				getTimestamp(ts); dst.ui64=ts; setHT(dst); break;
 			}
 			break;
 		case VT_INTERVAL:
@@ -767,21 +794,20 @@ noconv:
 			default: return RC_TYPE;
 			case VT_INT64: goto noconv;
 			case VT_STRING:
-				if ((rc=strToInterval(ps->str,ps->length,itv))!=RC_OK) return rc;
-				if (&dst==ps && ps->flags!=NO_HEAP) freeV(dst);
-				dst.i64=itv; break;
+				if ((rc=Session::strToInterval(ps->str,ps->length,itv))!=RC_OK) return rc;
+				if (&dst==ps) freeV(dst); dst.i64=itv; setHT(dst); break;
 			}
 			break;
 		case VT_URIID:
 			if (ps->type!=VT_STRING && ps->type!=VT_URL) return RC_TYPE;
 			uri=StoreCtx::get()->uriMgr->insert(ps->str);
-			if (&dst==ps && ps->flags!=NO_HEAP) freeV(dst);
-			dst.setURIID(uri!=NULL?uri->getID():STORE_INVALID_PROPID);
+			if (&dst==ps) freeV(dst);
+			dst.setURIID(uri!=NULL?uri->getID():STORE_INVALID_URIID);
 			if (uri!=NULL) uri->release(); break;
 		case VT_IDENTITY:
 			if (ps->type!=VT_STRING) return RC_TYPE;
 			ident=(Identity*)StoreCtx::get()->identMgr->find(ps->str);
-			if (&dst==ps && ps->flags!=NO_HEAP) freeV(dst);
+			if (&dst==ps) freeV(dst);
 			dst.setIdentity(ident!=NULL?ident->getID():STORE_INVALID_IDENTITY);
 			if (ident!=NULL) ident->release(); break;
 		case VT_ARRAY:
@@ -789,7 +815,7 @@ noconv:
 			default: return RC_TYPE;
 			case VT_STRING:
 				// ...
-			//	if (&dst==ps && ps->flags!=NO_HEAP) freeV(dst);
+			//	if (&dst==ps) freeV(dst);
 				// ...
 			//	break;
 				return RC_TYPE;
@@ -803,7 +829,7 @@ noconv:
 			default: return RC_TYPE;
 			case VT_STRING:
 				// ...
-			//	if (&dst==ps && ps->flags!=NO_HEAP) freeV(dst);
+			//	if (&dst==ps) freeV(dst);
 				// ...
 			//	break;
 				return RC_TYPE;
@@ -817,7 +843,7 @@ noconv:
 			default: return RC_TYPE;
 			case VT_STRING:
 				// ...
-			//	if (&dst==ps && ps->flags!=NO_HEAP) freeV(dst);
+			//	if (&dst==ps) freeV(dst);
 				// ...
 			//	break;
 				return RC_TYPE;
@@ -825,9 +851,9 @@ noconv:
 			break;
 		case VT_STMT:
 			if (ps->type==VT_STRING) {
-				Session *ses=Session::getSession(); if (ses==NULL) return RC_NOSESSION; RC rc=RC_OK;
-				SInCtx in(ses,ps->str,ps->length,NULL,0,(ses->getItf()&ITF_SPARQL)!=0?SQ_SPARQL:SQ_PATHSQL);
-				try {Stmt *st=in.parseStmt(); if (&src==&dst) freeV(dst); dst.set(st); dst.flags=SES_HEAP; return RC_OK;}
+				Session *ses=Session::getSession(); if (ses==NULL) return RC_NOSESSION;
+				SInCtx in(ses,ps->str,ps->length,NULL,0); RC rc=RC_OK;
+				try {Stmt *st=in.parseStmt(); if (ps==&dst) freeV(dst); dst.set(st); dst.flags=SES_HEAP; return RC_OK;}
 				catch (SynErr) {rc=RC_SYNTAX;} catch (RC rc2) {rc=rc2;}
 				return rc;
 			}
@@ -838,7 +864,7 @@ noconv:
 				SInCtx in(ses,ps->str,ps->length,NULL,0); Expr *pe=NULL;
 				try {
 					ExprTree *et=in.parse(false); in.checkEnd(); rc=Expr::compile(et,pe,ses,false); et->destroy(); 
-					if (rc!=RC_OK) return rc; if (&src==&dst) freeV(dst);
+					if (rc!=RC_OK) return rc; if (ps==&dst) freeV(dst);
 					dst.set(pe); dst.flags=SES_HEAP; return RC_OK;
 				} catch (SynErr) {return RC_SYNTAX;} catch (RC rc) {return rc;}
 			}
@@ -857,7 +883,7 @@ RC AfyKernel::derefValue(const Value &src,Value &dst,Session *ses)
 	default: return RC_TYPE;
 	case VT_REF:
 		pin=(PIN*)src.pin; 
-		if ((rc=pin->getPINValue(dst,ses))==RC_OK && &src==&dst && save!=NO_HEAP) pin->destroy();
+		if ((rc=pin->getPINValue(dst,ses))==RC_OK && &src==&dst && save>=SES_HEAP) pin->destroy();
 		break;
 	case VT_REFID:
 		rc=ses!=NULL?ses->getStore()->queryMgr->getPINValue(src.id,dst,0,ses):RC_NOSESSION; break;
@@ -865,16 +891,16 @@ RC AfyKernel::derefValue(const Value &src,Value &dst,Session *ses)
 	case VT_REFELT:
 		pin=(PIN*)src.ref.pin;
 		rc=ses!=NULL?ses->getStore()->queryMgr->loadValue(ses,pin->getPID(),src.ref.pid,src.type==VT_REFELT?src.ref.eid:STORE_COLLECTION_ID,dst,0):RC_NOSESSION;
-		if (rc==RC_OK && &src==&dst && save!=NO_HEAP) pin->destroy();
+		if (rc==RC_OK && &src==&dst && save>=SES_HEAP) pin->destroy();
 		break;
 	case VT_REFIDPROP:
 	case VT_REFIDELT:
 		refId=src.refId;
 		rc=ses!=NULL?ses->getStore()->queryMgr->loadValue(ses,refId->id,refId->pid,src.type==VT_REFIDELT?refId->eid:STORE_COLLECTION_ID,dst,0):RC_NOSESSION;
-		if (rc==RC_OK && &src==&dst && save!=NO_HEAP) if (save==SES_HEAP) ses->free((void*)refId); else free((void*)refId,save);
+		if (rc==RC_OK && &src==&dst && save>=SES_HEAP) if (save==SES_HEAP) ses->free((void*)refId); else free((void*)refId,save);
 		break;
 	case VT_STRUCT:
-		rc=(cv=BIN<Value,PropertyID,ValCmp,uint32_t>::find(PROP_SPEC_REFID,src.varray,src.length))==NULL?RC_TYPE:
+		rc=(cv=BIN<Value,PropertyID,ValCmp,uint32_t>::find(PROP_SPEC_REF,src.varray,src.length))==NULL?RC_TYPE:
 								ses!=NULL?ses->getStore()->queryMgr->getPINValue(cv->id,dst,0,ses):RC_NOSESSION;
 		break;
 	}
@@ -910,16 +936,18 @@ RC AfyKernel::convURL(const Value& src,Value& dst,HEAP_TYPE alloc)
 	return RC_OK;
 }
 
-void AfyKernel::freeV(Value *v,ulong nv,MemAlloc *ma)
+void AfyKernel::freeV(Value *v,unsigned nv,MemAlloc *ma)
 {
-	for (ulong i=0; i<nv; i++) freeV(v[i]);
-	ma->free(v);
+	if (v!=NULL) {
+		for (unsigned i=0; i<nv; i++) freeV(v[i]);
+		ma->free(v);
+	}
 }
 
 void AfyKernel::freeV0(Value& v)
 {
 	try {
-		HEAP_TYPE allc=(HEAP_TYPE)(v.flags&HEAP_TYPE_MASK); assert(allc!=NO_HEAP);
+		HEAP_TYPE allc=(HEAP_TYPE)(v.flags&HEAP_TYPE_MASK); assert(allc>=SES_HEAP);
 		switch (v.type) {
 		default: break;
 		case VT_STRING: case VT_BSTR: case VT_URL:
@@ -927,7 +955,7 @@ void AfyKernel::freeV0(Value& v)
 		case VT_REFIDPROP: case VT_REFIDELT: free((RefVID*)v.refId,allc); break;
 		case VT_ARRAY: case VT_STRUCT:
 			if (v.varray!=NULL) {
-				for (ulong i=0; i<v.length; i++) freeV(const_cast<Value&>(v.varray[i]));
+				for (unsigned i=0; i<v.length; i++) freeV(const_cast<Value&>(v.varray[i]));
 				free(const_cast<Value*>(v.varray),allc);
 			}
 			break;
@@ -937,7 +965,7 @@ void AfyKernel::freeV0(Value& v)
 				freeV(v.range[0]); freeV(v.range[1]); free(v.range,allc);
 			}
 			break;
-		case VT_EXPRTREE: delete (ExprTree*)v.exprt; break;
+		case VT_EXPRTREE: delete (ExprTree*)v.exprt; break;	// allc?
 		case VT_STREAM: if (v.stream.is!=NULL) v.stream.is->destroy(); break;
 		case VT_STMT: if (v.stmt!=NULL) v.stmt->destroy(); break;
 		case VT_COLLECTION: if (v.nav!=NULL) v.nav->destroy(); break;

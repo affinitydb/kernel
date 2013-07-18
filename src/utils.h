@@ -1,6 +1,6 @@
 /**************************************************************************************
 
-Copyright © 2004-2012 VMware, Inc. All rights reserved.
+Copyright © 2004-2013 GoPivotal, Inc. All rights reserved.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -24,92 +24,11 @@ Written by Mark Venguerov 2004-2012
 #ifndef _UTILS_H_
 #define _UTILS_H_
 
-#include "sync.h"
+#include "afyutils.h"
 #include "mem.h"
-#include <stddef.h>
-
-namespace AfyDB {struct Value; struct DateTime;}
 
 namespace AfyKernel
 {
-
-/**
- * Next Power of 2 (H. Warren, Hacker's Delight, 2003, p.48)
- */
-__forceinline unsigned nextP2(unsigned x)
-{
-	x = x - 1;
-	x = x | x >> 1;
-	x = x | x >> 2;
-	x = x | x >> 4;
-	x = x | x >> 8;
-	x = x | x >> 16;
-	return x + 1;
-}
-
-/**
- * Number of 1-bits in 32-bit number (H. Warren, Hacker's Delight, 2003, p.66)
- */
-__forceinline int pop(unsigned x)
-{
-	x = x - (x >> 1 & 0x55555555);
-	x = (x & 0x33333333) + (x >> 2 & 0x33333333);
-	x = x + (x>>4) & 0x0f0f0f0f; x += x>>8;
-	return x+(x>>16)&0x3f;
-}
-
-/**
- * Number of 1-bits in 16-bit number
- */
-__forceinline int pop16(unsigned short x)
-{
-	x = x - (x >> 1 & 0x5555);
-	x = (x & 0x3333) + (x >> 2 & 0x3333);
-	x = x + (x>>4) & 0x0f0f; 
-	return x + (x>>8) & 0x1f;
-}
-
-/**
- * Number of 1-bits in 16-bit number
- */
-__forceinline int pop8(unsigned char x)
-{
-	x = x - (x >> 1 & 0x55);
-	x = (x & 0x33) + (x >> 2 & 0x33);
-	return x + (x>>4) & 0x0f; 
-}
-
-/**
- * Number of leading zeros in 32-bit number (H. Warren, Hacker's Delight, 2003)
- */
-__forceinline int nlz(unsigned x)
-{
-	x|=x>>1; x|=x>>2; x|=x>>4; x|=x>>8; return pop(~(x|x>>16));
-}
-
-/**
- * Number of trailing zeros in 32-bit number (H. Warren, Hacker's Delight, 2003)
- */
-__forceinline int ntz(unsigned x)
-{
-	return pop(~x&x-1);
-}
-
-/**
- * 3-way comparison, returns -1,0,1 (H. Warren, Hacker's Delight, 2003)
- */
-template<typename T> __forceinline int cmp3(T x,T y)
-{
-	return (x>y)-(x<y);
-}
-
-/**
- * sign function, returns -1,0,1 (H. Warren, Hacker's Delight, 2003)
- */
-template<typename T> __forceinline int sign(T x)
-{
-	return (x>0)-(x<0);
-}
 
 #ifndef LLONG_MAX
 #define	LLONG_MAX	9223372036854775807LL
@@ -145,34 +64,22 @@ __forceinline bool cmpncase(const char *p1,const char *p2,size_t l)
 }
 
 /**
- * various conversion helper functions
- */
-extern	RC		strToNum(const char *str,size_t lstr,AfyDB::Value& res,const char **pend=NULL,bool fInt=false);
-extern	RC		strToTimestamp(const char *str,size_t lstr,TIMESTAMP& res);
-extern	RC		strToInterval(const char *str,size_t lstr,int64_t& res);
-extern	RC		convDateTime(class Session *ses,TIMESTAMP dt,char *buf,int& l,bool fUTC=true);
-extern	RC		convInterval(int64_t it,char *buf,int& l);
-extern	RC		convDateTime(class Session *ses,TIMESTAMP dt,AfyDB::DateTime& dts,bool fUTC=true);
-extern	RC		convDateTime(class Session *ses,const AfyDB::DateTime& dts,TIMESTAMP& dt,bool fUTC=true);
-extern	RC		getDTPart(TIMESTAMP dt,unsigned& res,int part);
-
-/**
  * int128 number compression and decompression macros
  */
-#undef afy_rot
+#undef afy_rotl
 #undef afy_rev
 #ifdef WIN32
-#define afy_rot(u,n)	_lrotl(u,n)
+#define afy_rotl(u,n)	_lrotl(u,n)
 #define afy_rev(u) _byteswap_ulong(u)
 #elif defined(IA32) || defined(__x86_64__)
-#define afy_rot(u,n) ({register uint32_t ret; asm ("roll %1,%0":"=r"(ret):"I"(n),"0"(u):"cc"); ret;})
+#define afy_rotl(u,n) ({register uint32_t ret; asm ("roll %1,%0":"=r"(ret):"I"(n),"0"(u):"cc"); ret;})
 __forceinline uint32_t afy_rev(uint32_t u) {register uint32_t l=u; asm ("bswapl %0":"=r"(l):"0"(l)); return l;}
-#elif defined(__arm__)
-#define afy_rot(u, n) ({register uint32_t ret, i=32-n; asm (" mov %0, %2, ror %1":"=r"(ret):"r"(i),"0"(u):"cc"); ret;})
+#elif defined(__arm__) && !defined(_ARMLES6)
+#define afy_rotl(u, n) ({register uint32_t ret, i=32-n; asm (" mov %0, %2, ror %1":"=r"(ret):"r"(i),"0"(u):"cc"); ret;})
 __forceinline uint32_t afy_rev(uint32_t u) {register uint32_t l=u; asm ("rev %0, %1":"=r"(l):"0"(l)); return l;}
 #else
-__forceinline uint32_t afy_rot(uint32_t u,uint32_t n) {return u<<n|u>>(sizeof(uint32_t)*8-n);}
-__forceinline uint32_t afy_rev(uint32_t u) {return afy_rot(u,8)&0x00FF00FF|afy_rot(u&0x00FF00FF,24);}
+__forceinline uint32_t afy_rotl(uint32_t u,uint32_t n) {return u<<n|u>>(sizeof(uint32_t)*8-n);}
+__forceinline uint32_t afy_rev(uint32_t u) {return afy_rotl(u,8)&0x00FF00FF|afy_rotl(u&0x00FF00FF,24);}
 #endif
 
 #define	afy_dec64(a,b)	{if (((b=*a++)&1<<7)!=0 && ((b=b&(1<<7)-1|*a++<<7)&1<<14)!=0 &&													\
@@ -246,64 +153,6 @@ __forceinline uint32_t afy_rev(uint32_t u) {return afy_rot(u,8)&0x00FF00FF|afy_r
 #define	afy_dec32zz(a)	int32_t(uint32_t(a)>>1^-int32_t((a)&1))
 #define	afy_dec64zz(a)	int64_t(uint64_t(a)>>1^-int64_t((a)&1))
 
-template<typename T> class DefCmp
-{
-public:
-	__forceinline static int cmp(T x,T y) {return cmp3(x,y);}
-	__forceinline static RC merge(T&,T&,MemAlloc*) {return RC_OK;}
-};
-
-/**
- * binary array search template
- */
-template<typename T,typename Key=T,class C=DefCmp<Key>,typename N=unsigned> class BIN
-{
-public:
-	__forceinline static const T *find(Key key,const T *arr,N nElts,T** ins=NULL) {
-		N k=0; const T *r=NULL;
-		if (arr!=NULL) while (nElts!=0) {
-			k=nElts>>1; const T *q=&arr[k]; int c=C::cmp(*q,key);
-			if (c==0) {r=q; break;} if (c>0) nElts=k; else {nElts-=++k; arr+=k; k=0;}
-		}
-		if (ins!=NULL) *ins=(T*)&arr[k]; return r;
-	}
-	__forceinline static const T *find(Key key,const T **arr,N nElts,const T*** ins=NULL) {
-		N k=0; const T *r=NULL;
-		if (arr!=NULL) while (nElts!=0) {
-			k=nElts>>1; const T *q=arr[k]; int c=C::cmp(q,key); 
-			if (c==0) {r=q; break;} if (c>0) nElts=k; else {nElts-=++k; arr+=k; k=0;}
-		}
-		if (ins!=NULL) *ins=(const T**)&arr[k]; return r;
-	}
-	__forceinline static RC insert(T *&arr,N& n,Key key,T newElt,MemAlloc *ma,N *xn=NULL) {
-		T *ins=NULL; if (find(key,(const T*)arr,n,&ins)!=NULL) return RC_OK;
-		if ((arr==NULL || xn==NULL || n>=*xn) && ma!=NULL) {
-			ptrdiff_t sht=ins-arr;
-			if ((arr=(T*)ma->realloc(arr,(xn==NULL?n+1:*xn+=(*xn==0?10:*xn/2))*sizeof(T)))==NULL) return RC_NORESOURCES;
-			ins=arr+sht;
-		}
-		if (ins<&arr[n]) memmove(ins+1,ins,(byte*)&arr[n]-(byte*)ins); *ins=newElt; n++; return RC_OK;
-	}
-};
-
-/**
- * CRC32 calculation
- */
-class CRC32
-{
-	uint32_t	CRCTable[256];
-public:
-	CRC32();
-	CRC		start() const {return CRC(0xFFFFFFFFul);}
-	CRC		update(const byte *buf,size_t len,CRC sum) const {
-		for (;len!=0; --len,++buf) sum = CRCTable[(sum^*buf)&0xff]^sum>>8;
-		return sum;
-	}
-	CRC		finish(CRC sum) const {return ~sum;}
-	CRC		checksum(const byte *buf,size_t len) const {return ~update(buf,len,CRC(~0ul));}
-	static	CRC32	_CRC;
-};
-
 /**
  * UTF8 helper functions
  * conversions, type character, etc.
@@ -314,21 +163,21 @@ class UTF8
 	const static byte	sec[64][2];
 	const static byte	mrk[7];
 	const static ushort	upperrng[];
-	const static ulong	nupperrng;
+	const static unsigned	nupperrng;
 	const static ushort	uppersgl[];
-	const static ulong	nuppersgl;
+	const static unsigned	nuppersgl;
 	const static ushort	lowerrng[];
-	const static ulong	nlowerrng;
+	const static unsigned	nlowerrng;
 	const static ushort	lowersgl[];
-	const static ulong	nlowersgl;
+	const static unsigned	nlowersgl;
 	const static ushort	otherrng[];
-	const static ulong	notherrng;
+	const static unsigned	notherrng;
 	const static ushort	othersgl[];
-	const static ulong	nothersgl;
+	const static unsigned	nothersgl;
 	const static ushort	spacerng[];
-	const static ulong	nspacerng;
-	static bool	test(wchar_t wch,const ushort *p,ulong n,const ushort *sgl,ulong nsgl) {
-		const ushort *q; ulong k;
+	const static unsigned	nspacerng;
+	static bool	test(wchar_t wch,const ushort *p,unsigned n,const ushort *sgl,unsigned nsgl) {
+		const ushort *q; unsigned k;
 		while (n>1) {k=n>>1; q=p+k*3; if (wch>=*q) {p=q; n-=k;} else n=k;}
 		if (n>0 && wch>=p[0] && wch<=p[1]) return true;
 		p=sgl; n=nsgl;
@@ -337,11 +186,11 @@ class UTF8
 	}
 public:
 	static int	len(byte ch) {return slen[ch];}
-	static int	ulen(ulong ch) {return ch>0x10FFFF || (ch&0xFFFE)==0xFFFE || ch>=0xD800 && ch<=0xDFFF ? 0 : ch<0x80 ? 1 : ch<0x800 ? 2 : ch<0x10000 ? 3 : 4;}
-	static ulong decode(ulong ch,const byte *&s,size_t xl) {
-		ulong len=slen[(byte)ch]; if (len==1) return ch;
+	static int	ulen(unsigned ch) {return ch>0x10FFFF || (ch&0xFFFE)==0xFFFE || ch>=0xD800 && ch<=0xDFFF ? 0 : ch<0x80 ? 1 : ch<0x800 ? 2 : ch<0x10000 ? 3 : 4;}
+	static unsigned decode(unsigned ch,const byte *&s,size_t xl) {
+		unsigned len=slen[(byte)ch]; if (len==1) return ch;
 		if (len==0 || len>xl+1) return ~0u;
-		byte c=*s++; ulong i=ch&0x3F;
+		byte c=*s++; unsigned i=ch&0x3F;
 		if (c<sec[i][0] || c>sec[i][1]) return ~0u;
 		for (ch&=0x3F>>--len;;) {
 			ch = ch<<6|(c&0x3F);
@@ -349,16 +198,16 @@ public:
 			if (((c=*s++)&0xC0)!=0x80) return ~0u;
 		}
 	}
-	static int encode(byte *s,ulong ch) {
+	static int encode(byte *s,unsigned ch) {
 		if (ch<0x80) {*s=(byte)ch; return 1;} int len=ulen(ch);
 		for (int i=len; --i>=1; ch>>=6) s[i]=byte(ch&0x3F|0x80);
 		s[0]=byte(ch|mrk[len]); return len;
 	}
-	static bool iswdigit(wchar_t wch) {return (ulong)wch-'0'<=9u || (ulong)wch-0xFF10<=9u;}
-	static bool isrdigit(wchar_t wch) {return (ulong)wch-0x2160<=0x1F;}
+	static bool iswdigit(wchar_t wch) {return (unsigned)wch-'0'<=9u || (unsigned)wch-0xFF10<=9u;}
+	static bool isrdigit(wchar_t wch) {return (unsigned)wch-0x2160<=0x1F;}
 	static bool iswlower(wchar_t wch) {return test(wch,lowerrng,nlowerrng,lowersgl,nlowersgl);}
-	static bool iswupper(wchar_t wch,ulong& res) {
-		const ushort *p=upperrng,*q; ulong n=nupperrng,k;
+	static bool iswupper(wchar_t wch,unsigned& res) {
+		const ushort *p=upperrng,*q; unsigned n=nupperrng,k;
 		while (n>1) {k=n>>1; q=p+k*3; if (wch>=*q) {p=q; n-=k;} else n=k;}
 		if (n>0 && wch>=p[0] && wch<=p[1]) {res=wchar_t(wch+p[2]-500); return true;}
 		p=uppersgl; n=nuppersgl;
@@ -368,7 +217,7 @@ public:
 	}
 	static bool iswlalpha(wchar_t wch) {
 		if (test(wch,lowerrng,nlowerrng,lowersgl,nlowersgl)) return true;
-		const ushort *p=otherrng,*q; ulong n=notherrng,k;
+		const ushort *p=otherrng,*q; unsigned n=notherrng,k;
 		while (n>1) {k=n>>1; q=p+k*2; if (wch>=*q) {p=q; n-=k;} else n=k;}
 		if (n>0 && wch>=p[0] && wch<=p[1]) return true;
 		p=othersgl; n=nothersgl;
@@ -382,12 +231,12 @@ public:
 		return iswdigit(wch) || iswlalpha(wch) || test(wch,upperrng,nupperrng,uppersgl,nuppersgl);
 	}
 	static bool iswspace(wchar_t wch) {
-		const ushort *p=spacerng,*q; ulong n=nspacerng,k;
+		const ushort *p=spacerng,*q; unsigned n=nspacerng,k;
 		while (n>1) {k=n>>1; q=p+k*2; if (wch>=*q) {p=q; n-=k;} else n=k;}
 		return n>0 && wch>=p[0] && wch<=p[1];
 	}
 	static wchar_t towlower(wchar_t wch) {
-		const ushort *p=upperrng,*q; ulong n=nupperrng,k;
+		const ushort *p=upperrng,*q; unsigned n=nupperrng,k;
 		while (n>1) {k=n>>1; q=p+k*3; if (wch>=*q) {p=q; n-=k;} else n=k;}
 		if (n>0 && wch>=p[0] && wch<=p[1]) return wchar_t(wch+p[2]-500);
 		p=uppersgl; n=nuppersgl;
@@ -395,76 +244,14 @@ public:
 		return n>0 && wch==p[0] ? wchar_t(wch+p[1]-500) : wch;
 	}
 	static wchar_t towupper(wchar_t wch) {
-		const ushort *p=lowerrng,*q; ulong n=nlowerrng,k;
+		const ushort *p=lowerrng,*q; unsigned n=nlowerrng,k;
 		while (n>1) {k=n>>1; q=p+k*3; if (wch>=*q) {p=q; n-=k;} else n=k;}
 		if (n>0 && wch>=p[0] && wch<=p[1]) return wchar_t(wch+p[2]-500);
 		p=lowersgl; n=nlowersgl;
 		while (n>1) {k=n>>1; q=p+k*2; if (wch>=*q) {p=q; n-=k;} else n=k;}
 		return n>0 && wch==p[0] ? wchar_t(wch+p[1]-500) : wch;
 	}
-	static int wdigit(ulong ch) {return ch-0xFF10<=9u?ch-0xFF10:-1;}
-};
-
-/**
- * double-linked circular list
- * trades space for O(1) insertion and deletion operations
- */
-struct DLList
-{
-	DLList	*prev;
-	DLList	*next;
-public:
-	DLList() {prev=next=this;}
-	void	insertFirst(DLList *elt) {elt->next=next; elt->prev=this; next=next->prev=elt;}
-	void	insertLast(DLList *elt) {elt->next=this; elt->prev=prev; prev=prev->next=elt;}
-	void	insertAfter(DLList *elt) {next=elt->next; prev=elt; elt->next=elt->next->prev=this;}
-	void	insertBefore(DLList *elt) {next=elt; prev=elt->prev; elt->prev=elt->prev->next=this;}
-	void	remove() {next->prev=prev; prev->next=next; prev=next=this;}
-	bool	isInList() const {return next!=this;}
-	void	reset() {prev=next=this;}
-};
-
-/**
- * hash-table chain element template
- */
-template<class T> class HChain : public DLList
-{
-	T* const	obj;
-	ulong		idx;
-public:
-	HChain() : obj(NULL),idx(~0u) {}
-	HChain(T *t) : obj(t),idx(~0u) {}
-	void	insertFirst(HChain<T> *elt) {assert(obj==NULL&&elt->obj!=NULL); DLList::insertFirst(elt);}
-	void	insertLast(HChain<T> *elt) {assert(obj==NULL&&elt->obj!=NULL); DLList::insertLast(elt);}
-	void	insertAfter(HChain<T> *elt) {assert(obj!=NULL); DLList::insertAfter(elt);}
-	void	insertBefore(HChain<T> *elt) {assert(obj!=NULL); DLList::insertBefore(elt);}
-	T*		getFirst() const {return next==this ? NULL : ((HChain<T>*)next)->obj;}
-	T*		getLast() const {return prev==this ? NULL : ((HChain<T>*)prev)->obj;}
-	T*		getNext() const {return ((HChain<T>*)next)->obj;}
-	T*		getPrev() const {return ((HChain<T>*)prev)->obj;}
-	T*		removeFirst() {HChain<T> *dl=(HChain<T>*)next; if (dl==this) return NULL; dl->remove(); return dl->obj;}
-	T*		removeLast() {HChain<T> *dl=(HChain<T>*)prev; if (dl==this) return NULL; dl->remove(); return dl->obj;}
-	ulong	getIndex() const {return idx;}
-	void	setIndex(ulong i) {idx=i;}
-	class it {
-		HChain<T> *cur,*th; 
-	public:
-		it(HChain<T> *t) : cur(t),th(t) {}
-		void reset(HChain<T> *t) {cur=th=t;}
-		bool operator++() {return (cur=(HChain<T>*)cur->next)!=th;}
-		bool operator--() {return (cur=(HChain<T>*)cur->prev)!=th;}
-		operator HChain<T>*() const {return cur;}
-		T* get() const {return cur->obj;}
-	};
-	class it_r {
-		HChain<T> *cur,*th,*nxt; 
-	public:
-		it_r(HChain<T> *t) : cur(t),th(t),nxt((HChain<T>*)t->next) {}
-		void reset(HChain<T> *t) {cur=th=t; nxt=t->next;}
-		bool operator++() {return nxt==th?false:(nxt=(HChain<T>*)(cur=nxt)->next,true);}
-		operator HChain<T>*() const {return cur;}
-		T* get() const {return cur->obj;}
-	};
+	static int wdigit(unsigned ch) {return ch-0xFF10<=9u?ch-0xFF10:-1;}
 };
 
 /**
@@ -500,6 +287,7 @@ public:
 	bool operator!=(const StrRefKey& key2) const {return strcmp(str,key2.str)!=0;}
 	void operator=(const char *key) {if (str!=NULL) free(str,STORE_HEAP); str=strdup(key,STORE_HEAP);}
 	void set(char *s) {if (str!=NULL) free(str,STORE_HEAP); str=s;}
+	void reset() {str=NULL;}
 };
 
 /**
@@ -514,235 +302,10 @@ struct StrLen
 	StrLen(const char *s,size_t l) : str(s),len(l) {}
 public:
 	operator const char*() const {return str;}
-	operator uint32_t() const {uint32_t hash=uint32_t(len); for (ulong i=0; i<len; i++) hash=hash<<1^str[i]; return hash;}
+	operator uint32_t() const {uint32_t hash=uint32_t(len); for (unsigned i=0; i<len; i++) hash=hash<<1^str[i]; return hash;}
 	bool operator==(const StrLen& key) const {return len==key.len && memcmp(str,key.str,len)==0;}
 	bool operator!=(const StrLen& key) const {return len!=key.len || memcmp(str,key.str,len)!=0;}
 	void operator=(const StrLen& key) {str=key.str; len=key.len;}
-};
-
-/**
- * simple hash table template
- */
-template<class T,typename Key,HChain<T> T::*pList> class HashTab
-{
-	struct HashTabElt {
-		HChain<T>		list;
-		ulong			counter;
-		HashTabElt()	{counter = 0;}
-	};
-	const	ulong		hashSize;
-	const	ulong		keyMask;
-	const	ulong		keyShift;
-	MemAlloc			*const	ma;
-	const	bool		fClear;
-	HashTabElt			*hashTab;
-	ulong				highwatermark;
-public:
-	HashTab(ulong size,MemAlloc *allc,bool fClr=true) : hashSize(nextP2(size)),keyMask(hashSize-1),keyShift(32-pop(keyMask)),ma(allc),fClear(fClr),highwatermark(0)
-														{hashTab=new(allc) HashTabElt[hashSize];}
-	~HashTab()	{if (fClear) {clear(); ma->free(hashTab);}}
-	ulong		index(ulong hash) const {return hash*2654435769ul>>keyShift&keyMask;}
-	HChain<T>	*start(ulong idx) const {assert(idx<hashSize); return &hashTab[idx].list;}
-	void		insert(T *t) {insert(t, index(uint32_t(t->getKey())));}
-	void		insert(T *t, ulong idx) {
-		assert(idx<hashSize); HashTabElt *ht=&hashTab[idx];
-		ht->list.insertFirst(&(t->*pList)); (t->*pList).setIndex(idx);
-		if (++ht->counter>highwatermark) highwatermark=ht->counter;
-	}
-	void	remove(T *t,bool fDelete=false) {
-		ulong idx=(t->*pList).getIndex(); (t->*pList).setIndex(~0u);
-		if (idx<hashSize) --hashTab[idx].counter; 
-		(t->*pList).remove(); if (fDelete) delete t;
-	}
-	void	remove(Key key,bool fDelete=false) {
-		for (typename HChain<T>::it it(start(index(uint32_t(key)))); ++it;)
-			{T *p = it.get(); assert(p!=NULL); if (p->getKey()==key) {remove(p,fDelete); break;}}
-	}
-	ulong	getHighwatermark() const {return highwatermark;}
-	T*		find(Key key) const {
-		for (typename HChain<T>::it it(start(index(uint32_t(key)))); ++it;)
-			{T *p = it.get(); assert(p!=NULL); if (p->getKey()==key) return p;}
-		return NULL;
-	}
-	T*		find(Key key,ulong idx) const {
-		for (typename HChain<T>::it it(start(idx)); ++it;)
-			{T *p = it.get(); assert(p!=NULL); if (p->getKey()==key) return p;}
-		return NULL;
-	}
-	void clear() {
-		T *t;
-		for (ulong i=0; i<hashSize; i++)
-			while ((t = hashTab[i].list.removeFirst())!=NULL) delete t;
-	}
-	friend class it;
-	/**
-	 * hash table iterator
-	 */
-	class it : public HChain<T>::it {
-		const HashTab&		hashTab;
-		ulong				idx;
-	public:
-		it(const HashTab& ht) : HChain<T>::it(ht.start(0)),hashTab(ht),idx(0) {}
-		bool operator++() {
-			for (;;) {
-				if (HChain<T>::it::operator++()) return true;
-				if (++idx>=hashTab.hashSize) return false;
-				reset(hashTab.start(idx));
-			}
-		}
-	};
-	/**
-	 * hash table search context
-	 */
-	class Find {
-		const HashTab&	hashTab;
-		const Key		key;
-		const ulong		idx;
-	public:
-		Find(const HashTab& ht,Key k) : hashTab(ht),key(k),idx(ht.index(uint32_t(k))) {}
-		T* find() const {
-			for (typename HChain<T>::it it(hashTab.start(idx)); ++it;)
-				{T *p = it.get(); assert(p!=NULL); if (p->getKey()==key) return p;}
-			return NULL;
-		}
-		ulong getIdx() const {return idx;}
-	};
-};
-
-/**
- * 'synchronised' hash table template (supports concurrent access)
- */
-template<class T,typename Key,HChain<T> T::*pList,typename FKey=Key,typename FKeyArg=Key> class SyncHashTab
-{
-	struct HashTabElt {
-		HChain<T>		list;
-		RWSpin			lock;
-		long			counter;
-		HashTabElt() : counter(0) {}
-	};
-	HashTabElt			*hashTab;
-	ulong				hashSize;
-	int					keyShift;
-	ulong				keyMask;
-	long				highwatermark;
-public:
-	SyncHashTab(ulong size) {hashSize=nextP2(size); hashTab=new(STORE_HEAP) HashTabElt[hashSize]; keyMask=hashSize-1; keyShift=32-pop(keyMask); highwatermark=0;}
-	~SyncHashTab() {free(hashTab,STORE_HEAP);}
-	ulong index(ulong hash) const {return hash*2654435769ul>>keyShift&keyMask;}
-	void insert(T *t) {insert(t, index(uint32_t(t->getKey())));}
-	void insert(T *t, ulong idx) {
-		assert(idx<hashSize); HashTabElt *ht=&hashTab[idx]; (t->*pList).setIndex(idx);
-		ht->lock.lock(RW_X_LOCK); ht->list.insertFirst(&(t->*pList)); 
-		if (++ht->counter>highwatermark) highwatermark=ht->counter;
-		ht->lock.unlock();
-	}
-	void insertNoLock(T *t) {insertNoLock(t,index(uint32_t(t->getKey())));}
-	void insertNoLock(T *t,ulong idx) {
-		assert(idx<hashSize); HashTabElt *ht=&hashTab[idx];
-		(t->*pList).setIndex(idx); ht->list.insertFirst(&(t->*pList));
-		if (++ht->counter>highwatermark) highwatermark=ht->counter;
-	}
-	void remove(T *t,bool fDelete=false) {
-		if ((t->*pList).isInList()) {
-			ulong idx=(t->*pList).getIndex();
-			if (idx<hashSize) {
-				HashTabElt *ht=&hashTab[idx]; ht->lock.lock(RW_X_LOCK); 
-				(t->*pList).setIndex(~0u); (t->*pList).remove(); 
-				--ht->counter; ht->lock.unlock();
-			}
-		}
-		if (fDelete) delete t;
-	}
-	void removeNoLock(T *t) {
-		ulong idx=(t->*pList).getIndex();
-		assert((t->*pList).isInList() && idx<hashSize);
-		HashTabElt *ht=&hashTab[idx];
-		(t->*pList).setIndex(~0u); (t->*pList).remove(); 
-		--ht->counter; ht->lock.unlock();
-	}
-	void remove(Key key,bool fDelete=false) {
-		HashTabElt *ht=&hashTab[index(uint32_t(key))]; ht->lock.lock(RW_U_LOCK);
-		for (typename HChain<T>::it it(&ht->list); ++it;) {
-			T *p=it.get(); assert(p!=NULL); 
-			if (p->getKey()==key) {
-				ht->lock.upgradelock(RW_X_LOCK); (p->*pList).remove(); 
-				--ht->counter; ht->lock.unlock(); if (fDelete) delete p; 
-				return;
-			}
-		}
-		ht->lock.unlock(true);
-	}
-	ulong	getHighwatermark() const {return highwatermark;}
-	T* find(Key key) const {return find(key,index(uint32_t(key)));}
-	T* find(Key key,ulong idx) const {
-		HashTabElt *ht=&hashTab[idx]; ht->lock.lock(RW_S_LOCK);
-		typename HChain<T>::it it(&ht->list); T *ret=NULL;
-		while (++it) {T *p=it.get(); assert(p!=NULL); if (p->getKey()==key) {ret=p; break;}}
-		ht->lock.unlock(); return ret;
-	}
-	T* findLock(Key key) const {return findLock(key,index(uint32_t(key)));}
-	T* findLock(Key key,ulong idx) const {
-		HashTabElt *ht=&hashTab[idx]; ht->lock.lock(RW_S_LOCK);
-		typename HChain<T>::it it(&ht->list);
-		while (++it) {T *p=it.get(); assert(p!=NULL); if (p->getKey()==key) return p;}
-		return NULL;
-	}
-	void lock(T* t,RW_LockType lt) {assert((t->*pList).getIndex()<hashSize); hashTab[(t->*pList).getIndex()].lock.lock(lt);}
-	void unlock(Key key) {hashTab[index(uint32_t(key))].lock.unlock();}
-	void unlock(T* t) {assert((t->*pList).getIndex()<hashSize); hashTab[(t->*pList).getIndex()].lock.unlock();}
-	void clear() {
-		for (ulong i=0; i<hashSize; i++) {
-			HashTabElt *ht=&hashTab[i]; ht->lock.lock(RW_X_LOCK); T *t;
-			while ((t=ht->list.removeFirst())!=NULL) delete t;
-			ht->lock.unlock();
-		}
-	}
-	friend class it;
-	HChain<T>	*start(ulong idx) const {assert(idx<hashSize); return &hashTab[idx].list;}
-	/**
-	 * synchronised hash table iterator
-	 */
-	class it : public HChain<T>::it {
-		const SyncHashTab&	hashTab;
-		ulong				idx;
-	public:
-		it(const SyncHashTab& ht) : HChain<T>::it(ht.start(0)),hashTab(ht),idx(0) {}
-		bool operator++() {
-			for (;;) {
-				if (HChain<T>::it::operator++()) return true;
-				if (++idx>=hashTab.hashSize) return false;
-				reset(hashTab.start(idx));
-			}
-		}
-	};
-	/**
-	 * synchronized hash table search context
-	 */
-	class Find {
-		SyncHashTab&		hashTab;
-		const FKey			key;
-		const ulong			idx;
-		bool				fLocked;
-	public:
-		Find(SyncHashTab& ht,FKeyArg k) : hashTab(ht),key(k),idx(ht.index(uint32_t(key))),fLocked(false) {}
-		~Find() {if (fLocked) unlock();}
-		T* find() {
-			assert(idx<hashTab.hashSize);
-			HashTabElt *ht=&hashTab.hashTab[idx]; ht->lock.lock(RW_S_LOCK); fLocked=true;
-			typename HChain<T>::it it(&ht->list); T *ret=NULL;
-			while (++it) {T *p=it.get(); assert(p!=NULL); if (p->getKey()==key) {ret=p; break;}}
-			ht->lock.unlock(); fLocked=false; return ret;
-		}
-		T* findLock(RW_LockType lt) {
-			assert(idx<hashTab.hashSize);
-			HashTabElt *ht=&hashTab.hashTab[idx]; ht->lock.lock(lt); fLocked=true; typename HChain<T>::it it(&ht->list);
-			while (++it) {T *p=it.get(); assert(p!=NULL); if (p->getKey()==key) return p;}
-			return NULL;
-		}
-		void remove(T *t) {if (!fLocked) hashTab.lock(t,RW_X_LOCK); hashTab.removeNoLock(t); fLocked=false;}
-		void unlock() {assert(idx<hashTab.hashSize); hashTab.hashTab[idx].lock.unlock(); fLocked=false;}
-		ulong getIdx() const {return idx;}
-	};
 };
 
 /**
@@ -750,34 +313,36 @@ public:
  */
 enum SListOp {SLO_LT, SLO_GT, SLO_NOOP, SLO_INSERT, SLO_DELETE, SLO_ERROR};
 
-template<typename T,class SL,int xHeight=16,unsigned int factor=4> class SList
+template<typename T,class SL,int xHeight=16,unsigned factor=4> class SList
 {
 	struct Node {
 		T		obj;
 		Node	*ptrs[xHeight];
 		Node()	{}
 		Node(const T& o) : obj(o) {}
-		void	*operator new(size_t s,int h,MemAlloc& sa) throw() {assert(h<=xHeight); return sa.memalign(sizeof(void*),s-int(xHeight-h)*sizeof(Node*));}
+		void	*operator new(size_t s,int h,MemAlloc& sa) throw() {assert(h<=xHeight); return sa.malloc(s-int(xHeight-h)*sizeof(Node*));}
 	};
 	Node		node0;
 	Node		*current;
 	int			level;
-	ulong		count;
-	ulong		extra;
+	unsigned	count;
+	unsigned	extra;
 	MemAlloc&	alloc;
 public:
-	SList(MemAlloc& ma,ulong ex=0) : current(&node0),level(0),count(0),extra(ex),alloc(ma) {for (int i=0; i<xHeight; i++) node0.ptrs[i]=NULL;}
+	SList(MemAlloc& ma,unsigned ex=0) : current(&node0),level(0),count(0),extra(ex),alloc(ma) {for (int i=0; i<xHeight; i++) node0.ptrs[i]=NULL;}
 	~SList() {}
 	SListOp	add(const T& obj,T **ret=NULL) {
-		Node *update[xHeight],*node=&node0,*prev=NULL; int i=level; if (ret!=NULL) *ret=NULL;
+		Node *update[xHeight],*node=&node0,*prev=NULL,*nd; int i=level; if (ret!=NULL) *ret=NULL;
 		if (--i>=0) for (;;) {
-			switch (node->ptrs[i]!=NULL&&node->ptrs[i]!=prev?SL::compare(obj,node->ptrs[i]->obj,extra):SLO_LT) {
-			default: break;
-			case SLO_NOOP: if (ret!=NULL) *ret=&node->ptrs[i]->obj; return SLO_NOOP;
-			case SLO_GT: node=node->ptrs[i]; continue;
-			case SLO_LT: prev=(update[i]=node)->ptrs[i]; if (--i>=0) continue; else break;
+			switch ((nd=node->ptrs[i])!=NULL&&nd!=prev?SL::compare(obj,nd->obj,extra,alloc):SLO_LT) {
+			default: assert(0);
+			case SLO_ERROR: return SLO_ERROR;
+			case SLO_INSERT: break;
+			case SLO_NOOP: if (ret!=NULL) *ret=&nd->obj; return SLO_NOOP;
+			case SLO_GT: node=nd; continue;
+			case SLO_LT: prev=nd; update[i]=node; if (--i>=0) continue; else break;
 			case SLO_DELETE:
-				for (prev=node->ptrs[i];;) {
+				for (prev=nd;;) {
 					node->ptrs[i]=prev->ptrs[i]; if (--i<0) break;
 					while (node->ptrs[i]!=prev) {assert(node->ptrs[i]!=NULL); node=node->ptrs[i];}
 				}
@@ -792,23 +357,96 @@ public:
 			if (ret!=NULL) *ret=&node->obj; return SLO_INSERT;
 		}
 	}
-	bool	operator[](const T& obj) const {
-		if (level==0) return false; const Node *node=&node0,*prev=NULL;
-		for (int i=level-1;;) switch (node->ptrs[i]!=NULL && node->ptrs[i]!=prev?SL::compare(obj,node->ptrs[i]->obj,extra):SLO_LT) {
-		default: return true;
-		case SLO_GT: node=node->ptrs[i]; continue;
-		case SLO_LT: prev=node->ptrs[i]; if (--i>=0) continue; return false;
+	SListOp	addInt(T& obj) {
+		Node *update[xHeight],*node=&node0,*prev=NULL,*nd; int i=level;
+		if (--i>=0) for (;;) {
+			switch ((nd=node->ptrs[i])!=NULL&&nd!=prev?SL::compare(obj,nd->obj,nd->ptrs[0]!=NULL?&nd->ptrs[0]->obj:NULL,node==&node0,alloc):SLO_LT) {
+			default: assert(0);
+			case SLO_ERROR: return SLO_ERROR;
+			case SLO_NOOP: return SLO_NOOP;
+			case SLO_GT: node=nd; continue;
+			case SLO_LT: prev=nd; update[i]=node; if (--i>=0) continue; else break;
+			case SLO_INSERT: while (i>=0) update[i--]=nd; break;
+			}
+			break;
+		}
+		for (i=1; ;i++) if (i>=xHeight || rand()*factor>=RAND_MAX) {
+			if (i>level) for (assert(i<=xHeight); level<i; level++) update[level]=&node0;
+			if ((node=new(i,alloc) Node(obj))==NULL) return SLO_ERROR; count++;
+			while (--i>=0) {node->ptrs[i]=update[i]->ptrs[i]; update[i]->ptrs[i]=node;}
+			return SLO_INSERT;
 		}
 	}
-	ulong	getCount() const {return count;}
-	size_t	nodeSize() const {return sizeof(Node);}
-	void	setEtxra(ulong ex) {extra=ex;}
-	void	start() {current=&node0;}
-	const T* next() {return current->ptrs[0]!=NULL?&(current=current->ptrs[0])->obj:(T*)0;}
-	void	*store(const void *ptr,size_t s) {void *buf=alloc.malloc(s); if (buf!=NULL) memcpy(buf,ptr,s); return buf;}
-	void	clear() {alloc.release(); current=&node0; level=0; count=0; for (int i=0; i<xHeight; i++) node0.ptrs[i]=NULL;}
+	bool	operator[](const T& obj) const {
+		if (level==0) return false; const Node *node=&node0,*prev=NULL,*nd;
+		for (int i=level-1;;) switch ((nd=node->ptrs[i])!=NULL && nd!=prev?SL::compare(obj,nd->obj,extra,alloc):SLO_LT) {
+		default: return true;
+		case SLO_GT: node=nd; continue;
+		case SLO_LT: prev=nd; if (--i>=0) continue; return false;
+		}
+	}
+	unsigned	getCount() const {return count;}
+	size_t		nodeSize() const {return sizeof(Node);}
+	unsigned	getExtra() const {return extra;}
+	void		setExtra(unsigned ex) {extra=ex;}
+	void		start() {current=&node0;}
+	const T*	next() {return current->ptrs[0]!=NULL?&(current=current->ptrs[0])->obj:(T*)0;}
+	void		*store(const void *ptr,size_t s) {void *buf=alloc.malloc(s); if (buf!=NULL) memcpy(buf,ptr,s); return buf;}
+	void		clear() {alloc.release(); current=&node0; level=0; count=0; for (int i=0; i<xHeight; i++) node0.ptrs[i]=NULL;}
 };
 
+/**
+ * priority queue template (based on skip list)
+ */
+
+template<typename T,typename P,int xHeight=8,unsigned factor=4> class PQueue
+{
+	struct Node {
+		P		prty;
+		T		*obj;
+		Node	*ptrs[xHeight];
+		Node()	: obj(NULL) {}
+		Node(P pr,T *o) : prty(pr),obj(o) {}
+	};
+	Node					node0;
+	RWLock					lock;
+	int						level;
+	volatile	unsigned	count;
+	MemAlloc&				alloc;
+	Node					*freeNodes;
+public:
+	PQueue(MemAlloc& ma) : level(0),count(0),alloc(ma),freeNodes(NULL) {for (int i=0; i<xHeight; i++) node0.ptrs[i]=NULL;}
+	~PQueue() {}
+	RC	push(T *obj,P prty) {
+		Node *update[xHeight],*node=&node0,*prev=NULL; RWLockP lck(&lock,RW_X_LOCK); int i=level;
+		if (--i>=0) for (;;) {
+			if (node->ptrs[i]!=NULL&&node->ptrs[i]!=prev&&cmp3(prty,node->ptrs[i]->prty)>=0) node=node->ptrs[i];
+			else {prev=(update[i]=node)->ptrs[i]; if (--i<0) break;}
+		}
+		for (i=1; ;i++) if (i>=xHeight || rand()*factor>=RAND_MAX) {
+			if (i>level) for (assert(i<=xHeight); level<i; level++) update[level]=&node0;
+			if (freeNodes!=NULL) {void *p=freeNodes; freeNodes=freeNodes->ptrs[0]; node=new(p) Node(prty,obj);}
+			else if ((node=new(&alloc) Node(prty,obj))==NULL) return RC_NORESOURCES;
+			while (--i>=0) {node->ptrs[i]=update[i]->ptrs[i]; update[i]->ptrs[i]=node;}
+			count++; return node0.ptrs[0]==node?RC_TRUE:RC_OK;
+		}
+	}
+	T	*pop(P *pPrty=NULL) {
+		RWLockP lck(&lock,RW_X_LOCK);
+		Node *node=node0.ptrs[0]; if (node==NULL) return NULL;
+		T *ret=node->obj; if (pPrty!=NULL) *pPrty=node->prty;
+		for (int i=level; --i>=0;) if (node0.ptrs[i]==node) node0.ptrs[i]=node->ptrs[i];
+		node->ptrs[0]=freeNodes; freeNodes=node; assert(count!=0); count--;
+		return ret;
+	}
+	T	*top(P *pPrty=NULL) {
+		RWLockP lck(&lock,RW_S_LOCK);
+		if (node0.ptrs[0]==NULL) return NULL;
+		if (pPrty!=NULL) *pPrty=node0.ptrs[0]->prty;
+		return node0.ptrs[0]->obj;
+	}
+	unsigned	getCount() const {return count;}
+};
 
 /**
  * compressed page set descriptor
@@ -824,9 +462,9 @@ class PageSet
 		uint32_t	npg;
 	};
 	PageSetChunk		*chunks;
-	ulong				nChunks;
-	ulong				xChunks;
-	ulong				nPages;
+	unsigned				nChunks;
+	unsigned				xChunks;
+	unsigned				nPages;
 	MemAlloc *const		ma;
 public:
 	PageSet(MemAlloc *m) : chunks(NULL),nChunks(0),xChunks(0),nPages(0),ma(m) {}
@@ -834,14 +472,14 @@ public:
 	void	destroy() {cleanup(); ma->free((void*)this);}
 	void	cleanup() {
 		if (ma!=NULL) {
-			for (ulong i=0; i<nChunks; i++) if (chunks[i].bmp!=NULL) ma->free(chunks[i].bmp);
+			for (unsigned i=0; i<nChunks; i++) if (chunks[i].bmp!=NULL) ma->free(chunks[i].bmp);
 			ma->free(chunks); chunks=NULL; nChunks=0; xChunks=0; nPages=0;
 		}
 	}
-	operator ulong() const {return nPages;}
+	operator unsigned() const {return nPages;}
 	bool	operator[](PageID pid) const {
-		if (nPages!=0) for (ulong n=nChunks,base=0; n>0;) {
-			ulong k=n>>1; const PageSetChunk &ch=chunks[base+k];
+		if (nPages!=0) for (unsigned n=nChunks,base=0; n>0;) {
+			unsigned k=n>>1; const PageSetChunk &ch=chunks[base+k];
 			if (ch.from>pid) n=k; else if (ch.to<pid) {base+=k+1; n-=k+1;}
 			else return ch.bmp==NULL||(ch.bmp[pid/SZ_BMP-ch.from/SZ_BMP]&1<<pid%SZ_BMP)!=0;
 		}
@@ -849,8 +487,8 @@ public:
 	}
 	RC		operator+=(PageID pid) {return add(pid,pid);}
 	RC		add(PageID from,PageID to);
-	RC		add(const PageID *pages,ulong npg) {
-		ulong i=0,j=0;
+	RC		add(const PageID *pages,unsigned npg) {
+		unsigned i=0,j=0;
 		while (++i<npg) if (pages[i]!=pages[i-1]+1)
 			{RC rc=add(pages[j],pages[i-1]); if (rc==RC_OK) j=i; else return rc;}
 		return add(pages[j],pages[i-1]);
@@ -858,7 +496,7 @@ public:
 	RC		add(const PageSet& rhs);
 	RC		operator-=(PageID);
 	RC		operator-=(const PageSet&);
-	RC		remove(const PageID *,ulong);
+	RC		remove(const PageID *,unsigned);
 	PageID	pop();
 	void	test() const;
 	RC		operator+=(PageSet& rhs) {
@@ -876,7 +514,7 @@ public:
 	class it {
 		const	PageSet			&set;
 		const	PageSetChunk	*chunk;
-		ulong					idx,bidx,sht,start;
+		unsigned					idx,bidx,sht,start;
 	public:
 		it(const PageSet& ps) : set(ps),chunk(ps.nChunks>0?ps.chunks:(PageSetChunk*)0),idx(0),bidx(~0u),sht(0),start(0) {}
 		const PageSet& getPageSet() const {return set;}
@@ -895,113 +533,41 @@ public:
 	};
 };
 
-/**
- * dynamic unordered array template
- */
-template<typename T,int initSize=10,unsigned factor=1> class DynArray
+template<typename T> class DefCmpM
 {
-	MemAlloc	*const ma;
-	T			tbuf[initSize];
-	T			*ts;
-	unsigned	nTs;
-	unsigned	xTs;
 public:
-	DynArray(MemAlloc *m) : ma(m),ts(tbuf),nTs(0),xTs(initSize) {}
-	~DynArray() {if (ts!=tbuf) ma->free(ts);}
-	RC operator+=(T t) {return nTs>=xTs && !expand() ? RC_NORESOURCES : (ts[nTs++]=t,RC_OK);}
-	RC operator-=(unsigned idx) {if (idx>=nTs) return RC_INVPARAM; if (idx+1<nTs) memmove(ts+idx,ts+idx+1,(nTs-idx-1)*sizeof(T)); --nTs; return RC_OK;}
-	T* pop() {return nTs!=0?&ts[--nTs]:NULL;}
-	T& add() {return nTs>=xTs && !expand() ? *(T*)0 : ts[nTs++];}
-	T* get(uint32_t& n) {T *pt=NULL; if ((n=nTs)!=0) {if ((pt=ts)!=tbuf) ts=tbuf; else if ((pt=new(ma) T[nTs])!=NULL) memcpy(pt,ts,nTs*sizeof(T)); nTs=0;} return pt;}
-	operator const T* () const {return ts;}
-	operator unsigned () const {return nTs;}
-	void clear() {if (ts!=tbuf) {ma->free(ts); ts=tbuf;} nTs=0; xTs=initSize;}
-private:
-	bool expand() {
-		if (ts!=tbuf) ts=(T*)ma->realloc(ts,(xTs+=xTs/factor)*sizeof(T));
-		else if ((ts=(T*)ma->malloc((xTs+=xTs/factor)*sizeof(T)))!=NULL) memcpy(ts,tbuf,sizeof(tbuf));
-		return ts!=NULL;
-	}
+	__forceinline static int cmp(T x,T y) {return cmp3(x,y);}
+	__forceinline static RC merge(T&,T&,MemAlloc*) {return RC_OK;}
 };
 
 /**
- * dynamic ordered array template; supports binary search
+ * dynamic ordered array template; supports binary search & merge
  */
-template<typename T,typename Key=T,class C=DefCmp<Key>,unsigned initX=16,unsigned factor=1> class DynOArray
+template<typename T,typename Key=T,class C=DefCmpM<Key>,unsigned initX=16,unsigned factor=1> class DynOArrayM : public DynOArray<T,Key,C,initX,factor>
 {
-	MemAlloc	*const ma;
-	T			*ts;
-	unsigned	nTs;
-	unsigned	xTs;
+	MemAlloc	*const mma;
 public:
-	DynOArray(MemAlloc *m) : ma(m),ts(NULL),nTs(0),xTs(0) {}
-	~DynOArray() {if (ts!=NULL) ma->free(ts);}
-	RC operator+=(T t) {return add(t);}
-	RC add(T t,T **ret=NULL) {
-		T *p,*ins=NULL;
-		if ((p=(T*)BIN<T,Key,C>::find((Key)t,(const T*)ts,nTs,&ins))!=NULL) {if (ret!=NULL) *ret=p; return RC_FALSE;}
-		if (nTs>=xTs) {ptrdiff_t sht=ins-ts; if ((ts=(T*)ma->realloc(ts,(xTs+=xTs==0?initX:xTs/factor)*sizeof(T)))==NULL) return RC_NORESOURCES; ins=ts+sht;}
-		if (ins<&ts[nTs]) memmove(ins+1,ins,(byte*)&ts[nTs]-(byte*)ins); *ins=t; nTs++; if (ret!=NULL) *ret=ins; return RC_OK;
-	}
-	void moveTo(DynOArray<T,Key,C,initX,factor>& to) {if (to.ts!=NULL) to.ma->free(to.ts); to.ts=ts; to.nTs=nTs; to.xTs=xTs; ts=NULL; nTs=xTs=0;}
-	RC merge(DynOArray<T,Key,C,initX,factor>& src) {
-		if (src.nTs==0) return RC_OK; if (nTs==0) {src.moveTo(*this); return RC_OK;}
-		if (xTs-nTs<src.nTs) {
-			if (src.xTs-src.nTs>=nTs) {T *tt=src.ts; unsigned tn=src.nTs,tx=src.xTs; src.ts=ts; src.nTs=nTs; src.xTs=xTs; ts=tt; nTs=tn; xTs=tx;}
-			else if ((ts=(T*)ma->realloc(ts,(xTs+=src.nTs)*sizeof(T)))==NULL) return RC_NORESOURCES;
+	DynOArrayM(MemAlloc *m) : DynOArray<T,Key,C,initX,factor>(m),mma(m) {}
+	RC merge(DynOArrayM<T,Key,C,initX,factor>& src) {
+		if (src.nTs==0) return RC_OK; if (this->nTs==0) {src.moveTo(*this); return RC_OK;}
+		if (this->xTs-this->nTs<src.nTs) {
+			if (src.xTs-src.nTs>=this->nTs) {T *tt=src.ts; unsigned tn=src.nTs,tx=src.xTs; src.ts=this->ts; src.nTs=this->nTs; src.xTs=this->xTs; this->ts=tt; this->nTs=tn; this->xTs=tx;}
+			else {size_t old=this->xTs*sizeof(T); if ((this->ts=(T*)mma->realloc(this->ts,(this->xTs+=src.nTs)*sizeof(T),old))==NULL) return RC_NORESOURCES;}
 		}
-		T *p=ts,*from=src.ts,*const end=from+src.nTs; unsigned n=nTs; RC rc;
+		T *p=this->ts,*from=src.ts,*const end=from+src.nTs; unsigned n=this->nTs; RC rc;
 		do {
 			T *ins,*pt=(T*)BIN<T,Key,C>::find((Key)*from,p,n,&ins);
 			if (pt!=NULL) {
-				if ((rc=C::merge(*pt,*from,ma))!=RC_OK || ++from>=end) {src.clear(); return rc;}
-				p=pt+1; n=unsigned(&ts[nTs]-p);
-			} else if ((n=unsigned(&ts[nTs]-ins))!=0) {
+				if ((rc=C::merge(*pt,*from,mma))!=RC_OK || ++from>=end) {src.clear(); return rc;}
+				p=pt+1; n=unsigned(&this->ts[this->nTs]-p);
+			} else if ((n=unsigned(&this->ts[this->nTs]-ins))!=0) {
 				Key k=(Key)*ins; unsigned nc=1; for (T* pf=from; ++pf<end && C::cmp(*pf,k)<0;) nc++;
-				memmove(ins+nc,ins,n*sizeof(T)); memcpy(ins,from,nc*sizeof(T)); nTs+=nc;
+				memmove(ins+nc,ins,n*sizeof(T)); memcpy(ins,from,nc*sizeof(T)); this->nTs+=nc;
 				if ((from+=nc)>=end) {src.clear(); return RC_OK;} p+=nc;
 			}
 		} while (n!=0);
-		assert(from<end); memcpy(&ts[nTs],from,(byte*)end-(byte*)from); nTs+=unsigned(end-from);
+		assert(from<end); memcpy(&this->ts[this->nTs],from,(byte*)end-(byte*)from); this->nTs+=unsigned(end-from);
 		src.clear(); return RC_OK;
-	}
-	T* get(uint32_t& n) {T *pt=NULL; if ((n=nTs)!=0) {pt=ts; ts=NULL; xTs=nTs=0;} return pt;}
-	operator const T* () const {return ts;}
-	operator unsigned () const {return nTs;}
-	void clear() {if (ts!=NULL) {ma->free(ts); ts=NULL;} nTs=xTs=0;}
-};
-
-/**
- * dynamic ordered array template; supports binary search
- * contains pre-allocated buffer
- */
-template<typename T,typename Key=T,class C=DefCmp<Key>,int initSize=16,unsigned factor=1> class DynOArrayBuf
-{
-	MemAlloc	*const ma;
-	T			tbuf[initSize];
-	T			*ts;
-	unsigned	nTs;
-	unsigned	xTs;
-public:
-	DynOArrayBuf(MemAlloc *m) : ma(m),ts(tbuf),nTs(0),xTs(initSize) {}
-	~DynOArrayBuf() {if (ts!=tbuf) ma->free(ts);}
-	RC operator+=(T t) {return add(t);}
-	RC add(T t,T **ret=NULL) {
-		T *p,*ins=NULL;
-		if ((p=(T*)BIN<T,Key,C>::find((Key)t,(const T*)ts,nTs,&ins))!=NULL) {if (ret!=NULL) *ret=p; return RC_FALSE;}
-		if (nTs>=xTs) {ptrdiff_t sht=ins-ts; if (!expand()) return RC_NORESOURCES; ins=ts+sht;}
-		if (ins<&ts[nTs]) memmove(ins+1,ins,(byte*)&ts[nTs]-(byte*)ins); *ins=t; nTs++; if (ret!=NULL) *ret=ins; return RC_OK;
-	}
-	void moveTo(DynOArrayBuf<T,Key,C,initSize,factor>& to) {if (to.ts!=to.tbuf) to.ma->free(to.ts); if (ts==tbuf) memcpy(to.ts=to.tbuf,tbuf,sizeof(tbuf)); else to.ts=ts; to.nTs=nTs; to.xTs=xTs; ts=tbuf; nTs=0; xTs=initSize;}
-	T* get(uint32_t& n) {T *pt=NULL; if ((n=nTs)!=0) {if ((pt=ts)!=tbuf) ts=tbuf; else if ((pt=new(ma) T[nTs])!=NULL) memcpy(pt,ts,nTs*sizeof(T));} return pt;}
-	operator const T* () const {return ts;}
-	operator unsigned () const {return nTs;}
-	void clear() {if (ts!=tbuf) {ma->free(ts); ts=tbuf;} nTs=0; xTs=initSize;}
-private:
-	bool expand() {
-		if (ts!=tbuf) ts=(T*)ma->realloc(ts,(xTs+=xTs/factor)*sizeof(T));
-		else if ((ts=(T*)ma->malloc((xTs+=xTs/factor)*sizeof(T)))!=NULL) memcpy(ts,tbuf,sizeof(tbuf));
-		return ts!=NULL;
 	}
 };
 

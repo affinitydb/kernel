@@ -1,6 +1,6 @@
 /**************************************************************************************
 
-Copyright © 2004-2012 VMware, Inc. All rights reserved.
+Copyright © 2004-2013 GoPivotal, Inc. All rights reserved.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -26,7 +26,7 @@ Written by Mark Venguerov 2004-2012
 
 #include "affinity.h"
 
-using namespace AfyDB;
+using namespace Afy;
 
 namespace AfyKernel
 {
@@ -41,8 +41,8 @@ public:
 	bool			isConjunctive(size_t l) const {return l==0 || sizeof(PropDNF)+int(nIncl+nExcl-1)*sizeof(PropertyID)==l;}
 	static	RC		andP(PropDNF *&dnf,size_t& ldnf,PropDNF *rhs,size_t lrhs,MemAlloc *ma);
 	static	RC		orP(PropDNF *&dnf,size_t& ldnf,PropDNF *rhs,size_t lrhs,MemAlloc *ma);
-	static	RC		andP(PropDNF *&dnf,size_t& ldnf,const PropertyID *pids,ulong np,MemAlloc *ma,bool fNot=false);
-	static	RC		orP(PropDNF *&dnf,size_t& ldnf,const PropertyID *pids,ulong np,MemAlloc *ma,bool fNot=false);
+	static	RC		andP(PropDNF *&dnf,size_t& ldnf,const PropertyID *pids,unsigned np,MemAlloc *ma,bool fNot=false);
+	static	RC		orP(PropDNF *&dnf,size_t& ldnf,const PropertyID *pids,unsigned np,MemAlloc *ma,bool fNot=false);
 	static	void	normalize(PropDNF *&dnf,size_t& ldnf,MemAlloc *ma);
 };
 

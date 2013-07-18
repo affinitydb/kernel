@@ -1,6 +1,6 @@
 /**************************************************************************************
 
-Copyright © 2004-2012 VMware, Inc. All rights reserved.
+Copyright © 2004-2013 GoPivotal, Inc. All rights reserved.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -28,11 +28,9 @@ Written by Mark Venguerov 2004-2012
 #include "qmgr.h"
 #include "idxtree.h"
 #include "pagemgr.h"
-#include "affinityimpl.h"
+#include "pin.h"
 
-class IStoreNet;
-
-using namespace AfyDB;
+using namespace Afy;
 
 namespace AfyKernel
 {
@@ -60,8 +58,9 @@ public:
 	void			setKey(const PID& id,void*) {ID=id;}
 	QE				*getQE() const {return qe;}
 	void			setQE(QE *q) {qe=q;}
-	RC				load(int,ulong);
+	RC				load(int,unsigned);
 	RC				refresh(PIN*,class Session*);
+	RC				read(Session *ses,PIN *&pin);
 	bool			isDirty() const {return false;}
 	RW_LockType		lockType(RW_LockType lt) const {return lt;}
 	bool			save() const {return true;}
@@ -72,7 +71,7 @@ public:
 	static	void	signal(void *mg);
 };
 
-typedef QMgr<RPIN,PID,const PID&,int,STORE_HEAP> RPINHashTab;
+typedef QMgr<RPIN,PID,const PID&,int> RPINHashTab;
 
 /**
  * remote and replicated PIN manager
@@ -82,29 +81,26 @@ typedef QMgr<RPIN,PID,const PID&,int,STORE_HEAP> RPINHashTab;
  */
 class NetMgr : public RPINHashTab, public PageMgr
 {
-	friend	class		RPIN;
-	StoreCtx			*const ctx;
-	IStoreNet			*net;
-	Mutex				lock;
-	SharedCounter		nPINs;
-	long				xPINs;
-	TIMESTAMP			defExpiration;
-	TreeGlobalRoot		map;
-	FreeQ<RPIN_BLOCK,Std_Alloc<STORE_HEAP> > freeRPINs;
+	friend	class	RPIN;
+	Mutex			lock;
+	SharedCounter	nPINs;
+	long			xPINs;
+	TIMESTAMP		defExpiration;
+	TreeGlobalRoot	map;
+	FreeQ			freeRPINs;
 public:
-	NetMgr(StoreCtx *ct,IStoreNet *n,int hashSize=DEFAULT_RPINHASH_SIZE,int cacheSize=DEFAULT_CACHED_RPINS,TIMESTAMP dExp=DEFAULT_EXPIRATION);
-	virtual				~NetMgr();
-	void *operator		new(size_t s,StoreCtx *ctx) {void *p=ctx->malloc(s); if (p==NULL) throw RC_NORESOURCES; return p;}
-	void				close();
-	RC					insert(PIN *pin);
-	RC					updateAddr(const PID& id,const PageAddr& addr);
-	RC					remove(const PID& id,PageAddr &addr);
-	RC					refresh(PIN *pin,class Session *);
-	RC					getPage(const PID& id,ulong flags,PageIdx& idx,class PBlockP& pb,Session *ses);
-	RC					setExpiration(const PID& id,unsigned long);
-	RC					undo(ulong info,const byte *rec,size_t lrec,PageID);
-	bool				isCached(const PID& id);
-	bool				isOnline();
+	NetMgr(StoreCtx *ct,int hashSize=DEFAULT_RPINHASH_SIZE,int cacheSize=DEFAULT_CACHED_RPINS,TIMESTAMP dExp=DEFAULT_EXPIRATION);
+	virtual			~NetMgr();
+	void *operator	new(size_t s,StoreCtx *ctx) {void *p=ctx->malloc(s); if (p==NULL) throw RC_NORESOURCES; return p;}
+	void			close();
+	RC				insert(PIN *pin);
+	RC				updateAddr(const PID& id,const PageAddr& addr);
+	RC				remove(const PID& id,PageAddr &addr);
+	RC				refresh(PIN *pin,class Session *);
+	RC				getPage(const PID& id,unsigned flags,PageIdx& idx,class PBlockP& pb,Session *ses);
+	RC				setExpiration(const PID& id,unsigned);
+	RC				undo(unsigned info,const byte *rec,size_t lrec,PageID);
+	bool			isCached(const PID& id);
 };
 
 };

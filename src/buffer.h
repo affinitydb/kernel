@@ -1,6 +1,6 @@
 /**************************************************************************************
 
-Copyright © 2004-2012 VMware, Inc. All rights reserved.
+Copyright © 2004-2013 GoPivotal, Inc. All rights reserved.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -49,7 +49,7 @@ Written by Mark Venguerov 2004-2012
 #define	PGCTL_INREL			0x0040				/**< page being released by PBlockP */
 
 #define MAX_ASYNC_PAGES		32					/**< maximum number of pages being asynchronously saved to disk */
-#define	FLUSH_CHAIN_THR		12					/**< when dependency chain reaches this length, page flushing starts automatically */
+#define	FLUSH_CHAIN_THR		32					/**< when dependency chain reaches this length, page flushing starts automatically */
 #define	MIN_BUFFERS			8					/**< minimum number of page buffers in memory */
 
 namespace AfyKernel
@@ -77,25 +77,25 @@ class PBlock
 	LSN				redoLSN;
 	struct myaio	*aio;
 	QEPB			*QE;
-	PBlock			*dependent;
+	PBlock* volatile dependent;
 	SharedCounter	dependCnt;
 	VBlock			*vb;
 	class  BufMgr	*mgr;
 	HChain<PBlock>	pageList;
 	HChain<PBlock>	flushList;
+	HChain<PBlock>	depList;
 private:
 	PBlock(class BufMgr *bm,byte *frm,struct myaio *ai=NULL);
-	void			setStateBits(ulong v) {setStateBits(v,v);}
-	void			resetStateBits(ulong v) {setStateBits(0,v);}
-	void			setStateBits(ulong v,ulong mask) {for (long s=state; !cas(&state,s,long(s&~mask|v)); s=state) ;}
+	void			setStateBits(unsigned v) {setStateBits(v,v);}
+	void			resetStateBits(unsigned v) {setStateBits(0,v);}
+	void			setStateBits(unsigned v,unsigned mask) {for (long s=state; !cas(&state,s,long(s&~mask|v)); s=state) ;}
 	RC				flushBlock();
-	RC				readResult(RC rc);
-	void			writeResult(RC rc);
-	bool			setaio();
-	void			fillaio(int,void (*callback)(void*,RC)) const;
+	RC				readResult(RC rc,bool fAsync=false);
+	void			writeResult(RC rc,bool fAsync=false);
+	void			fillaio(int,void (*callback)(void*,RC,bool)) const;
 public:
 	~PBlock();
-	void			release(ulong mode=0,Session *ses=NULL);
+	void			release(unsigned mode=0,Session *ses=NULL);
 	PageID			getPageID() const {return pageID;}
 	byte			*getPageBuf() const {return frame;}
 	PageMgr			*getPageMgr() const {return pageMgr;}
@@ -122,7 +122,7 @@ public:
 	void			setQE(QEPB *qe) {QE=qe;}
 	bool			isDirty() const {return (state&BLOCK_DIRTY)!=0;}
 	RW_LockType		lockType(RW_LockType);
-	RC				load(PageMgr*,ulong);
+	RC				load(PageMgr*,unsigned);
 	bool			save();
 	void			saveAsync();
 	void			destroy();
@@ -139,27 +139,27 @@ public:
 class PBlockP
 {
 	PBlock			*pb;
-	ulong			flags;
+	unsigned			flags;
 public:
-	PBlockP(PBlock *p,ulong flg) : pb(p),flags(flg) {}
+	PBlockP(PBlock *p,unsigned flg) : pb(p),flags(flg) {}
 	PBlockP(PBlockP& pbp) : pb(pbp.pb),flags(pbp.flags) {pbp.flags|=PGCTL_NOREL;}
 	PBlockP() : pb(NULL),flags(0) {}
 	~PBlockP() {if (pb!=NULL && (flags&PGCTL_NOREL)==0) {flags|=PGCTL_INREL; pb->release(flags&(QMGR_UFORCE|PGCTL_DISCARD));}}
 	void release(Session *s=NULL) {if (pb!=NULL && (flags&PGCTL_NOREL)==0) {flags|=PGCTL_INREL; pb->release(flags&(QMGR_UFORCE|PGCTL_DISCARD),s);} pb=NULL; flags=0;}
 	void moveTo(PBlockP& to) {if (to.pb!=NULL && (to.flags&PGCTL_NOREL)==0) {to.flags|=PGCTL_INREL; to.pb->release(to.flags&(QMGR_UFORCE|PGCTL_DISCARD));} to.pb=pb; to.flags=flags; pb=NULL; flags=0;}
 	PBlock *operator=(PBlock *p) {pb=p; flags=0; return p;}
-	void set(ulong flg) {flags|=flg;}
-	void reset(ulong flg) {flags&=~flg;}
+	void set(unsigned flg) {flags|=flg;}
+	void reset(unsigned flg) {flags&=~flg;}
 	operator PBlock*() const {return pb;}
 	PBlock* operator->() const {return pb;}
 	bool isNull() const {return pb==NULL;}
-	bool isSet(ulong flg) const {return (flags&flg)!=0;}
-	ulong uforce() const {return flags&QMGR_UFORCE;}
-	PBlock*	newPage(PageID pid,PageMgr*,ulong flags=0,Session *ses=NULL);
-	PBlock*	getPage(PageID pid,PageMgr*,ulong flags=0,Session *ses=NULL);
+	bool isSet(unsigned flg) const {return (flags&flg)!=0;}
+	unsigned uforce() const {return flags&QMGR_UFORCE;}
+	PBlock*	newPage(PageID pid,PageMgr*,unsigned flags=0,Session *ses=NULL);
+	PBlock*	getPage(PageID pid,PageMgr*,unsigned flags=0,Session *ses=NULL);
 };
 
-typedef QMgr<PBlock,PageID,PageID,PageMgr*,SERVER_HEAP> BufQMgr;
+typedef QMgr<PBlock,PageID,PageID,PageMgr*> BufQMgr;
 
 /**
  * Buffer manager
@@ -169,18 +169,20 @@ class BufMgr : public BufQMgr
 {
 	class	StoreCtx *const	ctx;
 	const	size_t			lPage;
-	const	ulong			nStoreBuffers;
-	mutable	Mutex			pageLock;
+	const	unsigned			nStoreBuffers;
+	RWLock					pageQLock;
 	HChain<PBlock>			pageList;
-	mutable	Mutex			flushLock;
+	RWLock					flushQLock;
 	HChain<PBlock>			flushList;
-	ulong					dirtyCount;
+	RWLock					depQLock;
+	HChain<PBlock>			depList;
+	SharedCounter			dirtyCount;
 	SharedCounter			asyncWriteCount;
 	SharedCounter			asyncReadCount;
-	ulong					maxDepDepth;
+	RWLock					flushLock;
 
-	static ulong			nBuffers;
-	static ulong			xBuffers;
+	static unsigned			nBuffers;
+	static unsigned			xBuffers;
 	static volatile	long	nStores;
 	static SLIST_HEADER		freeBuffers;
 	static Mutex			initLock;
@@ -192,19 +194,19 @@ public:
 	RC					init();
 	RC					flushAll(uint64_t timeout);
 	size_t				getPageSize() const {return lPage;}
-	PBlock*				newPage(PageID pid,PageMgr*,PBlock *old=NULL,ulong flags=0,Session *ses=NULL);
-	PBlock*				getPage(PageID pid,PageMgr*,ulong flags=0,PBlock *old=NULL,Session *ses=NULL);
+	PBlock*				newPage(PageID pid,PageMgr*,PBlock *old=NULL,unsigned flags=0,Session *ses=NULL);
+	PBlock*				getPage(PageID pid,PageMgr*,unsigned flags=0,PBlock *old=NULL,Session *ses=NULL);
 	void				prefetch(const PageID *pages,int nPages,PageMgr *mgr,PageMgr *const *mgrs=NULL);
 	void				asyncWrite();
 	RC					close(FileID fid,bool fAll=false);
-	void				writeAsyncPages(const PageID *asyncPages,ulong nAsyncPages);
-	LogDirtyPages		*getDirtyPageInfo(LSN old,LSN& redo,PageID *asyncPages,ulong& nAsyncPages,ulong maxAsyncPages);
+	void				writeAsyncPages(const PageID *asyncPages,unsigned nAsyncPages);
+	LogDirtyPages		*getDirtyPageInfo(LSN old,LSN& redo,PageID *asyncPages,unsigned& nAsyncPages,unsigned maxAsyncPages);
 #ifdef _DEBUG
 	void				checkState();
 #endif
 private:
-	static	void		asyncReadNotify(void*,RC);
-	static	void		asyncWriteNotify(void*,RC);
+	static	void		asyncReadNotify(void*,RC,bool);
+	static	void		asyncWriteNotify(void*,RC,bool fAsync);
 	friend	class		PBlock;
 	friend	class		Session;
 };

@@ -1,6 +1,6 @@
 /**************************************************************************************
 
-Copyright © 2004-2012 VMware, Inc. All rights reserved.
+Copyright © 2004-2013 GoPivotal, Inc. All rights reserved.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -24,21 +24,25 @@ Written by Mark Venguerov 2004-2012
 #ifndef _TYPES_H_
 #define _TYPES_H_
 
-#include "rc.h"
+#include "affinity.h"
 
-using namespace AfyRC;
+using namespace Afy;
+
+#ifdef ANDROID
+#define	POSIX
+#endif
+
+#include <new>
 
 #ifdef WIN32
-
 /**
  * Windows
  */
-
 #include <stdint.h>
 #include <malloc.h>
-#include <algorithm>
+#include <stdio.h>
 #ifndef _WIN32_WINNT
-#define _WIN32_WINNT 0x0403
+#define _WIN32_WINNT 0x0600
 #endif
 #ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
@@ -49,14 +53,9 @@ using namespace AfyRC;
 #define	_LU_FM				"%I64u"
 typedef unsigned char		byte;
 typedef unsigned short		ushort;
-typedef unsigned long		ulong;
 typedef	unsigned __int64	off64_t;
-typedef HANDLE				HTHREAD;
-typedef	DWORD				THREADID;
-#define	getThreadId()		GetCurrentThreadId()
 extern "C" _declspec(dllexport) RC convCode(DWORD);
 extern "C" void				reportError(DWORD);
-inline	HTHREAD	getThread() {return GetCurrentThread();}
 inline	size_t	getPageSize() {SYSTEM_INFO si; GetSystemInfo(&si); return si.dwPageSize;}
 inline	size_t	getSectorSize() {
 	DWORD sectorSize,sectorsPerCluster,numberOfFreeClusters,totalNumberOfClusters;
@@ -65,13 +64,11 @@ inline	size_t	getSectorSize() {
 }
 inline	void	*allocAligned(size_t sz,size_t) {return VirtualAlloc(NULL,sz,MEM_COMMIT,PAGE_READWRITE);}
 inline	void	freeAligned(void* p) {VirtualFree(p,0,MEM_RELEASE);}
-inline	RC	createThread(LPTHREAD_START_ROUTINE pRoutine,LPVOID pParam,HANDLE& thread)
-				{thread = ::CreateThread(NULL,0,pRoutine,pParam,0,NULL); return thread==NULL?convCode(GetLastError()):RC_OK;}
-inline	int		getNProcessors() {SYSTEM_INFO si; GetSystemInfo(&si); return si.dwNumberOfProcessors;}
+inline	RC		createThread(LPTHREAD_START_ROUTINE pRoutine,LPVOID pParam,HANDLE& thread)
+					{thread = ::CreateThread(NULL,0,pRoutine,pParam,0,NULL); return thread==NULL?convCode(GetLastError()):RC_OK;}
 
-typedef	unsigned __int64	TIMESTAMP;
-#define	TS_DELTA			TIMESTAMP(0)
-inline	void	getTimestamp(TIMESTAMP& ts) {FILETIME ft; GetSystemTimeAsFileTime(&ft); ULARGE_INTEGER li={ft.dwLowDateTime,ft.dwHighDateTime}; ts=li.QuadPart/10+TS_DELTA;}
+#define	TS_DELTA	TIMESTAMP(0)
+inline	void		getTimestamp(TIMESTAMP& ts) {FILETIME ft; GetSystemTimeAsFileTime(&ft); ULARGE_INTEGER li={ft.dwLowDateTime,ft.dwHighDateTime}; ts=li.QuadPart/10+TS_DELTA;}
 
 #define	stricmp		_stricmp
 #define	strnicmp	_strnicmp
@@ -86,53 +83,60 @@ inline	void	getTimestamp(TIMESTAMP& ts) {FILETIME ft; GetSystemTimeAsFileTime(&f
 #undef	min
 #undef	max
 
-#ifdef __x86_64__
+#if defined(_M_X64) || defined(_M_AMD64) || defined(IA64)
 #define	DEFAULT_ALIGN	16
 #else
 #define	DEFAULT_ALIGN	8
 #endif
 
-#elif defined(POSIX) || defined(Darwin)
+#elif defined(POSIX) || defined(__APPLE__)
 /**
- * Linux, OSX (POSIX) or ARM
+ * Linux, OSX (POSIX), iOS or ARM
  */
+#ifdef __APPLE__
+#include <TargetConditionals.h>
+#define _DARWIN_USE_64_BIT_INODE
+#if TARGET_OS_IPHONE==1
+#define	stat64	stat
+#endif
+#elif defined(ANDROID)
+#include <malloc.h>
+#include <asm/timex.h>
+#include <sched.h>
+#include <time64.h>
+#else
+#include <malloc.h>
+#include <sys/timex.h>
+#endif
 #include <errno.h>
 #include <stdlib.h>
 #include <stdint.h>
-#include <pthread.h>
-#include <semaphore.h>
+#include <stdio.h>
 #include <time.h>
 #include <string.h>
-#ifndef Darwin
-#include <malloc.h>
-#endif
 #include <unistd.h>
 #include <sys/time.h>
-#ifndef Darwin
-#include <sys/timex.h>
-#endif
-#include <algorithm>
 #include <wctype.h>
+#include <pthread.h>
 #define	__cdecl
-#define	__forceinline inline
-#define _LX_FM		"%016LX"
-#define _LD_FM		"%Ld"
-#define _LU_FM		"%Lu"
-#define W_LD_FM		L"%Ld"
-#define W_LU_FM		L"%Lu"
+#if defined(__x86_64__) && !defined(__APPLE__) // or 64-bit ARM (what is its #define?)
+#define _LX_FM		"%016lX"
+#define _LD_FM		"%ld"
+#define _LU_FM		"%lu"
+#else
+#define _LX_FM		"%016llX"
+#define _LD_FM		"%lld"
+#define _LU_FM		"%llu"
+#endif
 typedef uint8_t		byte;
 typedef uint16_t	ushort;
 typedef	int			HANDLE;
-//typedef uint32_t	ulong;
-typedef pthread_t	HTHREAD;
-typedef	pthread_t	THREADID;
-#define	getThreadId()	pthread_self()
+#define	INVALID_HANDLE_VALUE	(-1)
 extern	"C" RC		convCode(int);
 extern	"C" void	reportError(int);
-inline	HTHREAD		getThread() {return pthread_self();}
 inline	size_t		getPageSize() {return (size_t)sysconf(_SC_PAGESIZE);}
 inline	size_t		getSectorSize() {return 0x200;}		// ????
-#ifndef Darwin
+#ifndef __APPLE__
 inline	void		*allocAligned(size_t sz,size_t alignment) {return memalign(alignment,sz);}
 #else
 /*Allocating /deallocating aligned memory...
@@ -147,23 +151,36 @@ void * tmp;
 inline	void		freeAligned(void *p) {free(p);}
 inline	RC			createThread(void *(*pRoutine)(void*),void *pParam,pthread_t& thread)
 									{return convCode(pthread_create(&thread,NULL,pRoutine,pParam));}
-inline	int			getNProcessors() {return (int)sysconf(_SC_NPROCESSORS_ONLN);}
 
-typedef	uint64_t	TIMESTAMP;
 #define	TS_DELTA	TIMESTAMP(0x00295e9648864000ULL)
 
-#ifndef Darwin
-inline	void		getTimestamp(TIMESTAMP& ts) {timespec tsp; clock_gettime(CLOCK_REALTIME,&tsp); 
-ts=uint64_t(tsp.tv_sec)*1000000+tsp.tv_nsec/1000+TS_DELTA;}
+#ifndef __APPLE__
+inline	void		getTimestamp(TIMESTAMP& ts) {timespec tsp; clock_gettime(CLOCK_REALTIME,&tsp); ts=uint64_t(tsp.tv_sec)*1000000+tsp.tv_nsec/1000+TS_DELTA;}
 #else
 inline	void		getTimestamp(TIMESTAMP& ts) {timeval tv; gettimeofday(&tv,NULL); ts=uint64_t(tv.tv_sec)*1000000+tv.tv_usec+TS_DELTA;}
 #endif
 
-#ifdef Darwin
+#ifdef __APPLE__
+#define _DARWIN_USE_64_BIT_INODE
 #include <mach/mach.h>
+#define open64 open
+#define ftruncate64 ftruncate
+#define pwrite64 pwrite
+#define pread64 pread
+#define aio_write64 aio_write 
+#define aio_read64 aio_read
+#define aiocb64 aiocb
+#define fdatasync(x) fsync(x)
 #define wcsncasecmp(x,y,z) wcsncmp(x,y,z)
-typedef unsigned long ulong;
 typedef uint64_t	off64_t;   //??int:
+#elif defined(ANDROID)
+#define pthread_yield sched_yield
+#define timegm timegm64
+#define open64 open
+#define ftruncate64 ftruncate
+#define pwrite64 pwrite
+#define pread64 pread
+#define aiocb64 myaio
 #endif
 
 #ifdef __x86_64__
@@ -178,31 +195,25 @@ typedef uint64_t	off64_t;   //??int:
 
 #endif
 
-using namespace std;
-
 #include <stdlib.h>
-#include <assert.h>
 #include <ctype.h>
 
-#ifdef _MSC_VER
-#pragma warning(disable:4291)
-#pragma warning(disable:4251)
-#pragma warning(disable:4355)
-#pragma	warning(disable:4181)
-#pragma	warning(disable:4512)
-#pragma	warning(disable:4100)
-#endif
-
-#if defined(_M_IX86) || defined(IA32) || defined(__x86_64__) || defined(_M_X64) || defined(_M_IA64)
-#define _u16(a)	(*(ushort*)(a))
-#define	_set_u16(a,b) (*(ushort*)(a))=ushort(b)
-#elif defined(_LSBF)
-#define _u16(a)	(((byte*)(a))[1]<<8|((byte*)(a))[0])
-#define	_set_u16(a,b) (((byte*)(a))[0]=(byte)(b),((byte*)(a))[1]=(byte)((b)>>8))
+#ifndef _MSC_VER
+template<typename T> struct __una__ {T __v;} __attribute__((packed));
+template<typename T> inline T __una_get(const T& ptr) {return ((const __una__<T> *)(void*)&ptr)->__v;}
+template<typename T> inline void __una_set(T *ptr,T val) {((__una__<T> *)(void*)ptr)->__v=val;}
+template<typename T> inline void __una_set(T& ptr,T val) {((__una__<T> *)(void*)&ptr)->__v=val;}
+#elif defined(_M_X64) || defined(_M_IA64)
+template<typename T> __forceinline T __una_get(const T& ptr) {return *(const T __unaligned *)&ptr;}
+template<typename T> __forceinline void __una_set(T *ptr,T val) {*(T __unaligned*)ptr=val;}
+template<typename T> __forceinline void __una_set(T& ptr,T val) {*(T __unaligned*)&ptr=val;}
 #else
-#define _u16(a)	(((byte*)(a))[0]<<8|((byte*)(a))[1])
-#define	_set_u16(a,b) (((byte*)(a))[1]=(byte)(b),((byte*)(a))[0]=(byte)((b)>>8))
+template<typename T> __forceinline T __una_get(const T& ptr) {return ptr;}
+template<typename T> __forceinline void __una_set(T *ptr,T val) {*(T*)ptr=val;}
+template<typename T> __forceinline void __una_set(T& ptr,T val) {ptr=val;}
 #endif
+#define _u16(a)	__una_get(*(const ushort *)(a))
+#define	_set_u16(a,b) __una_set((ushort*)(a),(ushort)(b))
 
 namespace AfyKernel
 {
@@ -263,7 +274,7 @@ struct PagePtr
  * types of allocated memory
  * stored in Value::flags
  */
-enum HEAP_TYPE {NO_HEAP,SES_HEAP,STORE_HEAP,SERVER_HEAP,HEAP_TYPE_MASK=0x03};
+enum HEAP_TYPE {NO_HEAP,PAGE_HEAP,SUBA_HEAP,SES_HEAP,STORE_HEAP,SHARED_HEAP,HEAP_TYPE_MASK=0x07};
 
 /** 
  * memory allocation and deallocation helper functions
@@ -281,7 +292,6 @@ extern	void	free(void*,HEAP_TYPE);
 
 extern	char	*forceCaseUTF8(const char *str,size_t ilen,uint32_t& olen,class MemAlloc* =NULL,char *extBuf=NULL,bool fUpper=false);
 
-extern void		report(MsgType,const char *str,...);
 extern void		initReport();
 extern void		closeReport();
 

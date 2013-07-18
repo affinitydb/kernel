@@ -1,6 +1,6 @@
 /**************************************************************************************
 
-Copyright © 2004-2012 VMware, Inc. All rights reserved.
+Copyright © 2004-2013 GoPivotal, Inc. All rights reserved.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -68,7 +68,7 @@ template<class T,typename Key,typename KeyArg> struct QElt : public DLList {
 /**
  * template for queue manager
  */
-template<class T,typename Key,typename KeyArg,typename Info,HEAP_TYPE allc> class QMgr
+template<class T,typename Key,typename KeyArg,typename Info> class QMgr
 {
 	typedef QElt<T,Key,KeyArg> QE;
 	typedef SyncHashTab<QE,KeyArg,&QE::hash> QEHash;
@@ -79,25 +79,25 @@ template<class T,typename Key,typename KeyArg,typename Info,HEAP_TYPE allc> clas
 		QE* removeLast() {if (prev==this) return NULL; QE *dt=(QE*)prev; dt->remove(); return dt;}
 	};
 public:
-	template<HEAP_TYPE alc> struct QueueCtrl {
-		long						nElts;
-		long						T1TargetL;
-		Queue						T1;
-		Queue						T2;
-		Queue						B1;
-		Queue						B2;
-		Mutex						lock;
-		FreeQ<QE_ALLOC_BLOCK_SIZE,Std_Alloc<alc> >	freeQE;
-		QueueCtrl(int nb) : nElts(nb),T1TargetL(0),T1(_T1),T2(_T2),B1(_B1),B2(_B2) {}
+	struct QueueCtrl {
+		long	nElts;
+		long	T1TargetL;
+		Queue	T1;
+		Queue	T2;
+		Queue	B1;
+		Queue	B2;
+		Mutex	lock;
+		FreeQ	freeQE;
+		QueueCtrl(int nb,MemAlloc *ma=NULL) : nElts(nb),T1TargetL(0),T1(_T1),T2(_T2),B1(_B1),B2(_B2),freeQE(ma,QE_ALLOC_BLOCK_SIZE) {}
 	};
 protected:
-	QueueCtrl<allc>			&ctrl;
-	RW_LockType				saveLock;
-	QEHash					hashTable;
+	QueueCtrl	&ctrl;
+	RW_LockType	saveLock;
+	QEHash		hashTable;
 public:
-	QMgr(QueueCtrl<allc>& ct,int lH) : ctrl(ct),saveLock(RW_U_LOCK),hashTable(nextP2(lH)) {}
+	QMgr(QueueCtrl& ct,int lH,MemAlloc *ma) : ctrl(ct),saveLock(RW_U_LOCK),hashTable(nextP2(lH),ma) {}
 protected:
-	RC get(T* &rsrc,KeyArg key,Info info,ulong flags=RW_S_LOCK,T *old=NULL) {
+	RC get(T* &rsrc,KeyArg key,Info info,unsigned flags=RW_S_LOCK,T *old=NULL) {
 		typename QEHash::Find findQE(hashTable,key); rsrc=NULL; Queue *pA=NULL;
 		if (old!=NULL) old->getQE()->lock.unlock((flags&QMGR_UFORCE)!=0);
 		QE *qe,*qe2; QEHash *ht; RW_LockType lt=(RW_LockType)(flags&RW_MASK); bool fT1=false;
@@ -180,8 +180,7 @@ protected:
 				fNew=false; break;
 			}
 			stolen->lock.lock(saveLock); ++stolen->fixCount; ht->unlock(stolen); ctrl.lock.unlock(); 
-			bool fSaved=stolen->rsrc->save();
-			if (fSaved) ctrl.lock.lock();
+			if (stolen->rsrc->save()) ctrl.lock.lock();
 			else {
 				stolen->lock.unlock(); ctrl.lock.lock(); ht->lock(stolen,RW_X_LOCK);
 				bool fDiscard=--stolen->fixCount==0&&stolen->fDiscard; ht->unlock(stolen);
@@ -298,7 +297,7 @@ public:
 			if (--qe->fixCount==0) {t->destroy(); ctrl.freeQE.dealloc(qe);}
 		} else {
 			ctrl.lock.lock(); hashTable.lock(qe,RW_X_LOCK); assert(qe->fixCount>0);
-			if (--qe->fixCount==0) {qe->remove(); (qe->qid==_T1?&ctrl.T1:&ctrl.T2)->insertFirst(qe); T::signal(this);}
+			if (--qe->fixCount==0) {qe->remove(); (qe->qid==_T1?&ctrl.T1:&ctrl.T2)->insertLast(qe); T::signal(this);}
 			hashTable.unlock(qe); ctrl.lock.unlock();
 		}
 	}

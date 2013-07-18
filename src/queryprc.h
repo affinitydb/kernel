@@ -1,6 +1,6 @@
 /**************************************************************************************
 
-Copyright © 2004-2012 VMware, Inc. All rights reserved.
+Copyright © 2004-2013 GoPivotal, Inc. All rights reserved.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -48,7 +48,13 @@ namespace AfyKernel
 
 #define	ARRAY_THRESHOLD			256		/**< threshold of 'big' collections */
 #define STRING_THRESHOLD		64		/**< string length threshold for SSV data */
-#define	QUERY_ARRAY_THRESHOLD	10
+
+/**
+ * bit flags for eval()
+ */
+#define EV_PID					0x0001
+#define	EV_COPY					0x0002
+#define	EV_ASYNC				0x0004
 
 /**
  * passed to FT indexer
@@ -80,7 +86,6 @@ struct ChangeInfo
 #define	PM_BCCAND		0x00000800
 #define	PM_MOVE			0x00001000
 #define	PM_NEWPROP		0x00002000
-#define	PM_SWORDS		0x00004000
 #define	PM_PUTOLD		0x00008000
 #define	PM_LOCAL		0x00010000
 #define	PM_INVALID		0x00020000
@@ -102,8 +107,8 @@ struct PropInfo
 	const HeapPageMgr::HeapV	*hprop;
 	struct	ModInfo				*first;
 	struct	ModInfo				*last;
-	ulong						nElts;
-	ulong						flags;
+	unsigned					nElts;
+	unsigned					flags;
 	ElementID					maxKey;
 	ElementID					single;
 	long						delta;
@@ -123,7 +128,7 @@ struct ModInfo
 	unsigned		pvIdx;
 	Value			*newV;
 	Value			*oldV;
-	ulong			flags;
+	unsigned		flags;
 	ElementID		eid;
 	ElementID		eltKey;
 	ElementID		epos;
@@ -144,28 +149,12 @@ struct CandidateSSV
 	struct	ModInfo	*mi;
 	size_t			length;
 	size_t			dlen;
+	CandidateSSV() {}
+	CandidateSSV(const Value *p,PropertyID pi,size_t len,struct ModInfo *m,size_t dl) : pid(pi),pv(p),mi(m),length(len),dlen(dl) {}
+	static	int __cdecl compare(const void *v1, const void *v2) {return cmp3(((const CandidateSSV*)v2)->length,((const CandidateSSV*)v1)->length);}
 };
 
-/**
- * dynamic array of candidate SSVs
- */
-struct CandidateSSVs
-{
-	CandidateSSV	*candidates;
-	ulong			nCandidates;
-	ulong			xCandidates;
-	CandidateSSVs() : candidates(NULL),nCandidates(0),xCandidates(0) {}
-	~CandidateSSVs() {free(candidates,SES_HEAP);}
-	RC	insert(const Value *pv,PropertyID pid,size_t length,struct ModInfo *mi,size_t dl) {
-		if (nCandidates>=xCandidates) {
-			candidates=(CandidateSSV*)(candidates==NULL?malloc((xCandidates=100)*sizeof(CandidateSSV),SES_HEAP):
-								realloc(candidates,(xCandidates+=xCandidates)*sizeof(CandidateSSV),SES_HEAP));
-			if (candidates==NULL) return RC_NORESOURCES;
-		}
-		CandidateSSV *ps=&candidates[nCandidates++]; assert(length>sizeof(HRefSSV));
-		ps->pid=pid; ps->length=length; ps->pv=pv; ps->mi=mi; ps->dlen=dl; return RC_OK;
-	}
-};
+typedef DynArray<CandidateSSV>	CandidateSSVs;
 
 struct RefTrace
 {
@@ -175,6 +164,21 @@ struct RefTrace
 	ElementID			eid;
 };
 
+/**
+ * map for resolution of mutual references of uncommitted pins
+ */
+
+struct PINMapElt
+{
+	uint64_t	tpid;
+	PIN			*pin;
+	__forceinline static int cmp(const PINMapElt& x,uint64_t y) {return cmp3(x.tpid,y);}
+	__forceinline static RC merge(PINMapElt&,PINMapElt&,MemAlloc*) {return RC_OK;}
+	operator uint64_t() const {return tpid;}
+};
+
+typedef	DynOArrayBuf<PINMapElt,uint64_t,PINMapElt> PINMap;
+
 class Cursor;
 
 /**
@@ -182,61 +186,61 @@ class Cursor;
  */
 class QueryPrc
 {
-	RC		loadProps(PINEx *pcb,unsigned mode,const PropertyID *pids=NULL,unsigned nPids=0);
-	RC		loadV(Value& v,ulong pid,const PINEx& cb,ulong mode,MemAlloc *ma,ulong eid=STORE_COLLECTION_ID);
-	RC		loadVH(Value& v,const HeapPageMgr::HeapV *hprop,const PINEx& cb,ulong mode,MemAlloc *ma,ulong eid=STORE_COLLECTION_ID);
-	RC		loadS(Value& v,HType ty,PageOff offset,const HeapPageMgr::HeapPage *frame,ulong mode,MemAlloc *ma,ulong eid=STORE_COLLECTION_ID);
+	RC		loadProps(PINx *pcb,unsigned mode,const PropertyID *pids=NULL,unsigned nPids=0);
+	RC		loadV(Value& v,unsigned pid,const PINx& cb,unsigned mode,MemAlloc *ma,unsigned eid=STORE_COLLECTION_ID,const Value *mkey=NULL);
+	RC		loadVH(Value& v,const HeapPageMgr::HeapV *hprop,const PINx& cb,unsigned mode,MemAlloc *ma,unsigned eid=STORE_COLLECTION_ID,const Value *mkey=NULL);
+	RC		loadS(Value& v,HType ty,PageOff offset,const HeapPageMgr::HeapPage *frame,unsigned mode,MemAlloc *ma,unsigned eid=STORE_COLLECTION_ID);
 	RC		loadSSVs(Value *values,unsigned nValues,unsigned mode,Session *ses,MemAlloc *ma);
-	RC		loadSSV(Value& val,ValueType ty,const HeapPageMgr::HeapObjHeader *hobj,unsigned mode,MemAlloc *ma);
+	RC		loadSSV(Value& val,ValueType ty,const HeapPageMgr::HeapObjHeader *hobj,unsigned mode,MemAlloc *ma);	// struct PropertyID?
 
-	RC		getBody(PINEx& cb,TVOp tvo=TVO_READ,ulong flags=0,VersionID=STORE_CURRENT_VERSION);
-	bool	checkRef(const Value& val,PIN *const *pins,unsigned nPins);
+	RC		getBody(PINx& cb,TVOp tvo=TVO_READ,unsigned flags=0,VersionID=STORE_CURRENT_VERSION);
+	RC		resolveRef(Value& val,PIN *const *pins,unsigned nPins,PINMap *map);
 	RC		makeRoom(PIN *pin,ushort lxtab,PBlock *pb,Session *ses,size_t reserve);
-	RC		rename(ChangeInfo& inf,PropertyID pid,ulong flags,bool fSync);
-	RC		checkLockAndACL(PINEx& qr,TVOp tvo,QueryOp *qop=NULL);
-	RC		checkACLs(PINEx& cb,IdentityID iid,TVOp tvo,ulong flags=0,bool fProp=true);
-	RC		checkACLs(const PINEx *pin,PINEx& cb,IdentityID iid,TVOp tvo,ulong flags=0,bool fProp=true);
-	RC		checkACL(const Value&,PINEx&,IdentityID,uint8_t,const RefTrace*,bool=true);
-	RC		getRefSafe(const PID& id,Value *&vals,ulong& nValues,ulong mode,PINEx& cb);
-	RC		apply(Session *ses,STMT_OP op,PINEx& qr,const Value *values,unsigned nValues,unsigned mode,const ValueV& params,PIN *pin=NULL);
-	RC		count(QueryOp *qop,uint64_t& cnt,unsigned long nAbort,const OrderSegQ *os=NULL,unsigned nos=0);
-	RC		eval(Session *ses,const Value *pv,Value& res,PINEx **vars,ulong nVars,const ValueV *params,unsigned nParams,MemAlloc *ma,bool fInsert);
+	RC		rename(ChangeInfo& inf,PropertyID pid,unsigned flags,bool fSync);
+	RC		checkLockAndACL(PINx& qr,TVOp tvo,QueryOp *qop=NULL);
+	RC		checkACLs(PINx& cb,IdentityID iid,TVOp tvo,unsigned flags=0,bool fProp=true);
+	RC		checkACLs(PINx *pin,PINx& cb,IdentityID iid,TVOp tvo,unsigned flags=0,bool fProp=true);
+	RC		checkACL(const Value&,PINx&,IdentityID,uint8_t,const RefTrace*,bool=true);
+	RC		getRefSafe(const PID& id,Value *&vals,unsigned& nValues,unsigned mode,PINx& cb);
+	RC		apply(const EvalCtx& ectx,STMT_OP op,PINx& qr,const Value *values,unsigned nValues,unsigned mode,PIN *pin=NULL);
+	RC		count(QueryOp *qop,uint64_t& cnt,unsigned nAbort,const OrderSegQ *os=NULL,unsigned nos=0);
+	RC		eval(const Value *pv,const EvalCtx& ctx,Value *res=NULL,unsigned mode=0);
 	RC		purge(PageID pageID,unsigned start,unsigned len,const uint32_t *bmp,PurgeType pt,Session *ses);
+	RC		updateComm(const EvalCtx &ectx,PIN *pin,const Value *v,unsigned nv,unsigned mode);
 
 	size_t	splitLength(const Value *pv);
-	RC		estimateLength(const Value& v,size_t& res,ulong mode,size_t threshold,MemAlloc *ma,PageID pageID=INVALID_PAGEID,size_t *rlen=NULL);
-	RC		findCandidateSSVs(struct CandidateSSVs& cs,const Value *pv,ulong nv,bool fSplit,MemAlloc *ma,const AllocCtrl *act=NULL,PropertyID=STORE_INVALID_PROPID,struct ModInfo *mi=NULL);
+	RC		calcLength(const Value& v,size_t& res,unsigned mode,size_t threshold,MemAlloc *ma,PageID pageID=INVALID_PAGEID,size_t *rlen=NULL);
+	RC		findCandidateSSVs(CandidateSSVs& cs,const Value *pv,unsigned nv,bool fSplit,MemAlloc *ma,const AllocCtrl *act=NULL,PropertyID=STORE_INVALID_URIID,struct ModInfo *mi=NULL);
 	RC		persistValue(const Value& v,ushort& sht,HType& vt,ushort& offs,byte *buf,size_t *plrec,const PageAddr &addr,ElementID *keygen=NULL);
-	RC		putHeapMod(HeapPageMgr::HeapPropMod *hpm,struct ModInfo *pm,byte *buf,ushort& sht,PINEx&,bool=false);
-	static	int __cdecl cmpCandidateSSV(const void *v1, const void *v2);
+	RC		putHeapMod(HeapPageMgr::HeapPropMod *hpm,struct ModInfo *pm,byte *buf,ushort& sht,PINx&,bool=false);
+	RC		reload(PIN *pin,PINx *pcb);
 
 private:
 	IStoreNotification	*const	notification;
-	IStoreReplication	*const	replication;
 	StoreCtx			*const	ctx;
 	size_t				bigThreshold;
 	PropertyID			*calcProps;
 	unsigned			nCalcProps;
 	RWLock				cPropLock;
 public:
-	QueryPrc(StoreCtx *,IStoreNotification *notItf,IStoreReplication *repl);
+	QueryPrc(StoreCtx *,IStoreNotification *notItf);
 
-	RC		loadPIN(Session *ses,const PID& id,PIN *&pin,unsigned mode=0,PINEx *pcb=NULL,VersionID=STORE_CURRENT_VERSION);
-	RC		loadValue(Session *ses,const PID& id,PropertyID pid,ElementID eid,Value& res,ulong mode=0);
-	RC		loadValues(Value *pv,unsigned nv,const PID& id,Session *ses,ulong mode=0);
-	RC		getPINValue(const PID& id,Value& res,ulong mode,Session *ses);
-	RC		diffPIN(const PIN *pin,PINEx& cb,Value *&diffProps,ulong& nDiffProps,Session *ses);
-	RC		commitPINs(Session *ses,PIN *const *pins,unsigned nPins,unsigned mode,const ValueV& params,const AllocCtrl *actrl=NULL,size_t *pSize=NULL,const ClassSpec *into=NULL,unsigned nInto=0);
-	RC		modifyPIN(Session *ses,const PID& id,const Value *v,unsigned nv,PINEx *pcb,const ValueV& params,PIN *pin=NULL,unsigned mode=0,const ElementID *eids=NULL,unsigned* =NULL);
-	RC		deletePINs(Session *ses,const PIN *const *pins,const PID *pids,unsigned nPins,unsigned mode,PINEx *pcb=NULL);
-	RC		undeletePINs(Session *ses,const PID *pids,unsigned nPins);
-	RC		setFlag(Session *ses,const PID& id,PageAddr *addr,ushort flag,bool fReset);
+	RC		loadPIN(Session *ses,const PID& id,PIN *&pin,unsigned mode=0,PINx *pcb=NULL,VersionID=STORE_CURRENT_VERSION);
+	RC		loadValue(Session *ses,const PID& id,PropertyID pid,ElementID eid,Value& res,unsigned mode=0);
+	RC		loadValues(Value *pv,unsigned nv,const PID& id,Session *ses,unsigned mode=0);
+	RC		getPINValue(const PID& id,Value& res,unsigned mode,Session *ses);
+	RC		diffPIN(const PIN *pin,PINx& cb,Value *&diffProps,unsigned& nDiffProps,Session *ses);
+	RC		persistPINs(const EvalCtx& ectx,PIN *const *pins,unsigned nPins,unsigned mode,const AllocCtrl *actrl=NULL,size_t *pSize=NULL,const IntoClass *into=NULL,unsigned nInto=0);
+	RC		modifyPIN(const EvalCtx& ectx,const PID& id,const Value *v,unsigned nv,PINx *pcb,PIN *pin=NULL,unsigned mode=0,const ElementID *eids=NULL,unsigned* =NULL);
+	RC		deletePINs(const EvalCtx& ectx,const PIN *const *pins,const PID *pids,unsigned nPins,unsigned mode,PINx *pcb=NULL);
+	RC		undeletePINs(const EvalCtx& ectx,const PID *pids,unsigned nPins);
+	RC		setFlag(const EvalCtx& ectx,const PID& id,PageAddr *addr,ushort flag,bool fReset);
 	RC		loadData(const PageAddr& addr,byte *&p,size_t& len,MemAlloc *ma);
 	RC		persistData(IStream *stream,const byte *str,size_t lstr,PageAddr& addr,uint64_t&,const PageAddr* =NULL,PBlockP* =NULL);
 	RC		editData(Session *ses,PageAddr &addr,uint64_t& length,const Value&,PBlockP *pbp=NULL,byte *pOld=NULL);
 	RC		deleteData(const PageAddr& addr,Session *ses=NULL,PBlockP *pbp=NULL);
-	bool	test(PINEx *,ClassID,const ValueV& pars,bool fIgnore=false);
-	RC		transform(const PINEx **vars,ulong nVars,PIN **pins,unsigned nPins,unsigned &nOut,Session*) const;
+	bool	test(PIN *,ClassID,const EvalCtx& ectx,bool fIgnore=false);
+	RC		transform(const PINx **vars,unsigned nVars,PIN **pins,unsigned nPins,unsigned &nOut,Session*) const;
 	RC		getClassInfo(Session *ses,PIN *pin);
 	RC		getCalcPropID(unsigned n,PropertyID& pid);
 	bool	checkCalcPropID(PropertyID pid);
@@ -245,20 +249,27 @@ public:
 	friend	class	Stmt;
 	friend	class	Cursor;
 	friend	class	Navigator;
-	friend	class	PINEx;
-	friend	class	SessionX;
+	friend	class	PINx;
+	friend	class	Session;
 	friend	struct	TxPurge;
 	friend	class	FTIndexMgr;
-	friend	struct	ModData;
+	friend	struct	ModCtx;
 	friend	class	Collection;
+	friend	struct	ClassResult;
 	friend	class	ClassPropIndex;
+	friend	struct	TimerQElt;
 	friend	class	Classifier;
 	friend	class	Class;
-	friend	class	SyncStreamIn;
-	friend	class	ServerStreamIn;
+	friend	class	StartFSM;
+	friend	class	FSMMgr;
+	friend	class	ProcessStream;
+	friend	class	NamedMgr;
+	friend	class	ServiceCtx;
+	friend	class	RegexService;
 	friend	class	QueryOp;
 	friend	class	MergeOp;
 	friend	class	NestedLoop;
+	friend	class	ExprScan;
 	friend	class	Filter;
 	friend	class	LoadOp;
 	friend	class	TransOp;

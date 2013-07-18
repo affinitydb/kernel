@@ -1,6 +1,6 @@
 /**************************************************************************************
 
-Copyright © 2004-2012 VMware, Inc. All rights reserved.
+Copyright © 2004-2013 GoPivotal, Inc. All rights reserved.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -18,12 +18,15 @@ Written by Mark Venguerov 2004-2012
 
 **************************************************************************************/
 
-#include "sync.h"
+#include "afysync.h"
 #include "session.h"
 
 using namespace AfyKernel;
 
-SpinC SpinC::SC;
+long SC::getSC()
+{
+	static const long sc=getNProcessors()>1?SPIN_COUNT:0; return sc;
+}
 
 #ifdef POSIX
 volatile long Mutex::fInit = 0;
@@ -148,7 +151,7 @@ void RWLock::wait(SemData *q) {
 	sem.next=q; queue=&sem; sem.wait(); sem.next=NULL;
 }
 
-#ifdef __arm__
+#if defined __arm__ && !defined __llvm__ && !defined _ARMLES6
 bool __sync_bool_compare_and_swap_8(volatile void* destination, long long unsigned comperand, long long unsigned exchange)                 
 {
 int lRes = 0;  
@@ -175,7 +178,8 @@ int lRes = 0;
 }
 #endif
 
-#ifdef Darwin
+#ifdef __APPLE__
+#if defined __x86_64__
 inline int cas128(volatile __uint128_t* destination,
                    __uint128_t* comperand,
                    __uint128_t* exchange)
@@ -212,4 +216,5 @@ bool __sync_bool_compare_and_swap_16(volatile __uint128_t * destination, __uint1
   retval = cas128(destination, &comperand, &exchange);
   return retval ? 1 : 0;
 }
+#endif
 #endif

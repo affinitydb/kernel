@@ -1,6 +1,6 @@
 /**************************************************************************************
 
-Copyright © 2004-2012 VMware, Inc. All rights reserved.
+Copyright © 2004-2013 GoPivotal, Inc. All rights reserved.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -23,17 +23,20 @@ Written by Mark Venguerov 2004-2012
 #include "buffer.h"
 #include "txmgr.h"
 #include "startup.h"
-#include "affinityimpl.h"
+#include "pin.h"
 #include "queryprc.h"
 #include "logmgr.h"
+#include "service.h"
 
 using namespace AfyKernel;
 
+#define PIDKeySize		(sizeof(uint64_t)+sizeof(IdentityID))
+
 static const IndexFormat rpinIndexFmt(KT_BIN,PIDKeySize,PageAddrSize+sizeof(TIMESTAMP));
 
-NetMgr::NetMgr(StoreCtx *ct,IStoreNet *nt,int hashSize,int cacheSize,TIMESTAMP dExp)
-: RPINHashTab(*new(ct) RPINHashTab::QueueCtrl<STORE_HEAP>(cacheSize),hashSize),ctx(ct),
-	net(nt),xPINs(cacheSize),defExpiration(dExp),map(MA_RCACHE,rpinIndexFmt,ct,TF_WITHDEL)
+NetMgr::NetMgr(StoreCtx *ct,int hashSize,int cacheSize,TIMESTAMP dExp)
+: RPINHashTab(*new(ct) RPINHashTab::QueueCtrl(cacheSize,ct),hashSize,ct),PageMgr(ct),
+	xPINs(cacheSize),defExpiration(dExp),map(MA_RCACHE,rpinIndexFmt,ct,TF_WITHDEL),freeRPINs((MemAlloc*)ct,RPIN_BLOCK)
 {
 		ctx->registerPageMgr(PGID_NETMGR,this); if (&ctrl==NULL) throw RC_NORESOURCES;
 }
@@ -47,20 +50,14 @@ void NetMgr::close()
 {
 }
 
-bool NetMgr::isOnline()
-{
-	return net!=NULL && net->isOnline();
-}
-
 bool NetMgr::isCached(const PID& id)
 {
 	PID pid=id; RPIN *rp; RC rc=get(rp,pid,0,RW_S_LOCK|QMGR_INMEM);
 	if (rc==RC_OK) {release(rp); return true;}
 	byte rbuf[PIDKeySize],dbuf[PageAddrSize+sizeof(TIMESTAMP)];
-	memcpy(rbuf,&pid.ident,sizeof(IdentityID));
-	memcpy(rbuf+sizeof(IdentityID),&pid.pid,sizeof(OID));
+	*(IdentityID*)rbuf=pid.ident; __una_set((OID*)(rbuf+sizeof(IdentityID)),pid.pid);
 	SearchKey key(rbuf,PIDKeySize); size_t size=sizeof(dbuf);
-	return map.find(key,dbuf,size);
+	return map.find(key,dbuf,size)==RC_OK;
 }
 
 RC NetMgr::insert(PIN *pin)
@@ -69,7 +66,7 @@ RC NetMgr::insert(PIN *pin)
 	byte rbuf[PIDKeySize],dbuf[PageAddrSize+sizeof(TIMESTAMP)];
 	*(PageID*)dbuf=pin->addr.pageID; *(PageIdx*)(dbuf+sizeof(PageID))=pin->addr.idx;
 	const static TIMESTAMP noExp=~TIMESTAMP(0); memcpy(dbuf+PageAddrSize,&noExp,sizeof(TIMESTAMP));
-	memcpy(rbuf,&pin->id.ident,sizeof(IdentityID)); memcpy(rbuf+sizeof(IdentityID),&pin->id.pid,sizeof(OID));
+	*(IdentityID*)rbuf=pin->id.ident; __una_set((OID*)(rbuf+sizeof(IdentityID)),pin->id.pid);
 	SearchKey key(rbuf,PIDKeySize); RPIN *rp; RC rc;
 	if ((rc=map.insert(key,dbuf,sizeof(dbuf)))==RC_OK && (rc=get(rp,pin->id,0,QMGR_NOLOAD|RW_X_LOCK))==RC_OK) 
 		{rp->addr=pin->addr; rp->expiration=noExp; release(rp);}
@@ -108,17 +105,16 @@ RC NetMgr::remove(const PID& pid,PageAddr &addr)
 	return RC_OK;
 }
 
-RC NetMgr::getPage(const PID& id,ulong flags,PageIdx& idx,PBlockP& pb,Session *ses)
+RC NetMgr::getPage(const PID& id,unsigned flags,PageIdx& idx,PBlockP& pb,Session *ses)
 {
 	PID pid=id; RPIN *rp; RC rc=get(rp,pid,0,RW_S_LOCK); if (rc!=RC_OK) {pb.release(ses); return rc;}
 	if (!rp->addr.defined()) {release(rp); pb.release(ses); return rc;}
-	TIMESTAMP now; getTimestamp(now);
-	if (rp->expiration<now && net!=NULL && net->isOnline()) rp->refresh(NULL,ses);
+	TIMESTAMP now; getTimestamp(now); if (rp->expiration<now) rp->refresh(NULL,ses);
 	pb.getPage(rp->addr.pageID,ctx->heapMgr,flags|PGCTL_RLATCH,ses);
 	idx=rp->addr.idx; release(rp); return pb.isNull()?RC_CORRUPTED:RC_OK;
 }
 
-RC NetMgr::setExpiration(const PID& pid,unsigned long exp)
+RC NetMgr::setExpiration(const PID& pid,unsigned exp)
 {
 	PID id=pid; RPIN *rp; TIMESTAMP expTime;
 	RC rc=get(rp,id,0,RW_X_LOCK); if (rc!=RC_OK) return rc;
@@ -138,7 +134,7 @@ RC NetMgr::refresh(PIN *pin,Session *ses)
 	return rc;
 }
 
-RC NetMgr::undo(ulong info,const byte *rec,size_t lrec,PageID pid)
+RC NetMgr::undo(unsigned info,const byte *rec,size_t lrec,PageID pid)
 {
 	if (pid!=INVALID_PAGEID || lrec!=PIDKeySize+PageAddrSize) return RC_CORRUPTED;
 	if (!ctx->logMgr->isRecovery()) {
@@ -156,58 +152,63 @@ RC NetMgr::undo(ulong info,const byte *rec,size_t lrec,PageID pid)
 //-------------------------------------------------------------------------------------------------
 
 RPIN::RPIN(const PID& id,class NetMgr& mg) : ID(id),qe(NULL),mgr(mg),expiration(0),addr(PageAddr::invAddr) {++mg.nPINs;}
+
+RC RPIN::read(Session *ses,PIN *&pin)
+{
+	Value vv[2],res; vv[0].set(ID); vv[0].setPropID(PROP_SPEC_PINID); vv[1].setURIID(SERVICE_REMOTE); vv[1].setPropID(PROP_SPEC_SERVICE); res.setEmpty();
+	ServiceCtx *srv=NULL; RC rc=ses->prepare(srv,PIN::defPID,vv,2,0); pin=NULL;
+	if (rc==RC_OK && srv!=NULL) {
+		if ((rc=srv->invoke(vv,2,&res))==RC_OK) {if (res.type==VT_REF) pin=(PIN*)res.pin; else {freeV(res); rc=RC_TYPE;}}
+		srv->destroy();
+	}
+	return rc;
+}
 	
-RC RPIN::load(int,ulong flags)
+RC RPIN::load(int,unsigned flags)
 {
 	addr.pageID=INVALID_PAGEID; addr.idx=INVALID_INDEX;
 	byte rbuf[PIDKeySize],dbuf[PageAddrSize+sizeof(TIMESTAMP)];
 	memcpy(rbuf,&ID.ident,sizeof(IdentityID));
 	memcpy(rbuf+sizeof(IdentityID),&ID.pid,sizeof(OID));
 	SearchKey key(rbuf,PIDKeySize); size_t size=sizeof(dbuf);
-	bool rc=mgr.map.find(key,dbuf,size),fExpired=false; assert(!rc||size==sizeof(dbuf));
-	if (rc) {
+	RC rc=mgr.map.find(key,dbuf,size); bool fExpired=false; assert(!rc||size==sizeof(dbuf));
+	if (rc==RC_OK) {
 		addr.pageID=*(PageID*)dbuf; addr.idx=*(PageIdx*)(dbuf+sizeof(PageID));
 		memcpy(&expiration,dbuf+PageAddrSize,sizeof(TIMESTAMP));
 	}
-	if ((!rc || fExpired) && mgr.net!=NULL && (flags&RPIN_NOFETCH)==0) {
-		Session *ses=Session::getSession();
-		PIN *pin=new(ses) PIN(ses,ID,PageAddr::invAddr);
-		if (pin==NULL) rc=false;
-		else {
-			try {
-				if (mgr.net->getPIN(ID.pid,ushort(ID.pid>>48),ID.ident,pin)) {
-					MiniTx tx(ses); pin->mode=pin->mode&(PIN_NOTIFY|PIN_NO_INDEX)|PIN_READONLY; size_t sz;
-					if (mgr.ctx->queryMgr->commitPINs(ses,&pin,1,MODE_NO_RINDEX,ValueV(NULL,0),NULL,&sz)!=RC_OK) rc=false;
-					else {
-						addr=pin->addr; *(PageID*)dbuf=addr.pageID; *(PageIdx*)(dbuf+sizeof(PageID))=addr.idx; getTimestamp(expiration);
-						expiration+=ses!=NULL&&ses->getDefaultExpiration()!=0?ses->getDefaultExpiration():mgr.defExpiration;
-						memcpy(dbuf+PageAddrSize,&expiration,sizeof(TIMESTAMP));
-						rc=mgr.map.insert(key,dbuf,sizeof(dbuf))==RC_OK; if (rc) tx.ok();
-						if (rc && fExpired) {
-							// delete old one
-						}
+	if ((rc!=RC_OK || fExpired) && (flags&RPIN_NOFETCH)==0) try {
+		PIN *pin=NULL; Session *ses=Session::getSession();
+		if (read(ses,pin)==RC_OK && pin!=NULL) {
+			MiniTx tx(ses); pin->id=ID; const_cast<PIN*>(pin)->addr=PageAddr::invAddr;
+			pin->mode=pin->mode&PIN_NOTIFY|PIN_IMMUTABLE; size_t sz;
+			if ((rc=mgr.ctx->queryMgr->persistPINs(EvalCtx(ses,ECT_INSERT),&pin,1,MODE_NO_RINDEX,NULL,&sz))==RC_OK) {
+				addr=pin->addr; *(PageID*)dbuf=addr.pageID; *(PageIdx*)(dbuf+sizeof(PageID))=addr.idx; getTimestamp(expiration);
+				expiration+=ses!=NULL&&ses->getDefaultExpiration()!=0?ses->getDefaultExpiration():mgr.defExpiration;
+				memcpy(dbuf+PageAddrSize,&expiration,sizeof(TIMESTAMP));
+				if ((rc=mgr.map.insert(key,dbuf,sizeof(dbuf)))==RC_OK) {
+					tx.ok();
+					if (fExpired) {
+						// delete old one
 					}
 				}
-			} catch (...) {
-				// report exception
 			}
 			pin->destroy();
 		}
+	} catch (...) {
+		// report exception
 	}
-	return rc?RC_OK:RC_NOTFOUND;	// ???
+	return rc;
 }
 
 RC RPIN::refresh(PIN *pin,Session *ses)
 {
-	if (mgr.net==NULL) return RC_OK; RC rc=RC_OK; bool fDestroy=false; Value *val=NULL; ulong nProps=0;
-	if (pin!=NULL) {val=pin->properties; nProps=pin->nProperties; pin->properties=NULL; pin->nProperties=0;}
-	else if ((pin=new(ses) PIN(ses,ID,PageAddr::invAddr))!=NULL) fDestroy=true; else return RC_NORESOURCES;
+	RC rc=RC_OK; assert(pin==NULL||pin->getSes()==ses);
 	try {
-		const_cast<PageAddr&>(pin->addr)=PageAddr::invAddr;
-		if (mgr.net->getPIN(ID.pid,ushort(ID.pid>>48),ID.ident,pin)) {		// && pin->stamp!=oldStamp
-			PINEx cb(ses,ID); cb=addr; MiniTx tx(ses); Value *diffProps=NULL; ulong nDiffProps=0;
-			if ((rc=mgr.ctx->queryMgr->diffPIN(pin,cb,diffProps,nDiffProps,ses))==RC_OK) {
-				if (nDiffProps>0 && (rc=mgr.ctx->queryMgr->modifyPIN(ses,ID,diffProps,nDiffProps,&cb,ValueV(NULL,0),NULL,MODE_FORCE_EIDS|MODE_REFRESH))==RC_OK) {
+		PIN *rp=NULL;
+		if (read(ses,rp)==RC_OK && rp!=NULL) {
+			PINx cb(ses,ID); cb=addr; MiniTx tx(ses); Value *diffProps=NULL; unsigned nDiffProps=0; rp->id=ID;
+			if ((rc=mgr.ctx->queryMgr->diffPIN(rp,cb,diffProps,nDiffProps,ses))==RC_OK) {
+				if (nDiffProps>0 && (rc=mgr.ctx->queryMgr->modifyPIN(EvalCtx(ses,ECT_INSERT),ID,diffProps,nDiffProps,&cb,NULL,MODE_FORCE_EIDS|MODE_REFRESH))==RC_OK) {
 					byte rbuf[PIDKeySize],dbuf[PageAddrSize+sizeof(TIMESTAMP)],dold[PageAddrSize+sizeof(TIMESTAMP)];
 					*(PageID*)dold=addr.pageID; *(PageIdx*)(dold+sizeof(PageID))=addr.idx; 
 					*(PageID*)dbuf=cb.getAddr().pageID; *(PageIdx*)(dbuf+sizeof(PageID))=cb.getAddr().idx; 
@@ -218,16 +219,18 @@ RC RPIN::refresh(PIN *pin,Session *ses)
 					if ((rc=mgr.map.update(key,dold,sizeof(dold),dbuf,sizeof(dbuf)))==RC_OK) {addr=cb.getAddr(); expiration=exp; tx.ok();}
 				}
 				freeV(diffProps,nDiffProps,ses);
+				if (pin!=NULL) {
+					const_cast<PageAddr&>(pin->addr)=addr; freeV(pin->properties,pin->nProperties,ses);
+					pin->properties=rp->properties; pin->nProperties=rp->nProperties;
+					rp->properties=NULL; rp->nProperties=0;
+				}
 			}
+			rp->destroy();
 		}
-		if (rc!=RC_OK) const_cast<PageAddr&>(pin->addr)=addr;
 	} catch (RC rc2) {rc=rc2;} catch (...) {
 		// ..report exception
 		rc=RC_OTHER;
 	}
-	if (fDestroy) pin->destroy();
-	else if (rc!=RC_OK) {pin->properties=val; pin->nProperties=nProps;}
-	else if (val!=NULL) {for (ulong i=0; i<nProps; i++) freeV(val[i]); free(val,SES_HEAP);}
 	return rc;
 }
 

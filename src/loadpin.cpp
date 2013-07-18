@@ -1,6 +1,6 @@
 /**************************************************************************************
 
-Copyright © 2004-2012 VMware, Inc. All rights reserved.
+Copyright © 2004-2013 GoPivotal, Inc. All rights reserved.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -27,31 +27,34 @@ Written by Mark Venguerov 2004-2012
 
 using namespace AfyKernel;
 
-RC QueryPrc::loadPIN(Session *ses,const PID& id,PIN *&pin,unsigned mode,PINEx *pcb,VersionID vid)
+RC QueryPrc::loadPIN(Session *ses,const PID& id,PIN *&pin,unsigned mode,PINx *pcb,VersionID vid)
 {
-	PINEx cb(ses,id); RC rc=RC_OK; assert(pin==NULL||pin->ses==ses);
-	if (pcb==NULL) {pcb=&cb; cb.addr=pin!=NULL?pin->addr:PageAddr::invAddr;}
-	if (pcb->pb.isNull() && (rc=getBody(*(PINEx*)pcb,TVO_READ,(mode&MODE_DELETED)!=0?GB_DELETED:0,vid))!=RC_OK)		// tvo?
+	PINx cb(ses,id); RC rc=RC_OK; assert(pin==NULL||pin->ses==ses);
+	if (pcb==NULL) {pcb=&cb; if (pin!=NULL) cb=pin->addr;}
+	if (pcb->pb.isNull() && (rc=getBody(*(PINx*)pcb,TVO_READ,(mode&MODE_DELETED)!=0?GB_DELETED:0,vid))!=RC_OK)		// tvo?
 		{if (rc==RC_DELETED && pin!=NULL) pin->mode|=PIN_DELETED; return rc;}
 
-	if (pin!=NULL) {pin->id=id; pin->addr=pcb->addr; pin->mode=pcb->mode;}
-	else if ((pin=new(ses) PIN(ses,pcb->id,pcb->addr,pcb->mode&~PIN_PINEX))==NULL) return RC_NORESOURCES;
-	pin->stamp=pcb->stamp;
+	if (pin==NULL && (pin=new(ses) PIN(ses,pcb->mode))==NULL) return RC_NORESOURCES;
+	*pin=id; *pin=pcb->addr;
+
 	if ((rc=loadProps(pcb,mode|LOAD_SSV))==RC_OK) {
 		assert((pcb->mode&PIN_SSV)==0);
-		if ((pcb->mode&PIN_NO_FREE)==0) {pin->properties=pcb->properties; pin->nProperties=pcb->nProperties; pcb->properties=NULL; pcb->nProperties=0;}
-		else if ((rc=copyV(pcb->properties,pcb->nProperties,pin->properties,ses))==RC_OK) pin->nProperties=pcb->nProperties;
+		if ((PIN*)pcb!=pin) {
+			pin->mode=pcb->mode; pin->meta=pcb->meta;
+			if ((pcb->mode&PIN_NO_FREE)==0) {pin->properties=pcb->properties; pin->nProperties=pcb->nProperties; pcb->properties=NULL; pcb->nProperties=0; pcb->mode|=PIN_PARTIAL;}
+			else if ((rc=copyV(pcb->properties,pcb->nProperties,pin->properties,ses))==RC_OK) {pin->nProperties=pcb->nProperties; pin->mode&=~PIN_NO_FREE;}
+		}
 	}
 	return rc;
 }
 
-RC QueryPrc::loadProps(PINEx *pcb,unsigned mode,const PropertyID *pids,unsigned nPids)
+RC QueryPrc::loadProps(PINx *pcb,unsigned mode,const PropertyID *pids,unsigned nPids)
 {
 	assert(!pcb->pb.isNull() && pcb->hpin!=NULL);
-	RC rc=RC_OK; unsigned nProps=pcb->hpin->nProps; const DataSS *dss=NULL;
+	RC rc=RC_OK; unsigned nProps=pcb->hpin->nProps; const DataSS *dss=NULL; pcb->mode&=~PIN_PARTIAL;
 //	if (!pcb->ses->inWriteTx() && pcb->tv!=NULL && (!pcb->tv->fCommited || (dss=pcb->tv->stack)!=NULL && dss->fNew)) return RC_DELETED;
 	if ((pcb->nProperties=nProps)!=0) {
-		if (pids!=NULL) {if (nPids==0 || pids[0]==PROP_SPEC_ANY) pids=NULL; else if (nPids!=0 && nPids<pcb->nProperties) {pcb->nProperties=nPids; pcb->mode|=PIN_PROJECTED;}}
+		if (pids!=NULL) {if (nPids==0 || pids[0]==PROP_SPEC_ANY) pids=NULL; else if (nPids!=0 && nPids<pcb->nProperties) {pcb->nProperties=nPids; pcb->mode|=PIN_PARTIAL;}}
 		if ((pcb->properties=(Value*)pcb->ses->realloc(pcb->properties,pcb->nProperties*sizeof(Value)))==NULL) return RC_NORESOURCES;
 		const HeapPageMgr::HeapV *hprop=pcb->hpin->getPropTab(),*const hend=hprop+pcb->hpin->nProps,*hpr; pcb->mode&=~PIN_SSV; 
 		for (unsigned i=0; i<pcb->nProperties; ++i,++hprop) {
@@ -60,7 +63,7 @@ RC QueryPrc::loadProps(PINEx *pcb,unsigned mode,const PropertyID *pids,unsigned 
 				if (pids==NULL) {
 					// check if there are properties>=prev(i>0) && <pid
 				}
-				bool fFound=false;
+				//bool fFound=false;
 				for (const DataSS *ds=dss; ds!=NULL; ds=ds->nextSS) {
 					// try to find pid
 					// found -> fFound=true
@@ -77,7 +80,7 @@ RC QueryPrc::loadProps(PINEx *pcb,unsigned mode,const PropertyID *pids,unsigned 
 				if (hprop>=hend || (hpr=hprop)->getPropID()!=pid && (hpr=pcb->hpin->findProperty(pid))==NULL) {
 					//skip
 				}
-				if (hpr!=hprop) {hprop=hpr; pcb->mode|=PIN_PROJECTED;}
+				if (hpr!=hprop) {hprop=hpr; pcb->mode|=PIN_PARTIAL;}
 			}
 			if ((rc=loadVH(pcb->properties[i],hprop,*pcb,mode&~LOAD_CARDINALITY,pcb->ses))!=RC_OK) break;
 			if ((pcb->properties[i].flags&VF_SSV)!=0) pcb->mode|=PIN_SSV;
@@ -89,17 +92,10 @@ RC QueryPrc::loadProps(PINEx *pcb,unsigned mode,const PropertyID *pids,unsigned 
 
 RC QueryPrc::getClassInfo(Session *ses,PIN *pin)
 {
-	const Value *cv; Class *cls=NULL; uint64_t nPINs=0,nDeletedPINs=0; RC rc=RC_OK; Value vv,*pv;
-	if (pin==NULL || (pin->mode&PIN_CLASS)==0 || (cv=pin->findProperty(PROP_SPEC_CLASSID))==NULL || cv->type!=VT_URIID) return RC_CORRUPTED;
+	const Value *cv; Class *cls=NULL; uint64_t nPINs=0; RC rc=RC_OK; Value vv,*pv;
+	if (pin==NULL || (pin->meta&PMT_CLASS)==0 || (cv=pin->findProperty(PROP_SPEC_OBJID))==NULL || cv->type!=VT_URIID) return RC_CORRUPTED;
 	const ClassID clsid=cv->uid;
-	if (pin->findProperty(PROP_SPEC_URI)==NULL) {
-		URI *uri=(URI*)ctx->uriMgr->ObjMgr::find(clsid);
-		if (uri!=NULL) {
-			vv.set(strdup(uri->getName(),ses)); vv.flags=SES_HEAP; vv.setPropID(PROP_SPEC_URI); uri->release();
-			rc=BIN<Value,PropertyID,ValCmp,uint32_t>::insert(pin->properties,pin->nProperties,vv.property,vv,ses);
-		}
-	}
-	if (rc!=RC_OK || (rc=ctx->classMgr->getClassInfo(clsid,cls,nPINs,nDeletedPINs))!=RC_OK) return rc;
+	if (rc!=RC_OK || (rc=ctx->classMgr->getClassInfo(clsid,cls,nPINs))!=RC_OK) return rc;
 	assert(cls!=NULL); ClassIndex *ci; Stmt *qry; QVar *qv; PropListP plp(ses);
 	if ((qry=cls->getQuery())!=NULL && (qv=qry->getTop())!=NULL && qv->mergeProps(plp)==RC_OK && plp.pls!=NULL && plp.nPls!=0) {
 		Value *va=new(ses) Value[plp.pls[0].nProps];
@@ -108,14 +104,10 @@ RC QueryPrc::getClassInfo(Session *ses,PIN *pin)
 			ElementID prefix=ctx->getPrefix();
 			for (unsigned i=0; i<plp.pls[0].nProps; i++) {va[i].setURIID(plp.pls[0].props[i]&STORE_MAX_URIID); va[i].eid=prefix+i;}
 			vv.set(va,plp.pls[0].nProps); vv.setPropID(PROP_SPEC_PROPERTIES);
-			if ((rc=BIN<Value,PropertyID,ValCmp,uint32_t>::insert(pin->properties,pin->nProperties,vv.property,vv,ses))!=RC_OK) ses->free(va);
+			if ((rc=BIN<Value,PropertyID,ValCmp,uint32_t>::insert(pin->properties,pin->nProperties,vv.property,vv,(MemAlloc*)ses))!=RC_OK) ses->free(va);
 		}
 	}
-	if (rc==RC_OK && (cls->getFlags()&CLASS_INDEXED)!=0) {
-		if ((cv=pin->findProperty(PROP_SPEC_CLASS_INFO))==NULL) {
-			vv.set((unsigned)CLASS_INDEXED); vv.setPropID(PROP_SPEC_CLASS_INFO);
-			rc=BIN<Value,PropertyID,ValCmp,uint32_t>::insert(pin->properties,pin->nProperties,vv.property,vv,ses);
-		}
+	if (rc==RC_OK && (cls->getFlags()&META_PROP_INDEXED)!=0) {
 		if ((ci=cls->getIndex())!=NULL) {
 			if (pin->findProperty(PROP_SPEC_INDEX_INFO)!=NULL) rc=RC_CORRUPTED;
 			else {
@@ -125,24 +117,21 @@ RC QueryPrc::getClassInfo(Session *ses,PIN *pin)
 					ElementID prefix=ctx->getPrefix();
 					for (unsigned i=0; i<nFields; i++) {pv[i].setU64(0ULL); pv[i].iseg=*is++; pv[i].eid=prefix+i;}
 					vv.set(pv,nFields); vv.setPropID(PROP_SPEC_INDEX_INFO);
-					rc=BIN<Value,PropertyID,ValCmp,uint32_t>::insert(pin->properties,pin->nProperties,vv.property,vv,ses);
+					rc=BIN<Value,PropertyID,ValCmp,uint32_t>::insert(pin->properties,pin->nProperties,vv.property,vv,(MemAlloc*)ses);
 				}
 			}
 		}
 		if (rc==RC_OK) {
-			vv.setU64(nPINs); vv.setPropID(PROP_SPEC_NINSTANCES);
-			if ((rc=BIN<Value,PropertyID,ValCmp,uint32_t>::insert(pin->properties,pin->nProperties,vv.property,vv,ses))==RC_OK && nDeletedPINs!=0) {
-				vv.setU64(nDeletedPINs); vv.setPropID(PROP_SPEC_NDINSTANCES);
-				rc=BIN<Value,PropertyID,ValCmp,uint32_t>::insert(pin->properties,pin->nProperties,vv.property,vv,ses);
-			}
+			vv.setU64(nPINs); vv.setPropID(PROP_SPEC_COUNT);
+			rc=BIN<Value,PropertyID,ValCmp,uint32_t>::insert(pin->properties,pin->nProperties,vv.property,vv,(MemAlloc*)ses);
 		}
 	}
 	cls->release(); return rc;
 }
 
-RC QueryPrc::loadValues(Value *pv,unsigned nv,const PID& id,Session *ses,ulong mode)
+RC QueryPrc::loadValues(Value *pv,unsigned nv,const PID& id,Session *ses,unsigned mode)
 {
-	bool fSSVs=false,fNotFound=false; RC rc; PINEx cb(ses,id); if ((rc=getBody(cb))!=RC_OK) return rc;
+	bool fSSVs=false,fNotFound=false; RC rc; PINx cb(ses,id); if ((rc=getBody(cb))!=RC_OK) return rc;
 	for (unsigned i=0; i<nv; ++i) 
 		if ((rc=loadV(pv[i],pv[i].property,cb,mode&~LOAD_CARDINALITY,ses,pv[i].eid))!=RC_OK) {
 			if (rc==RC_NOTFOUND) {rc=RC_OK; fNotFound=true;} else return rc;	// free allocated???
@@ -151,18 +140,17 @@ RC QueryPrc::loadValues(Value *pv,unsigned nv,const PID& id,Session *ses,ulong m
 	return rc!=RC_OK?rc:fNotFound?RC_FALSE:RC_OK;
 }
 
-RC QueryPrc::loadValue(Session *ses,const PID& id,PropertyID propID,ElementID eid,Value& res,ulong mode)
+RC QueryPrc::loadValue(Session *ses,const PID& id,PropertyID propID,ElementID eid,Value& res,unsigned mode)
 {
-	PINEx cb(ses,id); RC rc; return (rc=getBody(cb))!=RC_OK?rc:loadV(res,propID,cb,mode|LOAD_SSV,ses,eid);
+	PINx cb(ses,id); RC rc; return (rc=getBody(cb))!=RC_OK?rc:loadV(res,propID,cb,mode|LOAD_SSV,ses,eid);
 }
 
 RC QueryPrc::loadSSVs(Value *values,unsigned nValues,unsigned mode,Session *ses,MemAlloc *ma)
 {
-	for (ulong i=0; i<nValues; ++i) {
+	for (unsigned i=0; i<nValues; ++i) {
 		Value& v=values[i]; RC rc;
 		if ((v.flags&VF_SSV)!=0) switch (v.type) {
 		case VT_STRUCT:
-			//????
 		case VT_ARRAY:
 			if ((rc=loadSSVs(const_cast<Value*>(v.varray),v.length,mode,ses,ma))!=RC_OK) return rc;
 			v.flags&=~VF_SSV; break;
@@ -171,7 +159,7 @@ RC QueryPrc::loadSSVs(Value *values,unsigned nValues,unsigned mode,Session *ses,
 			PBlockP pb(ctx->bufMgr->getPage(href->pageID,ctx->ssvMgr,0,NULL,ses),0); if (pb.isNull()) {v.setError(v.property); return RC_NOTFOUND;}
 			const HeapPageMgr::HeapPage *hp = (const HeapPageMgr::HeapPage *)pb->getPageBuf(); 
 			if ((rc=loadSSV(v,href->type.getType(),hp->getObject(hp->getOffset(href->idx)),mode,ma))!=RC_OK) return rc;
-			for (ulong j=i+1; j<nValues; j++) if ((values[j].flags&VF_SSV)!=0) {
+			for (unsigned j=i+1; j<nValues; j++) if ((values[j].flags&VF_SSV)!=0) {
 				if (values[j].type==VT_ARRAY || values[j].type==VT_STRUCT) {
 					// ???
 				} else {
@@ -239,10 +227,10 @@ RC QueryPrc::loadData(const PageAddr &addr,byte *&p,size_t &len,MemAlloc *ma)
 	return RC_OK;
 }
 
-RC QueryPrc::loadV(Value& v,ulong propID,const PINEx& cb,ulong mode,MemAlloc *ma,ulong eid)
+RC QueryPrc::loadV(Value& v,unsigned propID,const PINx& cb,unsigned mode,MemAlloc *ma,unsigned eid,const Value *mkey)
 {
 	switch (propID) {
-	case STORE_INVALID_PROPID: 
+	case STORE_INVALID_URIID: 
 		if ((mode&LOAD_CARDINALITY)==0) {v.setError(); return RC_INVPARAM;}
 		v.set(0u); return RC_OK;
 	case PROP_SPEC_PINID:
@@ -255,96 +243,119 @@ RC QueryPrc::loadV(Value& v,ulong propID,const PINEx& cb,ulong mode,MemAlloc *ma
 		}
 		if ((mode&LOAD_CARDINALITY)!=0) v.set(1u); else v.set(cb.id);
 		v.property=propID; return RC_OK;
-	case PROP_SPEC_STAMP:
-		if ((mode&LOAD_CARDINALITY)!=0) v.set(1u); else v.set((unsigned int)cb.hpin->getStamp());
-		v.property=propID; return RC_OK;
-	case PROP_SPEC_NINSTANCES:
-	case PROP_SPEC_NDINSTANCES:
-	case PROP_SPEC_CLASS_INFO:
-		if ((mode&LOAD_CARDINALITY)!=0) v.set((cb.hpin->hdr.descr&HOH_CLASS)!=0?1:0);
-		else if ((cb.hpin->hdr.descr&HOH_CLASS)!=0) {
+	case PROP_SPEC_COUNT:
+		if ((mode&LOAD_CARDINALITY)!=0) v.set((cb.hpin->meta&PMT_CLASS)!=0?1:0);
+		else if ((cb.hpin->meta&PMT_CLASS)==0) {v.setError(propID); return RC_NOTFOUND;}
+		else {
 			//???
-		} else {
-			v.setError(propID); return RC_NOTFOUND;
+			v.property=propID; return RC_OK;
 		}
-		v.property=propID; return RC_OK;
+		break;
 	}
 	if (cb.properties!=NULL) {
 		//?????
-		const Value *pv=BIN<Value,PropertyID,ValCmp>::find(propID,cb.properties,cb.nProperties);
-		if ((mode&LOAD_CARDINALITY)!=0) {
-			v.set(unsigned(pv==NULL?0u:pv->type==VT_ARRAY?pv->length:pv->type==VT_COLLECTION?pv->nav->count():1u));
-			v.property=propID; return RC_OK;
+		const Value *pv=VBIN::find(propID,cb.properties,cb.nProperties);
+		if (pv!=NULL || (cb.mode&PIN_PARTIAL)==0) {
+			if ((mode&LOAD_CARDINALITY)!=0) {
+				v.set(unsigned(pv==NULL?0u:pv->type==VT_ARRAY?pv->length:pv->type==VT_COLLECTION?pv->nav->count():1u));
+				v.property=propID; return RC_OK;
+			}
+			RC rc=pv!=NULL?copyV(*pv,v,ma):RC_NOTFOUND;
+			if (rc==RC_OK) v.property=propID; else v.setError(propID);
+			return rc;
 		}
-		RC rc=pv!=NULL?copyV(*pv,v,ma):RC_NOTFOUND;
-		if (rc==RC_OK) v.property=propID; else v.setError(propID);
-		return rc;
 	}
 	const HeapPageMgr::HeapV *hprop=cb.hpin->findProperty(propID);
-	if (propID==PROP_SPEC_URI && hprop==NULL) {
-		// convert PID to URI
-		return RC_OK;
-	}
-	return hprop!=NULL?loadVH(v,hprop,cb,mode,ma,eid):(mode&LOAD_CARDINALITY)!=0?(v.set(0u),v.property=propID,RC_OK):
+	return hprop!=NULL?loadVH(v,hprop,cb,mode,ma,eid,mkey):(mode&LOAD_CARDINALITY)!=0?(v.set(0u),v.property=propID,RC_OK):
 																					(v.setError(propID),RC_NOTFOUND);
 }
 
-RC QueryPrc::loadVH(Value& v,const HeapPageMgr::HeapV *hprop,const PINEx& cb,ulong mode,MemAlloc *ma,ulong eid)
+RC QueryPrc::loadVH(Value& v,const HeapPageMgr::HeapV *hprop,const PINx& cb,unsigned mode,MemAlloc *ma,unsigned eid,const Value *mkey)
 {
 	HType ty=hprop->type; ushort offset=hprop->offset; PropertyID pid=hprop->getID(); PID id; Value val;
-	if (ty.getType()==VT_ARRAY) {
+	if (ty.isCompound()) {
 		if (ty.getFormat()==HDF_LONG) {
-			const HeapPageMgr::HeapExtCollection *coll=(const HeapPageMgr::HeapExtCollection*)(cb.pb->getPageBuf()+hprop->offset);
-			if (eid!=STORE_COLLECTION_ID) {
-				Navigator nav(cb.addr,hprop->getID(),coll,mode,ma); RC rc;
-				if ((rc=nav.getElementByID(eid,val))!=RC_OK) {
-					if ((mode&LOAD_CARDINALITY)!=0) {v.set(0u); v.property=pid; return RC_OK;}
-					v.setError(pid); return rc;
+			const HeapPageMgr::HeapExtCollection *coll;
+			switch (ty.getType()) {
+			case VT_ARRAY:
+				coll=(const HeapPageMgr::HeapExtCollection*)(cb.pb->getPageBuf()+hprop->offset);
+				if (eid!=STORE_COLLECTION_ID) {
+					Navigator nav(cb.addr,hprop->getID(),coll,mode,ma); RC rc;
+					if ((rc=nav.getElementByID(eid,val))!=RC_OK) {
+						if ((mode&LOAD_CARDINALITY)!=0) {v.set(0u); v.property=pid; return RC_OK;}
+						v.setError(pid); return rc;
+					}
+					if ((mode&LOAD_CARDINALITY)!=0) v.set(1u); else {v=val;	v.eid=eid;} // fGlobal -> copyV
+				} else {
+					Navigator *nav;
+					if ((mode&LOAD_CARDINALITY)!=0) v.set(~0u);
+					else if (ma==NULL && (ma=Session::getSession())==NULL) return RC_NOSESSION;
+					else if ((nav=new(ma) Navigator(cb.addr,hprop->getID(),coll,mode,ma))==NULL) v.setError(pid);
+					else {
+						ma->addObj(nav); v.nav=nav; v.flags=ma->getAType(); v.type=VT_COLLECTION; 
+						v.eid=STORE_COLLECTION_ID; v.length=1; v.meta=ty.flags; v.op=OP_SET;
+					}
 				}
-				if ((mode&LOAD_CARDINALITY)!=0) v.set(1u); else {v=val;	v.eid=eid;} // fGlobal -> copyV
-			} else {
-				Navigator *nav;
-				if ((mode&LOAD_CARDINALITY)!=0) v.set(~0u);
-				else if (ma==NULL && (ma=Session::getSession())==NULL) return RC_NOSESSION;
-				else if ((nav=new(ma) Navigator(cb.addr,hprop->getID(),coll,mode,ma))==NULL) v.setError(pid);
-				else {
-					ma->addObj(nav); v.nav=nav; v.flags=ma->getAType(); v.type=VT_COLLECTION; 
-					v.eid=STORE_COLLECTION_ID; v.length=1; v.meta=ty.flags; v.op=OP_SET;
+				break;
+			case VT_MAP:
+				if (mkey!=NULL) {
+					// get element by key
+				} else {
+					// create MapImpl
 				}
+				return RC_INTERNAL;
+				//break;
+			case VT_STRUCT:
+				// loadS()
+				return RC_INTERNAL;
+			default: return RC_CORRUPTED;
 			}
 			v.property=pid; return RC_OK;
 		}
-		const HeapPageMgr::HeapVV *coll=(const HeapPageMgr::HeapVV*)(cb.pb->getPageBuf()+offset);
-		if (eid==STORE_COLLECTION_ID) { 
-			if ((mode&LOAD_CARDINALITY)!=0) {v.set(unsigned(coll->cnt)); v.property=pid; return RC_OK;}
+		const HeapPageMgr::HeapVV *coll=(const HeapPageMgr::HeapVV*)(cb.pb->getPageBuf()+offset); const ValueType vt=ty.getType();
+		if (vt==VT_STRUCT || vt==VT_ARRAY && eid==STORE_COLLECTION_ID || vt==VT_MAP && mkey==NULL) { 
+			if ((mode&LOAD_CARDINALITY)!=0) {v.set(unsigned(vt==VT_MAP?coll->cnt/2:coll->cnt)); v.property=pid; return RC_OK;}
 			if (ty.getFormat()!=HDF_SHORT || coll->cnt>1) {
 				MemAlloc *al=ma!=NULL?ma:(MemAlloc*)Session::getSession(); if (al==NULL) return RC_NOSESSION;
-				v.type=VT_ARRAY; v.length=coll->cnt; v.eid=STORE_COLLECTION_ID; v.meta=ty.flags; v.op=OP_SET;
-				v.varray=(Value*)al->malloc(v.length*sizeof(Value)); ulong i,j; RC rc=RC_OK; uint8_t flg=0;
+				v.type=ty.getType(); v.length=coll->cnt; v.eid=STORE_COLLECTION_ID; v.meta=ty.flags; v.op=OP_SET;
+				v.varray=(Value*)al->malloc(v.length*sizeof(Value)); unsigned i,j; RC rc=RC_OK; uint8_t flg=0;
 				if (v.varray==NULL) {v.type=VT_ERROR; v.property=pid; return RC_NORESOURCES;}
 				for (i=j=0; i<v.length; i++) {
-					const HeapPageMgr::HeapV *elt=&coll->start[i]; ValueType vt;
-					if ((mode&LOAD_REF)==0 || (vt=elt->type.getType())==VT_REFID || vt==VT_STRUCT /*&& ??? */) {
-						if ((rc=loadS(const_cast<Value&>(v.varray[j]),elt->type,elt->offset,(HeapPageMgr::HeapPage*)cb.pb->getPageBuf(),mode,ma,elt->getID()))!=RC_OK) break;
-						flg|=v.varray[j].flags&VF_SSV; const_cast<Value&>(v.varray[j]).property=STORE_INVALID_PROPID; j++;
+					const HeapPageMgr::HeapV *elt=&coll->start[i];
+					if ((mode&LOAD_REF)==0 || elt->type.getType()==VT_REFID || elt->type.getType()==VT_STRUCT /*&& ??? */) {
+						const uint32_t id=elt->getID();
+						if ((rc=elt->type.isCompound()?loadVH(const_cast<Value&>(v.varray[j]),elt,cb,mode,ma):
+							loadS(const_cast<Value&>(v.varray[j]),elt->type,elt->offset,(HeapPageMgr::HeapPage*)cb.pb->getPageBuf(),mode,ma))!=RC_OK) break;
+						const_cast<Value&>(v.varray[j]).property=vt==VT_STRUCT?id:STORE_INVALID_URIID; if (vt==VT_ARRAY) const_cast<Value&>(v.varray[j]).eid=id;
+						flg|=v.varray[j].flags&VF_SSV; j++;
 					}
 				}
 				if (rc==RC_OK && (flg&VF_SSV)!=0 && (mode&LOAD_SSV)!=0 && (rc=loadSSVs(const_cast<Value*>(v.varray),j,mode,Session::getSession(),al))==RC_OK) flg=0;
 				if (rc==RC_OK && (mode&LOAD_REF)!=0) {if ((v.length=j)==0) {al->free((void*)v.varray); v.setError();}}
 				else if (j<v.length||rc!=RC_OK) {
-					report(MSG_ERROR,"loadV: cannot load collection %08X, %08X:%04X\n",pid,cb.pb->getPageID(),cb.addr.idx);
+					report(MSG_ERROR,"loadV: cannot load compound type %d, prop %08X, %08X:%04X\n",vt,pid,cb.pb->getPageID(),cb.addr.idx);
 					while (j--!=0) freeV(const_cast<Value&>(v.varray[j]));
 					al->free(const_cast<Value*>(v.varray)); v.setError(pid);
 					return rc==RC_OK?RC_CORRUPTED:rc;
+				}
+				if (vt==VT_MAP) {
+					MemMap *mm=new(al) MemMap((MapElt*)v.varray,v.length/2,al);
+					if (mm==NULL) {freeV((Value*)v.varray,v.length,al); v.type=VT_ERROR; v.property=pid; return RC_NORESOURCES;}
+					v.type=VT_MAP; v.map=mm; v.length=1;
 				}
 				v.flags=al->getAType()|flg; v.property=pid; return RC_OK;
 			}
 			eid=STORE_FIRST_ELEMENT;
 		}
-		const HeapPageMgr::HeapV *elt=coll->findElt(eid);
+		const HeapPageMgr::HeapV *elt=NULL;
+		if (vt==VT_ARRAY) elt=coll->findElt(eid);
+		else if (vt==VT_MAP) {
+			assert(mkey!=NULL);
+			// find
+		}
 		if ((mode&LOAD_CARDINALITY)!=0) {v.set(elt!=NULL?1u:0u); v.property=pid; return RC_OK;}
 		if (elt==NULL) {v.setError(pid); return RC_NOTFOUND;}
-		offset=elt->offset; ty=elt->type; eid=elt->getID();
+		offset=elt->offset; ty=elt->type; if (vt==VT_ARRAY) eid=elt->getID(); //else if (vt==VT_STRUCT) pid=elt->getID(); ???
 	} else if (eid!=STORE_COLLECTION_ID && eid!=STORE_FIRST_ELEMENT && eid!=(cb.hpin!=NULL && cb.hpin->hasRemoteID() && 
 		cb.hpin->getAddr(id) && (hprop->type.flags&META_PROP_LOCAL)==0?HeapPageMgr::getPrefix(id):isRemote(cb.id)?
 															HeapPageMgr::getPrefix(cb.id):ctx->getPrefix())) return RC_NOTFOUND;
@@ -354,7 +365,7 @@ RC QueryPrc::loadVH(Value& v,const HeapPageMgr::HeapV *hprop,const PINEx& cb,ulo
 	RC rc=loadS(v,ty,offset,(HeapPageMgr::HeapPage*)cb.pb->getPageBuf(),mode,ma,eid); v.property=pid; return rc;
 }
 
-RC QueryPrc::loadS(Value& v,HType vt,PageOff offset,const HeapPageMgr::HeapPage *hp,ulong mode,MemAlloc *ma,ulong eid)
+RC QueryPrc::loadS(Value& v,HType vt,PageOff offset,const HeapPageMgr::HeapPage *hp,unsigned mode,MemAlloc *ma,unsigned eid)
 {
 	ValueType ty=vt.getType(); 
 	if (ty==VT_ERROR || ty>=VT_ALL) {
@@ -364,7 +375,7 @@ RC QueryPrc::loadS(Value& v,HType vt,PageOff offset,const HeapPageMgr::HeapPage 
 	}
 	if ((mode&LOAD_CARDINALITY)!=0) {v.set(1u); return RC_OK;}
 	const byte *pData=(byte*)hp+offset; const HeapDataFmt fmt=vt.getFormat();
-	v.flags=NO_HEAP; v.type=ty; PageAddr addr; RC rc;
+	v.flags=NO_HEAP; v.fcalc=0; v.type=ty; PageAddr addr; RC rc;
 	uint64_t l64; StreamX *pstr; Expr *exp; Stmt *qry; size_t l;
 	switch (ty) {
 	default: break;
@@ -375,7 +386,7 @@ RC QueryPrc::loadS(Value& v,HType vt,PageOff offset,const HeapPageMgr::HeapPage 
 		case HDF_SHORT: v.length=*pData++; break;
 		case HDF_NORMAL: v.length=pData[0]<<8|pData[1]; pData+=2; break;
 		}
-		if (ma==NULL||v.length==0) v.bstr=pData;
+		if (ma==NULL||v.length==0) {v.bstr=pData; setHT(v,PAGE_HEAP);}
 		else {
 			byte *p=(byte*)ma->malloc(v.length); if (p==NULL) return RC_NORESOURCES; 
 			memcpy(p,pData,v.length); v.bstr=p; v.flags=ma->getAType();
@@ -390,84 +401,59 @@ RC QueryPrc::loadS(Value& v,HType vt,PageOff offset,const HeapPageMgr::HeapPage 
 		case HDF_SHORT: v.length=*pData++; break;
 		case HDF_NORMAL: v.length=pData[0]<<8|pData[1]; pData+=2; break;
 		}
-		if (ma==NULL) v.str=(const char*)pData;
+		if (ma==NULL) {v.str=(const char*)pData; setHT(v,PAGE_HEAP);}
 		else {
 			char *p=(char*)ma->malloc(v.length+1); if (p==NULL) return RC_NORESOURCES; 
 			memcpy(p,pData,v.length); p[v.length]=0; v.str=p; v.flags=ma->getAType();
 		}
 		break;
-	case VT_RESERVED1:
-		// ???
-		break;
 	case VT_INT:
-		if (fmt==HDF_COMPACT) v.i=(short)offset;
-		else if ((offset&sizeof(int32_t)-1)==0) v.i=*(int32_t*)pData;
-		else memcpy(&v.i,pData,sizeof(int32_t));
-		v.length=sizeof(int32_t); break;
+		v.i=fmt==HDF_COMPACT?(short)offset:__una_get(*(int32_t*)pData); v.length=sizeof(int32_t); break;
 	case VT_UINT:
-		if (fmt==HDF_COMPACT) v.ui=(ushort)offset;
-		else if ((offset&sizeof(uint32_t)-1)==0) v.ui=*(uint32_t*)pData;
-		else memcpy(&v.ui,pData,sizeof(uint32_t));
-		v.length=sizeof(uint32_t); break;
+		v.ui=fmt==HDF_COMPACT?(ushort)offset:__una_get(*(uint32_t*)pData); v.length=sizeof(uint32_t); break;
 	case VT_INT64: case VT_INTERVAL:
-		if (fmt==HDF_COMPACT) v.i64=(short)offset;
-		else if ((offset&sizeof(int64_t)-1)==0) v.i64=*(int64_t*)pData;
-		else memcpy(&v.i64,pData,sizeof(int64_t));
-		v.length=sizeof(int64_t); break;
+		v.i64=fmt==HDF_COMPACT?(short)offset:__una_get(*(int64_t*)pData); v.length=sizeof(int64_t); break;
 	case VT_UINT64: case VT_DATETIME:
-		if (fmt==HDF_COMPACT) v.ui64=(ushort)offset;
-		else if ((offset&sizeof(uint64_t)-1)==0) v.ui64=*(uint64_t*)pData;
-		else memcpy(&v.ui64,pData,sizeof(uint64_t));
-		v.length=sizeof(uint64_t); break;
+		v.ui64=fmt==HDF_COMPACT?(ushort)offset:__una_get(*(uint64_t*)pData); v.length=sizeof(uint64_t); break;
+	case VT_ENUM:
+		v.enu.enumid=__una_get(((uint32_t*)pData)[0]); v.enu.eltid=__una_get(((uint32_t*)pData)[1]); v.length=sizeof(VEnum); break;
 	case VT_FLOAT:
-		if ((offset&sizeof(float)-1)==0) v.f=*(float*)pData; else memcpy(&v.f,pData,sizeof(float));
-		v.length=sizeof(float); v.qval.units=fmt==HDF_LONG?*(uint16_t*)(pData+sizeof(float)):(uint16_t)Un_NDIM; break;
+		v.f=__una_get(*(float*)pData);v.length=sizeof(float);
+		v.qval.units=fmt==HDF_LONG?__una_get(*(uint16_t*)(pData+sizeof(float))):(uint16_t)Un_NDIM; break;
 	case VT_DOUBLE:
-		if ((offset&sizeof(double)-1)==0) v.d=*(double*)pData; else memcpy(&v.d,pData,sizeof(double));
-		v.length=sizeof(double); v.qval.units=fmt==HDF_LONG?*(uint16_t*)(pData+sizeof(double)):(uint16_t)Un_NDIM; break;
+		v.d=__una_get(*(double*)pData); v.length=sizeof(double); 
+		v.qval.units=fmt==HDF_LONG?__una_get(*(uint16_t*)(pData+sizeof(double))):(uint16_t)Un_NDIM; break;
 	case VT_BOOL:
 		v.b=offset!=0; v.length=1; break;
 	case VT_URIID:
-		if (fmt==HDF_COMPACT) v.uid=(ushort)offset;
-		else if ((offset&sizeof(URIID)-1)==0) v.uid=*(URIID*)pData;
-		else memcpy(&v.ui,pData,sizeof(URIID));
-		v.length=sizeof(URIID); break;
+		v.uid=fmt==HDF_COMPACT?(ushort)offset:__una_get(*(URIID*)pData); v.length=sizeof(URIID); break;
 	case VT_IDENTITY:
-		if (fmt==HDF_COMPACT) v.iid=(ushort)offset;
-		else if ((offset&sizeof(IdentityID)-1)==0) v.iid=*(IdentityID*)pData;
-		else memcpy(&v.ui,pData,sizeof(IdentityID));
-		v.length=sizeof(IdentityID); break;
+		v.iid=fmt==HDF_COMPACT?(ushort)offset:__una_get(*(IdentityID*)pData); v.length=sizeof(IdentityID); break;
 	case VT_REFID: case VT_REFIDPROP: case VT_REFIDELT:
 		hp->getRef(v.id,fmt,offset);
 		if (ty==VT_REFID) v.length=sizeof(PID);
 		else {
 			if (ma==NULL && (ma=Session::getSession())==NULL && (ma=StoreCtx::get())==NULL) return RC_NOSESSION;
 			RefVID *rv=new(ma) RefVID; if (rv==NULL) return RC_NORESOURCES;
-			rv->id=v.id; memcpy(&rv->pid,pData+HeapPageMgr::refLength[fmt],sizeof(PropertyID));
+			rv->id=v.id; rv->pid=__una_get(*(PropertyID*)(pData+HeapPageMgr::refLength[fmt]));
 			if (ty!=VT_REFIDELT) rv->eid=STORE_COLLECTION_ID;
-			else memcpy(&rv->eid,pData+HeapPageMgr::refLength[fmt]+sizeof(PropertyID),sizeof(ElementID));
+			else rv->eid=__una_get(*(ElementID*)(pData+HeapPageMgr::refLength[fmt]+sizeof(PropertyID)));
 			v.set(*rv); v.flags=ma->getAType();
 		}
 		break;
 	case VT_STREAM:
 		switch (fmt) {
 		default:
-			memcpy(&v.id,pData,v.length=sizeof(HRefSSV));
-			if ((mode&MODE_SSV_AS_STREAM)==0 && ((mode&MODE_FORCED_SSV_AS_STREAM)==0 || (vt.flags&META_PROP_SSTORAGE)==0)) {
-				v.flags|=VF_SSV; Session *ses=Session::getSession();
-				if ((mode&LOAD_SSV)!=0 && (rc=loadSSVs(&v,1,mode,ses,ma!=NULL?ma:ses))!=RC_OK) return rc;
-			} else {
-				addr.pageID=((HRefSSV*)&v.id)->pageID; addr.idx=((HRefSSV*)&v.id)->idx;
-				if (ma==NULL && (ma=Session::getSession())==NULL && (ma=StoreCtx::get())==NULL) return RC_NOSESSION;
-				if ((pstr=new(ma) StreamX(addr,~0ULL,((HRefSSV*)&v.id)->type.getType(),ma))==NULL) return RC_NORESOURCES;
-				v.set(pstr); v.flags=ma->getAType(); ma->addObj(pstr);
+			memcpy(&v.id,pData,v.length=sizeof(HRefSSV)); v.flags|=VF_SSV; 
+			if ((mode&LOAD_SSV)!=0) {
+				Session *ses=Session::getSession(); if (ses==NULL) return RC_NOSESSION;
+				if ((rc=loadSSVs(&v,1,mode,ses,ma!=NULL?ma:ses))!=RC_OK) return rc;
 			}
 			break;
 		case HDF_COMPACT:
 			v.length=0; v.bstr=(byte*)&v.length; v.type=VT_STRING; break;
 		case HDF_LONG:
-			memcpy(&addr.pageID,&((HLOB*)pData)->ref.pageID,sizeof(PageID)); addr.idx=((HLOB*)pData)->ref.idx;
-			memcpy(&l64,&((HLOB*)pData)->len,sizeof(uint64_t));
+			addr.pageID=__una_get(((HLOB*)pData)->ref.pageID); addr.idx=__una_get(((HLOB*)pData)->ref.idx); l64=__una_get(((HLOB*)pData)->len);
 			if (ma==NULL && (ma=Session::getSession())==NULL && (ma=StoreCtx::get())==NULL) return RC_NOSESSION;
 			if ((pstr=new(ma) StreamX(addr,l64,ty=((HLOB*)pData)->ref.type.getType(),ma))==NULL) return RC_NORESOURCES;
 			switch (ty) {
@@ -490,6 +476,8 @@ RC QueryPrc::loadS(Value& v,HType vt,PageOff offset,const HeapPageMgr::HeapPage 
 		if (ma==NULL && (ma=Session::getSession())==NULL && (ma=StoreCtx::get())==NULL) return RC_NOSESSION;
 		afy_dec16(pData,l); if ((rc=Stmt::deserialize(qry,pData,pData+l,ma))!=RC_OK) return rc;
 		v.set(qry); v.flags=ma->getAType(); break;
+	case VT_CURRENT: v.i=offset; break;
+	case VT_VARREF: memcpy(&v.refV,pData,sizeof(RefV)); break;
 	}
 	v.eid=eid; v.meta=vt.flags; v.op=OP_SET; return RC_OK;
 }

@@ -1,6 +1,6 @@
 /**************************************************************************************
 
-Copyright © 2004-2012 VMware, Inc. All rights reserved.
+Copyright © 2004-2013 GoPivotal, Inc. All rights reserved.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -26,10 +26,12 @@ Written by Mark Venguerov 2004-2012
 
 #include "txmgr.h"
 #include "buffer.h"
+#include "fio.h"
+#include "request.h"
 
 #define	MINSEGSIZE			0x10000			/**< minimum size of log segment */
 #define	MAXLOGRECSIZE		0x100000ul		/**< maximum size of log record - 1Mb */
-#define	INVALIDLOGFILE		(~0ul)			/**< invalid log file descriptor */
+#define	INVALIDLOGFILE		(~0u)			/**< invalid log file descriptor */
 #define	LOGFILETHRESHOLD	0.75			/**< time to allocate new log file(s) */
 #define CHECKPOINTTHRESHOLD	0x1000			/**< records between checkpoints */
 #define	MAXPREVLOGSEGS		6				/**< max number of previous log segments open simultaneously */
@@ -76,10 +78,10 @@ struct LogRec
 	PageID		pageID;						/**< page ID */
 
 	LRType		getType() const {return (LRType)(info&0x0F);}
-	ulong		getExtra() const {return info>>4;}
-	ulong		getFlags() const {return len1>>LOGRECFLAGSSHIFT;}
+	unsigned		getExtra() const {return info>>4;}
+	unsigned		getFlags() const {return len1>>LOGRECFLAGSSHIFT;}
 	uint32_t	getLength() const {return len1&LOGRECLENMASK;}
-	void		setInfo(LRType type,ulong extra) {info=extra<<4|type;}
+	void		setInfo(LRType type,unsigned extra) {info=extra<<4|type;}
 	void		setLength(uint32_t l,uint32_t flags) {len1=flags<<LOGRECFLAGSSHIFT|l&LOGRECLENMASK;}
 };
 
@@ -93,7 +95,7 @@ struct LogRecHM : public LogRec
  */
 struct PrevLogSeg
 {
-	ulong	logFile;
+	unsigned	logFile;
 	FileID	fid;
 	long	nReads;
 };
@@ -132,9 +134,9 @@ class LogMgr
 	bool				fRecovery;
 	bool				fAnalizing;
 	size_t				recFileSize;
-	ulong				maxAllocated;
-	ulong				prevTruncate;
-	ulong				nRecordsSinceCheckpoint;
+	unsigned				maxAllocated;
+	unsigned				prevTruncate;
+	unsigned				nRecordsSinceCheckpoint;
 	SharedCounter		nOverflow;
 	SharedCounter		nWrites;
 	
@@ -143,12 +145,14 @@ class LogMgr
 	PBlock				*newPage;
 
 	mutable	Mutex		openFile;
-	ulong				currentLogFile;
+	unsigned				currentLogFile;
 	FileID				logFile;
 	PrevLogSeg			readLogSegs[MAXPREVLOGSEGS];
 	int					nReadLogSegs;
 	Event				waitLogSeg;
-	struct myaio*		pcb;
+
+	myaio				aio;
+	myaio				*pcb;
 	const	bool		fArchive;
 	bool				fReadFromCurrent;
 	char				*logDirectory;
@@ -180,9 +184,9 @@ public:
 	void *operator		new(size_t s,StoreCtx *ctx) {void *p=ctx->malloc(s); if (p==NULL) throw RC_NORESOURCES; return p;}
 	void				deleteLogs();
 	RC					init();
-	RC					allocLogFile(ulong fileN,char* buf=NULL);
+	RC					allocLogFile(unsigned fileN,char* buf=NULL);
 	RC					flushTo(LSN lsn,LSN* =NULL);
-	LSN					insert(Session *,LRType type,ulong extra=0,PageID pid=INVALID_PAGEID,const LSN *undoNext=NULL,const void *pData=NULL,
+	LSN					insert(Session *,LRType type,unsigned extra=0,PageID pid=INVALID_PAGEID,const LSN *undoNext=NULL,const void *pData=NULL,
 																				size_t lData=0,uint32_t flags=0,PBlock *pb=NULL,PBlock *pb2=NULL);
 	LSN					getRecvLSN() const {return recv;}
 	RC					rollback(Session *,bool fSavepoint);
@@ -198,9 +202,9 @@ private:
 	RC					openLogFile(LSN fileStart);
 	RC					write();
 	RC					checkpoint();
-	char				*getLogFileName(ulong logFileN,char *buf) const;
-	LSN					LSNFromOffset(ulong fileN,size_t offset) {return off64_t(fileN)*logSegSize+offset;}
-	ulong				LSNToFileN(LSN lsn) {return ulong(lsn.lsn/logSegSize);}
+	char				*getLogFileName(unsigned logFileN,char *buf) const;
+	LSN					LSNFromOffset(unsigned fileN,size_t offset) {return off64_t(fileN)*logSegSize+offset;}
+	unsigned				LSNToFileN(LSN lsn) {return unsigned(lsn.lsn/logSegSize);}
 	size_t				LSNToFileOffset(LSN lsn) {return lsn.lsn%logSegSize;}
 	friend	class		LogReadCtx;
 };
@@ -213,7 +217,7 @@ class LogReadCtx
 {
 	LogMgr	*const		logMgr;
 	Session	*const		ses;
-	ulong				currentLogSeg;
+	unsigned				currentLogSeg;
 	FileID				fid;
 	PBlockP				pb;
 	const	byte		*ptr;
@@ -226,7 +230,7 @@ class LogReadCtx
 public:
 	LogRecHM			logRec;
 	LRType				type;
-	ulong				flags;
+	unsigned				flags;
 	byte				*rbuf;
 	size_t				lrec;
 public:

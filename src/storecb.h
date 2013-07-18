@@ -1,6 +1,6 @@
 /**************************************************************************************
 
-Copyright © 2004-2012 VMware, Inc. All rights reserved.
+Copyright © 2004-2013 GoPivotal, Inc. All rights reserved.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -67,7 +67,7 @@ enum MapAnchor
 	MA_RCACHE,							/**< remote PIN cache root page */
 	MA_FTINDEX,							/**< Free-text index root page */
 	MA_CLASSINDEX,						/**< class index root page */
-	MA_CLASSPINS,						/**< class PINs map root page */
+	MA_NAMEDPINS,						/**< named PINs map root page */
 	MA_PINEXTURI,						/**< PIN external URI map root page (not implemented yet) */
 	MA_HEAPDIRFIRST, MA_HEAPDIRLAST,	/**< first and last pages in the directory of heap pages */
 	MA_CLASSDIRFIRST, MA_CLASSDIRLAST,	/**< first and last pages in the directory of class PIN pages */
@@ -102,7 +102,7 @@ struct CryptInfo
 	uint8_t			hmac[HMAC_SIZE];
 	uint8_t			salt1[sizeof(uint32_t)+PWD_LSALT];
 	uint8_t			salt2[sizeof(uint32_t)+PWD_LSALT];
-	uint8_t			padding[4];
+	uint8_t			padding[8];
 };
 
 /**
@@ -140,8 +140,8 @@ struct StoreCB
 	PageID			dirPages[MAXDIRPAGES];		/**< directory pages */
 	PartialInfo		partials[MAXPARTIALPAGES];	/**< partially filled pages */
 
-	PageID			getRoot(ulong idx) const {return idx<MA_ALL?mapRoots[idx]:INVALID_PAGEID;}
-	RC				update(class StoreCtx *ctx,ulong info,const byte *rec,size_t lrec,bool fUndo=false);
+	PageID			getRoot(unsigned idx) const {return idx<MA_ALL?mapRoots[idx]:INVALID_PAGEID;}
+	RC				update(class StoreCtx *ctx,unsigned info,const byte *rec,size_t lrec,bool fUndo=false);
 	void			preload(class StoreCtx *ctx) const;
 
 	static	RC		open(class StoreCtx *ctx,const char *fname,const char *pwd,bool fForce=false);

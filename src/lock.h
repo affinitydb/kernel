@@ -1,6 +1,6 @@
 /**************************************************************************************
 
-Copyright © 2004-2012 VMware, Inc. All rights reserved.
+Copyright © 2004-2013 GoPivotal, Inc. All rights reserved.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -26,10 +26,9 @@ Written by Mark Venguerov 2004-2012
 
 #include "pinex.h"
 #include "affinity.h"
+#include "timerq.h"
 
-using namespace AfyDB;
-
-class ILockNotification;
+using namespace Afy;
 
 namespace AfyKernel
 {
@@ -95,8 +94,8 @@ __declspec(align(16))
 struct LockBlock
 {
 	DLList				list;
-	ulong				nBlocks;
-	ulong				nFree;
+	unsigned				nBlocks;
+	unsigned				nFree;
 #if defined(__x86_64__) || defined(__arm__)
 }__attribute__((aligned(16)));
 #else
@@ -104,24 +103,13 @@ struct LockBlock
 #endif
 
 /**
- * store specific lock manager reference
+ * deadlock detector - timer queue element
  */
-struct LockStore : public SLIST_ENTRY
+struct DLD : public TimeRQ
 {
-	class	LockMgr		*volatile mgr;
-	LockStore(class LockMgr *mg) : mgr(mg) {}
-};
-
-/**
- * kernel-wide lock mgr descriptor for various stores
- */
-struct LockStoreHdr
-{
-	SLIST_HEADER stores;
-	FreeQ<>		freeLS;
-	volatile	HTHREAD		lockDaemonThread;
-	LockStoreHdr() : lockDaemonThread(0) {InitializeSListHead(&stores);}
-	void		lockDaemon();
+	DLD(StoreCtx *ct) : TimeRQ(253,500000ULL,ct) {}
+	void	processTimeRQ();
+	void	destroyTimeRQ();
 };
 
 /**
@@ -200,16 +188,15 @@ typedef SyncHashTab<PageV,PageID,&PageV::list> PageVTab;
  * controls transaction level locking for r/w transactions, snapshot creation and deallocation, snapshot access for r/o transaction
  * implements deadlock detection
  */
-class LockMgr : public Request
+class LockMgr
 {
 	class	StoreCtx	*const ctx;
-	ILockNotification	*const lockNotification;
 
 	Mutex				blockLock;
 	SLIST_HEADER		freeHeaders;
 	SLIST_HEADER		freeGranted;
 	DLList				freeBlocks;
-	ulong				nFreeBlocks;
+	unsigned			nFreeBlocks;
 	PageVTab			pageVTab;
 	
 	HChain<Session>		waitQ;
@@ -217,28 +204,22 @@ class LockMgr : public Request
 	Session* volatile	topmost;
 	Session* volatile	oldSes;
 	TIMESTAMP volatile	oldTimestamp;
-	LockStore			*lockStore;
 
-	static	const ulong	lockConflictMatrix[LOCK_ALL];
+	static	const unsigned	lockConflictMatrix[LOCK_ALL];
 	template<class T> inline T* alloc(SLIST_HEADER&);
 	void	checkDeadlock(Session *ses,SemData& sem);
-	static	LockStoreHdr lockStoreHdr;
-	friend	struct	LockStoreHdr;
 	friend	struct	LockHdr;
 	friend	struct	PageV;
 public:
-	LockMgr(class StoreCtx *ct,ILockNotification *lno);
-	~LockMgr();
+	LockMgr(class StoreCtx *ct);
 	void	*operator new(size_t s,StoreCtx *ctx) {void *p=ctx->malloc(s); if (p==NULL) throw RC_NORESOURCES; return p;}
-	RC		lock(LockType,PINEx& pe,ulong flags=0);
-	RC		getTVers(class PINEx& pe,TVOp tvo=TVO_READ);
+	RC		lock(LockType,PINx& pe,unsigned flags=0);
+	RC		getTVers(PINx& pe,TVOp tvo=TVO_READ);
 	VBlock	*getVBlock(PageID pid) {PageVTab::Find findVB(pageVTab,pid); PageV *pv=findVB.findLock(RW_S_LOCK); if (pv!=NULL) ++pv->fixCnt; findVB.unlock(); return pv;}
 
-	void	releaseLocks(Session *ses,ulong subTxID=0,bool fAbort=false);
+	void	releaseLocks(Session *ses,unsigned subTxID=0,bool fAbort=false);
 	void	releaseSession(Session *ses);
 	void	process();
-	void	destroy();
-	static	void stopThreads();
 };
 
 };

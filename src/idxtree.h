@@ -1,6 +1,6 @@
 /**************************************************************************************
 
-Copyright © 2004-2012 VMware, Inc. All rights reserved.
+Copyright © 2004-2013 GoPivotal, Inc. All rights reserved.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -27,7 +27,7 @@ Written by Mark Venguerov 2004-2012
 #include "utils.h"
 #include "affinity.h"
 
-using namespace AfyDB;
+using namespace Afy;
 
 namespace AfyKernel 
 {
@@ -94,7 +94,7 @@ struct SearchKey
 	const	byte *getPtr2() const {return type<KT_BIN?(const byte*)&v:type>=KT_ALL?(byte*)0:v.ptr.p!=NULL?(const byte*)v.ptr.p:(const byte*)(this+1);}
 	void	free(MemAlloc *ma) {if (loc==PLC_ALLC && type>=KT_BIN && type<KT_ALL) ma->free((void*)v.ptr.p); type=KT_ALL; loc=PLC_EMB;}
 	int		cmp(const SearchKey& rhs) const {assert(type<KT_BIN||type>=KT_ALL||v.ptr.p!=NULL); return type==rhs.type?v.cmp(rhs.v,type):-2;}
-	RC		toKey(const Value **pv,ulong nv,const IndexSeg *dscrs,int idx,Session *ses,MemAlloc *ma=NULL);
+	RC		toKey(const Value **pv,unsigned nv,const IndexSeg *dscrs,int idx,Session *ses,MemAlloc *ma=NULL);
 	RC		getValues(Value *pv,unsigned nv,const IndexSeg *dscrs,unsigned nFields,Session *ses,bool fFilter=false,MemAlloc *ma=NULL) const;
 	static	ushort extLength(ushort l) {return l+(l<128?2:3);}
 	ushort	extLength() const {return type<KT_BIN?extKeyLen[type]+1:type>=KT_ALL?1:v.ptr.l+(v.ptr.l<128?2:3);}
@@ -172,7 +172,7 @@ class TreeScan
 public:
 	virtual	RC			nextKey(GO_DIR=GO_NEXT,const SearchKey *skip=NULL) = 0;
 	virtual	const void	*nextValue(size_t& lData,GO_DIR=GO_NEXT,const byte *skip=NULL,size_t lsk=0) = 0;
-	virtual	RC			skip(ulong& nSkip,bool fBack=false) = 0;
+	virtual	RC			skip(unsigned& nSkip,bool fBack=false) = 0;
 	virtual	const		SearchKey& getKey() = 0;
 	virtual	bool		hasValues() = 0;
 	virtual	void		release() = 0;
@@ -206,11 +206,11 @@ enum TREE_NODETYPE
  */
 struct CheckTreeReport
 {
-	ulong	depth;
-	ulong	total[TREE_MAX_DEPTH];
-	ulong	missing[TREE_MAX_DEPTH];
-	ulong	empty[TREE_MAX_DEPTH];
-	ulong	histogram[TREE_N_HIST_BUCKETS];
+	unsigned	depth;
+	unsigned	total[TREE_MAX_DEPTH];
+	unsigned	missing[TREE_MAX_DEPTH];
+	unsigned	empty[TREE_MAX_DEPTH];
+	unsigned	histogram[TREE_N_HIST_BUCKETS];
 };
 
 /**
@@ -226,7 +226,8 @@ struct CheckTreeReport
 class IMultiKey
 {
 public:
-	virtual	RC	nextKey(const SearchKey *&nk,const void *&value,ushort& lValue,bool& fMulti) = 0;
+	virtual	RC		nextKey(const SearchKey *&nk,const void *&value,ushort& lValue,bool& fMulti,bool fForceNext=false) = 0;
+	virtual	void	push_back() = 0;
 };
 
 /**
@@ -248,13 +249,13 @@ public:
 	// index tree interface
 	virtual	TreeFactory *getFactory() const = 0;
 	virtual	IndexFormat	indexFormat() const = 0;
-	virtual	ulong		getMode() const;
+	virtual	unsigned	getMode() const;
 	virtual	PageID		startPage(const SearchKey*,int& level,bool=true,bool=false) = 0;
 	virtual	PageID		prevStartPage(PageID pid) = 0;
-	virtual	RC			addRootPage(const SearchKey& key,PageID& pageID,ulong level) = 0;
-	virtual	RC			removeRootPage(PageID page,PageID leftmost,ulong level) = 0;
-	virtual	ulong		getStamp(TREE_NODETYPE) const = 0;
-	virtual	void		getStamps(ulong stamps[TREE_NODETYPE_ALL]) const = 0;
+	virtual	RC			addRootPage(const SearchKey& key,PageID& pageID,unsigned level) = 0;
+	virtual	RC			removeRootPage(PageID page,PageID leftmost,unsigned level) = 0;
+	virtual	unsigned	getStamp(TREE_NODETYPE) const = 0;
+	virtual	void		getStamps(unsigned stamps[TREE_NODETYPE_ALL]) const = 0;
 	virtual	void		advanceStamp(TREE_NODETYPE) = 0;
 	virtual	bool		lock(RW_LockType,bool fTry=false) const = 0;
 	virtual	void		unlock() const = 0;
@@ -262,7 +263,8 @@ public:
 	virtual	void		destroy() = 0;
 public:
 	// index tree search and manipulation functions
-	bool				find(const SearchKey& key,void *buf,size_t &size);
+	RC					find(const SearchKey& key,void *buf,size_t &size);
+	RC					findByPrefix(const SearchKey& key,uint32_t prefix,byte *buf,byte& lData);
 	RC					countValues(const SearchKey& key,uint64_t& nValues);
 	RC					insert(IMultiKey& mk);
 	RC					insert(const SearchKey& key,const void *value=NULL,ushort lValue=0,bool fMulti=false);
@@ -270,15 +272,15 @@ public:
 	RC					update(const SearchKey& key,const void *oldValue,ushort lOldValue,const void *newValue,ushort lNewValue);
 	RC					edit(const SearchKey& key,const void *newValue,ushort lNewValue,ushort lOld,ushort sht);
 	RC					remove(const SearchKey& key,const void *value=NULL,ushort lValue=0,bool fMulti=false);
-	TreeScan			*scan(Session *ses,const SearchKey *start,const SearchKey *finish=NULL,ulong flgs=0,const IndexSeg *sg=NULL,unsigned nSegs=0,IKeyCallback *kc=NULL);
+	TreeScan			*scan(Session *ses,const SearchKey *start,const SearchKey *finish=NULL,unsigned flgs=0,const IndexSeg *sg=NULL,unsigned nSegs=0,IKeyCallback *kc=NULL);
 	static	RC			drop(PageID,StoreCtx*,TreeFreeData* =NULL);
-	static	ulong		checkTree(StoreCtx*,PageID root,CheckTreeReport& res,CheckTreeReport *sec=NULL);
+	static	unsigned	checkTree(StoreCtx*,PageID root,CheckTreeReport& res,CheckTreeReport *sec=NULL);
 	StoreCtx			*getStoreCtx() const {return ctx;}
 protected:
 	StoreCtx			*const ctx;
 	Tree(StoreCtx *ct) : ctx(ct) {}
 	enum	TreeOp		{TO_READ,TO_INSERT,TO_UPDATE,TO_DELETE,TO_EDIT};		/**< used in recovery */
-	PBlock				*getPage(PageID pid,ulong stamp,TREE_NODETYPE type);
+	PBlock				*getPage(PageID pid,unsigned stamp,TREE_NODETYPE type);
 	RC					insert(const SearchKey& key,const void *val,ushort lval,bool fMulti,struct TreeCtx& rtr,PageID& pid);
 	friend	class		TreePageMgr;
 	friend	class		TreeScanImpl;
@@ -310,17 +312,17 @@ class TreeStdRoot : public Tree
 {
 protected:
 	PageID			root;
-	ulong			height;
-	ulong			stamps[TREE_NODETYPE_ALL];
+	unsigned		height;
+	unsigned		stamps[TREE_NODETYPE_ALL];
 public:
 	TreeStdRoot(PageID rt,StoreCtx *ct) : Tree(ct),root(rt),height(0) {memset(stamps,0,sizeof(stamps));}
 	virtual			~TreeStdRoot();
 	virtual	PageID	startPage(const SearchKey*,int& level,bool,bool=false);
 	virtual	PageID	prevStartPage(PageID pid);
-	virtual	RC		addRootPage(const SearchKey& key,PageID& pageID,ulong level);
-	virtual	RC		removeRootPage(PageID page,PageID leftmost,ulong level);
-	virtual	ulong	getStamp(TREE_NODETYPE) const;
-	virtual	void	getStamps(ulong stamps[TREE_NODETYPE_ALL]) const;
+	virtual	RC		addRootPage(const SearchKey& key,PageID& pageID,unsigned level);
+	virtual	RC		removeRootPage(PageID page,PageID leftmost,unsigned level);
+	virtual	unsigned getStamp(TREE_NODETYPE) const;
+	virtual	void	getStamps(unsigned stamps[TREE_NODETYPE_ALL]) const;
 	virtual	void	advanceStamp(TREE_NODETYPE);
 };
 
@@ -334,19 +336,19 @@ class TreeGlobalRoot : public TreeStdRoot, public TreeFactory
 {
 	mutable	RWLock		rwlock;
 	mutable	RWLock		rootLock;
-	const	ulong		index;
+	const	unsigned	index;
 	const	IndexFormat	ifmt;
-	const	ulong		mode;
+	const	unsigned	mode;
 	RC					setRoot(PageID,PageID);
 public:
-	TreeGlobalRoot(ulong idx,IndexFormat ifm,StoreCtx *ct,ulong md=0);
+	TreeGlobalRoot(unsigned idx,IndexFormat ifm,StoreCtx *ct,unsigned md=0);
 	virtual				~TreeGlobalRoot();
 	TreeFactory			*getFactory() const;
 	IndexFormat			indexFormat() const;
-	ulong				getMode() const;
+	unsigned			getMode() const;
 	PageID				startPage(const SearchKey*,int& level,bool,bool=false);
-	RC					addRootPage(const SearchKey& key,PageID& pageID,ulong level);
-	RC					removeRootPage(PageID page,PageID leftmost,ulong level);
+	RC					addRootPage(const SearchKey& key,PageID& pageID,unsigned level);
+	RC					removeRootPage(PageID page,PageID leftmost,unsigned level);
 	bool				lock(RW_LockType,bool fTry=false) const;
 	void				unlock() const;
 	void				destroy();
@@ -377,7 +379,7 @@ public:
 	SharedCounter		pageRead;
 	SharedCounter		sibRead;
 public:
-	TreeMgr(StoreCtx *ct,ulong timeout);
+	TreeMgr(StoreCtx *ct,unsigned timeout);
 	virtual ~TreeMgr();
 	void	*operator new(size_t s,StoreCtx *ctx);
 	RC		registerFactory(TreeFactory& factory);

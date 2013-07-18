@@ -1,6 +1,6 @@
 /**************************************************************************************
 
-Copyright © 2004-2012 VMware, Inc. All rights reserved.
+Copyright © 2004-2013 GoPivotal, Inc. All rights reserved.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -20,6 +20,13 @@ Written by Mark Venguerov 2004-2012
 
 #ifndef _RC_H_
 #define _RC_H_
+
+#undef AFY_EXP
+#ifdef _MSC_VER
+#define AFY_EXP	_declspec(dllexport)
+#else
+#define AFY_EXP
+#endif
 
 namespace AfyRC 
 {
@@ -70,8 +77,10 @@ enum RC
 	RC_SYNTAX,				/**< syntactic error in query or expression */
 	RC_TOOBIG,				/**< object (pin, property, collection) is too big */
 	RC_PAGEFULL,			/**< no space on page for the object (either pin or index entry) */
-	RC_CONSTRAINT			/**< PIN doesn't satisfy membership constraints or not unique */			
+	RC_CONSTRAINT			/**< PIN doesn't satisfy membership constraints or not unique, or transaction was aborted in a class action or attempt to modify immutable property */			
 };
+
+extern "C" AFY_EXP void	report(MsgType type,const char *str,...);		/**< report an error, warning or debugging info, printf style */
 
 };
 

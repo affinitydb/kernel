@@ -1,6 +1,6 @@
 /**************************************************************************************
 
-Copyright © 2010-2012 VMware, Inc. All rights reserved.
+Copyright © 2004-2013 GoPivotal, Inc. All rights reserved.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -25,21 +25,13 @@ Written by Mark Venguerov 2010-2012
 #ifndef _PARSER_H_
 #define _PARSER_H_
 
-#include "affinity.h"
 #include "session.h"
-
-using namespace AfyDB;
 
 class IMapDir;
 struct StartupParameters;
 
 namespace AfyKernel
 {
-
-enum SQType
-{
-	SQ_PATHSQL, SQ_SPARQL		/**< type of query language (n.b. SPARQL is not implemented yet) */
-};
 
 #undef	_F
 #undef	_U
@@ -68,6 +60,7 @@ struct OpDscr {
 	byte		nOps[2];	/**< minimum and maximum number of operands */
 };
 
+class Stmt;
 class QVar;
 
 /**
@@ -77,7 +70,8 @@ class QVar;
 #define	SOM_AND			0x0002		/**< expressions combined with AND, insert '(...)' where necessary */
 #define	SOM_WHERE		0x0004		/**< expression in WHERE clause */
 #define	SOM_MATCH		0x0008		/**< expression in MATCH */
-#define	SOM_STD_PREFIX	0x0010		/**< standard prefix is overwritten - don't use it */
+#define	SOM_STD_PREFIX	0x0010		/**< standard prefix was used in rendering */
+#define	SOM_SRV_PREFIX	0x0010		/**< sevice prefix was used in rendering */
 #define	SOM_BASE_USED	0x0020		/**< BASE prefix used to compress IDs - add it to prologue */
 
 /**
@@ -86,7 +80,7 @@ class QVar;
  */
 enum JRType
 {
-	JR_NO, JR_PROP, JR_EID
+	JR_NO, JR_PROP, JR_EID, JR_VAL
 };
 
 /**
@@ -94,6 +88,7 @@ enum JRType
  */
 class SOutCtx
 {
+protected:
 	Session	*const		ses;						/**< assosiated session */
 	const	unsigned	mode;						/**< rendering mode */
 	const	QVar		*cvar;						/**< current context for identifier rendering (required for joins) */
@@ -102,7 +97,7 @@ class SOutCtx
 	unsigned			*usedQNames;				/**< priority queue of used qnames */
 	unsigned			nUsedQNames;				/**< length of qname priority queue */
 	char				cbuf[100];					/**< working buffer for parts of strings */
-	ulong				flags;						/**< current rendering mode, see SOM_XX flags above */
+	unsigned			flags;						/**< current rendering mode, see SOM_XX flags above */
 	byte				*ptr;						/**< main buffer */
 	size_t				cLen;						/**< current output length */
 	size_t				xLen;						/**< main buffer length */
@@ -115,8 +110,9 @@ public:
 	RC		renderPID(const PID& id,bool fJSon=false);															/**< render PIN ID */
 	RC		renderValue(const Value& v,JRType jr=JR_NO);														/**< render Value as PathSQL or JSON */
 	RC		renderVarName(const QVar *qv);																		/**< render variable name for PathSQL statement */
-	RC		renderRep(unsigned rm,unsigned rx);																	/**< render path expression segment repeater '{...}' */
+	RC		renderRep(const Value& rep);																		/**< render path expression segment repeater '{...}' */
 	RC		renderPath(const struct PathSeg& ps);																/**< render path expression */
+	RC		renderProperty(const Value &v,unsigned flags);														/**< render property name, optional meta-properties and optional value */
 	char	*renderAll();																						/**< append prologue if necessary */
 	RC		renderJSON(class Cursor *cr,uint64_t& cnt);															/**< render JSON output from a cursor */
 	
@@ -127,8 +123,10 @@ public:
 		if (l==0) return true; size_t cl=cLen; byte *pp=alloc(l); if (pp==NULL) return false; 
 		if (pos>=cl) memcpy(pp,p,l); else {memmove(ptr+pos+l,ptr+pos,cl-pos); memcpy(ptr+pos,p,l);} return true;
 	}
+	void	saveFlags(unsigned& s) const {s=flags&(SOM_VAR_NAMES|SOM_WHERE|SOM_MATCH|SOM_AND);}
+	void	restoreFlags(unsigned s) {flags=flags&~(SOM_VAR_NAMES|SOM_WHERE|SOM_MATCH|SOM_AND)|s;}
 	bool	fill(char c,int n) {if (n==0) return true; byte *pp=alloc(n); return pp==NULL?false:(memset(pp,c,n),true);}
-	byte	*result(size_t& len) {byte *p=ptr; ptr=NULL; len=cLen; return cLen<xLen?(byte*)ses->realloc(p,cLen):p;}
+	byte	*result(size_t& len) {byte *p=ptr; ptr=NULL; len=cLen; if (cLen<xLen/2) p=(byte*)ses->realloc(p,cLen); cLen=xLen=0; return p;}
 	operator char*() {char *p=(char*)ptr; ptr=NULL; if (cLen+1!=xLen) p=(char*)ses->realloc(p,cLen+1); if (p!=NULL) p[cLen]=0; return p;}
 	byte	*alloc(size_t l) {if (cLen+l>xLen && !expand(l)) return NULL; assert(ptr!=NULL); byte *p=ptr+cLen; cLen+=l; return p;}
 	bool	expand(size_t l);
@@ -144,12 +142,13 @@ public:
  */
 #define	SIM_SIMPLE_NAME		0x0001			/**< parse simple names only (no qname) (e.g. in FROM ... AS name) */
 #define	SIM_NO_BASE			0x0002			/**< don't use BASE */
-#define	SIM_STD_OVR			0x0004			/**< standard prefix overwriten - don't use it */
-#define	SIM_INT_NUM			0x0008			/**< force parsing integer number (don't treat '.' as a part of number) */
-#define	SIM_SELECT			0x0010			/**< expression is part of SELECT list - special parsing for identifiers */
-#define	SIM_DML_EXPR		0x0020			/**< expression in INSERT or UPDATE statements, can contain nested INSERTs */
-#define	SIM_HAVING			0x0040			/**< expression in HAVING - aggregates with '*' are allowed */
-#define	SIM_INSERT			0x0080			/**< expression in INSERT, can contain references to other INSERTs */
+#define	SIM_INT_NUM			0x0004			/**< force parsing integer number (don't treat '.' as a part of number) */
+#define	SIM_SELECT			0x0008			/**< expression is part of SELECT list - special parsing for identifiers */
+#define	SIM_DML_EXPR		0x0010			/**< expression in INSERT or UPDATE statements, can contain nested INSERTs */
+#define	SIM_HAVING			0x0020			/**< expression in HAVING - aggregates with '*' are allowed */
+#define	SIM_INSERT			0x0040			/**< expression in INSERT, can contain references to other INSERTs */
+
+#define	META_PROP_OBJECT	0x04			/**< #name flag set in lex() */
 
 /**
  * lexem enumeration
@@ -162,8 +161,9 @@ enum Lexem {
 	LX_COLON=OP_ALL, LX_LBR, LX_RBR, LX_LCBR, LX_RCBR, LX_PERIOD, LX_QUEST, LX_EXCL,
 	LX_EXPR, LX_QUERY, LX_URSHIFT, LX_PREFIX, LX_IS, LX_BETWEEN, LX_BAND, LX_HASH,
 	LX_SEMI, LX_CONCAT, LX_FILTER, LX_REPEAT, LX_PATHQ, LX_SELF, LX_SPROP, LX_TPID,
+	LX_RXREF, LX_REF, LX_INLINE, LX_ARROW,
 		
-	LX_NL, LX_SPACE, LX_DQUOTE, LX_QUOTE, LX_LT, LX_GT, LX_VL, LX_DOLLAR,
+	LX_NL, LX_SPACE, LX_DQUOTE, LX_QUOTE, LX_LT, LX_GT, LX_VL, LX_DOLLAR, LX_BSLASH,
 	LX_ERR, LX_UTF8, LX_DIGIT, LX_LETTER, LX_ULETTER, LX_XLETTER,
 };
 
@@ -177,9 +177,9 @@ enum KW {
 	KW_UNION, KW_EXCEPT, KW_INTERSECT, KW_DISTINCT, KW_VALUES, KW_AS, KW_OP, KW_NULLS,
 	KW_TRUE, KW_FALSE, KW_NULL, KW_ALL, KW_ANY, KW_SOME, KW_ASC, KW_DESC, KW_MATCH,
 	KW_NOW, KW_CUSER, KW_CSTORE, KW_TIMESTAMP, KW_INTERVAL, KW_WITH,
-	KW_INSERT, KW_DELETE, KW_UPDATE, KW_CREATE, KW_PURGE, KW_UNDELETE,
-	KW_SET, KW_ADD, KW_MOVE, KW_RENAME, KW_EDIT, KW_CLASS, KW_START, KW_COMMIT,
-	KW_ROLLBACK, KW_DROP
+	KW_INSERT, KW_DELETE, KW_UPDATE, KW_CREATE, KW_PURGE, KW_UNDELETE, KW_PERSIST,
+	KW_SET, KW_ADD, KW_MOVE, KW_RENAME, KW_EDIT, KW_START, KW_COMMIT,
+	KW_ROLLBACK, KW_DROP, KW_CASE, KW_WHEN, KW_THEN, KW_ELSE, KW_END, KW_RULE
 };
 
 /**
@@ -194,7 +194,7 @@ enum SynErr
 	SY_INVCOM, SY_MISCOM, SY_MISBIN, SY_MISSEL, SY_UNKVAR, SY_INVVAR, SY_INVCOND,
 	SY_MISBY, SY_SYNTAX, SY_MISLGC, SY_MISAND, SY_INVTMS, SY_MISQNM, SY_MISQN2, SY_INVEXT,
 	SY_UNBRPR, SY_UNBRBR, SY_UNBRCBR, SY_MISBOOL, SY_MISJOIN, SY_MISNAME, SY_MISAGNS,
-	SY_MISEQ, SY_MISCLN, SY_UNKQPR, SY_INVGRP, SY_INVHAV,
+	SY_MISEQ, SY_MISCLN, SY_UNKQPR, SY_INVGRP, SY_INVHAV, SY_MISSLASH, SY_MISIDN,
 
 	SY_ALL
 };
@@ -202,40 +202,63 @@ enum SynErr
 typedef	byte TLx;
 
 /**
- * keyword trie node descriptor
- */
-struct KWNode
-{
-	byte	mch,nch;
-	byte	lx,kw;
-	ushort	ql;
-	KWNode	*nodes[1];
-};
-
-/**
  * lexer state descriptor for backtracking in lookahead
  */
 struct LexState
 {
-	const	char				*ptr;
-	const	char				*lbeg;
-	unsigned					lmb;
-	unsigned					line;
+	const	char	*ptr;
+	const	char	*lbeg;
+	unsigned		lmb;
+	unsigned		line;
 };
 
 /**
  * expression parsing mode constants
  */
-#define	PRS_TOP					0x0001
-#define	PRS_COPYV				0x0002
-#define	PRS_PATH				0x0004
+#define	PRS_COPYV	0x0001
+#define	PRS_PATH	0x0002
+
+/**
+ * keyword trie node descriptor
+ */
+
+class KWTrieImpl : public KWTrie
+{
+	struct KWNode {
+		unsigned	kw;
+		byte		lx,mch,nch;
+		KWNode		*nodes[1];
+	};
+	const	bool	fCase;
+	KWNode *kwt['z'-'A'+1];
+	size_t	kwTabSize;
+private:
+	void add(const char *str,unsigned kw,TLx lx=LX_KEYW);
+public:
+	KWTrieImpl(bool fC) : fCase(fC),kwTabSize(0) {memset(kwt,0,sizeof(kwt));}
+	RC	addKeywords(const KWInit *initTab,unsigned nInit);
+	RC createIt(ISession *ses,KWTrie::KWIt *&it);
+	RC	find(const char *str,size_t lstr,unsigned& code);
+	class KWItImpl : public KWIt {
+		ISession	*const	ses;
+		const KWTrieImpl&	trie;
+		const KWNode		*node;
+	public:
+		KWItImpl(KWTrieImpl& k,ISession *s) : ses(s),trie(k),node(NULL) {}
+		RC next(unsigned ch,unsigned& kw);
+		void destroy();
+	};
+	friend class SInCtx;
+};
 
 /**
  * PathSQL expression of statement parsing context
  * uses top-down LL(1) (mostly) for statement parsing and priority-driven shift-reduce for expression parsing
  * special code introduces various contextual dependencies
  */
-class SInCtx {
+class SInCtx
+{
+protected:
 	Session				*const	ses;			/**< associated session */
 	MemAlloc			*const	ma;				/**< memory allocator for expressions and statements */
 	const	HEAP_TYPE			mtype;			/**< heap type of the above memory allocator */
@@ -243,7 +266,6 @@ class SInCtx {
 	const	char		*const	end;			/**< end of PathSQL string */
 	const	URIID		*const	ids;			/**< table of URIIDs */
 	const	unsigned			nids;			/**< length of URIID table */
-	const	SQType				sqt;			/**< parser language */
 	const	char				*ptr;			/**< current position in string */
 	const	char				*lbeg;			/**< current line beginning for error reporting; lines are separated by '\n' */
 	unsigned					lmb;			/**< multi-byte shift; used to calculate line position in characters rather than octets */
@@ -259,16 +281,17 @@ class SInCtx {
 	DynArray<Len_Str,6>			dnames;			/**< delayed mapping names for SELECT parsing */
 	TLx							nextLex;		/**< look-ahead lexem */
 	Value						v;				/**< value associated with current lexem (string, number, etc.) */
+	DynOArrayBuf<uint64_t,uint64_t> *tids;		/**< array of temporary PIN IDs in this statement (@:xxx) */
+	TXI_LEVEL					txi;			/**< statement transaction isolation level */
 public:
-	SInCtx(Session *se,const char *s,size_t ls,const URIID *i=NULL,unsigned ni=0,SQType sq=SQ_PATHSQL,MemAlloc *m=NULL)
-		: ses(se),ma(m!=NULL?m:se),mtype(ma!=NULL?ma->getAType():SERVER_HEAP),str(s),end(s+ls),ids(i),nids(ni),sqt(sq),ptr(s),lbeg(s),lmb(0),line(1),errpos(NULL),
-		mode(se==NULL?SIM_NO_BASE:(se->fStdOvr?SIM_STD_OVR:0)|(se->lURIBase==0?SIM_NO_BASE:0)),base(NULL),lBase(0),lBaseBuf(0),qNames(NULL),nQNames(0),lastQN(~0u),
-		dnames(ma),nextLex(LX_ERR) {v.setError();}
+	SInCtx(Session *se,const char *s,size_t ls,const URIID *i=NULL,unsigned ni=0,MemAlloc *m=NULL)
+		: ses(se),ma(m!=NULL?m:se),mtype(ma!=NULL?ma->getAType():SHARED_HEAP),str(s),end(s+ls),ids(i),nids(ni),ptr(s),lbeg(s),lmb(0),line(1),errpos(NULL),
+		mode(SIM_NO_BASE),base(NULL),lBase(0),lBaseBuf(0),qNames(NULL),nQNames(0),lastQN(~0u),dnames(ma),nextLex(LX_ERR),tids(NULL),txi(TXI_DEFAULT) {v.setEmpty();}
 	~SInCtx();
-	Stmt	*parseStmt(bool fNested=false);															/**< parse PathSQL statement; can be called recursively for nested statements */
+	Stmt	*parseStmt();																			/**< parse PathSQL statement; can be called recursively for nested statements */
 	RC		exec(const Value *params,unsigned nParams,char **result=NULL,uint64_t *nProcessed=NULL,unsigned nProcess=~0u,unsigned nSkip=0);	/**< parse PathSQL, execute and return result as JSON */
-	QVarID	parseQuery(class Stmt*&,bool fNested=true);												/**< parse a query (i.e. not DML or DDL statement) */
-	void	parseManage(IMapDir *,AfyDBCtx&,const StartupParameters *sp);							/**< parse and execute database management PathSQL */
+	QVarID	parseQuery(Stmt*&,bool fNested=true);													/**< parse a query (i.e. not DML or DDL statement) */
+	void	parseManage(IMapDir *,IAffinity *&,const StartupParameters *sp);						/**< parse and execute database management PathSQL */
 	void	parse(Value& res,const union QVarRef *vars=NULL,unsigned nVars=0,unsigned flags=0);		/**< parse PathSQL expression */
 	class	ExprTree *parse(bool fCopy);															/**< parse PathSQL expression, return as an expression tree */
 	void	checkEnd(bool fSemi=false) {switch (lex()) {case LX_RPR: throw SY_UNBRPR; case LX_RBR: throw SY_UNBRBR; case LX_RCBR: throw SY_UNBRCBR; case LX_SEMI: if (fSemi && lex()==LX_EOE) {case LX_EOE: return;} default: throw SY_SYNTAX;}}	/**< check end of PathSQL string */
@@ -278,21 +301,22 @@ public:
 	}
 	static	void	getURIFlags(const char *uri,size_t l,struct URIInfo&);							/**< get flags describing URI string (see map.h) */
 	static	void	initKW();																		/**< initialize keyword trie */
-	static	size_t	kwTabSize;																		/**< keyword table size */
 	static	const	OpDscr	opDscr[];																/**< lexem and p-code operations descriptor table */
 	static	const	TLx		charLex[256];															/**< octet to lexem map */
 private:
 	TLx		lex();																					/**< lexer */
-	bool	parseEID(TLx lx,ElementID& eid);														/**< parse ':XXX' eid constant */
 	void	saveLexState(LexState& s) const {s.ptr=ptr; s.lbeg=lbeg; s.lmb=lmb; s.line=line;}		/**< save lexer state for deep lookahead */
 	void	restoreLexState(const LexState& s) {ptr=s.ptr; lbeg=s.lbeg; lmb=s.lmb; line=s.line;}	/**< restore lexer state */
-	void	mapURI(const char *prefix=NULL,size_t lPrefix=0);										/**< map string to URIID, use prefixes, base, ect. */
+	void	mapURI(bool fOID=false,const char *prefix=NULL,size_t lPrefix=0,bool fSrv=false);		/**< map string to URIID, use prefixes, base, ect. */
 	void	mapIdentity();																			/**< map identity string to IdentityID */
-	TLx		parsePrologue();																		/**< parse prologue, i.e. BASE ... PREFIX ... PREFIX ... */
+	bool	parseEID(TLx lx,ElementID& eid);														/**< parse ':XXX' eid constant */
+	void	parseMeta(PropertyID pid,uint8_t& meta);												/**< parse META_PROP_*** in insert and VT_STRUCT */
+	void	parseRegExp();																			/**< parse regular expression, return binary string containing 'compiled' form */
+	void	parseCase();																			/**< parse CASE ... WHEN ... END */
 	QVarID	parseSelect(Stmt *res,bool fMod=false);													/**< parse SELECT statement */
 	QVarID	parseFrom(Stmt *stmt);																	/**< parse FROM clause */
-	QVarID	parseClassVar(Stmt *stmt,bool fColon=false);											/**< parse classes variables in FROM clause */
-	void	parseClasses(DynArray<ClassSpec> &css,bool fColon=false,bool fInto=false);				/**< parse a list of classes in FROM or INTO */
+	QVarID	parseSource(Stmt *stmt,TLx lx,bool *pF,bool fSelect=true);								/**< parse a single source variable in FROM or UPDATE */
+	void	parseClasses(DynArray<SourceSpec> &css);												/**< parse a list of classes in FROM */
 	TLx		parseOrderOrGroup(Stmt *stmt,QVarID var,Value *os=NULL,unsigned nO=0);					/**< parse ORDER BY or GROUP BY clause */
 	ExprTree *parseCondition(const union QVarRef *vars,unsigned nVars);								/**< parse condition expresion (either in WHERE or in ON or in HAVING) */
 	RC		splitWhere(Stmt *stmt,QVar *qv,ExprTree *pe);											/**< down-propagate individual variable conditions in join, associate variables in JOIN on or WHERE conditions */
@@ -313,9 +337,59 @@ private:
 		T		top() const {assert(ptr>stk); return ptr[-1];}
 		bool	isEmpty() const {return ptr==stk;}
 	};
-	static	KWNode	*kwt['_'-'A'+1];																/**< keyword trie */
+	static	KWTrieImpl		kwt;																	/**< keyword trie */
 	static	const	char	*errorMsgs[SY_ALL];														/**< error messages */	
-	static	void	initKWEntry(const char *str,TLx lx,KW kw,ushort ql);							/**< keyword trie initialization */
+protected:
+	void	init(const char *s,size_t ls) {
+		const_cast<const char *&>(str)=s; const_cast<const char *&>(end)=s+ls; ptr=s; lbeg=s; lmb=0; line=1; errpos=NULL;
+		mode=SIM_NO_BASE; base=NULL; lBase=0; lBaseBuf=0; qNames=NULL; nQNames=0; lastQN=~0u;
+		dnames.clear(); nextLex=LX_ERR; if (tids!=NULL) {/*???*/ tids=NULL;} v.setEmpty();
+	}
+};
+
+class PathSQLParser : public IService::Processor, public SInCtx
+{
+	IServiceCtx *const	sctx;
+public:
+	PathSQLParser(IServiceCtx *ct,Session *ses) : SInCtx(ses,NULL,0,NULL,0,ses),sctx(ct) {}
+	RC		invoke(IServiceCtx *ctx,const Value& inp,Value& out,unsigned& mode);
+	void	cleanup(IServiceCtx *ctx,bool fDestroy);
+};
+
+class PathSQLRenderer : public IService::Processor, public SOutCtx
+{
+	size_t		sht;
+public:
+	PathSQLRenderer(Session *ses) : SOutCtx(ses),sht(0) {}
+	RC		invoke(IServiceCtx *ctx,const Value& inp,Value& out,unsigned& mode);
+	void	cleanup(IServiceCtx *ctx,bool fDestroy);
+};
+
+class PathSQLService : public IService
+{
+	StoreCtx	*const	ctx;
+public:
+	PathSQLService(StoreCtx *ct) : ctx(ct) {}
+	RC create(IServiceCtx *ctx,uint32_t& dscr,Processor *&ret);
+};
+
+class JSONOut : public IService::Processor, public SOutCtx
+{
+	size_t		lc;
+	size_t		sht;
+public:
+	JSONOut(Session *ses) : SOutCtx(ses),lc(1),sht(0) {cbuf[0]='[';}
+	RC		invoke(IServiceCtx *ctx,const Value& inp,Value& out,unsigned& mode);
+	RC		outPIN(IServiceCtx *ctx,PIN *pin);
+	void	cleanup(IServiceCtx *ctx,bool fDestroy);
+};
+
+class JSONService : public IService
+{
+	StoreCtx	*const	ctx;
+public:
+	JSONService(StoreCtx *ct) : ctx(ct) {}
+	RC create(IServiceCtx *ctx,uint32_t& dscr,Processor *&ret);
 };
 
 };

@@ -1,6 +1,6 @@
 /**************************************************************************************
 
-Copyright © 2004-2012 VMware, Inc. All rights reserved.
+Copyright © 2004-2013 GoPivotal, Inc. All rights reserved.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -21,7 +21,6 @@ Written by Mark Venguerov 2004-2012
 #include "types.h"
 #include "startup.h"
 #include <stdarg.h>
-#include <stdio.h>
 
 using namespace AfyKernel;
 
@@ -54,31 +53,27 @@ RC convCode(DWORD dwError)
 	case ERROR_FILE_EXISTS:
 	case ERROR_ALREADY_EXISTS: rc = RC_ALREADYEXISTS; break;
 
-	case ERROR_INVALID_PARAMETER: rc = RC_INVPARAM; break;
-
-	case ERROR_INVALID_BLOCK:
-	case ERROR_BAD_ENVIRONMENT:
 	case ERROR_INVALID_ADDRESS:
 	case ERROR_INVALID_DATA:
 	case ERROR_BAD_COMMAND:
 	case ERROR_BAD_LENGTH:
-	case ERROR_NOT_SUPPORTED:
-	case ERROR_DIRECT_ACCESS_HANDLE:
 	case ERROR_NEGATIVE_SEEK:
-	case ERROR_EXCL_SEM_ALREADY_OWNED:
-	case ERROR_SEM_IS_SET:
-	case ERROR_SEM_OWNER_DIED:
-	case ERROR_BUFFER_OVERFLOW:
-	case ERROR_INVALID_NAME:
-	case ERROR_CALL_NOT_IMPLEMENTED:
-	case ERROR_INSUFFICIENT_BUFFER:
-	case ERROR_BAD_THREADID_ADDR:
 	case ERROR_BAD_ARGUMENTS:
+	case ERROR_BAD_THREADID_ADDR:
 	case ERROR_BAD_PATHNAME:
 	case ERROR_FILENAME_EXCED_RANGE:
 	case ERROR_DIRECTORY:
-	case ERROR_INVALID_HANDLE: rc = RC_INTERNAL; break;
+	case ERROR_INVALID_NAME:
+	case ERROR_INVALID_PARAMETER: rc = RC_INVPARAM; break;
 
+	case ERROR_INVALID_HANDLE:
+	case ERROR_NOT_SUPPORTED:
+	case ERROR_CALL_NOT_IMPLEMENTED: rc = RC_INVOP; break;
+
+	case ERROR_BAD_ENVIRONMENT: rc = RC_CORRUPTED; break;
+
+	case ERROR_INSUFFICIENT_BUFFER:
+	case ERROR_BUFFER_OVERFLOW:
 	case ERROR_NETWORK_BUSY:
 	case ERROR_NOT_ENOUGH_MEMORY:
 	case ERROR_TOO_MANY_OPEN_FILES:
@@ -145,23 +140,29 @@ RC convCode(DWORD dwError)
 
 static const char *msgType[] = {"PANIC", "ERROR", "WARNING", "NOTICE", "INFO", "DEBUG"};
 
-void AfyKernel::report(MsgType type,const char *str,...)
+void AfyRC::report(MsgType type,const char *str,...)
 {
-	va_list args; va_start(args,str); char buffer[600];
-	if (iReport!=NULL) {
-		vsprintf(buffer,str,args);
-		iReport->report(reportNS,msgLevel[type],buffer,__FILE__,__LINE__);
-	} else {
+	try {
+		va_list args; va_start(args,str); char buffer[600];
+		if (iReport!=NULL) {
+			vsprintf_s(buffer,sizeof(buffer),str,args);
+			iReport->report(reportNS,msgLevel[type],buffer,__FILE__,__LINE__);
+		} else {
+			const char *msg=type<sizeof(msgType)/sizeof(msgType[0])?msgType[type]:"UNKNOWN";
 #ifdef _DEBUG
-		strcpy(buffer,msgType[type]); strcat(buffer,": ");
-		vsprintf(buffer+strlen(buffer),str,args); OutputDebugString(buffer);
+			if (strlen(str)<400) {
+				strcpy(buffer,msg); strcat(buffer,": "); size_t l=strlen(buffer);
+				vsprintf_s(buffer+l,sizeof(buffer)-l,str,args); OutputDebugString(buffer);
+			}
 #endif
-		fprintf(stderr,"%s: ",msgType[type]); vfprintf(stderr,str,args);
-	}
-	va_end(args);
+			fprintf(stderr,"%s: ",msg); vfprintf(stderr,str,args);
+		}
+		va_end(args);
 #if	defined(_DEBUG) && defined(BREAK_ON_ERROR)
-	if (type<=MSG_ERROR) DebugBreak();
+		if (type<=MSG_ERROR) DebugBreak();
 #endif
+	} catch (...) {
+	}
 }
 
 void AfyKernel::initReport()
@@ -174,7 +175,7 @@ void AfyKernel::closeReport()
 
 #else
 #include <errno.h>
-#ifndef Darwin
+#if !defined(__APPLE__) && !defined(ANDROID)
 #include <error.h>
 #endif
 #include <syslog.h>
@@ -186,19 +187,19 @@ RC convCode(int err)
 	case 0: rc = RC_OK; break;
 	case ENOSPC: rc = RC_FULL; break;
 	case EAGAIN: rc = RC_REPEAT; break;
-	case EINVAL:
-	case EFAULT:
-	case ERANGE:
-	case EDOM:
-	case ENOSYS:
-	case EBADF: rc = RC_INTERNAL; break;
+	case EINVAL: rc = RC_INVPARAM; break;
+	case EFAULT: rc = RC_INVPARAM; break;
+	case ERANGE: rc = RC_TOOBIG; break;
+	case EDOM: rc = RC_INVPARAM; break;
+	case ENOSYS: rc = RC_INTERNAL; break;
+	case EBADF: rc = RC_INVOP; break;
 	case EMFILE:
 	case ENFILE:
 	case E2BIG:
 	case ENOMEM:
 	case ENOBUFS:
 	case EFBIG: rc = RC_NORESOURCES; break;
-	case EINTR:			//The open operation was interrupted by a signal. See Interrupted Primitives. 
+	case EINTR: rc = RC_CANCELED; break;
 	case ESPIPE:	//The file descriptor filedes is associated with a pipe or a FIFO and this device does not allow positioning of the file pointer. 
 	case EIO: rc = RC_DEVICEERR; break;
 	case EISDIR:
@@ -218,31 +219,38 @@ RC convCode(int err)
 static bool fSyslogOpen = false;
 static int facility = LOG_USER;
 
-void AfyKernel::report(MsgType type,const char *str,...)
-{
-	va_list va; va_start(va,str);
-	if (iReport!=NULL) {
-		char buffer[600]; vsprintf(buffer,str,va);
-		iReport->report(reportNS,msgLevel[type],buffer,__FILE__,__LINE__);
-	} else {
-		int priority;
-		switch (type) {
-		case MSG_CRIT: priority = LOG_CRIT; break;
-		case MSG_ERROR: priority = LOG_ERR; break;
-		case MSG_WARNING: priority = LOG_WARNING; break;
-		case MSG_NOTICE: priority = LOG_NOTICE; break;
-		default:
-		case MSG_INFO: priority = LOG_INFO; break;
-		case MSG_DEBUG: priority = LOG_DEBUG; break; 
-		}
-		if (fSyslogOpen) vsyslog(LOG_MAKEPRI(facility,priority),str,va); else vfprintf(stderr,str,va);
-	}
-	va_end(va);
-#ifdef _DEBUG
-	if (type<=MSG_ERROR) {
-		// raise();
-	}
+#ifdef ANDROID
+#define LOG_MAKEPRI(a,b)	(a|b)
 #endif
+
+void AfyRC::report(MsgType type,const char *str,...)
+{
+	try {
+		va_list va; va_start(va,str);
+		if (iReport!=NULL) {
+			char buffer[600]; vsprintf(buffer,str,va);
+			iReport->report(reportNS,msgLevel[type],buffer,__FILE__,__LINE__);
+		} else {
+			int priority;
+			switch (type) {
+			case MSG_CRIT: priority = LOG_CRIT; break;
+			case MSG_ERROR: priority = LOG_ERR; break;
+			case MSG_WARNING: priority = LOG_WARNING; break;
+			case MSG_NOTICE: priority = LOG_NOTICE; break;
+			default:
+			case MSG_INFO: priority = LOG_INFO; break;
+			case MSG_DEBUG: priority = LOG_DEBUG; break; 
+			}
+			if (fSyslogOpen) vsyslog(LOG_MAKEPRI(facility,priority),str,va); else vfprintf(stderr,str,va);
+		}
+		va_end(va);
+#ifdef _DEBUG
+		if (type<=MSG_ERROR) {
+			// raise();
+		}
+#endif
+	} catch (...) {
+	}
 }
 
 void AfyKernel::initReport()

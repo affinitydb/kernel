@@ -1,6 +1,6 @@
 /**************************************************************************************
 
-Copyright © 2004-2012 VMware, Inc. All rights reserved.
+Copyright © 2004-2013 GoPivotal, Inc. All rights reserved.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -14,7 +14,7 @@ WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the
 License for the specific language governing permissions and limitations
 under the License.
 
-Written by Mark Venguerov and Andrew Skowronski 2004-2012
+Written by Mark Venguerov 2004-2012
 
 **************************************************************************************/
 
@@ -23,54 +23,40 @@ Written by Mark Venguerov and Andrew Skowronski 2004-2012
 #include "session.h"
 #include "startup.h"
 #include <limits.h>
-#include <stdio.h>
 
 using namespace AfyKernel;
 
-FileIOWin::CompletionPort FileIOWin::CP;
-FreeQ<>	FileIOWin::freeIODesc;
-
-struct WinIODesc
-{
-	/* needed because OVERLAPPED has nowhere to stick a context pointer */
-	OVERLAPPED		     aio_ov;				
-	IStoreIO::iodesc * iodesc;
-} ;
+FileMgr::CompletionPort FileMgr::CP;
+FreeQ	FileMgr::freeIODesc;
 
 struct AsyncWait : public SemData
 {
 	/* Tracks async io calls, caller sits in wait until they are all complete*/
-	SharedCounter	counter;
-	bool			fWait;
-	AsyncWait() : fWait(true) {}
-	static void notify(void *p) {AsyncWait *aw=(AsyncWait*)p; if (--aw->counter==0) aw->wakeup();}
+	volatile long	counter;
+	AsyncWait() : counter(0) {}
+	void operator++() {InterlockedIncrement(&counter);}
+	void operator--() {InterlockedDecrement(&counter);}
+	void wait() {for (long cnt=counter; cnt!=0; cnt=counter) if (InterlockedCompareExchange(&counter,cnt|0x80000000,cnt)==cnt) {SemData::wait(); break;}}
+	static void notify(void *p) {AsyncWait *aw=(AsyncWait*)p; for (long cnt=aw->counter; ;cnt=aw->counter) if (InterlockedCompareExchange(&aw->counter,cnt-1,cnt)==cnt) {if (cnt==0x80000001) aw->wakeup(); break;}}
 };
 
-FileIOWin::FileIOWin() : slotTab(NULL),xSlotTab(FIO_MAX_OPENFILES),asyncIOCallback(NULL)
+struct WinIODesc
+{
+	OVERLAPPED		     aio_ov;				
+	myaio				*aio;
+	AsyncWait			*av;
+};
+
+FileMgr::FileMgr(StoreCtx *ct,int maxOpenFiles,const char *ldDir) : GFileMgr(ct,maxOpenFiles,ldDir)
 {		
-	slotTab = (FileDescWin*)malloc(sizeof(FileDescWin)*xSlotTab,STORE_HEAP); 
-	if (slotTab!=NULL){ for (int i=0;i<xSlotTab;i++){ slotTab[i].init();}}
 }
 
-FileIOWin::~FileIOWin()
-{
-	if (slotTab!=NULL) {
-		closeAll(0) ;
-		free(slotTab,STORE_HEAP);
-	}
-}
-
-void FileIOWin::init(void (*cb)(iodesc*))
-{
-	asyncIOCallback=cb;
-}
-
-RC FileIOWin::open(FileID& fid,const char *fname,const char *dir,ulong flags)
+RC FileMgr::open(FileID& fid,const char *fname,unsigned flags)
 {
 	HANDLE fd; off64_t fileSize=0; RC rc = RC_OK;
 	if ((fname==NULL || *fname=='\0') && (flags&FIO_TEMP)==0) return RC_INVPARAM;
 
-	bool fdel = false;
+	const char *dir=ctx->getDirectory(); bool fdel=false;
 	if ((flags&FIO_TEMP)!=0) {
 		fname=(char*)malloc(MAX_PATH,STORE_HEAP); if (fname==NULL) return RC_NORESOURCES;
 		if (GetTempFileName(dir!=NULL?dir:".",STOREPREFIX,0,(char*)fname)==0)
@@ -116,7 +102,7 @@ RC FileIOWin::open(FileID& fid,const char *fname,const char *dir,ulong flags)
 		}
 	}
 	if (rc==RC_OK) {
-		FileDescWin &file=slotTab[fid];
+		FileDesc &file=slotTab[fid];
 		file.osFile=fd;
 		file.fileSize=fileSize;
 		file.filePath=strdup(fname,STORE_HEAP);
@@ -128,7 +114,7 @@ RC FileIOWin::open(FileID& fid,const char *fname,const char *dir,ulong flags)
 	return rc ;
 }
 
-off64_t FileIOWin::getFileSize(FileID fid) const
+off64_t GFileMgr::getFileSize(FileID fid)
 {
 	off64_t size=0; RWLockP rw(&lock,RW_S_LOCK);
 	if (fid<xSlotTab && slotTab[fid].isOpen()) {
@@ -142,38 +128,7 @@ off64_t FileIOWin::getFileSize(FileID fid) const
 	return size;
 }
 
-size_t FileIOWin::getFileName(FileID fid,char buf[],size_t lbuf) const
-{
-	size_t len = 0;
-	RWLockP rw(&lock,RW_S_LOCK);
-	if (fid<xSlotTab && slotTab[fid].isOpen()) {
-		if (buf!=NULL && lbuf>0) 
-			strncpy(buf,slotTab[fid].filePath,lbuf-1)[lbuf-1]=0;
-		len = strlen(slotTab[fid].filePath);
-	}
-	return len;
-}
-
-
-RC FileIOWin::close(FileID fid)
-{
-	RWLockP rw(&lock,RW_X_LOCK); RC rc = RC_OK;
-	if (fid>=xSlotTab) rc = RC_NOTFOUND;
-	else if (slotTab[fid].isOpen()) {
-		slotTab[fid].close();
-	}
-	return RC_OK;
-}
-
-void FileIOWin::closeAll(FileID start)
-{
-	RWLockP rw(&lock,RW_X_LOCK); RC rc = RC_OK;
-	for (FileID fid=start; fid<xSlotTab; fid++) if (slotTab[fid].isOpen()) {
-		slotTab[fid].close();
-	}
-}
-
-RC FileIOWin::growFile(FileID file, off64_t newSize)
+RC GFileMgr::growFile(FileID file, off64_t newSize)
 {
 	lock.lock(RW_S_LOCK);
 	if (file>=xSlotTab || !slotTab[file].isOpen()) {lock.unlock(); return RC_NOTFOUND;}
@@ -194,110 +149,82 @@ RC FileIOWin::growFile(FileID file, off64_t newSize)
 	return rc;
 }
 
-RC FileIOWin::listIO(int mode,int nent,iodesc* const* pcbs)
+RC FileMgr::listIO(int mode,int nent,myaio* const* pcbs,bool fSync)
 {
 	RC rc=RC_OK; int i,i0=0,i1=0; AsyncWait aw;
 	try {
-		HANDLE *ah=(HANDLE*)alloca(nent*sizeof(HANDLE)); if (ah==NULL) throw RC_NORESOURCES;
 		{RWLockP lck(&lock,RW_S_LOCK);
 		for (i=0; i<nent; i++) if (pcbs[i]!=NULL && pcbs[i]->aio_lio_opcode!=LIO_NOP) {
-			iodesc &aio=*(pcbs[i]);
-			FileID fid=aio.aio_fildes;   
-			aio.aio_rc=RC_OK;
+			myaio &aio=*pcbs[i];
+			FileID fid=aio.aio_fid;   
 			if (fid>=xSlotTab||!slotTab[fid].isOpen()) {i1=i; throw RC_INVPARAM;}
-			ah[i]=slotTab[fid].osFile;
+			aio.aio_rc=RC_OK;
+			aio.aio_ctx=ctx;
+			aio.aio_fildes=slotTab[fid].osFile;
 			if (aio.aio_offset+aio.aio_nbytes>slotTab[fid].fileSize) slotTab[fid].fSize=false;
 			assert(aio.aio_nbytes>0);
 			assert(aio.aio_buf!=NULL);
 			// Note: no check for file bounds - WRITE access 
 			// allowed and read access (e.g. attempt to read invalid PID)
 			// will fail at OS level
-			if (aio.aio_lio_opcode!=LIO_NOP) {
-				if (mode==LIO_WAIT) {
-					++aw.counter;
-					aio.aio_ptr[aio.aio_ptrpos++]=&aw;
-					aio.aio_ptr[aio.aio_ptrpos++]=AsyncWait::notify;
-				}else { aio.aio_ptr[aio.aio_ptrpos++]=this; }
-			}
-			assert(aio.aio_ptrpos<=FIO_MAX_PLUGIN_CHAIN);
 		}
 		}
 		for (i=0,i1=nent; i<nent; i++) if (pcbs[i]!=NULL) {
-			iodesc &aio = *(pcbs[i]);
+			myaio &aio = *(pcbs[i]);
 			if (aio.aio_lio_opcode==LIO_NOP) {if (mode!=LIO_WAIT) asyncIOCallback(&aio); continue;}
 			WinIODesc *ov=(WinIODesc*)freeIODesc.alloc(sizeof(WinIODesc)); if (ov==NULL) {i0=i; throw RC_NORESOURCES;}
-			memset(ov,0,sizeof(OVERLAPPED)); ov->iodesc=pcbs[i];
+			memset(ov,0,sizeof(WinIODesc)); ov->aio=pcbs[i]; if (mode==LIO_WAIT) {ov->av=&aw; ++aw;}
 			ov->aio_ov.Offset=DWORD(aio.aio_offset); ov->aio_ov.OffsetHigh=DWORD(aio.aio_offset>>32);
 			BOOL fOK = aio.aio_lio_opcode==LIO_WRITE ?
-				WriteFile(ah[i],aio.aio_buf,(DWORD)aio.aio_nbytes,NULL,&ov->aio_ov) :
-				ReadFile(ah[i],aio.aio_buf,(DWORD)aio.aio_nbytes,NULL,&ov->aio_ov);
+				WriteFile(aio.aio_fildes,aio.aio_buf,(DWORD)aio.aio_nbytes,NULL,&ov->aio_ov) :
+				ReadFile(aio.aio_fildes,aio.aio_buf,(DWORD)aio.aio_nbytes,NULL,&ov->aio_ov);
 			if (fOK==FALSE) {
 				DWORD dwError=GetLastError();
 				if (dwError!=ERROR_IO_PENDING) {
-					rc=aio.aio_rc=convCode(dwError); 
-					freeIODesc.dealloc(ov);
-					if (mode==LIO_WAIT) {if (--aw.counter==0) aw.fWait=false; aio.aio_ptrpos-=2;}
-					else {--aio.aio_ptrpos; asyncIOCallback(&aio); /* notify no matter what */}
+					rc=aio.aio_rc=convCode(dwError); freeIODesc.dealloc(ov);
+					if (mode!=LIO_WAIT) asyncIOCallback(&aio); else --aw;
 				}
-			} // else if (fForceFlushToDisk) FlushosFileBuffers(pcbs[i]->aio_fildes);
+			} // else if (fSync) FlushosFileBuffers(pcbs[i]->aio_fildes);
 		}
 		if (mode==LIO_WAIT) {
-			if (aw.fWait) aw.wait();
+			aw.wait();
 			for (i=0; i<nent; i++) if (pcbs[i]!=NULL && pcbs[i]->aio_rc!=RC_OK) {rc=pcbs[i]->aio_rc;} 	
 		}
 	} catch (RC rc2) {
 		rc=rc2; 
 		for (; i0<nent; i0++) {
-			iodesc &aio = *(pcbs[i]); aio.aio_rc=rc2;
-			if (mode!=LIO_WAIT) {
-				if (i0<i1) aio.aio_ptrpos--; else aio.aio_ptr[aio.aio_ptrpos]=this;
-				asyncIOCallback(&aio);
-			}
+			myaio &aio = *pcbs[i]; aio.aio_rc=rc2;
+			if (mode!=LIO_WAIT) asyncIOCallback(&aio);
+			// dealloc???
 		}
 	}
 	return rc;
 }
 
-void FileIOWin::asyncIOCompletion()
+void FileMgr::asyncIOCompletion()
 {
 	for (;;) {
-		DWORD l=0; ULONG_PTR key; iodesc *aio=NULL; WinIODesc *ov=NULL;
+		DWORD l=0; ULONG_PTR key; myaio *aio=NULL; WinIODesc *ov=NULL;
 		BOOL rc = GetQueuedCompletionStatus(CP.completionPort,&l,&key,(OVERLAPPED**)&ov,INFINITE);
 		if (key!=(ULONG_PTR)0) break;
-		assert(ov!=NULL && ov->iodesc!=NULL);
-		if (ov!=NULL && (aio=ov->iodesc)!=NULL) {
+		if (ov!=NULL && (aio=ov->aio)!=NULL) {
 			DWORD err=0; aio->aio_rc=RC_OK;
 			if (rc==FALSE) {
 				aio->aio_rc=convCode(err=GetLastError());
 				if (err!=ERROR_OPERATION_ABORTED) report(MSG_ERROR,"Error in asyncIOCompletion: %ld\n",err);
 			} else if (l!=aio->aio_nbytes) {
-				report(MSG_ERROR,"Incorrect length in asyncIOCompletion: 0x%x instead of 0x%x.  File %d, offset "_LX_FM"\n",l,aio->aio_nbytes,aio->aio_fildes,aio->aio_offset);
+				report(MSG_ERROR,"Incorrect length in asyncIOCompletion: 0x%x instead of 0x%x. File %d, offset "_LX_FM"\n",l,aio->aio_nbytes,aio->aio_fid,aio->aio_offset);
 				//??? see 10939
 			}
 
-			assert(aio->aio_ptrpos>0); 
-			void *ctx=aio->aio_ptr[--aio->aio_ptrpos];
-			if (ctx==AsyncWait::notify) {
-				assert(aio->aio_ptrpos>0); 
-				AsyncWait::notify(aio->aio_ptr[--aio->aio_ptrpos]);
-			}
-			else {
-				FileIOWin *pThis=(FileIOWin*)ctx;
-				if (pThis && pThis->asyncIOCallback) {pThis->asyncIOCallback(aio);}
-			}
-
+			if (ov->av!=NULL) AsyncWait::notify(ov->av); else GFileMgr::asyncIOCallback(aio,true);
 			freeIODesc.dealloc(ov);
 		}
 	}
 	PostQueuedCompletionStatus(CP.completionPort,0,(ULONG_PTR)1,NULL);
 }
 
-void FileIOWin::deleteLogFiles(ulong maxFile,const char *lDir,bool fArchived)
-{
-	deleteLogFiles(LOGPREFIX"*"LOGFILESUFFIX,maxFile,lDir,fArchived);
-}
-
-void FileIOWin::deleteLogFiles(const char *mask,ulong maxFile,const char *lDir,bool fArchived)
+void GFileMgr::deleteLogFiles(const char *mask,unsigned maxFile,const char *lDir,bool fArchived)
 {
 	char *end; 
 	if (lDir!=NULL) {
@@ -314,7 +241,7 @@ void FileIOWin::deleteLogFiles(const char *mask,ulong maxFile,const char *lDir,b
 				if ((findData.dwFileAttributes&FILE_ATTRIBUTE_ARCHIVE)!=0)
 					SetFileAttributes(buf,findData.dwFileAttributes&(~FILE_ATTRIBUTE_ARCHIVE));
 			}	
-			else if (maxFile==~0ul || strtoul(findData.cFileName+sizeof(LOGPREFIX),&end,16)<=maxFile) {	// 1 more than prefix size (for 'A' or 'B')
+			else if (maxFile==~0u || strtoul(findData.cFileName+sizeof(LOGPREFIX),&end,16)<=maxFile) {	// 1 more than prefix size (for 'A' or 'B')
 				::DeleteFile(buf);
 			}
 		} while (FindNextFile(h,&findData)==TRUE);
@@ -323,17 +250,41 @@ void FileIOWin::deleteLogFiles(const char *mask,ulong maxFile,const char *lDir,b
 	if (lDir!=NULL) free((char*)mask,STORE_HEAP);
 }
 
-RC FileIOWin::deleteFile(const char *fname)
+RC GFileMgr::deleteFile(const char *fname)
 {
-	if (!::DeleteFile(fname)) return convCode(GetLastError());
-	return RC_OK;
+	return ::DeleteFile(fname)?RC_OK:convCode(GetLastError());
 }
 
+RC GFileMgr::loadExt(const char *path,size_t l,Session *ses,const Value *pars,unsigned nPars,bool fNew)
+{
+	if (path==NULL || l==0) return RC_INVPARAM;
 
-IStoreIO *getStoreIO() 
-{ 
-	try {return new(STORE_HEAP) FileIOWin;}
-	catch (...) {report(MSG_ERROR,"Exception in getStoreIO\n"); return NULL;}
+	RC rc=RC_OK; size_t le=l<5 || !cmpncase(path+l-4,".DLL",4)!=0?4:0;
+	size_t ld=loadDir!=NULL && !memchr(path,'/',l) && !memchr(path,'\\',l)?strlen(loadDir):0;
+	char *p=(char*)ctx->malloc(ld+l+le+1); if (p==NULL) return RC_NORESOURCES;
+	if (ld!=0) memcpy(p,loadDir,ld); memcpy(p+ld,path,l); if (le!=0) memcpy(p+ld+l,".DLL",4); p[ld+l+le]='\0';
+
+	report(MSG_INFO,"Loading %s...\n",p);
+
+	HMODULE hm=::LoadLibrary(p);
+	if (hm==NULL) {
+		DWORD err=GetLastError();
+		report(MSG_ERROR,"Cannot load %s(%u)\n",p,err);
+		rc=convCode(err);
+	} else {
+		typedef bool (*InitFunc)(ISession*,const Value *pars,unsigned nPars,bool fNew);
+		InitFunc init = (InitFunc)::GetProcAddress(hm,INIT_ENTRY_NAME);
+		if (init==NULL) {
+			DWORD err=GetLastError();
+			report(MSG_ERROR,"%s: cannot find '%s'(%d)\n",p,INIT_ENTRY_NAME,err);
+			rc=convCode(err);
+		} else if (!init(ses,pars,nPars,fNew)) {
+			report(MSG_ERROR,"%s: initialization failed\n",p); rc=RC_FALSE;
+		} else
+			report(MSG_INFO,"%s succesfully loaded\n",p);
+	}
+	ctx->free(p);
+	return rc;
 }
 
 #endif

@@ -1,6 +1,6 @@
 /**************************************************************************************
 
-Copyright © 2004-2012 VMware, Inc. All rights reserved.
+Copyright © 2004-2013 GoPivotal, Inc. All rights reserved.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -286,6 +286,53 @@ void StreamBuf::destroy()
 
 //--------------------------------------------------------------------------------------------------------
 
+MemMap::~MemMap()
+{
+	if (ma!=NULL) freeV((Value*)elts,nElts*2,ma);
+}
+
+const Value	*MemMap::find(const Value &key)
+{
+	const MapElt *elt=MBIN::find(key,elts,nElts); return elt!=NULL?&elt->val:NULL;
+}
+
+RC MemMap::getNext(const Value *&key,const Value *&val,bool fFirst)
+{
+	if (fFirst) idx=0; if (idx>=nElts) return RC_EOF;
+	key=&elts[idx].key; val=&elts[idx].val; idx++; return RC_OK;
+}
+
+RC MemMap::set(const Value& key,const Value& val)
+{
+	MapElt *ins=NULL,*elt=(MapElt*)MBIN::find(key,elts,nElts,&ins);
+	if (elt!=NULL) {freeV(elt->val); return copyV(val,elt->val,ma);}
+	unsigned sht=ins!=NULL?unsigned(ins-elts):0u;
+	if ((elts=(MapElt*)ma->realloc(elts,(nElts+1)*sizeof(MapElt),nElts*sizeof(MapElt)))==NULL) return RC_NORESOURCES;
+	if (sht<nElts) memmove(elts+sht+1,elts+sht,(nElts-sht)*sizeof(MapElt));
+	ins=elts+sht; ins->key.setEmpty(); ins->val.setEmpty(); nElts++;
+	RC rc=copyV(key,ins->key,ma); return rc==RC_OK?copyV(val,ins->val,ma):rc; 
+}
+
+IMap *MemMap::clone() const
+{
+	Session *ses=Session::getSession(); Value *pv=NULL;
+	if (ses==NULL || copyV((const Value*)elts,nElts*2,pv,ses)!=RC_OK) return NULL;
+	MemMap *mm=new(ses) MemMap((MapElt*)pv,nElts,ses); if (mm==NULL) freeV(pv,nElts*2,ses);
+	return mm;
+}
+
+unsigned MemMap::count() const
+{
+	return nElts;
+}
+
+void MemMap::destroy()
+{
+	if (ma!=NULL) {this->~MemMap(); ma->free(this);}
+}
+
+//--------------------------------------------------------------------------------------------------------
+
 RC ECB::get(GO_DIR whence,ElementID ei,bool fRead)
 {
 	RC rc=RC_OK;
@@ -294,7 +341,7 @@ RC ECB::get(GO_DIR whence,ElementID ei,bool fRead)
 	switch (whence) {
 	case GO_NEXT:
 		if (eid==STORE_COLLECTION_ID) return RC_INVPARAM; else if (eid==coll->lastID) return RC_NOTFOUND;
-		if ((ei=nextID)!=STORE_COLLECTION_ID) pos=~0ul;
+		if ((ei=nextID)!=STORE_COLLECTION_ID) pos=~0u;
 		else {
 			if (pb.isNull()) {
 				rc=RC_NOTFOUND;
@@ -319,13 +366,13 @@ RC ECB::get(GO_DIR whence,ElementID ei,bool fRead)
 		break;
 	case GO_FIRST:
 		if ((ei=coll->firstID)==STORE_COLLECTION_ID) return RC_NOTFOUND;
-		pos=~0ul; cPage=INVALID_PAGEID; break;
+		pos=~0u; cPage=INVALID_PAGEID; break;
 	case GO_LAST:
 		if ((ei=coll->lastID)==STORE_COLLECTION_ID) return RC_NOTFOUND;
-		pos=~0ul; cPage=INVALID_PAGEID; break;
+		pos=~0u; cPage=INVALID_PAGEID; break;
 	case GO_PREVIOUS:
 		if (eid==STORE_COLLECTION_ID) return RC_INVPARAM; else if (eid==coll->firstID) return RC_NOTFOUND;
-		if ((ei=prevID)!=STORE_COLLECTION_ID) pos=~0ul;
+		if ((ei=prevID)!=STORE_COLLECTION_ID) pos=~0u;
 		else {
 			if (pb.isNull()) {
 				rc=RC_NOTFOUND;
@@ -355,16 +402,16 @@ RC ECB::get(GO_DIR whence,ElementID ei,bool fRead)
 		case STORE_LAST_ELEMENT: if ((ei=coll->lastID)==STORE_COLLECTION_ID) return RC_NOTFOUND; break;
 		}
 		if (ei==eid && !pb.isNull()) return RC_OK;
-		pos=~0ul; cPage=INVALID_PAGEID; break;
+		pos=~0u; cPage=INVALID_PAGEID; break;
 	}
 	if (pb.isNull()) {
 		if (cPage!=INVALID_PAGEID) {
 			// check deletes on heap page!!!
 			pb.getPage(cPage,ctx->trpgMgr,fRead?0:PGCTL_XLOCK); cPage=INVALID_PAGEID;
 		}
-		if (pb.isNull()) pos=~0ul;
+		if (pb.isNull()) pos=~0u;
 	}
-	if (pos==~0ul) {
+	if (pos==~0u) {
 		SearchKey key((uint64_t)ei);
 		if (pb.isNull() || !tp->findKey(key,pos)) {
 			pb.release(); parent.release(); depth=0; rc=fRead?findPage(&key):findPageForUpdate(&key);	// parent->findPage!
@@ -373,8 +420,8 @@ RC ECB::get(GO_DIR whence,ElementID ei,bool fRead)
 		}
 	}
 	if ((hdr=(const ElementDataHdr *)tp->findData(pos,lData))==NULL) return RC_NOTFOUND;
-	prevID=(hdr->flags&1)!=0?((uint32_t*)(hdr+1))[0]:STORE_COLLECTION_ID;
-	nextID=(hdr->flags&2)!=0?((uint32_t*)(hdr+1))[hdr->flags&1]:STORE_COLLECTION_ID;
+	prevID=(hdr->flags&1)!=0?__una_get(((uint32_t*)(hdr+1))[0]):STORE_COLLECTION_ID;
+	nextID=(hdr->flags&2)!=0?__una_get(((uint32_t*)(hdr+1))[hdr->flags&1]):STORE_COLLECTION_ID;
 	eid=ei; return RC_OK;
 }
 
@@ -391,8 +438,8 @@ RC ECB::shift(ElementID ei,bool fPrev)
 		tp=(const TreePageMgr::TreePage*)pb->getPageBuf();
 	}
 	if ((hdr=(const ElementDataHdr *)tp->findData(pos,lData))==NULL) return RC_NOTFOUND;
-	prevID=(hdr->flags&1)!=0?((uint32_t*)(hdr+1))[0]:STORE_COLLECTION_ID;
-	nextID=(hdr->flags&2)!=0?((uint32_t*)(hdr+1))[hdr->flags&1]:STORE_COLLECTION_ID;
+	prevID=(hdr->flags&1)!=0?__una_get(((uint32_t*)(hdr+1))[0]):STORE_COLLECTION_ID;
+	nextID=(hdr->flags&2)!=0?__una_get(((uint32_t*)(hdr+1))[hdr->flags&1]):STORE_COLLECTION_ID;
 	eid=tp->getKeyU32(ushort(pos)); return RC_OK;
 }
 
@@ -456,8 +503,8 @@ RC ECB::prepare(ElementID newEid)
 		(hdr->flags&(fBefore?1:2))==0 && 
 		(eid=tp->getKeyU32(ushort(fBefore?0:pos-1)))!=(fBefore?coll->firstID:coll->lastID)) {
 		ElementID saved=eid; RC rc; if (!fBefore) --pos;
-		prevID=(hdr->flags&1)!=0?((uint32_t*)(hdr+1))[0]:STORE_COLLECTION_ID;
-		nextID=(hdr->flags&2)!=0?((uint32_t*)(hdr+1))[hdr->flags&1]:STORE_COLLECTION_ID;
+		prevID=(hdr->flags&1)!=0?__una_get(((uint32_t*)(hdr+1))[0]):STORE_COLLECTION_ID;
+		nextID=(hdr->flags&2)!=0?__una_get(((uint32_t*)(hdr+1))[hdr->flags&1]):STORE_COLLECTION_ID;
 		if ((rc=get(fBefore?GO_PREVIOUS:GO_NEXT))!=RC_OK ||
 			(rc=setLinks(fBefore?prevID:saved,fBefore?saved:nextID,true))!=RC_OK) return rc;
 		saved=eid;
@@ -470,10 +517,10 @@ RC ECB::prepare(ElementID newEid)
 
 //--------------------------------------------------------------------------------------------------------
 
-Navigator::Navigator(const PageAddr& addr,PropertyID pid,const HeapPageMgr::HeapExtCollection *c,ulong md,MemAlloc *ma)
+Navigator::Navigator(const PageAddr& addr,PropertyID pid,const HeapPageMgr::HeapExtCollection *c,unsigned md,MemAlloc *ma)
 	: Tree(StoreCtx::get()),heapAddr(addr),propID(pid),mode(md),allc(ma),ecb(ctx,*this,NULL),type(VT_ANY)
 {
-	curValue.type=VT_ERROR; curValue.length=0; curValue.flags=0; ulong len=HeapPageMgr::collDescrSize(c);
+	curValue.type=VT_ERROR; curValue.length=0; curValue.flags=0; unsigned len=HeapPageMgr::collDescrSize(c);
 	if (len!=0) {
 		byte *p=(byte*)(ma!=NULL?ma->malloc(len):malloc(len,SES_HEAP));
 		if (p!=NULL) {memcpy(p,c,len); ecb.coll=(HeapPageMgr::HeapExtCollection*)p;}
@@ -490,9 +537,9 @@ const Value *Navigator::navigate(GO_DIR op,ElementID ei)
 	Value w,*res=NULL; bool fRelease=(mode&LOAD_ENAV)!=0;
 	if (op==GO_FINDBYID && ei==STORE_COLLECTION_ID) fRelease=true;
 	else if (ecb.get(op,op==GO_FINDBYID?ei:STORE_COLLECTION_ID,true)==RC_OK && 
-			ctx->queryMgr->loadS(w,ecb.hdr->type,ecb.hdr->type.isCompact()?*(ushort*)((byte*)(ecb.hdr+1)+ecb.hdr->shift):
+			ctx->queryMgr->loadS(w,__una_get(ecb.hdr->type),ecb.hdr->type.isCompact()?*(ushort*)((byte*)(ecb.hdr+1)+ecb.hdr->shift):
 			ushort((byte*)(ecb.hdr+1)-(byte*)ecb.tp)+ecb.hdr->shift,(const HeapPageMgr::HeapPage*)ecb.tp,mode|LOAD_SSV,allc)==RC_OK) {
-		freeV(curValue); curValue=w; curValue.property=STORE_INVALID_PROPID; curValue.eid=ecb.eid; res=&curValue;
+		freeV(curValue); curValue=w; curValue.property=STORE_INVALID_URIID; curValue.eid=ecb.eid; res=&curValue;
 		if (type!=VT_ANY && curValue.type!=type && convV(curValue,curValue,type,allc)!=RC_OK) res=NULL;
 	}
 	if (fRelease) ecb.release();
@@ -503,11 +550,8 @@ RC Navigator::getPageAddr(const ElementDataHdr *hdr,PageAddr& addr)
 {
 	if (!hdr->type.isLOB()||hdr->type.isCompact()) return RC_FALSE;
 	const byte *pData=(const byte*)(hdr+1)+hdr->shift;
-	if (hdr->type.getFormat()==HDF_LONG) {
-		memcpy(&addr.pageID,&((HLOB*)pData)->ref.pageID,sizeof(PageID)); addr.idx=((HLOB*)pData)->ref.idx;
-	} else {
-		HRefSSV href; memcpy(&href,pData,sizeof(HRefSSV)); addr.pageID=href.pageID; addr.idx=href.idx;
-	}
+	const HRefSSV *href=hdr->type.getFormat()==HDF_LONG?&((HLOB*)pData)->ref:(HRefSSV*)pData;
+	addr.pageID=__una_get(href->pageID); addr.idx=__una_get(href->idx);
 	return RC_OK;
 }
 
@@ -524,8 +568,8 @@ const Value *Navigator::getCurrentValue()
 RC Navigator::getElementByID(ElementID eid,Value& v)
 {
 	ECB ecb2(ctx,*this,ecb.coll); RC rc=ecb2.get(GO_FINDBYID,eid,true); if (rc!=RC_OK) return rc;
-	if ((rc=ctx->queryMgr->loadS(v,ecb2.hdr->type,ushort((byte*)ecb2.hdr-(byte*)ecb2.tp)+ecb2.hdr->shift+sizeof(ElementDataHdr),
-		(const HeapPageMgr::HeapPage*)ecb2.tp,mode|LOAD_SSV,allc))==RC_OK) {v.property=STORE_INVALID_PROPID; v.eid=ecb2.eid;}
+	if ((rc=ctx->queryMgr->loadS(v,__una_get(ecb2.hdr->type),ushort((byte*)ecb2.hdr-(byte*)ecb2.tp)+ecb2.hdr->shift+sizeof(ElementDataHdr),
+		(const HeapPageMgr::HeapPage*)ecb2.tp,mode|LOAD_SSV,allc))==RC_OK) {v.property=STORE_INVALID_URIID; v.eid=ecb2.eid;}
 	else if (type!=VT_ANY && v.type!=type) rc=convV(v,v,type,allc);
 	return rc;
 }
@@ -535,7 +579,7 @@ INav *Navigator::clone() const
 	MemAlloc *ma=allc!=NULL?allc:(MemAlloc*)Session::getSession(); return new(ma) Navigator(heapAddr,propID,ecb.coll,mode,ma);
 }
 
-unsigned long Navigator::count() const
+unsigned Navigator::count() const
 {
 	return ecb.coll!=NULL && ecb.coll->firstID!=STORE_COLLECTION_ID ? ecb.coll->nElements : 0;
 }
@@ -567,9 +611,9 @@ PageID Navigator::startPage(const SearchKey *key,int& level,bool fRead,bool fBef
 		if (key==NULL) {
 			if (fBefore) pid=ecb.coll->pages[ecb.coll->nPages-1].page;
 		} else if (key->v.u>=ecb.coll->pages[0].key) {
-			const HeapPageMgr::HeapExtCollPage *cp=ecb.coll->pages,*pp; ulong n=ecb.coll->nPages;
+			const HeapPageMgr::HeapExtCollPage *cp=ecb.coll->pages,*pp; unsigned n=ecb.coll->nPages;
 			do {
-				ulong k=n>>1; pp=&cp[k];
+				unsigned k=n>>1; pp=&cp[k];
 				if (pp->key==key->v.u) return !fBefore?pp->page:k>0?cp[k-1].page:ecb.coll->leftmost;
 				if (pp->key>key->v.u) n=k; else {pid=pp->page; cp=pp+1; n-=k+1;}
 			} while (n>0);
@@ -582,29 +626,29 @@ PageID Navigator::prevStartPage(PageID pid)
 {
 	if (pid!=ecb.coll->leftmost && ecb.coll->nPages>0) {
 		if (pid==ecb.coll->pages[0].page) return ecb.coll->leftmost;
-		for (ulong i=1; i<ecb.coll->nPages; i++) if (pid==ecb.coll->pages[i].page) return ecb.coll->pages[i-1].page;
+		for (unsigned i=1; i<ecb.coll->nPages; i++) if (pid==ecb.coll->pages[i].page) return ecb.coll->pages[i-1].page;
 	}
 	return INVALID_PAGEID;
 }
 
-RC Navigator::addRootPage(const SearchKey& key,PageID& pageID,ulong level)
+RC Navigator::addRootPage(const SearchKey& key,PageID& pageID,unsigned level)
 {
 	assert(0); return RC_OK;
 }
 
-RC Navigator::removeRootPage(PageID pageID,PageID leftmost,ulong level)
+RC Navigator::removeRootPage(PageID pageID,PageID leftmost,unsigned level)
 {
 	assert(0); return RC_OK;
 }
 
-ulong Navigator::getStamp(TREE_NODETYPE) const
+unsigned Navigator::getStamp(TREE_NODETYPE) const
 {
 	return 0;
 }
 
-void Navigator::getStamps(ulong stamps[TREE_NODETYPE_ALL]) const
+void Navigator::getStamps(unsigned stamps[TREE_NODETYPE_ALL]) const
 {
-	memset(stamps,0,TREE_NODETYPE_ALL*sizeof(ulong));
+	memset(stamps,0,TREE_NODETYPE_ALL*sizeof(unsigned));
 }
 
 void Navigator::advanceStamp(TREE_NODETYPE)
@@ -629,7 +673,7 @@ TreeConnect *Navigator::persist(uint32_t& hndl) const
 	return NULL;
 #else
 	assert(ecb.coll!=NULL);
-	ulong len=HeapPageMgr::collDescrSize(ecb.coll); 
+	unsigned len=HeapPageMgr::collDescrSize(ecb.coll); 
 	byte *p=(byte*)malloc(len,STORE_HEAP); if (p==NULL) return NULL; 
 	memcpy(p,ecb.coll,len); 
 	return new(STORE_HEAP) Collection(StoreCtx::get(),0,(HeapPageMgr::HeapExtCollection*)p,0,STORE_HEAP);	// stamp???
@@ -640,8 +684,8 @@ TreeConnect *Navigator::persist(uint32_t& hndl) const
 
 const IndexFormat Collection::collFormat(KT_UINT,sizeof(uint64_t),KT_VARDATA); 
 
-Collection::Collection(StoreCtx *ct,ulong stmp,const HeapPageMgr::HeapExtCollection *c,MemAlloc *ma,ulong xP)
-: Tree(ct),maxPages(xP),allc(ma),coll(ma!=NULL?HeapPageMgr::copyDescr(c,ma):(HeapPageMgr::HeapExtCollection*)c),stamp(stmp),fMod(false)
+Collection::Collection(StoreCtx *ct,const HeapPageMgr::HeapExtCollection *c,MemAlloc *ma,unsigned xP)
+: Tree(ct),maxPages(xP),allc(ma),coll(ma!=NULL?HeapPageMgr::copyDescr(c,ma):(HeapPageMgr::HeapExtCollection*)c),stamp(0),fMod(false)
 {
 }
 
@@ -660,7 +704,7 @@ IndexFormat Collection::indexFormat() const
 	return collFormat;
 }
 
-ulong Collection::getMode() const
+unsigned Collection::getMode() const
 {
 	return TF_WITHDEL|TF_SPLITINTX;
 }
@@ -682,9 +726,8 @@ Collection *Collection::create(const PageAddr& ad,PropertyID propID,StoreCtx *ct
 		memcpy(&addr,((HeapPageMgr::HeapObjHeader*)hpin)+1,PageAddrSize);
 	}
 	const HeapPageMgr::HeapV *hprop=hpin->findProperty(propID);
-	if (hprop==NULL || !hprop->type.isCollection() || hprop->type.getFormat()!=HDF_LONG)
-		{if (fRelease) pb->release(); return NULL;}
-	Collection *pc=new(ma) Collection(ctx,hpin->getStamp(),(const HeapPageMgr::HeapExtCollection*)(pb->getPageBuf()+hprop->offset),ma);
+	if (hprop==NULL || !hprop->type.isCollection() || hprop->type.getFormat()!=HDF_LONG) {if (fRelease) pb->release(); return NULL;}
+	Collection *pc=new(ma) Collection(ctx,(const HeapPageMgr::HeapExtCollection*)(pb->getPageBuf()+hprop->offset),ma);
 	if (fRelease) pb->release(); return pc!=NULL&&pc->coll!=NULL?pc:(delete pc,(Collection*)0);
 }
 
@@ -750,12 +793,9 @@ RC Collection::modify(ExprOp op,const Value *pv,ElementID epos,ElementID eid,Ses
 		case OP_DELETE:
 			assert(ecb.hdr!=NULL);
 			if (ecb.hdr->type.isLOB() && !ecb.hdr->type.isCompact()) {
-				const byte *pData=(const byte*)(ecb.hdr+1)+ecb.hdr->shift; PageAddr addr;
-				if (ecb.hdr->type.getFormat()==HDF_LONG) {
-					memcpy(&addr.pageID,&((HLOB*)pData)->ref.pageID,sizeof(PageID)); addr.idx=((HLOB*)pData)->ref.idx;
-				} else {
-					HRefSSV href; memcpy(&href,pData,sizeof(HRefSSV)); addr.pageID=href.pageID; addr.idx=href.idx;
-				}
+				const byte *pData=(const byte*)(ecb.hdr+1)+ecb.hdr->shift; 
+				const HRefSSV *href=ecb.hdr->type.getFormat()==HDF_LONG?&((HLOB*)pData)->ref:(HRefSSV*)pData;
+				PageAddr addr={__una_get(href->pageID),__una_get(href->idx)};
 				if ((rc=ctx->queryMgr->deleteData(addr,ses))!=RC_OK) break;
 			}
 			if ((rc=ecb.unlink(first,last,true))==RC_OK) {
@@ -772,9 +812,9 @@ RC Collection::modify(ExprOp op,const Value *pv,ElementID epos,ElementID eid,Ses
 			assert(ecb.hdr!=NULL);
 			if (isString(ecb.hdr->type.getType())) {
 				Value v;
-				if ((rc=ctx->queryMgr->loadS(v,ecb.hdr->type,ecb.hdr->type.isCompact()?*(ushort*)((byte*)(ecb.hdr+1)+ecb.hdr->shift):
+				if ((rc=ctx->queryMgr->loadS(v,__una_get(ecb.hdr->type),ecb.hdr->type.isCompact()?*(ushort*)((byte*)(ecb.hdr+1)+ecb.hdr->shift):
 					ushort((byte*)(ecb.hdr+1)-(byte*)ecb.tp)+ecb.hdr->shift,(const HeapPageMgr::HeapPage*)ecb.tp,0,ses))!=RC_OK) break;
-				if ((rc=Expr::calc(OP_EDIT,v,pv,2,0,ses))==RC_OK && (rc=persistElement(ses,v,lval,buf,lbuf,threshold,ecb.prevID,ecb.nextID))==RC_OK)
+				if ((rc=Expr::calc(OP_EDIT,v,pv,2,0,EvalCtx(ses)))==RC_OK && (rc=persistElement(ses,v,lval,buf,lbuf,threshold,ecb.prevID,ecb.nextID))==RC_OK)
 					rc=ctx->trpgMgr->update(ecb,key,(byte*)ecb.hdr,ecb.lData,buf,lval);
 			} else if (ecb.hdr->type.isLOB()) {
 				const byte *pData=(const byte*)(ecb.hdr+1)+ecb.hdr->shift; HLOB data;
@@ -865,9 +905,9 @@ PageID Collection::startPage(const SearchKey *key,int& level,bool fRead,bool fBe
 	} else if (coll->nPages>0) {
 		if (key==NULL) {if (fBefore) pid=coll->pages[coll->nPages-1].page;}
 		else if (key->v.u>=coll->pages[0].key) {
-			const HeapPageMgr::HeapExtCollPage *cp=coll->pages,*pp; ulong n=coll->nPages;
+			const HeapPageMgr::HeapExtCollPage *cp=coll->pages,*pp; unsigned n=coll->nPages;
 			do {
-				ulong k=n>>1; pp=&cp[k]; 
+				unsigned k=n>>1; pp=&cp[k]; 
 				if (pp->key==key->v.u) return !fBefore?pp->page:k>0?cp[k-1].page:coll->leftmost;
 				if (pp->key>key->v.u) n=k; else {pid=pp->page; cp=pp+1; n-=k+1;}
 			} while (n>0);
@@ -880,12 +920,12 @@ PageID Collection::prevStartPage(PageID pid)
 {
 	if (pid!=coll->leftmost && coll->nPages>0) {
 		if (pid==coll->pages[0].page) return coll->leftmost;
-		for (ulong i=1; i<coll->nPages; i++) if (pid==coll->pages[i].page) return coll->pages[i-1].page;
+		for (unsigned i=1; i<coll->nPages; i++) if (pid==coll->pages[i].page) return coll->pages[i-1].page;
 	}
 	return INVALID_PAGEID;
 }
 
-RC Collection::addRootPage(const SearchKey& key,PageID& pageID,ulong level) 
+RC Collection::addRootPage(const SearchKey& key,PageID& pageID,unsigned level) 
 {
 	if (coll==NULL) return RC_NOTFOUND;
 	RC rc=RC_OK; PageID newRoot; PBlock *pb; Session *ses;
@@ -898,10 +938,10 @@ RC Collection::addRootPage(const SearchKey& key,PageID& pageID,ulong level)
 			coll->nPages*sizeof(HeapPageMgr::HeapExtCollPage)+sizeof(HeapPageMgr::HeapExtCollection)))==NULL)
 				rc=RC_NORESOURCES;
 		else {
-			ulong idx=0,n=coll->nPages;
+			unsigned idx=0,n=coll->nPages;
 			if (n>0) {
 				for (;;) {
-					ulong k=n>>1; const HeapPageMgr::HeapExtCollPage *cp=&coll->pages[idx+k]; 
+					unsigned k=n>>1; const HeapPageMgr::HeapExtCollPage *cp=&coll->pages[idx+k]; 
 					if (cp->key==key.v.u) {idx+=k; break;}
 					if (cp->key>key.v.u) {if ((n=k)==0) break;} else {idx+=k+1; if ((n-=k+1)==0) break;}
 				}
@@ -924,18 +964,18 @@ RC Collection::addRootPage(const SearchKey& key,PageID& pageID,ulong level)
 	return rc;
 }
 
-RC Collection::removeRootPage(PageID pageID,PageID leftmost,ulong level)
+RC Collection::removeRootPage(PageID pageID,PageID leftmost,unsigned level)
 {
 	//...
 	return RC_OK;
 }
 
-ulong Collection::getStamp(TREE_NODETYPE) const
+unsigned Collection::getStamp(TREE_NODETYPE) const
 {
 	return stamp;
 }
 
-void Collection::getStamps(ulong stamps[TREE_NODETYPE_ALL]) const
+void Collection::getStamps(unsigned stamps[TREE_NODETYPE_ALL]) const
 {
 	for (int i=0; i<TREE_NODETYPE_ALL; i++) stamps[i]=stamp;
 }
@@ -965,7 +1005,7 @@ class InitCollection : public Tree
 {
 	HeapPageMgr::HeapExtCollection&	coll;
 	TreeCtx			tctx;
-	const	ulong	maxPages;
+	const	unsigned	maxPages;
 	const	bool	fForce;
 	const	bool	fOld;
 	byte			*buf;
@@ -973,11 +1013,11 @@ class InitCollection : public Tree
 	size_t			threshold;
 	Session			*const ses;
 public:
-	InitCollection(HeapPageMgr::HeapExtCollection& cl,ulong mP,Session *ss,bool fF,bool fO)
+	InitCollection(HeapPageMgr::HeapExtCollection& cl,unsigned mP,Session *ss,bool fF,bool fO)
 		: Tree(ss->getStore()),coll(cl),tctx(*this),maxPages(mP),fForce(fF),fOld(fO),buf(NULL),lbuf(0),ses(ss)
 			{threshold=ctx->trpgMgr->contentSize()/8;}
 	virtual ~InitCollection() {ses->free(buf);}
-	RC addRootPage(const SearchKey& key,PageID& pageID,ulong level) {
+	RC addRootPage(const SearchKey& key,PageID& pageID,unsigned level) {
 		assert(pageID!=INVALID_PAGEID && key.type==KT_UINT);
 		RC rc=RC_OK; PageID newRoot;
 		if (coll.nPages<maxPages) {
@@ -995,7 +1035,7 @@ public:
 		}
 		return rc;
 	}
-	RC persist(const Value& v,ulong idx) {
+	RC persist(const Value& v,unsigned idx) {
 		if (!fForce) v.eid=coll.keygen++;
 		else if (ctx->getPrefix()==(v.eid&CPREFIX_MASK) && v.eid>=coll.keygen) coll.keygen=v.eid+1;
 		if (idx==0) coll.firstID=v.eid; coll.lastID=v.eid; SearchKey key((uint64_t)v.eid); ushort lval;
@@ -1014,12 +1054,12 @@ public:
 	}
 	TreeFactory *getFactory() const {return NULL;}
 	IndexFormat	indexFormat() const {return Collection::collFormat;}
-	ulong		getMode() const {return TF_SPLITINTX|TF_NOPOST;}
+	unsigned		getMode() const {return TF_SPLITINTX|TF_NOPOST;}
 	PageID		startPage(const SearchKey*,int& level,bool,bool) {level=-1; return INVALID_PAGEID;}
 	PageID		prevStartPage(PageID) {return INVALID_PAGEID;}
-	RC			removeRootPage(PageID page,PageID leftmost,ulong level) {return RC_INTERNAL;}
-	ulong		getStamp(TREE_NODETYPE) const {return 0;}
-	void		getStamps(ulong stamps[TREE_NODETYPE_ALL]) const {}
+	RC			removeRootPage(PageID page,PageID leftmost,unsigned level) {return RC_INTERNAL;}
+	unsigned		getStamp(TREE_NODETYPE) const {return 0;}
+	void		getStamps(unsigned stamps[TREE_NODETYPE_ALL]) const {}
 	void		advanceStamp(TREE_NODETYPE) {}
 	bool		lock(RW_LockType,bool fTry=false) const {return true;}
 	void		unlock() const {}
@@ -1028,7 +1068,7 @@ public:
 };
 };
 
-RC Collection::persistElement(Session *ses,const Value& v,ushort& lval,byte *&buf,size_t& lbuf,size_t threshold,ulong prev,ulong next,bool fOld)
+RC Collection::persistElement(Session *ses,const Value& v,ushort& lval,byte *&buf,size_t& lbuf,size_t threshold,uint32_t prev,uint32_t next,bool fOld)
 {
 	ushort sht=0,l; lval=sizeof(ElementDataHdr); byte flags=0; StoreCtx *ctx=ses->getStore();
 	if (prev!=STORE_COLLECTION_ID) {lval+=sht=sizeof(uint32_t); flags|=1;}
@@ -1036,14 +1076,11 @@ RC Collection::persistElement(Session *ses,const Value& v,ushort& lval,byte *&bu
 	if (v.type==VT_ARRAY || v.type==VT_COLLECTION) return RC_INTERNAL;
 	size_t len; RC rc=RC_OK;
 	if (fOld && v.type==VT_STREAM) l=(v.flags&VF_SSV)!=0?sizeof(HRefSSV):sizeof(HLOB);
-	else if ((rc=ctx->queryMgr->estimateLength(v,len,MODE_PREFIX_READ,threshold,ses))!=RC_OK) return rc;
+	else if ((rc=ctx->queryMgr->calcLength(v,len,MODE_PREFIX_READ,threshold,ses))!=RC_OK) return rc;
 	else if ((l=(ushort)ceil(len,HP_ALIGN))==0) l=sizeof(ushort); else if (l>threshold) v.flags|=VF_SSV;
-	if (buf==NULL||ulong(lval+l)>lbuf) {
-		buf=buf==NULL?(byte*)ses->malloc(lbuf=lval+l):(byte*)ses->realloc(buf,lbuf=lval+l);
-		if (buf==NULL) return RC_NORESOURCES;
-	}
+	if ((buf==NULL||unsigned(lval+l)>lbuf) && (buf=(byte*)ses->realloc(buf,lbuf=lval+l))==NULL) return RC_NORESOURCES;
 	ElementDataHdr *hdr=(ElementDataHdr*)buf; hdr->flags=flags; hdr->shift=byte(sht); hdr->type.flags=v.meta;
-	if ((flags&1)!=0) ((uint32_t*)(hdr+1))[0]=prev; if ((flags&2)!=0) ((uint32_t*)(hdr+1))[flags&1]=next;
+	if ((flags&1)!=0) __una_set(((uint32_t*)(hdr+1))[0],prev); if ((flags&2)!=0) __una_set(((uint32_t*)(hdr+1))[flags&1],next);
 	if (fOld && v.type==VT_STREAM) {
 		if ((v.flags&VF_SSV)!=0) {memcpy(buf+lval,&v.id,sizeof(HRefSSV)); hdr->type.setType(VT_STREAM,HDF_SHORT);}
 		else {
@@ -1052,18 +1089,14 @@ RC Collection::persistElement(Session *ses,const Value& v,ushort& lval,byte *&bu
 			memcpy(buf+lval,&hl,sizeof(HLOB)); hdr->type.setType(VT_STREAM,HDF_LONG);
 		}
 		lval+=l;
-	} else if ((rc=ctx->queryMgr->persistValue(v,lval,hdr->type,*(ushort*)&buf[lval],buf+lval,NULL,PageAddr::invAddr))==RC_OK)
-		{if (hdr->type.isCompact()) lval+=sizeof(ushort); else lval=(ushort)ceil(lval,HP_ALIGN);}
+	} else if ((rc=ctx->queryMgr->persistValue(v,lval,hdr->type,sht,buf+lval,NULL,PageAddr::invAddr))==RC_OK)
+		{if (hdr->type.isCompact()) {__una_set(*(ushort*)(buf+lval),sht); lval+=sizeof(ushort);} else lval=(ushort)ceil(lval,HP_ALIGN);}
 	return rc;
 }
 
-RC Collection::persist(const Value& v,HeapPageMgr::HeapExtCollection& collection,Session *ses,bool fForce,bool fOld,ulong maxPages)
+RC Collection::persist(const Value& v,HeapPageMgr::HeapExtCollection& collection,Session *ses,bool fForce,bool fOld,unsigned maxPages)
 {
-	memset(&collection,0,sizeof(HeapPageMgr::HeapExtCollection));
-	collection.anchor=collection.leftmost=collection.pages[0].page=INVALID_PAGEID;
-	collection.keygen=ses->getStore()->getPrefix(); collection.indexID=~0u;
-	InitCollection init(collection,maxPages,ses,fForce,fOld); 
-	ulong k; const Value *cv; ElementID prev=0; RC rc=RC_OK;
+	InitCollection init(collection,maxPages,ses,fForce,fOld); unsigned k; const Value *cv; ElementID prev=0; RC rc=RC_OK;
 	if (ses==NULL) rc=RC_NOSESSION; else if (!ses->inWriteTx()) rc=RC_READTX;
 	else switch (v.type) {
 	case VT_ARRAY:
@@ -1072,14 +1105,14 @@ RC Collection::persist(const Value& v,HeapPageMgr::HeapExtCollection& collection
 			if ((rc=init.persist(v.varray[k],k))!=RC_OK) break;
 		}
 		init.release(); 
-		if (rc==RC_OK && k<v.length) for (Collection pcol(ses->getStore(),0,&collection,0,NO_HEAP); k<v.length; k++)
+		if (rc==RC_OK && k<v.length) for (Collection pcol(ses->getStore(),&collection,0,NO_HEAP); k<v.length; k++)
 			{const Value *cv=&v.varray[k]; if ((rc=pcol.modify(OP_ADD,cv,prev,cv->eid,ses))!=RC_OK) break; prev=cv->eid;}
 		break;
 	case VT_COLLECTION:
 		for (cv=v.nav->navigate(GO_FIRST),k=0; cv!=NULL; ++k,cv=v.nav->navigate(GO_NEXT))
 			{if (fForce) {if (cv->eid<prev) break; else prev=cv->eid;} if ((rc=init.persist(*cv,k))!=RC_OK) break;}
 		init.release(); 
-		if (rc==RC_OK && cv!=NULL) for (Collection pcol(ses->getStore(),0,&collection,0,NO_HEAP); cv!=NULL; ++k,cv=v.nav->navigate(GO_NEXT))
+		if (rc==RC_OK && cv!=NULL) for (Collection pcol(ses->getStore(),&collection,0,NO_HEAP); cv!=NULL; ++k,cv=v.nav->navigate(GO_NEXT))
 			{if ((rc=pcol.modify(OP_ADD,cv,prev,cv->eid,ses))!=RC_OK) break; prev=cv->eid;}
 		break;
 	default:
@@ -1093,12 +1126,9 @@ RC Collection::CollFreeData::freeData(const byte *data,StoreCtx *ctx)
 {
 	const ElementDataHdr *hdr=(const ElementDataHdr*)data;
 	if (!hdr->type.isLOB() || hdr->type.isCompact()) return RC_OK;
-	const byte *pData=(const byte*)(hdr+1)+hdr->shift; PageAddr addr;
-	if (hdr->type.getFormat()==HDF_LONG) {
-		memcpy(&addr.pageID,&((HLOB*)pData)->ref.pageID,sizeof(PageID)); addr.idx=((HLOB*)pData)->ref.idx;
-	} else {
-		HRefSSV href; memcpy(&href,pData,sizeof(HRefSSV)); addr.pageID=href.pageID; addr.idx=href.idx;
-	}
+	const byte *pData=(const byte*)(hdr+1)+hdr->shift; 
+	const HRefSSV *href=hdr->type.getFormat()==HDF_LONG?&((HLOB*)pData)->ref:(HRefSSV*)pData;
+	PageAddr addr={__una_get(href->pageID),__una_get(href->idx)};
 	return ctx->queryMgr->deleteData(addr);
 }
 
@@ -1135,8 +1165,8 @@ RC CollFactory::createTree(const byte *params,byte lparams,Tree *&tree)
 
 //-----------------------------------------------------------------------------------------------------
 
-BigMgr::BigMgr(StoreCtx *ct,ulong blobReadTabSize) 
-: ctx(ct),blobReadTab(blobReadTabSize)
+BigMgr::BigMgr(StoreCtx *ct,unsigned blobReadTabSize) 
+: ctx(ct),blobReadTab(blobReadTabSize,(MemAlloc*)ct),freeBlob((MemAlloc*)ct,DEFAULT_BLOBREAD_BLOCK)
 {
 	ct->treeMgr->registerFactory(CollFactory::factory);
 }

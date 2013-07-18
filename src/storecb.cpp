@@ -1,6 +1,6 @@
 /**************************************************************************************
 
-Copyright © 2004-2012 VMware, Inc. All rights reserved.
+Copyright © 2004-2013 GoPivotal, Inc. All rights reserved.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -49,17 +49,18 @@ RC StoreCB::open(StoreCtx *ctx,const char *fname,const char *pwd,bool fForce)
 				memcpy(keybuf,theCB->hdr.salt2,sizeof(uint32_t)+PWD_LSALT);
 				PWD_ENCRYPT crypt2((byte*)pwd,strlen(pwd),keybuf); 
 				memcpy(ctx->encKey0,crypt2.encrypted()+sizeof(uint32_t)+PWD_LSALT,ENC_KEY_SIZE);
-				AES aes(ctx->encKey0,ENC_KEY_SIZE);
+				AES aes(ctx->encKey0,ENC_KEY_SIZE,true);
 				aes.decrypt((byte*)theCB+sizeof(CryptInfo),STORECBSIZE-sizeof(CryptInfo),(uint32_t*)theCB->hdr.salt1+1);
 				if ((ctx->theCBEnc=(StoreCB*)allocAligned(ctx->bufSize,lPage))==NULL) {close(ctx); return RC_NORESOURCES;}
 			}
-			char buf[40]; int l; convDateTime(NULL,theCB->timestamp,buf,l); report(MSG_INFO,"Store timestamp: %s UTC\n",buf);
 			if (theCB->magic!=STORECBMAGIC || theCB->timestamp>ts && !fForce) rc=RC_CORRUPTED;
 			else if (theCB->version/100!=STORE_VERSION/100 || theCB->version%100>STORE_VERSION%100) rc=RC_VERSION;
 			else {
 				ctx->storeID=theCB->storeID; ctx->keyPrefix=StoreCtx::genPrefix(theCB->storeID);
 				memcpy(ctx->HMACKey,theCB->HMACKey,HMAC_KEY_SIZE);
 				memcpy(ctx->encKey,theCB->encKey,ENC_KEY_SIZE);
+				SHA pub; pub.add(ctx->encKey,ENC_KEY_SIZE);
+				memcpy(ctx->pubKey,pub.result(),SHA_DIGEST_BYTES);
 				ctx->fEncrypted=theCB->fIsEncrypted!=0;
 				ctx->fHMAC=theCB->fHMAC!=0;
 			}
@@ -78,7 +79,7 @@ RC StoreCB::create(StoreCtx *ctx,const char *fname,const StoreCreationParameters
 		bool fInit=open(ctx,fname,cpar.password,false)==RC_OK&&ctx->theCB->state==SST_INIT;
 		if (ctx->theCB!=NULL) {freeAligned(ctx->theCB); ctx->theCB=NULL;}
 		if (!fInit) {ctx->fileMgr->close(0); return rc;}
-		ctx->fileMgr->truncate(0,0);
+		ctx->fileMgr->growFile(0,0);
 	}
 	ctx->bufSize=(uint32_t)ceil(STORECBSIZE,cpar.pageSize);
 	StoreCB *theCB=ctx->theCB=(StoreCB*)allocAligned(ctx->bufSize,cpar.pageSize);
@@ -98,6 +99,10 @@ RC StoreCB::create(StoreCtx *ctx,const char *fname,const StoreCreationParameters
 		theCB->fIsEncrypted=uint8_t(cpar.fEncrypted ? ~0 : 0);
 		theCB->fHMAC=uint8_t(cpar.fPageIntegrity ? ~0 : 0);
 		theCB->filler=0;
+		ctx->cryptoMgr->randomBytes(theCB->encKey,ENC_KEY_SIZE);
+		memcpy(ctx->encKey,theCB->encKey,ENC_KEY_SIZE);
+		SHA pub; pub.add(ctx->encKey,ENC_KEY_SIZE);
+		memcpy(ctx->pubKey,pub.result(),SHA_DIGEST_BYTES);
 		if (cpar.fEncrypted || cpar.fPageIntegrity || cpar.password!=NULL && *cpar.password!='\0') {
 			ctx->fHMAC=true;
 			ctx->cryptoMgr->randomBytes(theCB->HMACKey,HMAC_KEY_SIZE);
@@ -106,10 +111,7 @@ RC StoreCB::create(StoreCtx *ctx,const char *fname,const StoreCreationParameters
 			PWD_ENCRYPT crypt((byte*)key,strlen(key));
 			memcpy(theCB->hdr.salt1,crypt.encrypted(),sizeof(uint32_t)+PWD_LSALT);
 			memcpy(ctx->HMACKey0,crypt.encrypted()+sizeof(uint32_t)+PWD_LSALT,HMAC_KEY_SIZE);
-			if (cpar.fEncrypted) {
-				ctx->cryptoMgr->randomBytes(theCB->encKey,ENC_KEY_SIZE);
-				memcpy(ctx->encKey,theCB->encKey,ENC_KEY_SIZE); ctx->fEncrypted=true;
-			}
+			if (cpar.fEncrypted) ctx->fEncrypted=true;
 			if (cpar.password!=NULL && *cpar.password!='\0') {
 				if ((ctx->theCBEnc=(StoreCB*)allocAligned(ctx->bufSize,cpar.pageSize))==NULL) rc=RC_NORESOURCES;
 				else {
@@ -122,7 +124,7 @@ RC StoreCB::create(StoreCtx *ctx,const char *fname,const StoreCreationParameters
 		ctx->keyPrefix=StoreCtx::genPrefix(cpar.storeId);
 		theCB->nDataFiles=1;
 		theCB->state=~0u;
-		theCB->xPropID=PROP_SPEC_LAST;
+		theCB->xPropID=MAX_BUILTIN_URIID;
 		for (int i=0; i<MA_ALL; i++) theCB->mapRoots[i]=INVALID_PAGEID;
 		if (rc==RC_OK) rc=update(ctx,false);
 	}
@@ -136,8 +138,8 @@ void StoreCB::preload(StoreCtx *ctx) const
 		PGID_INDEX,PGID_INDEX,PGID_INDEX,PGID_INDEX,PGID_INDEX,PGID_INDEX,PGID_INDEX,
 		PGID_INDEX,PGID_INDEX,PGID_HEAPDIR,PGID_HEAPDIR,PGID_HEAPDIR,PGID_HEAPDIR,
 		PGID_ALL,PGID_ALL,PGID_ALL,PGID_ALL,PGID_ALL,PGID_ALL,PGID_ALL,PGID_ALL};
-	PageID pages[MA_ALL]; PageMgr *pmgrs[MA_ALL]; ulong cnt=0;
-	for (ulong i=0; i<MA_ALL; i++) if (mapRoots[i]!=INVALID_PAGEID)
+	PageID pages[MA_ALL]; PageMgr *pmgrs[MA_ALL]; unsigned cnt=0;
+	for (unsigned i=0; i<MA_ALL; i++) if (mapRoots[i]!=INVALID_PAGEID)
 		{pages[cnt]=mapRoots[i]; pmgrs[cnt]=ctx->getPageMgr(mapRootsPGIDs[i]); cnt++;}
 	if (cnt>0) ctx->bufMgr->prefetch(pages,cnt,NULL,pmgrs);
 }
@@ -153,7 +155,7 @@ RC StoreCB::update(StoreCtx *ctx,bool fSetLogEnd)
 	}
 	RWLockP lck(&ctx->cbLock,RW_X_LOCK); getTimestamp(theCB->timestamp);
 	if (ctx->theCBEnc!=NULL) {
-		memcpy(theCB=ctx->theCBEnc,ctx->theCB,STORECBSIZE); AES aes(ctx->encKey0,ENC_KEY_SIZE);
+		memcpy(theCB=ctx->theCBEnc,ctx->theCB,STORECBSIZE); AES aes(ctx->encKey0,ENC_KEY_SIZE,false);
 		aes.encrypt((byte*)theCB+sizeof(CryptInfo),STORECBSIZE-sizeof(CryptInfo),(uint32_t*)theCB->hdr.salt1+1);
 	}
 	if (ctx->fHMAC!=0) {
@@ -190,7 +192,7 @@ void StoreCB::close(StoreCtx *ctx)
 	ctx->fileMgr->close(0);
 }
 
-RC StoreCB::update(StoreCtx *ctx,ulong info,const byte *rec,size_t lrec,bool fUndo)
+RC StoreCB::update(StoreCtx *ctx,unsigned info,const byte *rec,size_t lrec,bool fUndo)
 {
 	RWLockP lck(&ctx->cbLock,RW_S_LOCK);
 	const MapAnchorUpdate *mau=(const MapAnchorUpdate*)rec;

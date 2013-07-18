@@ -1,6 +1,6 @@
 /**************************************************************************************
 
-Copyright © 2004-2012 VMware, Inc. All rights reserved.
+Copyright © 2004-2013 GoPivotal, Inc. All rights reserved.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -27,24 +27,26 @@ Written by Mark Venguerov 2004-2012
 
 using namespace AfyKernel;
 
-QBuildCtx::QBuildCtx(Session *s,const ValueV& prs,const Stmt *st,ulong nsk,ulong md)
-	: ses(s),qx(new(s) QCtx(s)),stmt(st),nSkip(nsk),mode(md),flg(0),propsReq(s),sortReq(NULL),nSortReq(0),nqs(0),ncqs(0) 
+QBuildCtx::QBuildCtx(Session *s,EvalCtx *ectx,const Stmt *st,unsigned nsk,unsigned md)
+	: ses(s),qx(new(s) QCtx(s,ectx)),stmt(st),nSkip(nsk),mode(md),flg(0),propsReq(s),sortReq(NULL),nSortReq(0),nqs(0),ncqs(0) 
 {
-	if (qx==NULL) throw RC_NORESOURCES; 
-	qx->ref(); qx->vals[QV_PARAMS]=prs; qx->vals[QV_PARAMS].fFree=false;
+	if (qx==NULL) throw RC_NORESOURCES; qx->ref();
+	qx->vals[QV_PARAMS]=ectx!=NULL&&ectx->params!=NULL&&ectx->nParams!=0?ectx->params[0]:ValueV(NULL,0); qx->vals[QV_PARAMS].fFree=false;
 	if ((md&MODE_COPY_VALUES)!=0) {
 		flg|=QO_VCOPIED;
-		if (prs.vals!=NULL && prs.nValues!=0) {
-			RC rc=copyV(prs.vals,prs.nValues,*(Value**)&qx->vals[QV_PARAMS].vals,s); if (rc!=RC_OK) throw rc;
-			qx->vals[QV_PARAMS].fFree=true;
+		if (qx->vals[QV_PARAMS].vals!=NULL) {
+			RC rc=copyV(qx->vals[QV_PARAMS].vals,qx->vals[QV_PARAMS].nValues,*(Value**)&qx->vals[QV_PARAMS].vals,s);
+			if (rc!=RC_OK) throw rc; qx->vals[QV_PARAMS].fFree=true;
 		}
 	}
-	if ((md&MODE_FOR_UPDATE)!=0) flg|=QO_FORUPDATE; if ((md&MODE_DELETED)!=0) flg|=QO_DELETED; if ((md&MODE_CLASS)!=0) flg|=QO_CLASS;
+	if ((md&MODE_FOR_UPDATE)!=0) flg|=QO_FORUPDATE;
+	if ((md&MODE_DELETED)!=0) flg|=QO_DELETED;
+	if ((md&MODE_CLASS)!=0) flg|=QO_CLASS|QO_RAW;
 }
 
 QBuildCtx::~QBuildCtx()
 {
-	for (ulong i=0; i<nqs; i++) delete src[i];
+	for (unsigned i=0; i<nqs; i++) delete src[i];
 	if (qx!=NULL) qx->destroy();
 }
 
@@ -56,8 +58,9 @@ RC QBuildCtx::process(QueryOp *&qop)
 
 	RC rc=qv->build(*this,qop); if (rc!=RC_OK) return rc; assert(qop!=NULL);
 
-	if (qv->groupBy==NULL || qv->nGroupBy==0) switch (qv->dtype) {
-	case DT_DISTINCT: case DT_DEFAULT:
+	if (qv->groupBy==NULL || qv->nGroupBy==0) switch (qv->qvf&(QVF_ALL|QVF_DISTINCT)) {
+	default:
+	case QVF_DISTINCT:
 		if ((qop->qflags&QO_UNIQUE)==0 && (qv->stype==SEL_PINSET||qv->stype==SEL_COMPOUND||qv->stype==SEL_AUGMENTED)) {
 			QueryOp *q=new(ses,0,propsReq.nPls) Sort(qop,NULL,0,flg|QO_UNIQUE,0,NULL,0/*propsReq,nPropsReq*/);
 			if (q==NULL) {delete qop; qop=NULL; return RC_NORESOURCES;}
@@ -76,12 +79,12 @@ RC QBuildCtx::process(QueryOp *&qop)
 		}
 		break;
 #endif
-	case DT_ALL:
+	case QVF_ALL:
 		qop->unique(false); break;
 	}
 	if (qv->stype!=SEL_CONST && qv->stype!=SEL_VALUE && qv->stype!=SEL_DERIVED) {
 		if (stmt->orderBy!=NULL)
-			rc=sort(qop,stmt->orderBy,stmt->nOrderBy);
+			rc=sort(qop,stmt->orderBy,stmt->nOrderBy,NULL,false);
 		/*else if ((qop->qflags&QO_DEGREE)!=0) {
 			OrderSegQ ks; ks.pid=PROP_SPEC_ANY; ks.flags=0; ks.var=0; ks.aggop=OP_SET; ks.lPref=0;
 			QueryOp *q=new(ses,1,0) Sort(qop,&ks,1,flg,1,NULL,0); if (q==NULL) delete qop; qop=q;
@@ -91,7 +94,7 @@ RC QBuildCtx::process(QueryOp *&qop)
 	else if (rc!=RC_OK) {delete qop; qop=NULL;}
 	else {
 		if (nSkip!=0) qop->setSkip(nSkip);
-		if ((mode&MODE_VERBOSE)!=0 || (ses->getTraceMode()&TRACE_EXEC_PLAN)!=0)
+		if ((ses->getTraceMode()&TRACE_EXEC_PLAN)!=0)
 			{SOutCtx buf(ses); qop->print(buf,0); size_t l; byte *p=buf.result(l); ses->trace(1,"%.*s\n",l,p);}
 	}
 	return rc;
@@ -101,7 +104,7 @@ RC SetOpVar::build(class QBuildCtx& qctx,class QueryOp *&q) const
 {
 	q=NULL;	assert(type==QRY_UNION||type==QRY_EXCEPT||type==QRY_INTERSECT);
 	if (type==QRY_EXCEPT && nVars!=2) return RC_INTERNAL;
-	RC rc=RC_OK; QueryOp *qq; const ulong nqs0=qctx.nqs;
+	RC rc=RC_OK; QueryOp *qq; const unsigned nqs0=qctx.nqs;
 	const OrderSegQ *const os=qctx.sortReq; const unsigned nos=qctx.nSortReq;
 	OrderSegQ ids; ids.pid=PROP_SPEC_PINID; ids.flags=0; ids.var=0; ids.aggop=OP_SET; ids.lPref=0;
 	qctx.sortReq=&ids; qctx.nSortReq=1;
@@ -118,7 +121,7 @@ RC SetOpVar::build(class QBuildCtx& qctx,class QueryOp *&q) const
 
 RC JoinVar::build(class QBuildCtx& qctx,class QueryOp *&q) const
 {
-	q=NULL;	RC rc=RC_OK; const ulong nqs0=qctx.nqs;
+	q=NULL;	RC rc=RC_OK; const unsigned nqs0=qctx.nqs;
 	assert(type==QRY_SEMIJOIN||type==QRY_JOIN||type==QRY_LEFT_OUTER_JOIN||type==QRY_RIGHT_OUTER_JOIN||type==QRY_FULL_OUTER_JOIN);
 	const bool fTrans=groupBy!=NULL && nGroupBy!=0 || outs!=NULL && nOuts!=0;
 	if (fTrans) {
@@ -171,7 +174,7 @@ RC JoinVar::build(class QBuildCtx& qctx,class QueryOp *&q) const
 RC SimpleVar::build(class QBuildCtx& qctx,class QueryOp *&q) const
 {
 	q=NULL;	assert(type==QRY_SIMPLE);
-	RC rc=RC_OK; QueryOp *qq,*primary=NULL; const ulong nqs0=qctx.nqs,ncqs0=qctx.ncqs;
+	RC rc=RC_OK; QueryOp *qq,*primary=NULL; const unsigned nqs0=qctx.nqs,ncqs0=qctx.ncqs;
 	const bool fTrans=groupBy!=NULL && nGroupBy!=0 || outs!=NULL && nOuts!=0;
 	if (stype==SEL_CONST) {assert(fTrans); return qctx.out(q,this);}
 	
@@ -179,64 +182,37 @@ RC SimpleVar::build(class QBuildCtx& qctx,class QueryOp *&q) const
 		// merge props
 	}
 
-	if (subq!=NULL) {
-		if (subq->op!=STMT_QUERY || subq->top==NULL) return RC_INVPARAM;
-		const Stmt *saveQ=qctx.stmt; qctx.stmt=subq;
+	unsigned sflg=qctx.flg; if ((qvf&QVF_RAW)!=0) qctx.flg|=QO_RAW;
+	if (expr.type==VT_STMT) {
+		if (((Stmt*)expr.stmt)->op!=STMT_QUERY || ((Stmt*)expr.stmt)->top==NULL) return RC_INVPARAM;
+		const Stmt *saveQ=qctx.stmt; qctx.stmt=(Stmt*)expr.stmt;
 // merge propsReq with getProps
-		rc=subq->top->build(qctx,q); qctx.stmt=saveQ; if (rc!=RC_OK) return rc;
-		return rc!=RC_OK || nConds==0 ? rc : qctx.filter(q,nConds==1?&cond:conds,nConds);
-	} else for (ulong i=0; rc==RC_OK && i<nClasses; i++) {
-		const ClassSpec &cs=classes[i]; ClassID cid=cs.classID; PID *pids; unsigned nPids,j;
-		if ((cid&CLASS_PARAM_REF)!=0) {
-			ulong idx=cid&~CLASS_PARAM_REF; if (idx>qctx.qx->vals[QV_PARAMS].nValues) return RC_INVPARAM;
-			const Value& par=qctx.qx->vals[QV_PARAMS].vals[idx];
-			switch (par.type) {
-			case VT_URIID: cid=par.uid; break;
-			case VT_REFID:
-				if (qctx.nqs>=sizeof(qctx.src)/sizeof(qctx.src[0])) rc=RC_NORESOURCES;
-				else if ((qctx.src[qctx.nqs]=new(qctx.ses,1) ArrayScan(qctx.qx,&par.id,1,qctx.flg))==NULL) rc=RC_NORESOURCES;
-				else {qctx.nqs++; continue;}
-				break;
-			case VT_ARRAY:
-				pids=NULL;
-				if (qctx.nqs>=sizeof(qctx.src)/sizeof(qctx.src[0])) rc=RC_NORESOURCES;
-				else for (j=nPids=0; j<par.length; j++) if (par.varray[j].type==VT_REFID) {
-					if (pids==NULL && (pids=(PID*)qctx.ses->malloc((par.length-j)*sizeof(PID)))==NULL) {rc=RC_NORESOURCES; break;}
-					pids[nPids++]=par.varray[j].id;
-				}
-				if (rc==RC_OK) {
-					if (pids==NULL) continue; if (nPids>1) qsort(pids,nPids,sizeof(PID),cmpPIDs);
-					if ((qctx.src[qctx.nqs]=new(qctx.ses,nPids) ArrayScan(qctx.qx,pids,nPids,qctx.flg))==NULL) rc=RC_NORESOURCES;
-					else {qctx.nqs++; qctx.ses->free(pids); continue;}
-				}
-				if (pids!=NULL) qctx.ses->free(pids);
-				break;
-			case VT_STMT:
-				if (par.stmt->getOp()!=STMT_QUERY) rc=RC_INVPARAM;
-				else if (qctx.nqs>=sizeof(qctx.src)/sizeof(qctx.src[0])) rc=RC_NORESOURCES;
-				else rc=RC_INTERNAL;	// NIY
-				break;
-			case VT_REFIDPROP:
-			case VT_REFPROP:
-				//...
-			default: rc=RC_TYPE; break;
+		rc=((Stmt*)expr.stmt)->top->build(qctx,q); qctx.stmt=saveQ;
+		if (rc==RC_OK && nConds!=0) rc=qctx.filter(q,nConds==1?&cond:conds,nConds);
+		qctx.flg=sflg; return rc;
+	}
+	for (unsigned i=0; rc==RC_OK && i<nClasses; i++) {
+		const SourceSpec &cs=classes[i]; ClassID cid=cs.objectID;
+		if (cid<=MAX_BUILTIN_CLASSID) {
+			if (qctx.nqs>=sizeof(qctx.src)/sizeof(qctx.src[0])) rc=RC_NORESOURCES;
+			else {
+				qq=cid==CLASS_OF_STORES || cid==CLASS_OF_SERVICES ? (QueryOp*)new(qctx.ses) SpecClassScan(qctx.qx,cid,qctx.flg) 
+																	: (QueryOp*)new(qctx.ses) ClassScan(qctx.qx,cid,qctx.flg);
+				if ((qctx.src[qctx.nqs]=qq)!=NULL) qctx.nqs++; else rc=RC_NORESOURCES;
 			}
-			if (rc!=RC_OK) break;
+			continue;
 		}
 		Class *cls=qctx.ses->getStore()->classMgr->getClass(cid); if (cls==NULL) {rc=RC_NOTFOUND; break;}
-		const Stmt *cqry=cls->getQuery(); ClassIndex *cidx=cls->getIndex(); const ulong cflg=cls->getFlags(); IndexScan *is=NULL;
+		const Stmt *cqry=cls->getQuery(); ClassIndex *cidx=cls->getIndex(); const unsigned cflg=cls->getFlags(); IndexScan *is=NULL;
 		if (qctx.nqs>=sizeof(qctx.src)/sizeof(qctx.src[0])) rc=RC_NORESOURCES;
-		else if ((cflg&(CLASS_INDEXED|CLASS_VIEW))!=CLASS_INDEXED || (qctx.mode&MODE_DELETED)!=0 && ((cflg&CLASS_SDELETE)==0||cs.nParams!=0&&cidx!=NULL)) {
+		else if ((cflg&META_PROP_INDEXED)==0 || (qctx.mode&MODE_DELETED)!=0) {
 			if (qctx.ncqs>=sizeof(qctx.condQs)/sizeof(qctx.condQs[0])) rc=RC_NORESOURCES;
 			else if (cqry!=NULL) {
-#ifdef _DEBUG
-				if ((qctx.mode&(MODE_CLASS|MODE_DELETED))==0) {char *s=qctx.stmt->toString(); report(MSG_WARNING,"Using non-indexed class: %.512s\n",s); qctx.ses->free(s);}
-#endif
 				QueryWithParams &qs=qctx.condQs[qctx.ncqs++]; qs.params=NULL; qs.nParams=0;
 				if ((qs.qry=cqry->clone(STMT_QUERY,qctx.ses))==NULL) rc=RC_NORESOURCES; else {qs.params=(Value*)cs.params; qs.nParams=cs.nParams;}
 			}
 		} else if (cidx==NULL) {
-			if ((qctx.src[qctx.nqs++]=new(qctx.ses) ClassScan(qctx.qx,cls,qctx.flg))==NULL) rc=RC_NORESOURCES;
+			if ((qctx.src[qctx.nqs++]=new(qctx.ses) ClassScan(qctx.qx,cid,qctx.flg))==NULL) rc=RC_NORESOURCES;
 			else if (cqry!=NULL && cqry->hasParams() && cs.params!=NULL && cs.nParams!=0) {
 				if (qctx.ncqs>=sizeof(qctx.condQs)/sizeof(qctx.condQs[0])) rc=RC_NORESOURCES;
 				else {
@@ -246,26 +222,23 @@ RC SimpleVar::build(class QBuildCtx& qctx,class QueryOp *&q) const
 			}
 		} else {
 			assert(cqry!=NULL && cqry->top!=NULL && cqry->top->getType()==QRY_SIMPLE && ((SimpleVar*)cqry->top)->condIdx!=NULL);
-			ushort flags=SCAN_EXACT; ulong i=0,nRanges=0; const Value *param; const unsigned nSegs=((SimpleVar*)cqry->top)->nCondIdx;
+			ushort flags=SCAN_EXACT; unsigned i=0,nRanges=0; const Value *param; const unsigned nSegs=((SimpleVar*)cqry->top)->nCondIdx;
 			struct IdxParam {const Value *param; uint32_t idx;} *iparams=(IdxParam*)alloca(nSegs*sizeof(IdxParam));
 			const Value **curValues=(const Value**)alloca(nSegs*sizeof(Value*)),*cv;
 			if (iparams==NULL || curValues==NULL) rc=RC_NORESOURCES;
 			else {
 				if (cs.nParams==0) flags&=~SCAN_EXACT;
 				else for (CondIdx *pci=((SimpleVar*)cqry->top)->condIdx; pci!=NULL; pci=pci->next,++i) {
-					if (pci->param>=cs.nParams || (param=&cs.params[pci->param])->type==VT_RANGE && param->varray[0].type==VT_ANY && param->varray[1].type==VT_ANY) {
-						iparams[i].param=NULL; flags&=~SCAN_EXACT;
-					} else if (param->type==VT_ANY) {
-						if ((pci->ks.flags&(ORD_NULLS_BEFORE|ORD_NULLS_AFTER))!=0 && nRanges==0) nRanges=1;
-						iparams[i].param=NULL; flags&=~SCAN_EXACT;
+					if (pci->param>=cs.nParams) {iparams[i].param=NULL; flags&=~SCAN_EXACT;}
+					else if ((param=&cs.params[pci->param])->type==VT_RANGE && param->varray[0].type==VT_ANY && param->varray[1].type==VT_ANY || param->type==VT_ANY && param->fcalc!=0) {
+						iparams[i].param=param; iparams[i].idx=0; flags&=~SCAN_EXACT;
 					} else {
 						if (param->type==VT_VARREF && (param->refV.flags&VAR_TYPE_MASK)==VAR_PARAM) {
 							if (param->length!=0 || param->refV.refN>=qctx.qx->vals[QV_PARAMS].nValues) {rc=RC_INVPARAM; break;}
 							param=&qctx.qx->vals[QV_PARAMS].vals[param->refV.refN];
 						}
-						iparams[i].param=param; iparams[i].idx=0; ulong nVals=1;
-						if (param->type==VT_ARRAY) nVals=param->length;
-						else if (param->type==VT_COLLECTION) nVals=param->nav->count();
+						iparams[i].param=param; iparams[i].idx=0;
+						unsigned nVals=param->type==VT_ARRAY?param->length:param->type==VT_COLLECTION?param->nav->count():1;
 						if (nVals>1) {
 							if (pci->ks.op!=OP_EQ && pci->ks.op!=OP_IN && pci->ks.op!=OP_BEGINS) {rc=RC_TYPE; break;}
 							flags&=~SCAN_EXACT;
@@ -274,9 +247,9 @@ RC SimpleVar::build(class QBuildCtx& qctx,class QueryOp *&q) const
 					}
 				}
 				if (rc==RC_OK && (is=new(qctx.ses,nRanges,*cidx) IndexScan(qctx.qx,*cidx,flags,nRanges,qctx.flg))==NULL) rc=RC_NORESOURCES;
-				for (ulong i=0; rc==RC_OK && i<nRanges; i++) {
+				for (unsigned i=0; rc==RC_OK && i<nRanges; i++) {
 					bool fRange=false; byte op;
-					for (ulong k=0; k<nSegs; k++) if ((cv=curValues[k]=iparams[k].param)!=NULL) {
+					for (unsigned k=0; k<nSegs; k++) if ((cv=curValues[k]=iparams[k].param)!=NULL) {
 						if (cv->type==VT_ARRAY) {
 							if (iparams[k].idx<cv->length) cv=&cv->varray[iparams[k].idx++]; else cv=iparams[k].param=NULL;
 						} else if (cv->type==VT_COLLECTION) {
@@ -285,10 +258,12 @@ RC SimpleVar::build(class QBuildCtx& qctx,class QueryOp *&q) const
 						if ((curValues[k]=cv)==NULL) is->flags&=~SCAN_EXACT;
 						else switch (cv->type) {
 						case VT_RANGE:
+							if (cv->varray[0].type==VT_ANY && cv->varray[1].type==VT_ANY) {fRange=true; break;}
 							if (cidx->getIndexSegs()[k].op==OP_IN) {fRange=true; is->flags&=~SCAN_EXACT;} else rc=RC_TYPE;
 							break;
 						case VT_EXPR: case VT_STMT: case VT_EXPRTREE: case VT_VARREF:
 							rc=RC_TYPE; break;
+						case VT_ANY: if (cv->fcalc!=0) {fRange=true; break;}
 						default:
 							op=cidx->getIndexSegs()[k].op;
 							if (op!=OP_EQ && op!=OP_IN) {is->flags&=~SCAN_EXACT; if (op!=OP_BEGINS) fRange=true;}
@@ -342,36 +317,31 @@ RC SimpleVar::build(class QBuildCtx& qctx,class QueryOp *&q) const
 		if (qctx.nqs<sizeof(qctx.src)/sizeof(qctx.src[0])) qctx.src[qctx.nqs++]=qq; else {rc=RC_NORESOURCES; break;}
 	}
 	if (rc==RC_OK) {
-		bool fArrayFilter=pids!=NULL && nPids!=0;
+		bool fArrayFilter=expr.type==VT_ARRAY;
 		if (qctx.nqs>nqs0) {
-			if (qctx.nqs>nqs0+1 && (rc=qctx.mergeN(qq,&qctx.src[nqs0],qctx.nqs-nqs0,QRY_INTERSECT))==RC_OK) {qctx.src[nqs0]=qq; qctx.nqs=nqs0+1;}
+			if (!expr.isEmpty() && expr.type!=VT_ARRAY) {
+				if (qctx.ncqs>=sizeof(qctx.condQs)/sizeof(qctx.condQs[0]) ||
+											(qctx.src[qctx.nqs]=new(qctx.ses) ExprScan(qctx.qx,expr,qctx.flg))==NULL) rc=RC_NORESOURCES; else qctx.nqs++;
+			}
+			if (rc==RC_OK && qctx.nqs>nqs0+1 && (rc=qctx.mergeN(qq,&qctx.src[nqs0],qctx.nqs-nqs0,QRY_INTERSECT))==RC_OK) {qctx.src[nqs0]=qq; qctx.nqs=nqs0+1;}
 			if (rc==RC_OK && primary!=NULL) {if ((qq=new(qctx.ses) HashOp(primary,qctx.src[nqs0]))!=NULL) {qctx.src[nqs0]=qq; primary=NULL;} else rc=RC_NORESOURCES;}
 		} else if (qctx.nqs>=sizeof(qctx.src)/sizeof(qctx.src[0])) rc=RC_NORESOURCES;
 		else if (primary!=NULL) {qctx.src[qctx.nqs++]=primary; primary=NULL;}
-		else if (fArrayFilter) {
-			fArrayFilter=false;
-			if ((qctx.src[qctx.nqs]=new(qctx.ses,nPids) ArrayScan(qctx.qx,pids,nPids,qctx.flg))!=NULL) qctx.nqs++; else rc=RC_NORESOURCES;
+		else if (!expr.isEmpty()) {
+			if ((qctx.src[qctx.nqs]=new(qctx.ses) ExprScan(qctx.qx,expr,qctx.flg))!=NULL) {qctx.nqs++; fArrayFilter=false;} else rc=RC_NORESOURCES;
 		} else {
 #ifdef _DEBUG
 			if ((qctx.mode&(MODE_CLASS|MODE_DELETED))==0) {char *s=qctx.stmt->toString(); report(MSG_WARNING,"Full scan query: %.512s\n",s); qctx.ses->free(s);}
 #endif
-			qctx.src[qctx.nqs]=new(qctx.ses) FullScan(qctx.qx,(qctx.mode&(MODE_CLASS|MODE_NODEL))==QO_CLASS?HOH_HIDDEN:(qctx.mode&MODE_DELETED)!=0?HOH_DELETED<<16|HOH_DELETED|HOH_HIDDEN:HOH_DELETED|HOH_HIDDEN,qctx.flg);
+			qctx.src[qctx.nqs]=new(qctx.ses) FullScan(qctx.qx,(qctx.mode&(MODE_CLASS|MODE_NODEL))==MODE_CLASS?HOH_HIDDEN:(qctx.mode&MODE_DELETED)!=0?HOH_DELETED<<16|HOH_DELETED|HOH_HIDDEN:HOH_DELETED|HOH_HIDDEN,qctx.flg);
 			if (qctx.src[qctx.nqs]!=NULL) qctx.nqs++; else rc=RC_NORESOURCES;
 		}
 		if (rc==RC_OK) {
-			if (fArrayFilter) {if ((qq=new(nPids,qctx.ses) ArrayFilter(qctx.src[nqs0],pids,nPids))!=NULL) qctx.src[nqs0]=qq; else rc=RC_NORESOURCES;}
+			if (fArrayFilter) {if ((qq=new(qctx.ses) ArrayFilter(qctx.src[nqs0],expr.varray,expr.length))!=NULL) qctx.src[nqs0]=qq; else rc=RC_NORESOURCES;}
 			if (rc==RC_OK && path!=NULL && nPathSeg!=0) {
-				const PathSeg *ps=path;
-				if ((qctx.flg&QO_VCOPIED)!=0) {
-					if ((ps=new(qctx.ses) PathSeg[nPathSeg])==NULL) rc=RC_NORESOURCES;
-					else {
-						memcpy((PathSeg*)ps,path,nPathSeg*sizeof(PathSeg));
-						for (unsigned i=0; i<nPathSeg; i++)
-							if (ps[i].filter!=NULL && (((PathSeg*)ps)[i].filter=Expr::clone((Expr*)ps[i].filter,qctx.ses))==NULL) {qctx.ses->free((void*)ps); rc=RC_NORESOURCES; break;}
-					}
-				}
+				const PathSeg *ps=path; if ((qctx.flg&QO_VCOPIED)!=0) rc=copyPath(path,nPathSeg,*(PathSeg**)&ps,qctx.ses);
 				if (rc==RC_OK) {
-					if (qctx.src[nqs0]->props==NULL || BIN<PropertyID>::find(ps[0].pid,qctx.src[nqs0]->props[0].props,qctx.src[nqs0]->props[0].nProps)==NULL) {
+					if (qctx.src[nqs0]->props==NULL || ps[0].nPids!=0 && BIN<PropertyID>::find(ps[0].nPids==1?ps[0].pid:ps[0].pids[0],qctx.src[nqs0]->props[0].props,qctx.src[nqs0]->props[0].nProps)==NULL) {
 						PropList pl; pl.props=(PropertyID*)&ps[0].pid; pl.nProps=1; pl.fFree=false;
 						QueryOp *q=new(qctx.ses,1) LoadOp(qctx.src[nqs0],&pl,1,qctx.flg); if (q!=NULL) qctx.src[nqs0]=q; else rc=RC_NORESOURCES;
 					}
@@ -388,7 +358,7 @@ RC SimpleVar::build(class QBuildCtx& qctx,class QueryOp *&q) const
 		if ((q=qctx.src[nqs0])!=NULL && (nConds!=0 || condIdx!=NULL || qctx.ncqs>ncqs0)) rc=qctx.filter(q,nConds==1?&cond:conds,nConds,condIdx,qctx.ncqs-ncqs0);
 		if (rc==RC_OK && fTrans) rc=qctx.out(q,this);
 	}
-	qctx.nqs=nqs0; qctx.ncqs=ncqs0; return rc;		//???
+	qctx.nqs=nqs0; qctx.ncqs=ncqs0; qctx.flg=sflg; return rc;
 }
 
 bool QBuildCtx::checkSort(QueryOp *q,const OrderSegQ *req,unsigned nReq,unsigned& nP)
@@ -435,7 +405,7 @@ RC QBuildCtx::mergeN(QueryOp *&res,QueryOp **o,unsigned no,QUERY_SETOP op)
 RC QBuildCtx::merge2(QueryOp *&res,QueryOp **qs,const CondEJ *cej,QUERY_SETOP qo,const Expr *const *conds,unsigned nConds)
 {
 	res=NULL; if (qs[0]==NULL || qs[1]==NULL) return RC_EOF;
-	ulong ff=qo==QRY_SEMIJOIN?QO_UNIQUE:0; RC rc; assert(qo<QRY_UNION);
+	unsigned ff=qo==QRY_SEMIJOIN?QO_UNIQUE:0; RC rc; assert(qo<QRY_UNION);
 	unsigned nej=0; bool fS1=qs[0]->sort!=NULL,fS2=qs[1]->sort!=NULL,fR1=false,fR2=false,fI1=false,fI2=false;
 	for (const CondEJ *ce=cej; ce!=NULL; ce=ce->next,nej++) {
 		if (ce->propID1==PROP_SPEC_PINID && (qs[0]->qflags&QO_IDSORT)!=0) fI1=true;
@@ -517,7 +487,7 @@ RC QBuildCtx::mergeFT(QueryOp *&res,const CondFT *cft)
 {
 	StringTokenizer q(cft->str,strlen(cft->str),false); const FTLocaleInfo *loc=ses->getStore()->ftMgr->getLocale();
 	const char *pW; size_t lW; char buf[256]; bool fStop=false,fFlt=(cft->flags&QFT_FILTER_SW)!=0; RC rc=RC_OK; res=NULL;
-	QueryOp *qopsbuf[20],**qops=qopsbuf; ulong nqops=0,xqops=20;
+	QueryOp *qopsbuf[20],**qops=qopsbuf; unsigned nqops=0,xqops=20;
 	while ((pW=q.nextToken(lW,loc,buf,sizeof(buf)))!=NULL) {
 #if 0
 		if (*pW==DEFAULT_PHRASE_DEL) {
@@ -557,7 +527,7 @@ RC QBuildCtx::mergeFT(QueryOp *&res,const CondFT *cft)
 		if (nqops<=1) {res=nqops!=0?qops[0]:(rc=RC_EOF,(QueryOp*)0); nqops=0;}
 		else if ((rc=mergeN(res,qops,nqops,(mode&MODE_ALL_WORDS)==0?QRY_UNION:QRY_INTERSECT))==RC_OK) nqops=0;
 	}
-	for (ulong i=0; i<nqops; i++) delete qops[i];
+	for (unsigned i=0; i<nqops; i++) delete qops[i];
 	if (qops!=qopsbuf) ses->free(qops);
 	return rc;
 }
@@ -580,7 +550,7 @@ RC QBuildCtx::filter(QueryOp *&qop,const Expr *const *conds,unsigned nConds,cons
 			flt->nConds=nConds; Expr **pex;
 			if ((flg&QO_VCOPIED)==0) flt->conds=conds;
 			else if ((flt->conds=pex=new(ses) Expr*[nConds])==NULL) fOK=false;
-			else {memset(pex,0,nConds*sizeof(Expr*)); for (ulong i=0; i<nConds; ++i) if ((pex[i]=Expr::clone(conds[i],ses))==NULL) {fOK=false; break;}}
+			else {memset(pex,0,nConds*sizeof(Expr*)); for (unsigned i=0; i<nConds; ++i) if ((pex[i]=Expr::clone(conds[i],ses))==NULL) {fOK=false; break;}}
 		}
 		if ((flg&QO_CLASS)==0) {
 			if ((flg&QO_VCOPIED)==0) flt->condIdx=(CondIdx*)condIdx;
@@ -599,7 +569,7 @@ RC QBuildCtx::filter(QueryOp *&qop,const Expr *const *conds,unsigned nConds,cons
 					if (qwp.params!=NULL && qwp.nParams!=0) {
 						if ((rc=copyV(qwp.params,qwp.nParams,qwp.params,ses))!=RC_OK) {for (;i<ncq;i++) flt->queries[i].params=NULL; fOK=false; break;}
 						for (unsigned j=0; j<qwp.nParams; j++) if (qwp.params[j].type==VT_VARREF && (qwp.params[j].refV.flags&VAR_TYPE_MASK)==VAR_PARAM)
-							if (qwp.params[j].refV.refN<qx->vals[QV_PARAMS].nValues) {qwp.params[j]=qx->vals[QV_PARAMS].vals[qwp.params[j].refV.refN]; qwp.params[j].flags=NO_HEAP;} else qwp.params[j].setError();
+							if (qwp.params[j].refV.refN<qx->vals[QV_PARAMS].nValues) {qwp.params[j]=qx->vals[QV_PARAMS].vals[qwp.params[j].refV.refN]; setHT(qwp.params[j]);} else qwp.params[j].setError();
 					}
 				}
 			}
@@ -643,34 +613,47 @@ RC QBuildCtx::out(QueryOp *&qop,const QVar *qv)
 			else vv[i].fFree=true;
 		outs=vv;
 	}
+	if (qv->stype==SEL_PID) return RC_OK;
 	if (qv->stype==SEL_CONST) {if (qop!=NULL) {delete qop; qop=NULL;} return (qop=new(ses) TransOp(qx,outs,nOuts,flg|QO_UNIQUE))!=NULL?RC_OK:RC_NORESOURCES;}
 	if (nOuts==1 && outs[0].nValues==1 && qv->groupBy==NULL && qv->aggrs.vals==NULL) {
 		const Value &v=outs[0].vals[0];
 		if (v.type==VT_VARREF && (v.refV.flags&VAR_TYPE_MASK)==0 && (v.length==0 || v.refV.id==PROP_SPEC_SELF)) return RC_OK;
 	}
 	
-	PropListP plp(ses);
-	for (unsigned i=0; i<nOuts; i++) for (unsigned j=0; j<outs[i].nValues; j++) {
-		const Value& v=outs[i].vals[j];
-		switch (v.type) {
-		case VT_EXPR: if ((v.meta&META_PROP_EVAL)!=0 && (rc=((Expr*)v.expr)->mergeProps(plp))!=RC_OK) return rc; break;
-		case VT_VARREF: if ((v.refV.flags&VAR_TYPE_MASK)==0 && v.length==1 && (rc=plp.merge(v.refV.refN,&v.refV.id,1))!=RC_OK) return rc; break;
+	unsigned f=flg;
+	if (qv->stype==SEL_AUGMENTED) f|=QO_AUGMENT|QO_ALLPROPS|QO_LOADALL;
+	else {
+		PropListP plp(ses); if (qv->stype!=SEL_PINSET && qv->stype!=SEL_COMPOUND) f|=QO_UNIQUE;
+		for (unsigned i=0; i<nOuts; i++) for (unsigned j=0; j<outs[i].nValues; j++) {
+			const Value& v=outs[i].vals[j]; ushort vty;
+			switch (v.type) {
+			case VT_EXPR:
+				if (v.fcalc!=0) {
+					if ((((Expr*)v.expr)->getFlags()&EXPR_SELF)!=0) f|=QO_LOADALL;
+					if ((rc=((Expr*)v.expr)->mergeProps(plp))!=RC_OK) return rc;
+				}
+				break;
+			case VT_VARREF:
+				vty=v.refV.flags&VAR_TYPE_MASK;
+				if (vty==VAR_SELF || vty==0 && (v.length==0 || v.length==1 && v.refV.id==PROP_SPEC_SELF)) f|=QO_LOADALL;
+				else if (vty==0 && v.length==1 && (rc=plp.merge(v.refV.refN,&v.refV.id,1))!=RC_OK) return rc;
+				break;
+			}
 		}
+		if (qv->aggrs.vals!=NULL) for (unsigned i=0; i<qv->aggrs.nValues; i++) {
+			const Value& v=qv->aggrs.vals[i];
+			switch (v.type) {
+			case VT_EXPR: if (v.fcalc!=0 && (rc=((Expr*)v.expr)->mergeProps(plp))!=RC_OK) return rc; break;
+			case VT_VARREF: if ((v.refV.flags&VAR_TYPE_MASK)==0 && v.length==1 && (rc=plp.merge(v.refV.refN,&v.refV.id,1))!=RC_OK) return rc; break;
+			}
+		}
+		if (qv->groupBy!=NULL && qv->nGroupBy!=0) {
+			if ((rc=sort(qop,qv->groupBy,qv->nGroupBy,&plp))!=RC_OK) return rc;
+			if (outs==NULL || nOuts==0) {
+				// get them from gb/nG
+			}
+		} else if ((rc=load(qop,plp))!=RC_OK) return rc;
 	}
-	if (qv->aggrs.vals!=NULL) for (unsigned i=0; i<qv->aggrs.nValues; i++) {
-		const Value& v=qv->aggrs.vals[i];
-		switch (v.type) {
-		case VT_EXPR: if ((v.meta&META_PROP_EVAL)!=0 && (rc=((Expr*)v.expr)->mergeProps(plp))!=RC_OK) return rc; break;
-		case VT_VARREF: if ((v.refV.flags&VAR_TYPE_MASK)==0 && v.length==1 && (rc=plp.merge(v.refV.refN,&v.refV.id,1))!=RC_OK) return rc; break;
-		}
-	}
-	if (qv->groupBy!=NULL && qv->nGroupBy!=0) {
-		if ((rc=sort(qop,qv->groupBy,qv->nGroupBy,&plp))!=RC_OK) return rc;
-		if (outs==NULL || nOuts==0) {
-			// get them from gb/nG
-		}
-	} else if ((rc=load(qop,plp))!=RC_OK) return rc;
-	unsigned f=flg; if (qv->stype!=SEL_PINSET && qv->stype!=SEL_AUGMENTED && qv->stype!=SEL_COMPOUND) f|=QO_UNIQUE;
 	try {return (qop=new(ses) TransOp(qop,outs,nOuts,qv->aggrs,qv->groupBy,qv->nGroupBy,qv->having,f))!=NULL?RC_OK:RC_NORESOURCES;}
 	catch (RC rc) {return rc;}
 }
@@ -719,7 +702,7 @@ RC PropListP::merge(uint16_t var,const PropertyID *pids,unsigned nPids,bool fFor
 		if (pp!=NULL) pl.props[sht-1]|=pid;
 		else {
 			if (s2<pl.nProps) memmove(&pl.props[s2+ex],&pl.props[s2],(pl.nProps-s2)*sizeof(PropertyID));
-			memcpy(&pl.props[s2],&pids[i],ex*sizeof(uint32_t)); pl.nProps+=ex; sht+=s2+ex;
+			memcpy(&pl.props[s2],&pids[i],ex*sizeof(uint32_t)); pl.nProps+=ex; sht+=s2+ex; i+=ex-1;
 		}
 	}
 	return RC_OK;

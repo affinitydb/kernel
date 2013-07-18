@@ -160,7 +160,7 @@
       <WarningLevel>Level3</WarningLevel>
       <Optimization>Disabled</Optimization>
       <PreprocessorDefinitions>WIN32;_CRT_SECURE_NO_WARNINGS;_DEBUG;_WINDOWS;_USRDLL;AFFINITY_EXPORTS;%(PreprocessorDefinitions)</PreprocessorDefinitions>
-      <AdditionalIncludeDirectories>..\kernel\include; ..\kernel\protobuf\src</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>..\kernel\include</AdditionalIncludeDirectories>
       <PrecompiledHeaderFile>
       </PrecompiledHeaderFile>
       <PrecompiledHeaderOutputFile>
@@ -180,7 +180,7 @@
       <WarningLevel>Level3</WarningLevel>
       <Optimization>Disabled</Optimization>
       <PreprocessorDefinitions>WIN32;_CRT_SECURE_NO_WARNINGS;_DEBUG;_WINDOWS;_USRDLL;AFFINITY_EXPORTS;%(PreprocessorDefinitions)</PreprocessorDefinitions>
-      <AdditionalIncludeDirectories>..\kernel\include; ..\kernel\protobuf\src</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>include</AdditionalIncludeDirectories>
       <PrecompiledHeaderFile>
       </PrecompiledHeaderFile>
       <PrecompiledHeaderOutputFile>
@@ -200,7 +200,7 @@
       <WarningLevel>Level3</WarningLevel>
       <Optimization>Disabled</Optimization>
       <PreprocessorDefinitions>WIN32;_CRT_SECURE_NO_WARNINGS;_DEBUG;_WINDOWS;_USRDLL;AFFINITY_EXPORTS;%(PreprocessorDefinitions)</PreprocessorDefinitions>
-      <AdditionalIncludeDirectories>..\kernel\include; ..\kernel\protobuf\src</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>..\kernel\include</AdditionalIncludeDirectories>
       <PrecompiledHeaderFile>
       </PrecompiledHeaderFile>
       <PrecompiledHeaderOutputFile>
@@ -220,7 +220,7 @@
       <WarningLevel>Level3</WarningLevel>
       <Optimization>Disabled</Optimization>
       <PreprocessorDefinitions>WIN32;_CRT_SECURE_NO_WARNINGS;_DEBUG;_WINDOWS;_USRDLL;AFFINITY_EXPORTS;%(PreprocessorDefinitions)</PreprocessorDefinitions>
-      <AdditionalIncludeDirectories>..\kernel\include; ..\kernel\protobuf\src</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>include</AdditionalIncludeDirectories>
       <PrecompiledHeaderFile>
       </PrecompiledHeaderFile>
       <PrecompiledHeaderOutputFile>
@@ -242,7 +242,7 @@
       <FunctionLevelLinking>true</FunctionLevelLinking>
       <IntrinsicFunctions>true</IntrinsicFunctions>
       <PreprocessorDefinitions>WIN32;_CRT_SECURE_NO_WARNINGS;NDEBUG;_WINDOWS;_USRDLL;AFFINITY_EXPORTS;%(PreprocessorDefinitions)</PreprocessorDefinitions>
-      <AdditionalIncludeDirectories>..\kernel\include; ..\kernel\protobuf\src</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>..\kernel\include</AdditionalIncludeDirectories>
       <BufferSecurityCheck>false</BufferSecurityCheck>
       <EnableEnhancedInstructionSet>StreamingSIMDExtensions2</EnableEnhancedInstructionSet>
       <FloatingPointExceptions>false</FloatingPointExceptions>
@@ -268,7 +268,7 @@
       <FunctionLevelLinking>true</FunctionLevelLinking>
       <IntrinsicFunctions>true</IntrinsicFunctions>
       <PreprocessorDefinitions>WIN32;_CRT_SECURE_NO_WARNINGS;NDEBUG;_WINDOWS;_USRDLL;AFFINITY_EXPORTS;%(PreprocessorDefinitions)</PreprocessorDefinitions>
-      <AdditionalIncludeDirectories>..\kernel\include; ..\kernel\protobuf\src</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>..\kernel\include</AdditionalIncludeDirectories>
       <BufferSecurityCheck>false</BufferSecurityCheck>
       <EnableEnhancedInstructionSet>StreamingSIMDExtensions2</EnableEnhancedInstructionSet>
       <FloatingPointExceptions>false</FloatingPointExceptions>
@@ -294,7 +294,7 @@
       <FunctionLevelLinking>true</FunctionLevelLinking>
       <IntrinsicFunctions>true</IntrinsicFunctions>
       <PreprocessorDefinitions>WIN32;_CRT_SECURE_NO_WARNINGS;NDEBUG;_WINDOWS;_USRDLL;AFFINITY_EXPORTS;%(PreprocessorDefinitions)</PreprocessorDefinitions>
-      <AdditionalIncludeDirectories>..\kernel\include; ..\kernel\protobuf\src</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>include</AdditionalIncludeDirectories>
       <BufferSecurityCheck>false</BufferSecurityCheck>
       <EnableEnhancedInstructionSet>StreamingSIMDExtensions2</EnableEnhancedInstructionSet>
       <FloatingPointExceptions>false</FloatingPointExceptions>
@@ -320,7 +320,7 @@
       <FunctionLevelLinking>true</FunctionLevelLinking>
       <IntrinsicFunctions>true</IntrinsicFunctions>
       <PreprocessorDefinitions>WIN32;_CRT_SECURE_NO_WARNINGS;NDEBUG;_WINDOWS;_USRDLL;AFFINITY_EXPORTS;%(PreprocessorDefinitions)</PreprocessorDefinitions>
-      <AdditionalIncludeDirectories>..\kernel\include; ..\kernel\protobuf\src</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>include</AdditionalIncludeDirectories>
       <BufferSecurityCheck>false</BufferSecurityCheck>
       <EnableEnhancedInstructionSet>StreamingSIMDExtensions2</EnableEnhancedInstructionSet>
       <FloatingPointExceptions>false</FloatingPointExceptions>
@@ -339,12 +339,13 @@
   </ItemDefinitionGroup>
   <ItemGroup>
     <ClInclude Include="include\affinity.h" />
+    <ClInclude Include="include\afysock.h" />
+    <ClInclude Include="include\afysync.h" />
+    <ClInclude Include="include\afyutils.h" />
     <ClInclude Include="include\ifacever.h" />
     <ClInclude Include="include\rc.h" />
     <ClInclude Include="include\startup.h" />
-    <ClInclude Include="include\storeio.h" />
     <ClInclude Include="include\units.h" />
-    <ClInclude Include="src\affinityimpl.h" />
     <ClInclude Include="src\blob.h" />
     <ClInclude Include="src\buffer.h" />
     <ClInclude Include="src\classifier.h" />
@@ -353,6 +354,7 @@
     <ClInclude Include="src\fiolinux.h" />
     <ClInclude Include="src\fioosx.h" />
     <ClInclude Include="src\fiowin.h" />
+    <ClInclude Include="src\fsm.h" />
     <ClInclude Include="src\fsmgr.h" />
     <ClInclude Include="src\ftindex.h" />
     <ClInclude Include="src\idxcache.h" />
@@ -362,6 +364,7 @@
     <ClInclude Include="src\lsn.h" />
     <ClInclude Include="src\maps.h" />
     <ClInclude Include="src\mem.h" />
+    <ClInclude Include="src\named.h" />
     <ClInclude Include="src\netmgr.h" />
     <ClInclude Include="src\objmgr.h" />
     <ClInclude Include="src\pagemgr.h" />
@@ -370,30 +373,33 @@
     <ClInclude Include="src\pgtree.h" />
     <ClInclude Include="src\crypt.h" />
     <ClInclude Include="src\expr.h" />
+    <ClInclude Include="src\pin.h" />
     <ClInclude Include="src\pinex.h" />
     <ClInclude Include="src\pinref.h" />
     <ClInclude Include="src\idxtree.h" />
     <ClInclude Include="src\propdnf.h" />
+    <ClInclude Include="src\protobuf.h" />
     <ClInclude Include="src\qbuild.h" />
     <ClInclude Include="src\qmgr.h" />
     <ClInclude Include="src\queryop.h" />
     <ClInclude Include="src\queryprc.h" />
     <ClInclude Include="src\recover.h" />
+    <ClInclude Include="src\regexp.h" />
+    <ClInclude Include="src\request.h" />
+    <ClInclude Include="src\service.h" />
     <ClInclude Include="src\session.h" />
     <ClInclude Include="src\stmt.h" />
     <ClInclude Include="src\storecb.h" />
-    <ClInclude Include="src\sync.h" />
+    <ClInclude Include="src\timerq.h" />
     <ClInclude Include="src\txmgr.h" />
-    <ClInclude Include="src\txpage.h" />
     <ClInclude Include="src\types.h" />
     <ClInclude Include="src\utils.h" />
   </ItemGroup>
   <ItemGroup>
-    <ClCompile Include="src\affinityimpl.cpp" />
     <ClCompile Include="src\blob.cpp" />
     <ClCompile Include="src\buffer.cpp" />
+    <ClCompile Include="src\builtin.cpp" />
     <ClCompile Include="src\classifier.cpp" />
-    <ClCompile Include="src\commitpins.cpp" />
     <ClCompile Include="src\deletepins.cpp" />
     <ClCompile Include="src\dlalloc.cpp" />
     <ClCompile Include="src\errors.cpp" />
@@ -402,6 +408,7 @@
     <ClCompile Include="src\fiolinux.cpp" />
     <ClCompile Include="src\fioosx.cpp" />
     <ClCompile Include="src\fiowin.cpp" />
+    <ClCompile Include="src\fsm.cpp" />
     <ClCompile Include="src\fsmgr.cpp" />
     <ClCompile Include="src\ftindex.cpp" />
     <ClCompile Include="src\ftproceng.cpp" />
@@ -413,17 +420,22 @@
     <ClCompile Include="src\maps.cpp" />
     <ClCompile Include="src\memgr.cpp" />
     <ClCompile Include="src\modifypin.cpp" />
+    <ClCompile Include="src\named.cpp" />
     <ClCompile Include="src\netmgr.cpp" />
     <ClCompile Include="src\objcache.cpp" />
     <ClCompile Include="src\pagemgr.cpp" />
     <ClCompile Include="src\parser.cpp" />
+    <ClCompile Include="src\persist.cpp" />
     <ClCompile Include="src\pgheap.cpp" />
     <ClCompile Include="src\pgtree.cpp" />
     <ClCompile Include="src\crypt.cpp" />
     <ClCompile Include="src\expr.cpp" />
+    <ClCompile Include="src\pin.cpp" />
     <ClCompile Include="src\pinref.cpp" />
     <ClCompile Include="src\idxscan.cpp" />
     <ClCompile Include="src\protobuf.cpp" />
+    <ClCompile Include="src\regexp.cpp" />
+    <ClCompile Include="src\service.cpp" />
     <ClCompile Include="src\sort.cpp" />
     <ClCompile Include="src\idxtree.cpp" />
     <ClCompile Include="src\qbuild.cpp" />
@@ -437,9 +449,9 @@
     <ClCompile Include="src\stmt.cpp" />
     <ClCompile Include="src\storecb.cpp" />
     <ClCompile Include="src\sync.cpp" />
+    <ClCompile Include="src\timerq.cpp" />
     <ClCompile Include="src\transform.cpp" />
     <ClCompile Include="src\txmgr.cpp" />
-    <ClCompile Include="src\txpage.cpp" />
     <ClCompile Include="src\units.cpp" />
     <ClCompile Include="src\utils.cpp" />
     <ClCompile Include="src\value.cpp" />

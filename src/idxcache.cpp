@@ -1,6 +1,6 @@
 /**************************************************************************************
 
-Copyright © 2004-2012 VMware, Inc. All rights reserved.
+Copyright © 2004-2013 GoPivotal, Inc. All rights reserved.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -52,7 +52,7 @@ struct ExtFile
 
 }
 
-PIDStore::PIDStore(Session *ses,ulong lim)
+PIDStore::PIDStore(Session *ses,unsigned lim)
 : SubAlloc(ses),limit(lim),cache(*this),count(0),extFile(NULL)
 {
 }
@@ -62,7 +62,7 @@ PIDStore::~PIDStore()
 	delete (ExtFile*)extFile;
 }
 
-bool PIDStore::operator[](PINEx& cb) const
+bool PIDStore::operator[](PINx& cb) const
 {
 	if (extFile!=NULL) {
 		// check ext memory
@@ -70,7 +70,7 @@ bool PIDStore::operator[](PINEx& cb) const
 	PID id; return cb.getID(id)==RC_OK && cache[id];
 }
 
-RC PIDStore::operator+=(PINEx& cb)
+RC PIDStore::operator+=(PINx& cb)
 {
 	if (count+1>=limit) {
 //		assert(extFile==NULL);
@@ -86,7 +86,7 @@ RC PIDStore::operator+=(PINEx& cb)
 	return rc;
 }
 
-RC PIDStore::operator-=(PINEx& cb)
+RC PIDStore::operator-=(PINx& cb)
 {
 	//...
 	return RC_INTERNAL;

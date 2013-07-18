@@ -1,6 +1,6 @@
 /**************************************************************************************
 
-Copyright © 2004-2012 VMware, Inc. All rights reserved.
+Copyright © 2004-2013 GoPivotal, Inc. All rights reserved.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -17,6 +17,16 @@ under the License.
 Written by Mark Venguerov 2004-2012
 
 **************************************************************************************/
+
+#include <stdio.h>
+#ifdef WIN32
+#include <intrin.h>
+#else
+#include <sys/stat.h>
+#ifndef __APPLE__
+#include <sys/sysinfo.h>
+#endif
+#endif
 
 #include "startup.h"
 #include "txmgr.h"
@@ -36,49 +46,134 @@ Written by Mark Venguerov 2004-2012
 #include "ftindex.h"
 #include "classifier.h"
 #include "blob.h"
+#include "fsm.h"
 #include "ifacever.h"
-#include <stdio.h>
-#ifndef WIN32
-#include <sys/stat.h>
-#ifndef Darwin
-#include <sys/sysinfo.h>
-#endif
-#endif
 
 using namespace AfyKernel;
 
-RC manageStores(const char *cmd,size_t lcmd,AfyDBCtx &store,IMapDir *id,const StartupParameters *sp,CompilationError *ce)
+namespace AfyKernel
+{
+SharedCounter StoreCtx::nStores;
+StoreTable *volatile storeTable=NULL;
+};
+
+RC manageStores(const char *cmd,size_t lcmd,IAffinity *&store,IMapDir *id,const StartupParameters *sp,CompilationError *ce)
 {
 	try {
 		store=NULL; if (cmd==NULL || lcmd==0) return RC_INVPARAM;
 		if (ce!=NULL) {memset(ce,0,sizeof(CompilationError)); ce->msg="";}
 		RequestQueue::startThreads(); initReport(); SInCtx::initKW();
-		SInCtx in(NULL,cmd,lcmd,NULL,0,SQ_PATHSQL,NULL);		//??? ma!!!
+		SInCtx in(NULL,cmd,lcmd,NULL,0,NULL);		//??? ma!!!
 		try {in.parseManage(id,store,sp); return RC_OK;}
 		catch (SynErr sy) {in.getErrorInfo(RC_SYNTAX,sy,ce); return RC_SYNTAX;}
 		catch (RC rc) {in.getErrorInfo(rc,SY_ALL,ce); return rc;}
 	} catch (RC rc) {return rc;} catch (...) {return RC_INTERNAL;}
 }
 
-static void setDirectory(FileMgr *fio, const char *dir,StoreCtx *ctx)
+static const char *errorMsgs[] =
 {
-	if (dir!=NULL && *dir!='\0') {fio->setDirectory(dir); return;}
+	"",
+	"resources (pin,property,element,page,etc.) not found",
+	"resource (element,key,file,store etc.) already exists",
+	"internal error",
+	"access is denied",
+	"not possible to allocate resource (too big pin or not enough memory)",
+	"disk is full",
+	"i/o device error",
+	"data check (e.g. parity) error",
+	"???",
+	"operation interrupted by timeout",
+	"???",
+	"data element (e.g. pin,page,collection element,etc.) is corrupted",
+	"i/o operation was cancelled",
+	"incompatible version",
+	"???",
+	"???",
+	"invalid type or type conversion is impossible",
+	"division by 0",
+	"invalid parameter value",
+	"attempt to modify data inside of a read-only transaction",
+	"unspecified error",
+	"transaction interrupted due to a deadlock",
+	"store allocation quota exceeded",
+	"the store is being shut - transaction aborted",
+	"pin was deleted",
+	"result set closed after commit/rollback",
+	"store in read-only state (backup, logging error)",
+	"no session set for current thread",
+	"invalid operation for this object",
+	"syntactic error in query or expression",
+	"object (pin, property, collection) is too big",
+	"no space on page for an object (either pin or index entry)",
+	"PIN doesn't satisfy membership constraints or not unique, or transaction was aborted in a class action"
+};
 
-	const char *homeDir=getenv(HOME_ENV); if (homeDir==NULL) homeDir=getenv("HOME");
-	if (homeDir!=NULL && *homeDir!='\0') {
-		char *dir=(char*)ctx->malloc(strlen(homeDir)+1+sizeof(STOREDIR)+1);
-		if (dir!=NULL) {
-			strcpy(dir,homeDir); strcat(dir,"/"STOREDIR);
-#ifdef WIN32
-			HANDLE hDir=CreateFile(dir,GENERIC_READ,FILE_SHARE_READ,NULL,OPEN_EXISTING,FILE_FLAG_BACKUP_SEMANTICS,NULL);
-			if (hDir!=INVALID_HANDLE_VALUE) {CloseHandle(hDir); fio->setDirectory(dir);}
-#else
-			struct stat64 st;
-			if (stat64(dir,&st)==0 && S_ISDIR(st.st_mode)) fio->setDirectory(dir);
-#endif
-			ctx->free(dir);
+size_t errorToString(RC rc,const CompilationError *err,char obuf[],size_t lbuf)
+{
+	try {
+		char buf[256]; size_t l=0;
+		if (rc!=RC_OK || err!=NULL && err->rc!=RC_OK) {
+			if (err!=NULL && err->rc!=RC_OK) rc=err->rc;
+			l=err!=NULL && err->rc==RC_SYNTAX && err->msg!=NULL ?
+				sprintf(buf,"Syntax error: %s at %d, line %d",err->msg,err->pos,err->line) :
+				sprintf(buf,"Error: %s(%d)",(size_t)rc<sizeof(errorMsgs)/sizeof(errorMsgs[0])?errorMsgs[rc]:"???",rc);
+			if (l>lbuf-1) l=lbuf-1; memcpy(obuf,buf,l);
 		}
+		obuf[l]=0; return l;
+	} catch (...) {report(MSG_ERROR,"Exception in ISession::errorToString()\n"); return 0;}
+}
+
+char *StoreCtx::getDirString(const char *d,bool fRel)
+{
+	if (d==NULL || *d=='\0') return NULL;
+	size_t i=strlen(d),f=d[i-1]!='/',l=0;
+#ifdef WIN32
+	if (f && (d[i-1]==':' || d[i-1]=='\\')) f=0;
+#endif
+	if (fRel && (const char*)directory!=NULL && memchr(".~/",d[0],3)==NULL
+#ifdef WIN32
+		&& d[0]!='\\' && (i<2 || d[1]!=':')
+#endif
+		) l=strlen(directory);
+	char *s=(char*)malloc(l+i+f+1);
+	if (s!=NULL) {
+		if (l!=0) memcpy(s,directory,l);
+		memcpy(s+l,d,i+1); if (f) {s[l+i]='/'; s[l+i+1]='\0';}
 	}
+	return s;
+}
+
+static const char *setDirectory(const char *dir,char *buf,size_t lbuf)
+{
+	bool fTryDot=true;
+	if (dir!=NULL && *dir!='\0') {
+		size_t i=strlen(dir),f=dir[i-1]!='/'; fTryDot=false;
+#ifdef WIN32
+		if (f && (dir[i-1]==':' || dir[i-1]=='\\')) f=0;
+#endif
+		if (f!=0) {
+			if (i+f>=lbuf) return NULL;
+			memcpy(buf,dir,i); buf[i]='/'; buf[i+1]='\0'; dir=buf;
+		}
+	} else if (((dir=getenv(HOME_ENV))!=NULL || (dir=getenv("HOME"))!=NULL) && *dir!='\0') {
+		size_t l=strlen(dir); if (l+sizeof(STOREDIR)+2>=lbuf) return NULL; memcpy(buf,dir,l);
+		if (buf[l-1]!='/'
+#ifdef WIN32
+			&& buf[l-1]!=':' && buf[l-1]!='\\'
+#endif
+			) buf[l++]='/';
+		memcpy(buf+l,STOREDIR "/",sizeof(STOREDIR)+1); dir=buf;
+	}
+	for (;;dir=NULL) {
+		if (dir==NULL || *dir=='\0') {if (!fTryDot) {dir=NULL; break;} dir="./"; fTryDot=false;}
+#ifdef WIN32
+		HANDLE hDir=CreateFile(dir,GENERIC_READ,FILE_SHARE_READ,NULL,OPEN_EXISTING,FILE_FLAG_BACKUP_SEMANTICS,NULL);
+		if (hDir!=INVALID_HANDLE_VALUE) {::CloseHandle(hDir); break;}
+#else
+		struct stat64 st; if (stat64(dir,&st)==0 && S_ISDIR(st.st_mode)) break;
+#endif
+	}
+	return dir;
 }
 
 static unsigned calcBuffers(unsigned nBuf,unsigned lPage)
@@ -87,41 +182,83 @@ static unsigned calcBuffers(unsigned nBuf,unsigned lPage)
 #ifdef WIN32
 		MEMORYSTATUSEX memStat={sizeof(MEMORYSTATUSEX)};
 		if (GlobalMemoryStatusEx(&memStat)) nBuf=unsigned(min(memStat.ullAvailPhys,memStat.ullAvailVirtual)*7/8/lPage);
+#elif defined(__APPLE__)
+		//????
+#elif defined(ANDROID)
+		//???
 #else
-#ifndef Darwin
 		struct sysinfo sysInfo;
 		if (sysinfo(&sysInfo)==0) nBuf=unsigned(uint64_t(sysInfo.freeram)*7/8/lPage);
-#else
-#endif
 #endif
 	}
 	return nBuf==0||nBuf==~0u?0x1000:nBuf<MIN_BUFFERS?MIN_BUFFERS:nBuf;
 }
 
-static RC testEnv()
+ProcFlags ProcFlags::pf;
+
+ProcFlags::ProcFlags() : flg(0)
 {
-	// check processor supports CMPXCHG16B in 64-bit mode
-#ifdef _WIN64
-	int CPUInfo[4]; __cpuid(CPUInfo,1); if ((CPUInfo[2]&0x2000)==0) return RC_INVOP;
-#elif defined(__i86_64__)
-	int CPUInfo[4];
-	__asm__ __volatile__ ("cpuid":"=a" (CPUInfo[0]), "=b" (CPUInfo[0]), "=c" (CPUInfo[0]), "=d" (CPUInfo[0]) : "1"((unsigned int)idx));
-	if ((CPUInfo[2]&0x2000)==0) return RC_INVOP;
+#if defined(__arm__) || defined(__APPLE__) && !defined(TARGET_OS_MAC)
+	flg|=PRCF_CMPXCHG16B;	//????
+#else 
+	int CPUInfo[4]; CPUInfo[0]=CPUInfo[1]=CPUInfo[2]=CPUInfo[3]=0;
+#if defined(_M_IX86) || defined(_M_X64) || defined(_M_AMD64) || defined(IA64)
+	__cpuid(CPUInfo,1);
+#elif defined(__x86_64__)
+	__asm__ __volatile__ ("cpuid":"=a" (CPUInfo[0]), "=b" (CPUInfo[1]), "=c" (CPUInfo[2]), "=d" (CPUInfo[3]) : "a" (1));
+#elif defined(__i386__)
+	__asm__ __volatile__ ( "pushl %%ebx \n\t cpuid \n\t movl %%ebx, %1 \n\t popl %%ebx \n\t" : "=a" (CPUInfo[0]), "=r" (CPUInfo[1]), "=c" (CPUInfo[2]), "=d" (CPUInfo[3]) : "a" (1));
 #endif
-	return RC_OK;
+	if ((CPUInfo[2]&0x2000)!=0) flg|=PRCF_CMPXCHG16B;
+	if ((CPUInfo[2]&0x2000000)!=0) flg|=PRCF_AESNI;
+#endif
 }
 
-RC openStore(const StartupParameters& params,AfyDBCtx &cctx)
+static const char *getSrvDir(const char *dir,char *buf,size_t lbuf)
 {
-	StoreCtx *ctx=NULL; RC rc=testEnv(); if (rc!=RC_OK) return rc;
+	if (dir==NULL || *dir=='\0') {
+#ifdef WIN32
+		DWORD dw=GetModuleFileName(NULL,buf,(DWORD)lbuf);
+		if (dw!=0) for (dir=buf; dw--!=0; ) if (buf[dw]=='/' || buf[dw]=='\\') {buf[dw+1]='\0'; break;}
+#else
+		dir=getcwd(buf,lbuf);
+		if (dir!=NULL && *dir!='\0') {size_t l=strlen(buf); if (buf[l-1]!='/' && l+1<lbuf) {buf[l]='/'; buf[l+1]='\0';}}
+#endif
+	}
+	return dir;
+}
+
+static void checkStoreTable()
+{
+	if (storeTable==NULL) {
+		StoreTable *st=new(&sharedAlloc) StoreTable(10,&sharedAlloc); if (st==NULL) throw RC_NORESOURCES;
+		if (!casP(&storeTable,(StoreTable*)0,st)) {st->~StoreTable(); sharedAlloc.free(st);}
+	}
+}
+
+RC openStore(const StartupParameters& params,IAffinity *&aff)
+{
+	StoreCtx *ctx=NULL; RC rc=RC_OK; if ((ProcFlags::pf.flg&PRCF_CMPXCHG16B)==0) return RC_INVOP;
 	try {
-		RequestQueue::startThreads(); initReport(); cctx=NULL;
+		checkStoreTable(); RequestQueue::startThreads(); initReport(); aff=NULL;
+
+		char dirbuf[1024]; const char *dir=setDirectory(params.directory,dirbuf,sizeof(dirbuf));
+		if (dir==NULL) {report(MSG_CRIT,"Directory doesn't exist or is protected\n"); return RC_NOTFOUND;}
+
+		if ((ctx=storeTable->find(StrKey(dir)))!=NULL) {report(MSG_NOTICE,"Found open store in %s\n",dir); aff=ctx; return RC_OK;}
+
 		report(MSG_NOTICE,"Affinity startup - version %d.%02d\n",STORE_VERSION/100,STORE_VERSION%100);
 
-		if ((ctx=StoreCtx::createCtx(params.mode))==NULL) return RC_NORESOURCES;
+		if ((ctx=StoreCtx::createCtx(params.mode,dir))==NULL) return RC_NORESOURCES;
 
-		FileMgr *fio=ctx->fileMgr=new(ctx) FileMgr(ctx,params.maxFiles,params.io);
-		setDirectory(fio,params.directory,ctx);
+		dir=ctx->getDirectory();
+
+		ctx->tqMgr=new(ctx) TimerQ(ctx);
+		
+		ctx->defaultService=params.service;
+
+		FileMgr *fio=ctx->fileMgr=new(ctx) FileMgr(ctx,params.maxFiles,getSrvDir(params.serviceDirectory,dirbuf,sizeof(dirbuf)));
+		if (fio==NULL) throw RC_NORESOURCES;
 
 		if ((ctx->cryptoMgr=CryptoMgr::get())==NULL) {report(MSG_CRIT,"Cannot initialize crypto\n"); throw RC_NORESOURCES;}
 
@@ -152,8 +289,8 @@ RC openStore(const StartupParameters& params,AfyDBCtx &cctx)
 				report(MSG_INFO,"Master record found in "STOREPREFIX DATAFILESUFFIX"\n"); dataFileN=1;
 			}
 		}
-		if (rc==RC_NOTFOUND) for (ulong i=1; i<MAXMASTERFILES; i++) {
-			char buf[100]; sprintf(buf,STOREPREFIX"%lu"MASTERFILESUFFIX,i+1);
+		if (rc==RC_NOTFOUND) for (unsigned i=1; i<MAXMASTERFILES; i++) {
+			char buf[100]; sprintf(buf,STOREPREFIX"%u"MASTERFILESUFFIX,i+1);
 			if ((rc=StoreCB::open(ctx,buf,params.password,fForce))==RC_OK) {
 				if (ctx->theCB->nMaster<i+1 || ctx->theCB->nMaster>MAXMASTERFILES) {
 					report(MSG_ERROR,"StoreCB: invalid nMaster field %d\n",ctx->theCB->nMaster); throw RC_CORRUPTED;
@@ -168,10 +305,10 @@ RC openStore(const StartupParameters& params,AfyDBCtx &cctx)
 		if (rc!=RC_OK||ctx->theCB->state==SST_INIT) {
 			switch (rc) {
 			case RC_OK: report(MSG_WARNING,"Previous store initialization not finished\n"); rc=RC_NOTFOUND; break;
-			case RC_VERSION: report(MSG_WARNING,"Invalid vesrion of Affinity in directory %.512s\n",fio->getDirectory()); break;
-			case RC_CORRUPTED: report(MSG_WARNING,"Corrupted or encrypted Affinity found in directory %.512s\n",fio->getDirectory()); break;
-			case RC_NOTFOUND: report(MSG_WARNING,"Affinity not found in directory %.512s\n",fio->getDirectory()); break;
-			default: report(MSG_WARNING,"Cannot open Affinity in directory %.512s(%d)\n",fio->getDirectory(),rc); break;
+			case RC_VERSION: report(MSG_WARNING,"Invalid vesrion of Affinity in directory %.512s\n",dir); break;
+			case RC_CORRUPTED: report(MSG_WARNING,"Corrupted or encrypted Affinity found in directory %.512s\n",dir); break;
+			case RC_NOTFOUND: report(MSG_WARNING,"Affinity not found in directory %.512s\n",dir); break;
+			default: report(MSG_WARNING,"Cannot open Affinity in directory %.512s(%d)\n",dir,rc); break;
 			}
 			throw rc;
 		}
@@ -189,12 +326,12 @@ RC openStore(const StartupParameters& params,AfyDBCtx &cctx)
 	
 		ctx->logMgr=new(ctx) LogMgr(ctx,params.logBufSize,(params.mode&STARTUP_ARCHIVE_LOGS)!=0,params.logDirectory);
 
-		for (ulong i=dataFileN; i<ctx->theCB->nDataFiles; i++) {
+		for (unsigned i=dataFileN; i<ctx->theCB->nDataFiles; i++) {
 			lastFile=FileID(RESERVEDFILEIDS + i - dataFileN); char buf[100];
 			if (i==0) strcpy(buf,STOREPREFIX DATAFILESUFFIX);
-			else sprintf(buf,STOREPREFIX"%lu"DATAFILESUFFIX,i);
+			else sprintf(buf,STOREPREFIX"%u"DATAFILESUFFIX,i);
 			if ((rc=fio->open(lastFile,buf))!=RC_OK)
-				{report(MSG_CRIT,"Cannot open data file '%s' in directory '%.400s' (%d)\n",buf,fio->getDirectory(),rc); throw rc;}
+				{report(MSG_CRIT,"Cannot open data file '%s' in directory '%.400s' (%d)\n",buf,dir,rc); throw rc;}
 		}
 
 		ctx->fsMgr=new(ctx) FSMgr(ctx); rc=ctx->fsMgr->init(lastFile);
@@ -205,19 +342,23 @@ RC openStore(const StartupParameters& params,AfyDBCtx &cctx)
 		ctx->hdirMgr=new(ctx) HeapDirMgr(ctx);
 		ctx->ssvMgr=new(ctx) SSVPageMgr(ctx);
 		ctx->trpgMgr=new(ctx) TreePageMgr(ctx);
-		ctx->lockMgr=new(ctx) LockMgr(ctx,params.lockNotification);
-		ctx->netMgr=new(ctx) NetMgr(ctx,params.network);
+		ctx->lockMgr=new(ctx) LockMgr(ctx);
+		ctx->netMgr=new(ctx) NetMgr(ctx);
 		ctx->identMgr=new(ctx) IdentityMgr(ctx);
 		ctx->uriMgr=new(ctx) URIMgr(ctx);
 		ctx->ftMgr=new(ctx) FTIndexMgr(ctx);
-		ctx->queryMgr=new(ctx) QueryPrc(ctx,params.notification,params.replication);
+		ctx->queryMgr=new(ctx) QueryPrc(ctx,params.notification);
+		ctx->namedMgr=new(ctx) NamedMgr(ctx);
 		ctx->classMgr=new(ctx) Classifier(ctx,params.shutdownAsyncTimeout);
 		ctx->bigMgr=new(ctx) BigMgr(ctx);
+		ctx->fsmMgr=new(ctx) FSMMgr(ctx);
 
 		if ((rc=RequestQueue::addStore(*ctx))!=RC_OK) {
 			//...
 			throw rc;
 		}
+
+		if ((rc=ctx->initBuiltinServices())!=RC_OK) throw rc;
 
 		bool fRecv=ctx->theCB->state!=SST_SHUTDOWN_COMPLETE && ctx->theCB->state!=SST_READ_ONLY;
 		if (fRecv || (params.mode&STARTUP_ROLLFORWARD)!=0) {
@@ -235,11 +376,15 @@ RC openStore(const StartupParameters& params,AfyDBCtx &cctx)
 			ctx->theCB->preload(ctx); ctx->heapMgr->initPartial(); ctx->ssvMgr->initPartial();
 		}
 
+		if ((rc=ctx->tqMgr->startThread())!=RC_OK) throw rc;
+
 		if ((params.mode&STARTUP_TOUCH_FILE)!=0 || ctx->logMgr->isInit())
 			{ctx->theCB->state=ctx->logMgr->isInit()?SST_LOGGING:SST_READ_ONLY; rc=ctx->theCB->update(ctx);}
 
-		if (rc==RC_OK || fForce) report(MSG_NOTICE,"Affinity running\n");
-		if (rc==RC_OK) {ctx->setState(SSTATE_OPEN); cctx=ctx;}
+		if (rc==RC_OK || fForce) {
+			ctx->setState(SSTATE_OPEN); aff=ctx; storeTable->insert(ctx); ++StoreCtx::nStores;	// check unique?
+			report(MSG_NOTICE,"Affinity running\n"); rc=RC_OK;
+		}
 		return rc;
 	} catch (RC rc2) {
 		if ((rc=rc2)==RC_NORESOURCES) report(MSG_CRIT,"Out of memory during store initialization\n");
@@ -253,21 +398,34 @@ RC openStore(const StartupParameters& params,AfyDBCtx &cctx)
 	return rc;
 }
 
-RC createStore(const StoreCreationParameters& create,const StartupParameters& params,AfyDBCtx &cctx,ISession **pLoad)
+RC createStore(const StoreCreationParameters& create,const StartupParameters& params,IAffinity *&aff,ISession **pLoad)
 {
-	StoreCtx *ctx=NULL; RC rc=testEnv(); if (rc!=RC_OK) return rc;
+	StoreCtx *ctx=NULL; aff=NULL; RC rc=RC_OK; if ((ProcFlags::pf.flg&PRCF_CMPXCHG16B)==0) return RC_INVOP;
 	try {
 		if (create.password!=params.password &&
 			(create.password==NULL || params.password==NULL || strcmp(create.password,params.password)!=0)) return RC_INVPARAM;
 
-		RequestQueue::startThreads(); initReport(); cctx=NULL;
+		checkStoreTable(); RequestQueue::startThreads(); initReport();
 
-		if ((ctx=StoreCtx::createCtx(params.mode,true))==NULL) return RC_NORESOURCES;
+		char dirbuf[1024]; const char *dir=setDirectory(params.directory,dirbuf,sizeof(dirbuf));
+		if (dir==NULL) {report(MSG_CRIT,"Directory doesn't exist or is protected\n"); return RC_NOTFOUND;}
+
+		if ((ctx=storeTable->find(StrKey(dir)))!=NULL) {report(MSG_NOTICE,"Found open store in %s\n",dir); aff=ctx; return RC_OK;}
+
+		if ((ctx=StoreCtx::createCtx(params.mode,dir,true))==NULL) return RC_NORESOURCES;
+
+		dir=ctx->getDirectory();
+
+		ctx->tqMgr=new(ctx) TimerQ(ctx);
+
+		ctx->defaultService=params.service;
 
 		ctx->bufMgr=new(ctx) BufMgr(ctx,calcBuffers(params.nBuffers,create.pageSize),create.pageSize);
 
-		FileMgr *fio=ctx->fileMgr=new(ctx) FileMgr(ctx,params.maxFiles,params.io);
-		setDirectory(fio,params.directory,ctx); fio->setPageSize(create.pageSize);
+		FileMgr *fio=ctx->fileMgr=new(ctx) FileMgr(ctx,params.maxFiles,getSrvDir(params.serviceDirectory,dirbuf,sizeof(dirbuf)));
+		if (fio==NULL) throw RC_NORESOURCES;
+
+		fio->setPageSize(create.pageSize);
 
 		if ((ctx->cryptoMgr=CryptoMgr::get())==NULL) {report(MSG_CRIT,"Cannot initialize crypto\n"); throw RC_NORESOURCES;}
 
@@ -284,7 +442,7 @@ RC createStore(const StoreCreationParameters& create,const StartupParameters& pa
 			// rename old, repeat StoreCB::create()
 		}
 
-		if (rc!=RC_OK) {report(MSG_CRIT,"Cannot create '%s' in directory '%.400s' (%d)\n",fname,fio->getDirectory(),rc); throw rc;}
+		if (rc!=RC_OK) {report(MSG_CRIT,"Cannot create '%s' in directory '%.400s' (%d)\n",fname,dir,rc); throw rc;}
 
 		if ((rc=ctx->bufMgr->init())!=RC_OK) {report(MSG_CRIT,"Cannot initialize buffer manager (%d)\n",rc); throw rc;}
 
@@ -299,12 +457,12 @@ RC createStore(const StoreCreationParameters& create,const StartupParameters& pa
 					if (rc==RC_ALREADYEXISTS && (params.mode&STARTUP_FORCE_NEW)!=0) {
 						// rename old, repeat open()
 					}
-					if (rc!=RC_OK) {report(MSG_CRIT,"Cannot create '%s' in directory '%.400s' (%d)\n",buf,ctx->fileMgr->getDirectory(),rc); throw rc;}
+					if (rc!=RC_OK) {report(MSG_CRIT,"Cannot create '%s' in directory '%.400s' (%d)\n",buf,dir,rc); throw rc;}
 				}
 			}
 			fid=RESERVEDFILEIDS;
 			if ((rc=ctx->fileMgr->open(fid,STOREPREFIX DATAFILESUFFIX,FIO_CREATE|FIO_NEW))!=RC_OK)
-				{report(MSG_CRIT,"Cannot create '"STOREPREFIX DATAFILESUFFIX"' in directory '%.400s' (%d)\n",ctx->fileMgr->getDirectory(),rc); throw rc;}
+				{report(MSG_CRIT,"Cannot create '"STOREPREFIX DATAFILESUFFIX"' in directory '%.400s' (%d)\n",dir,rc); throw rc;}
 		}
 
 		ctx->txMgr=new(ctx) TxMgr(ctx,0,params.notification);
@@ -322,15 +480,17 @@ RC createStore(const StoreCreationParameters& create,const StartupParameters& pa
 		ctx->hdirMgr=new(ctx) HeapDirMgr(ctx);
 		ctx->ssvMgr=new(ctx) SSVPageMgr(ctx);
 		ctx->trpgMgr=new(ctx) TreePageMgr(ctx);
-		ctx->lockMgr=new(ctx) LockMgr(ctx,params.lockNotification);
-		ctx->netMgr=new(ctx) NetMgr(ctx,params.network);
+		ctx->lockMgr=new(ctx) LockMgr(ctx);
+		ctx->netMgr=new(ctx) NetMgr(ctx);
 		ctx->identMgr=new(ctx) IdentityMgr(ctx);
 		ctx->uriMgr=new(ctx) URIMgr(ctx);
 		ctx->ftMgr=new(ctx) FTIndexMgr(ctx);
-		ctx->queryMgr=new(ctx) QueryPrc(ctx,params.notification,params.replication);
+		ctx->queryMgr=new(ctx) QueryPrc(ctx,params.notification);
+		ctx->namedMgr=new(ctx) NamedMgr(ctx);
 		ctx->classMgr=new(ctx) Classifier(ctx,params.shutdownAsyncTimeout);
 		ctx->bigMgr=new(ctx) BigMgr(ctx);
-
+		ctx->fsmMgr=new(ctx) FSMMgr(ctx);
+		
 		if ((rc=RequestQueue::addStore(*ctx))!=RC_OK) {
 			//...
 			throw rc;
@@ -338,30 +498,41 @@ RC createStore(const StoreCreationParameters& create,const StartupParameters& pa
 
 		Session *ses=Session::createSession(ctx); if (ses!=NULL) ses->setIdentity(STORE_OWNER,true);
 
-		if ((rc=ctx->classMgr->initStoreMaps(ses))!=RC_OK) {report(MSG_CRIT,"Cannot initialize maps (%d)\n",rc); throw rc;}
+		if ((rc=ctx->classMgr->initBuiltin(ses))!=RC_OK) {report(MSG_CRIT,"Cannot create builtin classes and properties (%d)\n",rc); throw rc;}
 		
 		PWD_ENCRYPT pwd((const byte*)create.password,create.password!=NULL?strlen(create.password):0);
 		const byte *enc=create.password!=NULL&&*create.password!='\0'?pwd.encrypted():NULL;
-		Identity *ident=ctx->identMgr->insert(create.identity==NULL?"":create.identity,enc,NULL,0,true);	//cert from params
+		const char *identity=create.identity;
+		if (identity==NULL || identity[0]=='\0') {
+#ifdef WIN32
+			DWORD lbuf=sizeof(dirbuf);
+			if (!::GetComputerName(dirbuf,&lbuf)) rc=convCode(GetLastError());
+#else
+			if (gethostname(dirbuf,sizeof(dirbuf))) rc=convCode(errno);
+#endif
+			if (rc!=RC_OK) {report(MSG_CRIT,"Cannot get host name (%d)\n",rc); throw rc;}
+			identity=dirbuf;
+		}
+		Identity *ident=ctx->identMgr->insert(identity,enc,NULL,0,true);
 		if (ident==NULL) {report(MSG_CRIT,"Cannot initialize identity map\n"); throw RC_OTHER;}
 		assert(ident->getID()==STORE_OWNER);
 		ident->release();
 
 		Session::terminateSession();
 
+		if ((rc=ctx->initBuiltinServices())!=RC_OK) throw rc;
+
+		if ((rc=ctx->tqMgr->startThread())!=RC_OK) throw rc;
+
 		ctx->theCB->state=SST_LOGGING;
 		if ((rc=ctx->theCB->update(ctx))==RC_OK || (params.mode&STARTUP_FORCE_OPEN)!=0) {
-			report(MSG_NOTICE,"Affinity running\n"); rc=RC_OK;
+			rc=RC_OK;
 			if (pLoad!=NULL) {
 				Session *ses=Session::createSession(ctx);
-				if (ses==NULL) {*pLoad=NULL; rc=RC_NORESOURCES;}
-				else {
-					SessionX *ps=SessionX::create(ses);
-					if ((*pLoad=ps)==NULL) {Session::terminateSession(); rc=RC_NORESOURCES;}
-					else if ((rc=ctx->txMgr->startTx(ses,TXT_READWRITE,TXI_DEFAULT))==RC_OK) {ses->setRestore(); ctx->theCB->state=SST_RESTORE;}
-				}
+				if ((*pLoad=ses)==NULL) {*pLoad=NULL; rc=RC_NORESOURCES;}
+				else if ((rc=ctx->txMgr->startTx(ses,TXT_READWRITE,TXI_DEFAULT))==RC_OK) {ses->setRestore(); ctx->theCB->state=SST_RESTORE;}
 			}
-			if (rc==RC_OK) {ctx->setState(SSTATE_OPEN); cctx=ctx;}
+			if (rc==RC_OK) {ctx->setState(SSTATE_OPEN); aff=ctx; ++StoreCtx::nStores; storeTable->insert(ctx); report(MSG_NOTICE,"Affinity running\n");}	// unique???
 		}
 		return rc;
 	} catch (RC rc2) {
@@ -376,9 +547,10 @@ RC createStore(const StoreCreationParameters& create,const StartupParameters& pa
 	return rc;
 }
 
-RC getStoreCreationParameters(StoreCreationParameters& params,AfyDBCtx ctx)
+RC getStoreCreationParameters(StoreCreationParameters& params,IAffinity *aff)
 {
 	try {
+		StoreCtx *ctx=(StoreCtx*)aff;
 		if (ctx!=NULL) ctx->set(); else if ((ctx=StoreCtx::get())==NULL) return RC_NOTFOUND;
 		params.nControlRecords=ctx->theCB->nMaster;
 		params.pageSize=ctx->theCB->lPage;
@@ -400,56 +572,43 @@ unsigned getVersion()
 	return STORE_IFACE_VER;
 }
 
-RC loadLang(const char *path,uint16_t& langID)
-{
-	try {
-#ifdef _MSC_VER
-#else
-#endif
-		void *itf=NULL;
-		//...
-		return Expr::registerExtn(itf,langID);
-	} catch (RC rc) {return rc;} catch (...) {return RC_INTERNAL;}
-}
+//-------------------------------------------------------------------------------------------------------------------------------------------------
 
 static void reportTree(PageID pid,const char *t,StoreCtx *ctx)
 {
 	if (pid!=INVALID_PAGEID) {
 		CheckTreeReport rep,sec;
-		ulong cnt=Tree::checkTree(ctx,pid,rep,&sec),cnt2=ctx->trpgMgr->enumPages(pid);
+		unsigned cnt=Tree::checkTree(ctx,pid,rep,&sec),cnt2=ctx->trpgMgr->enumPages(pid);
 		if (cnt!=cnt2) report(MSG_ERROR,"!!!!%s: cnt=%lu, enum=%lu\n",t,cnt,cnt2);
 		if (rep.depth>0) {
 			report(MSG_INFO," %s index report (%lu pages):\n",t,cnt);
-			for (ulong i=0; i<rep.depth; i++)
+			for (unsigned i=0; i<rep.depth; i++)
 				report(MSG_INFO,"\t\t%lu: %lu total, %lu missing, %lu empty\n",i,rep.total[i],rep.missing[i],rep.empty[i]);
-			for (ulong i=cnt2=0; i<sec.depth; i++)
+			for (unsigned i=cnt2=0; i<sec.depth; i++)
 				{report(MSG_INFO,"\t\t\t%lu: %lu total, %lu missing, %lu empty\n",i,sec.total[i],sec.missing[i],sec.empty[i]); cnt2+=sec.total[i];}
 			report(MSG_INFO," Primary leaf histogram:\n");
-			for (ulong i=0; i<TREE_N_HIST_BUCKETS; i++)
+			for (unsigned i=0; i<TREE_N_HIST_BUCKETS; i++)
 				report (MSG_INFO,"%d - %d%% full: %lu\n",int(i*(100./TREE_N_HIST_BUCKETS)),int((i+1)*(100./TREE_N_HIST_BUCKETS)),rep.histogram[i]);
 			if (cnt2!=0) {
 				report(MSG_INFO," Secondary leaf histogram:\n");
-				for (ulong i=0; i<TREE_N_HIST_BUCKETS; i++)
+				for (unsigned i=0; i<TREE_N_HIST_BUCKETS; i++)
 					report (MSG_INFO,"%d - %d%% full: %lu\n",int(i*(100./TREE_N_HIST_BUCKETS)),int((i+1)*(100./TREE_N_HIST_BUCKETS)),sec.histogram[i]);
 			}
 		}
 	}
 }
 
-unsigned getStoreState(AfyDBCtx ctx)
+RC shutdownStore()
 {
-	try {return ctx!=NULL || (ctx=StoreCtx::get())!=NULL ? ctx->getState() : 0u;}
-	catch (RC) {} catch (...) {report(MSG_ERROR,"Exception in getStoreState\n");}
-	return 0u;
+	StoreCtx *ctx=StoreCtx::get(); return ctx!=NULL?ctx->shutdown():RC_NOTFOUND;
 }
 
-RC shutdownStore(AfyDBCtx ctx)
+RC StoreCtx::shutdown()
 {
 	try {
-		if (ctx!=NULL) ctx->set(); else if ((ctx=StoreCtx::get())==NULL) return RC_NOTFOUND;
-		for (long st=ctx->state; ;st=ctx->state) {
+		for (long st=state; ;st=state) {
 			if ((st&SSTATE_IN_SHUTDOWN)!=0) return RC_SHUTDOWN;
-			if (cas(&ctx->state,st,st|SSTATE_IN_SHUTDOWN)) break;
+			if (cas(&state,st,st|SSTATE_IN_SHUTDOWN)) break;
 		}
 
 		report(MSG_NOTICE,"Affinity shutdown in progress\n");
@@ -458,37 +617,38 @@ RC shutdownStore(AfyDBCtx ctx)
 
 		// check return codes!!!
 
-		if (ctx->theCB->state!=SST_SHUTDOWN_COMPLETE && ctx->theCB->state!=SST_READ_ONLY && ctx->theCB->state!=SST_NO_SHUTDOWN)
-			{ctx->theCB->state=SST_SHUTDOWN_IN_PROGRESS; if ((rc=ctx->theCB->update(ctx))!=RC_OK) return rc;}
+		if (theCB->state!=SST_SHUTDOWN_COMPLETE && theCB->state!=SST_READ_ONLY && theCB->state!=SST_NO_SHUTDOWN)
+			{theCB->state=SST_SHUTDOWN_IN_PROGRESS; if ((rc=theCB->update(this))!=RC_OK) return rc;}
 
-		if (ctx->txMgr->getNActive()>0) {
-			report(MSG_NOTICE,"Rollback %d active transaction(s)\n",ctx->txMgr->getNActive());
-			while (ctx->txMgr->getNActive()>0) threadYield();
+		if (txMgr->getNActive()>0) {
+			report(MSG_NOTICE,"Rollback %d active transaction(s)\n",txMgr->getNActive());
+			while (txMgr->getNActive()>0) threadYield();
 		}
 
-		ctx->netMgr->close();		//make all close() -> RC
-		ctx->fsMgr->close();
-		RequestQueue::removeStore(*ctx,10000);						// ??? timeout
-		if (ctx->bufMgr->flushAll(60000000)!=RC_OK) {				// timeout 1 minute (for slow ext. memory)
-			ctx->theCB->state=SST_NO_SHUTDOWN;
+		shutdownServices();
+
+		netMgr->close();		//make all close() -> RC
+		fsMgr->close();
+		RequestQueue::removeStore(*this,10000);						// ??? timeout
+		if (bufMgr->flushAll(60000000)!=RC_OK) {				// timeout 1 minute (for slow ext. memory)
+			theCB->state=SST_NO_SHUTDOWN;
 		}
 
-		if ((ctx->mode&STARTUP_PRINT_STATS)!=0) {
-			Session *ses=Session::createSession(ctx); if (ses!=NULL) ses->setIdentity(STORE_OWNER,true);
-			reportTree(ctx->theCB->mapRoots[MA_FTINDEX],"FT",ctx);
-			reportTree(ctx->theCB->mapRoots[MA_CLASSINDEX],"Class",ctx);
-			TreeScan *sc=ctx->classMgr->getClassPINs().scan(ses,NULL);
+		if ((mode&STARTUP_PRINT_STATS)!=0) {
+			Session *ses=Session::createSession(this); if (ses!=NULL) ses->setIdentity(STORE_OWNER,true);
+			reportTree(theCB->mapRoots[MA_FTINDEX],"FT",this);
+			reportTree(theCB->mapRoots[MA_CLASSINDEX],"Class",this);
+			TreeScan *sc=namedMgr->scan(ses,NULL);
 			if (sc!=NULL) {
 				const void *er; size_t lD;
 				while ((er=sc->nextValue(lD))!=NULL) {
-					PINRef pr(ctx->storeID,(const byte*)er,byte(lD));
-					if ((pr.def&PR_PID2)!=0) {
+					PINRef pr(storeID,(const byte*)er,byte(lD));
+					if ((pr.def&PR_U1)!=0 && (pr.u1&PMT_CLASS)!=0 && (pr.def&PR_PID2)!=0) {
 						const SearchKey& ky=sc->getKey(); assert(ky.type==KT_UINT);
-						URI *uri=NULL; char buf[20]; const char *name=buf;
-						if (ky.v.u<=PROP_SPEC_LAST) name=Classifier::builtinURIs[(uint32_t)ky.v.u].name;
-						else if ((uri=(URI*)ctx->uriMgr->ObjMgr::find((uint32_t)ky.v.u))!=NULL) name=uri->getURI();
-						else sprintf(buf,"%u",(uint32_t)ky.v.u);
-						reportTree(PageID(pr.id2.pid>>16),name,ctx);
+						URI *uri=NULL; char buf[20]; const char *name=buf; size_t lname;
+						if (ky.v.u>MAX_BUILTIN_URIID || (name=Classifier::getBuiltinName((URIID)ky.v.u,lname))==NULL)
+							{if ((uri=(URI*)uriMgr->ObjMgr::find((uint32_t)ky.v.u))!=NULL) name=uri->getURI(); else sprintf(buf,"%u",(uint32_t)ky.v.u);}
+						reportTree(PageID(pr.id2.pid>>16),name,this);
 						if (uri!=NULL) uri->release();
 					}
 				}
@@ -497,26 +657,26 @@ RC shutdownStore(AfyDBCtx ctx)
 			Session::terminateSession();
 		}
 
-		ctx->fileMgr->closeAll(RESERVEDFILEIDS);
-		if ((rc=ctx->bufMgr->close(0,true))!=RC_OK) return rc;
-		if ((rc=ctx->logMgr->close())!=RC_OK) return rc;
+		fileMgr->closeAll(RESERVEDFILEIDS);
+		if ((rc=bufMgr->close(0,true))!=RC_OK) return rc;
+		if ((rc=logMgr->close())!=RC_OK) return rc;
 
-		HeapPageMgr::savePartial(ctx->heapMgr,ctx->ssvMgr);
-		ctx->theCB->xPropID=ctx->classMgr->getXPropID();
+		HeapPageMgr::savePartial(heapMgr,ssvMgr);
+		theCB->xPropID=classMgr->getXPropID();
 
 		bool fDelLog=false;
-		if (ctx->theCB->state!=SST_SHUTDOWN_COMPLETE && ctx->theCB->state!=SST_NO_SHUTDOWN)
-			{ctx->theCB->state=SST_SHUTDOWN_COMPLETE; if ((rc=ctx->theCB->update(ctx))!=RC_OK) return rc; fDelLog=true;}
+		if (theCB->state!=SST_SHUTDOWN_COMPLETE && theCB->state!=SST_NO_SHUTDOWN)
+			{theCB->state=SST_SHUTDOWN_COMPLETE; if ((rc=theCB->update(this))!=RC_OK) return rc; fDelLog=true;}
 
-		ctx->theCB->close(ctx);
+		theCB->close(this);
 
-		if (fDelLog) ctx->logMgr->deleteLogs();
+		if (fDelLog) logMgr->deleteLogs();
 
-		delete ctx;
+		assert(storeTable!=NULL); storeTable->remove(this); delete this;
 
 		report(MSG_NOTICE,"Affinity shutdown complete\n");
-	// if last one ->
-		closeReport();
+
+		if (--StoreCtx::nStores==0) closeReport();
 	
 		return RC_OK;
 	} catch (RC rc) {return rc;} catch (...) {report(MSG_ERROR,"Exception in shutdownStore\n"); return RC_INTERNAL;}
@@ -524,15 +684,16 @@ RC shutdownStore(AfyDBCtx ctx)
 
 void stopThreads()
 {
+	TimerQ::stopThreads();
 	RequestQueue::stopThreads();
-	LockMgr::stopThreads();
 }
 
 StoreCtx::~StoreCtx()
 {
-	MemAlloc *m=mem;
+	MemAlloc *m=mem; directory.reset();
 	if (bufMgr!=NULL) bufMgr->~BufMgr();
 	if (classMgr!=NULL) classMgr->~Classifier();
+	if (namedMgr!=NULL) namedMgr->~NamedMgr();
 	if (fileMgr!=NULL) fileMgr->~FileMgr();
 	if (fsMgr!=NULL) fsMgr->~FSMgr();
 	//if (ftMgr!=NULL) ftMgr->~FTIndexMgr();
@@ -547,19 +708,23 @@ StoreCtx::~StoreCtx()
 	if (treeMgr!=NULL) treeMgr->~TreeMgr();
 	if (txMgr!=NULL) txMgr->~TxMgr();
 	if (bigMgr!=NULL) bigMgr->~BigMgr();
+	if (fsmMgr!=NULL) fsmMgr->~FSMMgr();
+	if (tqMgr!=NULL) tqMgr->~TimerQ();
 	storeTls.set(NULL);
 	if (m!=NULL) m->release();
-	--nStores;
 }
 
-StoreCtx *StoreCtx::createCtx(ulong f,bool fNew)
+StoreCtx *StoreCtx::createCtx(unsigned f,const char *dir,bool fNew)
 {
-	StoreCtx *ctx=new(SERVER_HEAP) StoreCtx(f);
-	if (ctx!=NULL) {ctx->mem=createMemAlloc(fNew?STORE_NEW_MEM:STORE_START_MEM,true); storeTls.set(ctx);}
+	StoreCtx *ctx=new(&sharedAlloc) StoreCtx(f);
+	if (ctx!=NULL) {
+		ctx->mem=createMemAlloc(fNew?STORE_NEW_MEM:STORE_START_MEM,true); storeTls.set(ctx);
+		if (dir!=NULL && *dir!='\0') ctx->directory=strdup(dir,ctx);
+	}
 	return ctx;
 }
 
 void StoreCtx::operator delete(void *p)
 {
-	AfyKernel::free(p,SERVER_HEAP);
+	sharedAlloc.free(p);
 }

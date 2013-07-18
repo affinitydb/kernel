@@ -1,6 +1,6 @@
 /**************************************************************************************
 
-Copyright © 2004-2012 VMware, Inc. All rights reserved.
+Copyright © 2004-2013 GoPivotal, Inc. All rights reserved.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -23,7 +23,7 @@ Written by Mark Venguerov 2004-2012
 #include "buffer.h"
 #include "session.h"
 
-using namespace AfyDB;
+using namespace Afy;
 using namespace AfyKernel;
 
 namespace AfyKernel
@@ -48,7 +48,7 @@ class TreeScanImpl : public TreeScan, public TreeCtx, public LatchHolder
 {
 	Session			*const	ses;
 	StoreCtx		*const	ctx;
-	ulong					state;
+	unsigned					state;
 	const SearchKey	*const	start;
 	const SearchKey	*const	finish;
 	const IndexSeg	*const	segs;
@@ -59,14 +59,14 @@ class TreeScanImpl : public TreeScan, public TreeCtx, public LatchHolder
 	PageID					kPage;
 	PageID					nPage;
 	LSN						lsn;
-	ulong					stamp;
+	unsigned					stamp;
 	SearchKey				*savedKey;
 	size_t					lKeyBuf;
 
 	PBlock					*subpg;
 	PageID					sPage;
 	PageID					anchor;
-	ulong					stamp2;
+	unsigned					stamp2;
 
 	const byte				*ps,*pe,*ptr;
 	size_t					lElt;
@@ -78,7 +78,7 @@ class TreeScanImpl : public TreeScan, public TreeCtx, public LatchHolder
 
 private:
 	bool checkBounds(const TreePageMgr::TreePage* tp,bool fNext,bool fSibling=false) {
-		const SearchKey *bound=fNext?finish:start; return bound!=NULL&&bound->isSet()?tp->testBound(*bound,ushort(fSibling?~0ul:index),segs,nSegs,!fNext,(state&SCAN_PREFIX)!=0):true;
+		const SearchKey *bound=fNext?finish:start; return bound!=NULL&&bound->isSet()?tp->testBound(*bound,ushort(fSibling?~0u:index),segs,nSegs,!fNext,(state&SCAN_PREFIX)!=0):true;
 	}
 	void saveKey() {
 		assert((state&SCAN_EXACT)==0);
@@ -118,8 +118,8 @@ private:
 	}
 	bool findValue(const byte *buf,const byte *ebuf,const byte *v,size_t lv,const byte *&res) {
 		assert(ebuf>buf && (ebuf-buf)%lElt==0);
-		for (ulong n=(ulong)((ebuf-buf)/lElt); n>0; ) {
-			ulong k=n>>1; const byte *p=buf+k*lElt,*q; size_t l; int cmp;
+		for (unsigned n=(unsigned)((ebuf-buf)/lElt); n>0; ) {
+			unsigned k=n>>1; const byte *p=buf+k*lElt,*q; size_t l; int cmp;
 			if ((state&SC_FIXED)!=0) q=p,l=lElt; else if (lElt==1) q=ps+p[0],l=p[1]-p[0]; else q=ps+_u16(p),l=_u16(p+2)-_u16(p);
 			if ((state&SC_PINREF)!=0) cmp=PINRef::cmpPIDs(q,(unsigned)l,v,(unsigned)lv); else if ((cmp=memcmp(q,v,min(l,lv)))==0) cmp=cmp3(l,lv);
 			if (cmp==0) {res=p; return true;} if (cmp<0) {buf=p+lElt; n-=k+1;} else n=k;
@@ -138,7 +138,7 @@ private:
 		return ((const TreePageMgr::TreePage*)pb->getPageBuf())->findKey(*key,index);
 	}
 public:
-	TreeScanImpl(Session *se,Tree& tr,const SearchKey *st,const SearchKey *fi,ulong flgs,const IndexSeg *sg,unsigned nS,IKeyCallback *kcb)
+	TreeScanImpl(Session *se,Tree& tr,const SearchKey *st,const SearchKey *fi,unsigned flgs,const IndexSeg *sg,unsigned nS,IKeyCallback *kcb)
 		: TreeCtx(tr),LatchHolder(se),ses(se),ctx(ses->getStore()),state(flgs|SC_INIT),start(st),finish(fi),segs(sg),nSegs(nS),keycb(kcb),fHyper(false),
 		kPage(INVALID_PAGEID),lsn(0),stamp(0),savedKey(NULL),lKeyBuf(0),subpg(NULL),sPage(INVALID_PAGEID),stamp2(0),ps(NULL),pe(NULL),ptr(NULL),
 		lElt(0),buf(NULL),lbuf(0),ldata(0),lpref(0),bufsht(0)
@@ -179,9 +179,9 @@ public:
 							const TreePageMgr::TreePage* tp=(const TreePageMgr::TreePage*)pb->getPageBuf();
 							cmp=tp->testKey(*skip,(ushort)index); assert(index<tp->info.nSearchKeys);
 							if (fF && cmp>=0 || !fF && cmp<=0) skip=NULL;											// skip before(fF) or after(!fF) current key
-							else if (tp->findKey(*skip,index) && index<(ulong)tp->info.nSearchKeys) goto retkey;	// found skip
-							else if (index>0 && index<(ulong)tp->info.nEntries) skip=NULL;							// skip within page or before next page
-							else if (index>=(ulong)tp->info.nSearchKeys) index=tp->info.nSearchKeys-1;
+							else if (tp->findKey(*skip,index) && index<(unsigned)tp->info.nSearchKeys) goto retkey;	// found skip
+							else if (index>0 && index<(unsigned)tp->info.nEntries) skip=NULL;							// skip within page or before next page
+							else if (index>=(unsigned)tp->info.nSearchKeys) index=tp->info.nSearchKeys-1;
 						} else if (savedKey->isSet()) {
 							cmp=savedKey->cmp(*skip); if (fF && cmp>=0 || !fF && cmp<=0) skip=NULL;
 							// !!! else check first/last key on page: if inside -> restore page
@@ -227,7 +227,7 @@ public:
 						if (tp->findKey(*key,index) && (key!=start || (state&SCAN_EXCLUDE_START)==0)
 							&& (key!=finish || (state&SCAN_EXCLUDE_END)==0)) goto retkey;
 						if (!fF) {if (index>0) {--index; if (checkBounds(tp,false)) goto retkey;}}
-						else if (index+1<(ulong)tp->info.nSearchKeys) {++index; if (checkBounds(tp,true)) goto retkey;}
+						else if (index+1<(unsigned)tp->info.nSearchKeys) {++index; if (checkBounds(tp,true)) goto retkey;}
 					}
 					pb.release(ses);
 				}
@@ -441,10 +441,10 @@ retkey:
 			}
 		}
 	}
-	RC skip(ulong& nSkip,bool fBack) {
+	RC skip(unsigned& nSkip,bool fBack) {
 		if ((state&SC_INIT)==0) return RC_OTHER; if ((state&SC_UNIQUE)!=0) {--nSkip; return RC_EOF;} size_t lD;
 		for (GO_DIR op=fBack?GO_LAST:GO_FIRST,op2=fBack?GO_PREVIOUS:GO_NEXT; nextValue(lD,op,NULL,0)!=NULL; op=op2) {
-			ulong n=(ulong)((pe-ps)/lElt);
+			unsigned n=(unsigned)((pe-ps)/lElt);
 			if (n>=nSkip) {ptr=fBack?pe-nSkip*lElt:ps+nSkip*lElt; nSkip=0; return RC_OK;}
 			ptr=fBack?ps:pe; nSkip-=n;
 		}
@@ -525,7 +525,7 @@ retkey:
 
 };
 
-TreeScan *Tree::scan(Session *ses,const SearchKey *start,const SearchKey *finish,ulong flags,const IndexSeg *sg,unsigned nSegs,IKeyCallback *kcb)
+TreeScan *Tree::scan(Session *ses,const SearchKey *start,const SearchKey *finish,unsigned flags,const IndexSeg *sg,unsigned nSegs,IKeyCallback *kcb)
 {
 	return new(ses) TreeScanImpl(ses,*this,start,finish,flags,sg,nSegs,kcb);
 }

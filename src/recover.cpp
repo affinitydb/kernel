@@ -1,6 +1,6 @@
 /**************************************************************************************
 
-Copyright © 2004-2012 VMware, Inc. All rights reserved.
+Copyright © 2004-2013 GoPivotal, Inc. All rights reserved.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -46,14 +46,14 @@ RC LogMgr::recover(Session *ses,bool fRollforward)
 	if (rc==RC_OK) {
 		prevLSN=maxLSN=writtenLSN=ctx->theCB->logEnd;
 		size_t offset=floor(LSNToFileOffset(chkp),lPage),lread;
-		if ((recFileSize=(ulong)ctx->fileMgr->getFileSize(logFile))==0) rc=RC_CORRUPTED;
+		if ((recFileSize=(unsigned)ctx->fileMgr->getFileSize(logFile))==0) rc=RC_CORRUPTED;
 		else {
 			if (recFileSize<bufLen) {offset=0; lread=ceil(recFileSize,sectorSize);}
 			else if (recFileSize-offset>=bufLen) lread=bufLen;
 			else {offset=ceil(recFileSize,lPage)-bufLen; lread=recFileSize-offset;}
 			minLSN=LSNFromOffset(LSNToFileN(chkp),offset); maxLSN=minLSN+lread;
-			pcb->aio_fildes=logFile; pcb->aio_buf=logBufBeg; pcb->aio_lio_opcode=LIO_READ;
-			pcb->aio_offset=offset; pcb->aio_nbytes=ceil(lread,sectorSize);
+			aio.aio_fid=logFile; aio.aio_buf=logBufBeg; aio.aio_lio_opcode=LIO_READ;
+			aio.aio_offset=offset; aio.aio_nbytes=ceil(lread,sectorSize);
 			rc=ctx->fileMgr->listIO(LIO_WAIT,1,&pcb);
 		}
 	}
@@ -71,24 +71,24 @@ RC LogMgr::recover(Session *ses,bool fRollforward)
 	if ((rc=rctx.read(lastLSN))!=RC_OK)
 		{report(MSG_CRIT,"Recovery: cannot read checkpoint record at "_LX_FM" (%d)\n",chkp.lsn,rc); fRecovery=fAnalizing=false; return RC_CORRUPTED;}
 
-	TxSet losers(LOSERSETSIZE,ses); LSN logEnd(ctx->theCB->logEnd);
-	DirtyPageSet dirtyPages(DIRTYPAGESETSIZE,ses); ulong ntx=0,npg=0,extra; PageMgr *pageMgr;
+	TxSet losers(LOSERSETSIZE,(MemAlloc*)ses); LSN logEnd(ctx->theCB->logEnd);
+	DirtyPageSet dirtyPages(DIRTYPAGESETSIZE,(MemAlloc*)ses); unsigned ntx=0,npg=0,extra; PageMgr *pageMgr;
 	if (rctx.type==LR_CHECKPOINT) {
 		if (rctx.rbuf==NULL || rctx.lrec==0)
 			{report(MSG_CRIT,"Recovery: empty checkpoint record at "_LX_FM"\n",chkp.lsn); fRecovery=fAnalizing=false; return RC_CORRUPTED;}
-		ulong ltx=sizeof(uint32_t)+((LogActiveTransactions*)rctx.rbuf)->nTransactions*sizeof(LogActiveTransactions::LogActiveTx);
-		if (ltx+sizeof(uint32_t)+((LogDirtyPages*)(rctx.rbuf+ltx))->nPages*sizeof(LogDirtyPages::LogDirtyPage)!=rctx.lrec)
+		size_t ltx=sizeof(uint64_t)+(size_t)((LogActiveTransactions*)rctx.rbuf)->nTransactions*sizeof(LogActiveTransactions::LogActiveTx);
+		if (ltx+sizeof(uint64_t)+(size_t)((LogDirtyPages*)(rctx.rbuf+ltx))->nPages*sizeof(LogDirtyPages::LogDirtyPage)!=rctx.lrec)
 			{report(MSG_CRIT,"Recovery: invalid length of checkpoint record at "_LX_FM"\n",chkp.lsn); fRecovery=fAnalizing=false; return RC_CORRUPTED;}
-		ntx=*(uint32_t*)rctx.rbuf; npg=*(uint32_t*)(rctx.rbuf+ltx);
-		const LogActiveTransactions::LogActiveTx *tx=(const LogActiveTransactions::LogActiveTx*)(rctx.rbuf+sizeof(uint32_t));
-		for (ulong i=0; i<ntx; ++tx,++i) {
+		ntx=(unsigned)((LogActiveTransactions*)rctx.rbuf)->nTransactions; npg=(unsigned)((LogDirtyPages*)(rctx.rbuf+ltx))->nPages;
+		const LogActiveTransactions::LogActiveTx *tx=(const LogActiveTransactions::LogActiveTx*)(rctx.rbuf+sizeof(uint64_t));
+		for (unsigned i=0; i<ntx; ++tx,++i) {
 			Trans *trans=new Trans(tx->txid,tx->lastLSN); if (trans!=NULL) losers.insert(trans);
 #if defined(_DEBUG) && defined(DEBUG_PRINT_ACTIVE_TX)
 			report(MSG_DEBUG,"\tActive tx: "_LX_FM"\n",tx->txid);
 #endif
 		}
-		const LogDirtyPages::LogDirtyPage *dpg=(const LogDirtyPages::LogDirtyPage*)(rctx.rbuf+ltx+sizeof(uint32_t));
-		for (ulong j=0; j<npg; ++j,++dpg) {
+		const LogDirtyPages::LogDirtyPage *dpg=(const LogDirtyPages::LogDirtyPage*)(rctx.rbuf+ltx+sizeof(uint64_t));
+		for (unsigned j=0; j<npg; ++j,++dpg) {
 			assert(dpg->redo<chkp); if ((dp=new DirtyPg((PageID)dpg->pageID,dpg->redo))!=NULL) dirtyPages.insert(dp);
 #if defined(_DEBUG) && defined(DEBUG_PRINT_DIRTY_PAGES)
 			report(MSG_DEBUG,"\tDirty page: %08X ("_LX_FM")\n",(PageID)dpg->pageID,dpg->redo.lsn);
@@ -174,8 +174,8 @@ RC LogMgr::recover(Session *ses,bool fRollforward)
 	if (sMinLSN!=minLSN && lastLSN!=minLSN) {
 		size_t len=(size_t)(lastLSN-sMinLSN),offset=LSNToFileOffset(sMinLSN); rc=RC_OK; assert(lastLSN>=sMinLSN && len<bufLen);
 		if (LSNToFileN(minLSN)==LSNToFileN(sMinLSN) || (rc=openLogFile(sMinLSN))==RC_OK) {
-			pcb->aio_fildes=logFile; pcb->aio_buf=logBufBeg; pcb->aio_lio_opcode=LIO_READ; 
-			pcb->aio_offset=offset; pcb->aio_nbytes=ceil(len,sectorSize); rc=ctx->fileMgr->listIO(LIO_WAIT,1,&pcb);
+			aio.aio_fid=logFile; aio.aio_buf=logBufBeg; aio.aio_lio_opcode=LIO_READ; 
+			aio.aio_offset=offset; aio.aio_nbytes=ceil(len,sectorSize); rc=ctx->fileMgr->listIO(LIO_WAIT,1,&pcb);
 		}
 		if (rc==RC_OK) minLSN=sMinLSN;
 		else {lock.unlock(); report(MSG_CRIT,"Recovery: cannot re-read log file segment(%d)\n",rc); fRecovery=false; return rc;}
@@ -253,7 +253,7 @@ RC LogMgr::recover(Session *ses,bool fRollforward)
 
 	// UNDO pass
 
-	TxSet activeTx(ACTIVESETSIZE,ses);
+	TxSet activeTx(ACTIVESETSIZE,(MemAlloc*)ses);
 	for (TxSet::it it(losers); ++it;) {
 		Trans *trans=new Trans(*it.get()); if (trans!=NULL) activeTx.insert(trans);
 	}
@@ -365,7 +365,7 @@ RC LogMgr::recover(Session *ses,bool fRollforward)
 RC LogMgr::rollback(Session *ses,bool fSavepoint)
 {
 	if (ses==NULL) return RC_NOSESSION; if ((ctx->mode&STARTUP_NO_RECOVERY)!=0) return RC_FALSE;
-	RC rc=RC_OK; PageMgr *mgr; LogReadCtx rctx(this,ses); ulong extra; LSN nullLSN(0),lastLSN(ses->tx.lastLSN);
+	RC rc=RC_OK; PageMgr *mgr; LogReadCtx rctx(this,ses); unsigned extra; LSN nullLSN(0),lastLSN(ses->tx.lastLSN);
 #ifdef _DEBUG
 	TXID txid=ses->getTXID();
 #endif
@@ -447,26 +447,25 @@ RC LogMgr::checkpoint()
 	if ((ctx->mode&STARTUP_NO_RECOVERY)!=0) return RC_OK;
 	bufferLock.lock(); RC rc=RC_OK; LSN start(~0ULL);
 	if (!fRecovery && ctx->theCB->checkpoint==prevLSN) {bufferLock.unlock(); return RC_OK;}
-	PageID asyncPages[MAX_ASYNC_PAGES]; ulong nAsyncPages=0;
+	PageID asyncPages[MAX_ASYNC_PAGES]; unsigned nAsyncPages=0;
 	LogDirtyPages *ldp=ctx->bufMgr->getDirtyPageInfo(maxLSN<logSegSize?LSN(0):maxLSN-logSegSize,
 								start,asyncPages,nAsyncPages,sizeof(asyncPages)/sizeof(asyncPages[0]));
 	LogActiveTransactions *lat=ctx->txMgr->getActiveTx(start);
 	if (ldp==NULL || lat==NULL) {bufferLock.unlock(); return RC_NORESOURCES;}
 	assert(!fRecovery || lat->nTransactions==0);
-	size_t lAt=lat->nTransactions*sizeof(LogActiveTransactions::LogActiveTx);
-	size_t lDp=ldp->nPages*sizeof(LogDirtyPages::LogDirtyPage);
-	byte *pData=(byte*)ctx->malloc(lAt+lDp+2*sizeof(uint32_t));
+	size_t lAt=(size_t)lat->nTransactions*sizeof(LogActiveTransactions::LogActiveTx),lDp=(size_t)ldp->nPages*sizeof(LogDirtyPages::LogDirtyPage);
+	size_t lChkp=sizeof(uint64_t)+lAt+sizeof(uint64_t)+lDp; byte *pData=(byte*)ctx->malloc(lChkp);
 	if (pData==NULL) {rc=RC_NORESOURCES; bufferLock.unlock();}
 	else {
-		*(uint32_t*)pData=lat->nTransactions; memcpy(pData+sizeof(uint32_t),lat->transactions,lAt);
-		*(uint32_t*)(pData+sizeof(uint32_t)+lAt)=ldp->nPages; memcpy(pData+sizeof(uint32_t)*2+lAt,ldp->pages,lDp);
-		LSN chkp(insert(NULL,LR_CHECKPOINT,0,INVALID_PAGEID,NULL,pData,lAt+lDp+2*sizeof(uint32_t)));
+		memcpy(pData,lat,+sizeof(uint64_t)+lAt);
+		memcpy(pData+sizeof(uint64_t)+lAt,ldp,sizeof(uint64_t)+lDp);
+		LSN chkp(insert(NULL,LR_CHECKPOINT,0,INVALID_PAGEID,NULL,pData,lChkp));
 		if ((rc=flushTo(chkp))==RC_OK) ctx->theCB->checkpoint=chkp; 
-		assert(LSNToFileOffset(maxLSN)<=(ulong)ctx->fileMgr->getFileSize(logFile));
+		assert(LSNToFileOffset(maxLSN)<=(unsigned)ctx->fileMgr->getFileSize(logFile));
 		bufferLock.unlock();
 		if (rc==RC_OK && (rc=ctx->theCB->update(ctx))==RC_OK) {
-			ulong fileN=LSNToFileN(start);   
-			if (fileN>0 && (--fileN>prevTruncate || prevTruncate==~0ul) && fileN<currentLogFile)   
+			unsigned fileN=LSNToFileN(start);   
+			if (fileN>0 && (--fileN>prevTruncate || prevTruncate==~0u) && fileN<currentLogFile)   
 				ctx->fileMgr->deleteLogFiles(prevTruncate=fileN,logDirectory,fArchive);   
 		} 
 		ctx->free(pData);

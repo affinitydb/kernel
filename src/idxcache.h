@@ -1,6 +1,6 @@
 /**************************************************************************************
 
-Copyright © 2004-2012 VMware, Inc. All rights reserved.
+Copyright © 2004-2013 GoPivotal, Inc. All rights reserved.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -27,7 +27,7 @@ Written by Mark Venguerov 2004-2012
 
 #include "pinex.h"
 
-using namespace AfyDB;
+using namespace Afy;
 
 namespace AfyKernel
 {
@@ -37,23 +37,23 @@ namespace AfyKernel
 class PIDCmp
 {
 public:
-	static SListOp compare(const PID& left,PID& right,ulong) 
+	static SListOp compare(const PID& left,const PID& right,unsigned,MemAlloc&)
 		{return left==right?SLO_NOOP:left.ident<right.ident||left.ident==right.ident&&left.pid<right.pid?SLO_LT:SLO_GT;}
 };
 
 class PIDStore : public SubAlloc
 {
-	const	ulong		limit;
+	const	unsigned		limit;
 	SList<PID,PIDCmp>	cache;
-	ulong				count;
+	unsigned				count;
 	void				*extFile;
 public:
-	PIDStore(Session *ses,ulong lim=DEFAULT_LIMIT);
+	PIDStore(Session *ses,unsigned lim=DEFAULT_LIMIT);
 	~PIDStore();
 	void	operator	delete(void *p) {if (p!=NULL) ((PIDStore*)p)->parent->free(p);}
-	bool	operator[](PINEx&) const;
-	RC		operator+=(PINEx&);
-	RC		operator-=(PINEx&);
+	bool	operator[](PINx&) const;
+	RC		operator+=(PINx&);
+	RC		operator-=(PINx&);
 	void	clear();
 };
 

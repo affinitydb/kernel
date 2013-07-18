@@ -1,6 +1,6 @@
 /**************************************************************************************
 
-Copyright © 2010-2012 VMware, Inc. All rights reserved.
+Copyright © 2004-2013 GoPivotal, Inc. All rights reserved.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -47,18 +47,27 @@ public:
  * can be implemented by session heap, store heap, server-wide heap
  * or special sub-allocators
  */
-class MemAlloc
+class MemAlloc : public IMemAlloc
 {
 public:
-	virtual void *malloc(size_t s) = 0;
-	virtual	void *memalign(size_t align,size_t s) = 0;
-	virtual	void *realloc(void *p,size_t s) = 0;
-	virtual	void free(void *p) = 0;
-	virtual	HEAP_TYPE getAType() const = 0;
-	virtual	void addObj(ObjDealloc *od);
-	virtual	void release() = 0;
+	virtual	void		*memalign(size_t align,size_t s) = 0;
+	virtual	HEAP_TYPE	getAType() const = 0;
+	virtual	void		addObj(ObjDealloc *od);
+	virtual	void		release() = 0;
 };
 
+class SharedAlloc : public MemAlloc
+{
+public:
+	void *malloc(size_t pSize);
+	void *memalign(size_t align,size_t s);
+	void *realloc(void *pPtr, size_t pNewSize, size_t pOldSize=0);
+	void free(void *pPtr);
+	HEAP_TYPE getAType() const;
+	void release();
+};
+
+extern SharedAlloc sharedAlloc;
 
 #define	SA_DEFAULT_SIZE	0x200
 
@@ -75,21 +84,28 @@ protected:
 	}				*extents;
 	byte			*ptr;
 	size_t			extentLeft;
+	size_t			total;
 	ObjDealloc		*chain;
 	const	bool	fZero;
 	MemAlloc* const	parent;
 	byte			*expand(size_t s);
 public:
-	SubAlloc(MemAlloc *pr,size_t lbuf=SA_DEFAULT_SIZE,byte *buf=NULL,bool fZ=false) : extents(NULL),ptr(buf),extentLeft(lbuf),chain(NULL),fZero(fZ),parent(pr) {
+	struct	SubMark {
+		SubExt	*ext;
+		byte	*end; 
+		size_t	total;
+	};
+public:
+	SubAlloc(MemAlloc *pr,size_t lbuf=SA_DEFAULT_SIZE,byte *buf=NULL,bool fZ=false) : extents(NULL),ptr(buf),extentLeft(lbuf),total(0),chain(NULL),fZero(fZ),parent(pr) {
 		if (ptr==NULL && (extents=(SubExt*)(parent!=NULL?parent->malloc(lbuf+sizeof(SubExt)):AfyKernel::malloc(lbuf+sizeof(SubExt),SES_HEAP)))!=NULL) 
-			{ptr=(byte*)(extents+1); extents->next=NULL; extents->size=lbuf+sizeof(SubExt);}
+			{ptr=(byte*)(extents+1); extents->next=NULL; extents->size=lbuf+sizeof(SubExt); total=lbuf+sizeof(SubExt);}
 		if (fZ && ptr!=NULL) memset(ptr,0,extentLeft);
 	}
 	~SubAlloc() {release();}
 	void operator delete(void *p) {if (p!=NULL) ((SubAlloc*)p)->parent->free(p);}
 	template<typename T> T *alloc(size_t s=0) {
 		size_t align=ceil(ptr,DEFAULT_ALIGN)-ptr;
-		if ((s+=align+sizeof(T))>extentLeft && expand(s)==NULL) return NULL;
+		if ((s+=align+sizeof(T))>extentLeft) {if (expand(s)!=NULL) {s-=align; align=0;} else return NULL;}
 		byte *p=ptr+align; ptr+=s; extentLeft-=s; return (T*)p;
 	}
 	template<typename T> T *alloc0(size_t s=0) {
@@ -110,19 +126,19 @@ public:
 	}
 	void	*malloc(size_t s);
 	void	*memalign(size_t,size_t);
-	void	*realloc(void *p,size_t s);
+	void	*realloc(void *p,size_t s,size_t old=0);
 	void	free(void *p);
 	HEAP_TYPE	getAType() const;
 	void	release();
 	char	*strdup(const char *s);
 	void	addObj(ObjDealloc *od);
 	void	compact();
-	struct	SubMark {SubExt *ext; byte *end;};
-	void	mark(SubMark& sm) {sm.ext=extents; sm.end=ptr;}
+	void	mark(SubMark& sm) {sm.ext=extents; sm.end=ptr; sm.total=total;}
 	size_t	length(const SubMark& mrk);
 	void	truncate(const SubMark& sm,size_t s=0);
 	void	*getBuffer(size_t& left) {if (extentLeft==0) expand(0); left=extentLeft; return ptr;}
 	void	setLeft(size_t left) {assert(left<=extentLeft); ptr+=extentLeft-left; extentLeft=left;}
+	size_t	getTotal() const {return total;}
 	template<typename T> class it {
 		SubExt			*ext;
 		byte			*end;

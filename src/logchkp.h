@@ -1,6 +1,6 @@
 /**************************************************************************************
 
-Copyright © 2004-2012 VMware, Inc. All rights reserved.
+Copyright © 2004-2013 GoPivotal, Inc. All rights reserved.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -33,7 +33,7 @@ namespace AfyKernel
 
 struct LogDirtyPages
 {
-	uint32_t		nPages;
+	uint64_t		nPages;
 	struct LogDirtyPage {
 		uint64_t	pageID;
 		LSN			redo;
@@ -42,7 +42,7 @@ struct LogDirtyPages
 
 struct LogActiveTransactions
 {
-	uint32_t		nTransactions;
+	uint64_t		nTransactions;
 	struct LogActiveTx {
 		TXID		txid;
 		LSN			lastLSN;

@@ -1,6 +1,6 @@
 /**************************************************************************************
 
-Copyright © 2004-2012 VMware, Inc. All rights reserved.
+Copyright © 2004-2013 GoPivotal, Inc. All rights reserved.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -26,7 +26,7 @@ Written by Mark Venguerov 2004-2012
 #include "fsmgr.h"
 #include "lock.h"
 
-using namespace AfyDB;
+using namespace Afy;
 using namespace AfyKernel;
 
 const HType HType::compactRef={0,HDF_COMPACT<<6|VT_REFID};
@@ -42,7 +42,7 @@ HeapPageMgr::~HeapPageMgr()
 {
 }
 
-RC HeapPageMgr::update(PBlock *pb,size_t len,ulong info,const byte *rec,size_t lrec,ulong flags,PBlock*)
+RC HeapPageMgr::update(PBlock *pb,size_t len,unsigned info,const byte *rec,size_t lrec,unsigned flags,PBlock*)
 {
 	byte *frame=pb->getPageBuf(); HeapPage *hp=(HeapPage*)frame;
 #ifdef _DEBUG
@@ -109,10 +109,9 @@ RC HeapPageMgr::update(PBlock *pb,size_t len,ulong info,const byte *rec,size_t l
 							if (hprop->type==HType::compactRef) hpin->hdr.descr|=HOH_COMPACTREF;
 						} else {
 							hprop->offset+=hp->freeSpace;
-							if (hprop->type.isCollection()) hpin->hdr.descr|=adjustCollection(frame,hprop,hprop->offset,ctx);
+							if (hprop->type.isCompound()) hpin->hdr.descr|=adjustCompound(frame,hprop,hprop->offset,ctx);
 						}
 					}
-					hpin->stamp[0]=hpin->stamp[1]=0;
 #ifdef _DEBUG
 					hpin->hdr.descr|=HOH_MULTIPART; 
 #endif
@@ -190,7 +189,7 @@ RC HeapPageMgr::update(PBlock *pb,size_t len,ulong info,const byte *rec,size_t l
 			hp->scatteredFreeSpace+=hdr->getLength(); newh->length=(ushort)(l+delta+sizeof(HeapObjHeader));
 		} else {
 			byte *p=pData=(byte*)(hdr+1); ushort ltail=l-hed->shift-ol;
-			if (delta>0 && (!f || ceil((ulong)delta,HP_ALIGN)>hp->contFree())) {
+			if (delta>0 && (!f || ceil((unsigned)delta,HP_ALIGN)>hp->contFree())) {
 				if (newl>hp->totalFree()+hdr->getLength()) {
 					report(MSG_ERROR,"Page %08X overflow in HOP_EDIT, requested: %d, available: %d\n",
 						hp->hdr.pageID,newl-hdr->getLength(),hp->totalFree());
@@ -205,7 +204,7 @@ RC HeapPageMgr::update(PBlock *pb,size_t len,ulong info,const byte *rec,size_t l
 			}
 			if (ltail!=0 && (p!=pData || delta!=0)) memmove(pData+hed->shift+nl,p+hed->shift+ol,ltail);
 			if (nl>0) memcpy(pData+hed->shift,rec+newPtr->offset,nl);
-			if ((l=(ushort)ceil(ulong(hdr->length+delta),HP_ALIGN))!=hdr->getLength()) {
+			if ((l=(ushort)ceil(unsigned(hdr->length+delta),HP_ALIGN))!=hdr->getLength()) {
 				if (delta>0) {l-=hdr->getLength(); hp->freeSpace+=l;}
 				else {l=hdr->getLength()-l; if (f) hp->freeSpace-=l; else hp->scatteredFreeSpace+=l;}
 			}
@@ -237,7 +236,6 @@ RC HeapPageMgr::update(PBlock *pb,size_t len,ulong info,const byte *rec,size_t l
 	HeapPIN *hpin=(HeapPIN*)hdr; const HeapPINMod *hpi=(const HeapPINMod*)rec;
 	rec+=sizeof(HeapPINMod)+int(hpi->nops-1)*sizeof(HeapPropMod); RC rc=RC_OK;
 	if ((flags&TXMGR_UNDO)==0) hpin->hdr.descr|=hpi->descr;
-	// check stamp !
 	for (uint16_t nop=0; nop<hpi->nops; nop++) {
 		const HeapPropMod *hpm=&hpi->ops[(flags&TXMGR_UNDO)!=0?hpi->nops-1-nop:nop]; op=hpm->op; ValueType ty;
 		PageIdx hidx; HeapV *hins=NULL,*hins2=NULL; uint32_t key; HType *pType; ushort sht,x; HeapDataFmt fmt,newf; bool fNewProp=false;
@@ -302,7 +300,7 @@ RC HeapPageMgr::update(PBlock *pb,size_t len,ulong info,const byte *rec,size_t l
 			}
 		}
 		const byte *data=rec+newPtr->ptr.offset; bool fColl;
-		ushort ol=(ushort)ceil((ulong)oldPtr->ptr.len,HP_ALIGN),nl=(ushort)ceil((ulong)newPtr->ptr.len,HP_ALIGN),extra,eidx=0;
+		ushort ol=(ushort)ceil((unsigned)oldPtr->ptr.len,HP_ALIGN),nl=(ushort)ceil((unsigned)newPtr->ptr.len,HP_ALIGN),extra,eidx=0;
 		switch (op) {
 		default: return RC_CORRUPTED;
 		case OP_SET:
@@ -319,10 +317,10 @@ RC HeapPageMgr::update(PBlock *pb,size_t len,ulong info,const byte *rec,size_t l
 				} else {
 					assert(eid==STORE_COLLECTION_ID && oldPtr->type==hprop->type);
 					if (oldPtr->type.isCompact()) assert(hprop->offset==oldPtr->ptr.offset);
-					else if (!hprop->type.isCollection()||hprop->type.getFormat()==HDF_LONG) 
+					else if (!hprop->type.isCompound()||hprop->type.getFormat()==HDF_LONG) 
 						assert(memcmp(frame+hprop->offset,rec+oldPtr->ptr.offset,oldPtr->ptr.len)==0);
 					else {
-						// check collection
+						// check compound
 					}
 #endif
 				}
@@ -357,7 +355,7 @@ RC HeapPageMgr::update(PBlock *pb,size_t len,ulong info,const byte *rec,size_t l
 						if (newPtr->type.isCompact()) elt->offset=newPtr->ptr.offset;
 						else {
 							memcpy(frame+elt->offset,data,newPtr->ptr.len);
-							if (newPtr->type.isCollection()) hpin->hdr.descr|=adjustCollection(frame,elt,elt->offset,ctx);
+							if (newPtr->type.isCollection()) hpin->hdr.descr|=adjustCompound(frame,elt,elt->offset,ctx);
 						}
 					}
 					hpin->hdr.length+=ushort(delta); break;
@@ -366,10 +364,10 @@ RC HeapPageMgr::update(PBlock *pb,size_t len,ulong info,const byte *rec,size_t l
 			if (coll!=NULL && --coll->cnt!=0) memmove(elt,elt+1,((byte*)&coll->start[coll->cnt]-(byte*)elt)+sizeof(HeapKey));
 			else {
 				fNewProp=true;
-				if (hidx<--hpin->nProps||hpin->lExtra!=0) memmove(hprop,hprop+1,(hpin->nProps-hidx)*sizeof(HeapV)+hpin->lExtra);
+				if (hidx<--hpin->nProps||hpin->fmtExtra!=HDF_COMPACT) memmove(hprop,hprop+1,(hpin->nProps-hidx)*sizeof(HeapV)+refLength[hpin->fmtExtra]);
 				if (coll!=NULL) {coll=NULL; elt=NULL; if (eid!=STORE_COLLECTION_ID) ol+=sizeof(HeapVV)+sizeof(HeapKey);}
 			}
-			hp->scatteredFreeSpace+=ol+=sizeof(HeapV); hpin->hdr.length-=ol; nl=(ushort)ceil((ulong)newPtr->ptr.len,HP_ALIGN);
+			hp->scatteredFreeSpace+=ol+=sizeof(HeapV); hpin->hdr.length-=ol; nl=(ushort)ceil((unsigned)newPtr->ptr.len,HP_ALIGN);
 #ifdef _DEBUG
 			hpin->hdr.descr|=HOH_MULTIPART; hp->compact(true);
 #endif
@@ -379,7 +377,7 @@ RC HeapPageMgr::update(PBlock *pb,size_t len,ulong info,const byte *rec,size_t l
 			if (fNewProp) {ol=hpin->headerLength(); if (eid!=STORE_COLLECTION_ID) extra+=sizeof(HeapVV)+sizeof(HeapKey);}
 			else if (coll==NULL) {ol=0; if (!newPtr->type.isCollection()) extra=sizeof(HeapVV)+sizeof(HeapV)+sizeof(HeapKey);}
 			else {
-				ol=coll->length(); if (op==OP_ADD) elt++; eidx=(ushort)(elt-coll->start);
+				ol=coll->length(hprop->type.isCollection()); if (op==OP_ADD) elt++; eidx=(ushort)(elt-coll->start);
 				if (newPtr->type.isCollection()) {nl-=sizeof(HeapVV)-sizeof(HeapV)+sizeof(HeapKey); extra=0;}
 			}
 			if (size_t(ol+nl+extra)>hp->contFree()) {
@@ -396,7 +394,7 @@ RC HeapPageMgr::update(PBlock *pb,size_t len,ulong info,const byte *rec,size_t l
 				hp->freeSpace+=ol; hp->scatteredFreeSpace+=ol;
 			}
 			if (fNewProp) {
-				if (hpin->lExtra>0||hidx<hpin->nProps) memmove(hprop+1,hprop,(hpin->nProps-hidx)*sizeof(HeapV)+hpin->lExtra);
+				if (hpin->fmtExtra!=HDF_COMPACT||hidx<hpin->nProps) memmove(hprop+1,hprop,(hpin->nProps-hidx)*sizeof(HeapV)+refLength[hpin->fmtExtra]);
 				hprop->setID(propID); hprop->type=newPtr->type; hprop->offset=hp->freeSpace+=sizeof(HeapV); hpin->nProps++;
 				if (eid!=STORE_COLLECTION_ID) {
 					coll=(HeapVV*)(frame+hprop->offset); coll->cnt=1; coll->fUnord=0; hp->freeSpace+=extra-sizeof(HeapV); 
@@ -410,7 +408,7 @@ RC HeapPageMgr::update(PBlock *pb,size_t len,ulong info,const byte *rec,size_t l
 					hprop->offset=newPtr->ptr.offset;
 				} else {
 					assert(nl!=0); memcpy(frame+hprop->offset,data,nl);
-					if (hprop->type.isCollection()) hpin->hdr.descr|=adjustCollection(frame,hprop,hprop->offset,ctx);
+					if (hprop->type.isCollection()) hpin->hdr.descr|=adjustCompound(frame,hprop,hprop->offset,ctx);
 				}
 			} else {
 				const ushort nElts=newPtr->type.isCollection()?((const HeapVV*)data)->cnt:1;
@@ -423,7 +421,7 @@ RC HeapPageMgr::update(PBlock *pb,size_t len,ulong info,const byte *rec,size_t l
 					coll=(HeapVV*)(frame+hp->freeSpace); coll->cnt=nElts+1; coll->fUnord=0; assert(!hprop->type.isCollection());
 					elt=&coll->start[op==OP_ADD?0:nElts]; elt->type=hprop->type; elt->offset=hprop->offset; key=ctx->getPrefix(); 
 					if (hpin->hasRemoteID()) {
-						PID id; ulong key2=(hprop->type.flags&META_PROP_LOCAL)==0&&hpin->getAddr(id)?getPrefix(id):key;
+						PID id; unsigned key2=(hprop->type.flags&META_PROP_LOCAL)==0&&hpin->getAddr(id)?getPrefix(id):key;
 						elt->setID(hpm->eltKey==key2?++key2:key2);	if (((key^key2)&CPREFIX_MASK)==0) key=key2+1;	// collision with array elts (if array)?
 					} else {
 						elt->setID(hpm->eltKey==key?++key:key); ++key;												// collision with array elts (if array)?
@@ -433,7 +431,7 @@ RC HeapPageMgr::update(PBlock *pb,size_t len,ulong info,const byte *rec,size_t l
 				if (newPtr->type.isCollection()) {
 					const HeapVV *const ncoll=(const HeapVV *)data; uint32_t keyNew=ncoll->getHKey()->getKey();
 					if (key<keyNew && ((key^keyNew)&CPREFIX_MASK)==0) hk->setKey(keyNew);
-					const ushort ssht=ncoll->length(),dsht=coll->length(); coll->fUnord|=ncoll->fUnord;
+					const ushort ssht=ncoll->length(true),dsht=coll->length(hprop->type.isCollection()); coll->fUnord|=ncoll->fUnord;
 					memcpy(elt,ncoll->start,nElts*sizeof(HeapV)); memcpy((byte*)coll+dsht,data+ssht,newPtr->ptr.len-ssht);
 					const ushort sht=hprop->offset+dsht-ssht;
 					for (unsigned i=0; i<nElts; ++i,++elt) {
@@ -496,8 +494,8 @@ RC HeapPageMgr::update(PBlock *pb,size_t len,ulong info,const byte *rec,size_t l
 				if ((byte*)(hprop+1)-frame==hp->freeSpace) hp->freeSpace-=sizeof(HeapV);
 				else {hp->scatteredFreeSpace+=sizeof(HeapV); hpin->hdr.descr|=HOH_MULTIPART;}
 			}
-			if (hpin->lExtra>0||hidx<hpin->nProps) memmove(hprop,hprop+1,(hpin->nProps-hidx)*sizeof(HeapV)+hpin->lExtra);
-			hpin->hdr.length-=ol+sizeof(HeapV); 	break;
+			if (hpin->fmtExtra!=HDF_COMPACT||hidx<hpin->nProps) memmove(hprop,hprop+1,(hpin->nProps-hidx)*sizeof(HeapV)+refLength[hpin->fmtExtra]);
+			hpin->hdr.length-=ol+sizeof(HeapV); break;
 		case OP_RENAME:
 			propID2=(flags&TXMGR_UNDO)!=0?hpm->propID:hpm->eltKey;
 			if (hpin->findProperty(propID2,&hins2)!=NULL) {
@@ -505,11 +503,11 @@ RC HeapPageMgr::update(PBlock *pb,size_t len,ulong info,const byte *rec,size_t l
 				PINOP_ERROR(RC_ALREADYEXISTS);
 			}
 			if (hins2!=hins && hins2!=hins+1) {
-				HeapV save=*hprop;
+				HeapV save=*hprop; save.setID(propID2);
 				if (hins2<hins) memmove(hins2+1,hins2,(byte*)hins-(byte*)hins2); else memmove(hins,hins+1,(byte*)--hins2-(byte*)hins);
 				*hins2=save;
-			}
-			hprop->setID(propID2); break;
+			} else hprop->setID(propID2); 
+			break;
 		case OP_EDIT:
 			if (!isString(hprop->type.getType()) && (elt==NULL || !isString(elt->type.getType()))) {
 				report(MSG_ERROR,"OP_EDIT for a non-string property %d, slot: %d, page: %08X\n",hprop->type.getType(),idx,hp->hdr.pageID);
@@ -587,7 +585,6 @@ RC HeapPageMgr::update(PBlock *pb,size_t len,ulong info,const byte *rec,size_t l
 			}
 			break;
 		}
-		hpin->advanceStamp();
 #ifdef _DEBUG
 		hp->checkPage(false);
 		hp->compact(true);
@@ -596,7 +593,7 @@ RC HeapPageMgr::update(PBlock *pb,size_t len,ulong info,const byte *rec,size_t l
 	return rc;
 }
 
-ulong HeapPageMgr::getPrefix(const PID& id)
+unsigned HeapPageMgr::getPrefix(const PID& id)
 {
 	assert(id.pid!=STORE_INVALID_PID&&id.ident!=STORE_INVALID_IDENTITY);
 	return StoreCtx::genPrefix(ushort(id.pid>>48));
@@ -609,7 +606,6 @@ const HeapPageMgr::HeapTypeInfo HeapPageMgr::typeInfo[VT_ALL] =
 	{sizeof(uint32_t),	sizeof(uint32_t)-1},	//	VT_UINT
 	{sizeof(int64_t),	sizeof(int64_t)-1},		//	VT_INT64
 	{sizeof(uint64_t),	sizeof(uint64_t)-1},	//	VT_UINT64
-	{0,					0},						//	VT_RESERVED2
 	{sizeof(float),		sizeof(float)-1},		//	VT_FLOAT
 	{sizeof(double),	sizeof(double)-1},		//	VT_DOUBLE
 	{0,					0},						//	VT_BOOL
@@ -617,10 +613,10 @@ const HeapPageMgr::HeapTypeInfo HeapPageMgr::typeInfo[VT_ALL] =
 	{sizeof(int64_t),	sizeof(int64_t)-1},		//	VT_INTERVAL
 	{sizeof(uint32_t),	sizeof(uint32_t)-1},	//	VT_URIID
 	{sizeof(uint32_t),	sizeof(uint32_t)-1},	//	VT_IDENTITY
+	{sizeof(uint32_t)*2,sizeof(uint32_t)*2},	//	VT_ENUM
 	{0,					0},						//	VT_STRING
 	{0,					0},						//	VT_BSTR
 	{0,					0}, 					//	VT_URL
-	{sizeof(uint32_t),	sizeof(uint32_t)-1},	//	VT_RESERVED1
 	{0,					sizeof(uint64_t)-1},	//	VT_REF
 	{0,					sizeof(uint64_t)-1},	//	VT_REFID
 	{0,					sizeof(uint64_t)-1},	//	VT_REFPROP
@@ -632,16 +628,17 @@ const HeapPageMgr::HeapTypeInfo HeapPageMgr::typeInfo[VT_ALL] =
 	{0,					0},						//	VT_ARRAY
 	{0,					0},						//	VT_COLLECTION
 	{0,					0},						//	VT_STRUCT
+	{0,					0},						//	VT_MAP
 	{0,					0},						//	VT_RANGE
 	{sizeof(HRefSSV),	sizeof(uint32_t)-1},	//	VT_STREAM
 	{0,					0},						//	VT_CURRENT
-	{0,					0},						//	VT_VARREF
+	{sizeof(RefV),		sizeof(RefV)},			//	VT_VARREF
 	{0,					0},						//	VT_EXPRTREE
 };
 
-const ushort HeapPageMgr::refLength[] = {0,PageAddrSize,sizeof(OID),sizeof(OID)+sizeof(IdentityID)};
+const ushort HeapPageMgr::refLength[4] = {0,PageAddrSize,sizeof(OID),sizeof(OID)+sizeof(IdentityID)};
 
-ushort HeapPageMgr::dataLength(HType vt,const byte *pData,const byte *frame,ulong *idxMask)
+ushort HeapPageMgr::dataLength(HType vt,const byte *pData,const byte *frame,unsigned *idxMask)
 {
 	HeapDataFmt fmt=vt.getFormat(); if (fmt==HDF_COMPACT) return 0;
 	ValueType ty=vt.getType(); uint32_t l; ushort len; const byte *p;
@@ -662,7 +659,7 @@ ushort HeapPageMgr::dataLength(HType vt,const byte *pData,const byte *frame,ulon
 	case VT_REFIDELT:
 		return refLength[fmt]+sizeof(PropertyID)+sizeof(ElementID);
 	case VT_EXPR:
-		memcpy(&l,pData,sizeof(uint32_t)); assert(ushort(l)==l); return ushort(l);
+		l=__una_get(*(uint32_t*)pData); assert(ushort(l)==l); return ushort(l);
 	case VT_STMT:
 		p=pData; afy_dec16(p,len); return len+ushort(p-pData);
 	case VT_STREAM:
@@ -674,59 +671,57 @@ ushort HeapPageMgr::dataLength(HType vt,const byte *pData,const byte *frame,ulon
 		if (idxMask!=NULL && ((HRefSSV*)pData)->type.isString()) *idxMask|=IX_OFT;
 		return sizeof(HRefSSV);
 	case VT_ARRAY:
+	case VT_STRUCT:
+	case VT_MAP:
 		if (fmt==HDF_LONG) {
-			len=collDescrSize((HeapExtCollection*)pData);
-			if (idxMask!=NULL) *idxMask|=IX_OFT;
+			len=ty==VT_MAP?0:ty==VT_STRUCT?sizeof(HRefSSV):collDescrSize((HeapExtCollection*)pData); if (idxMask!=NULL) *idxMask|=IX_OFT;	// VT_MAP?
 		} else {
-			const HeapVV *coll=(const HeapVV*)pData; len=0; assert(frame!=NULL);
-			for (l=coll->cnt; l!=0; ) {
-				const HeapV *elt=&coll->start[--l];
+			const HeapVV *comp=(const HeapVV*)pData; len=0; assert(frame!=NULL);
+			for (l=comp->cnt; l!=0; ) {
+				const HeapV *elt=&comp->start[--l];
 				if (!elt->type.isCompact()) len+=ushort(ceil(dataLength(elt->type,frame+elt->offset,frame,idxMask),HP_ALIGN)); 
 			}
-			len+=coll->length();
+			len+=comp->length(ty==VT_ARRAY);
 		}
 		return len;
-	case VT_STRUCT:
-		if (fmt==HDF_LONG) {
-			// SSV
-		} else {
-			const HeapVV *stru=(const HeapVV*)pData; len=0; assert(frame!=NULL);
-			for (l=stru->cnt; l!=0; ) {
-				const HeapV *elt=&stru->start[--l];
-				if (!elt->type.isCompact()) len+=ushort(ceil(dataLength(elt->type,frame+elt->offset,frame,idxMask),HP_ALIGN)); 
-			}
-			len+=stru->lengthS();
-		}
-		break;
 	}
 	return ty<VT_ALL?typeInfo[ty].length:0;
 }
 
-ushort HeapPageMgr::moveCollection(HType vt,byte *dest,PageOff doff,const byte *src,PageOff soff)
+ushort HeapPageMgr::moveCompound(HType vt,byte *dest,PageOff doff,const byte *src,PageOff soff)
 {
-	ushort ldata; assert(vt.isCollection());
-	if (vt.getFormat()==HDF_LONG) memcpy(dest+doff,src+soff,ldata=collDescrSize((const HeapExtCollection*)(src+soff)));
+	ushort ldata; const bool fA=vt.isCollection(); assert(vt.isCompound());
+	if (vt.getFormat()==HDF_LONG)
+		memcpy(dest+doff,src+soff,ldata=fA?collDescrSize((const HeapExtCollection*)(src+soff)):sizeof(HRefSSV));	// VT_MAP?
 	else {
-		const HeapVV *coll=(const HeapVV*)(src+soff); memcpy(dest+doff,src+soff,ldata=coll->length());
-		for (unsigned i=0,j=coll->cnt; i<j; i++) if (!coll->start[i].type.isCompact()) {
-			((HeapVV*)(dest+doff))->start[i].offset=doff+ldata;
-			ldata+=(ushort)ceil(moveData(dest+doff+ldata,src+coll->start[i].offset,coll->start[i].type),HP_ALIGN);
+		const HeapVV *coll=(const HeapVV*)(src+soff); memcpy(dest+doff,src+soff,ldata=coll->length(fA));
+		for (unsigned i=0,j=coll->cnt; i<j; i++) {
+			const HeapV &se=coll->start[i];
+			if (!se.type.isCompact()) {
+				((HeapVV*)(dest+doff))->start[i].offset=doff+ldata;
+				ldata+=se.type.isCompound()?moveCompound(se.type,dest,doff+ldata,src,se.offset) :
+						(ushort)ceil(moveData(dest+doff+ldata,src+se.offset,se.type),HP_ALIGN);
+			}
 		}
 	}
 	return ldata;
 }
 
-ushort HeapPageMgr::adjustCollection(byte *frame,HeapV *hprop,ushort sht,StoreCtx *ctx)
+ushort HeapPageMgr::adjustCompound(byte *frame,HeapV *hprop,ushort sht,StoreCtx *ctx)
 {
-	ushort flag=0; assert(hprop->type.isCollection());
+	ushort flag=0; assert(hprop->type.isCompound());
 	if (hprop->type.getFormat()!=HDF_LONG) {
-		const ulong prefix=ctx!=NULL?ctx->getPrefix():~0ul;
-		HeapVV *coll=(HeapVV*)(frame+hprop->offset); HeapV *elt=coll->start; HeapKey *hk=coll->getHKey(); uint32_t key=hk->getKey();
-		for (int i=coll->cnt; --i>=0; ++elt) {
-			if (!elt->type.isCompact()) elt->offset+=sht; else if (elt->type==HType::compactRef) flag=HOH_COMPACTREF;
-			const uint32_t eid=elt->getID(); if ((eid&CPREFIX_MASK)==prefix && eid>=key) key=eid+1;
+		const unsigned prefix=ctx!=NULL?ctx->getPrefix():~0u; const bool fA=hprop->type.isCollection();
+		HeapVV *comp=(HeapVV*)(frame+hprop->offset); HeapV *elt=comp->start; 
+		HeapKey *hk=fA?comp->getHKey():NULL; uint32_t key=fA?hk->getKey():0;
+		for (int i=comp->cnt; --i>=0; ++elt) {
+			if (elt->type==HType::compactRef) flag=HOH_COMPACTREF;
+			else if (!elt->type.isCompact()) {
+				elt->offset+=sht; if (elt->type.isCompound()) flag|=adjustCompound(frame,elt,elt->offset,ctx);
+			}
+			if (fA) {const uint32_t eid=elt->getID(); if ((eid&CPREFIX_MASK)==prefix && eid>=key) key=eid+1;}
 		}
-		hk->setKey(key);
+		if (hk!=NULL) hk->setKey(key);
 	}
 	return flag;
 }
@@ -820,27 +815,27 @@ void HeapPageMgr::HeapPage::moveObject(const HeapPageMgr::HeapObjHeader *hobj,by
 		if (hobj->getType()==HO_PIN && (delta=ushort(off-((byte*)hobj-frame)))!=0) {
 			HeapV *hprop=((HeapPIN*)((byte*)this+off))->getPropTab();
 			for (int i=((HeapPIN*)((byte*)this+off))->nProps; --i>=0; hprop++) if (!hprop->type.isCompact())
-				{hprop->offset+=delta; if (hprop->type.isCollection()) adjustCollection((byte*)this,hprop,delta);}
+				{hprop->offset+=delta; if (hprop->type.isCompound()) adjustCompound((byte*)this,hprop,delta);}
 		}
 		freeSpace+=len;
 	} else {
-		ushort lhdr=((HeapPIN*)hobj)->headerLength(),ldata=0; assert(hobj->getType()==HO_PIN);
+		ushort lhdr=((HeapPIN*)hobj)->headerLength(),ldata=0; assert(hobj->getType()==HO_PIN);		// or SSV struct?
 		HeapPIN *hpin=(HeapPIN*)alloca(lhdr); memcpy(hpin,hobj,lhdr);
 		if (!fModified||propIdx!=ushort(~0u)) {assert(lhdr<=contFree()); freeSpace+=lhdr;}
 		HeapV *hprop=hpin->getPropTab(); ushort size;
 		for (ushort i=0; i<hpin->nProps; ++i,++hprop) if (i!=propIdx && !hprop->type.isCompact()) {
 			assert(hprop->offset<((HeapPage*)frame)->freeSpace);
-			size=hprop->type.isCollection() ?
-				moveCollection(hprop->type,(byte*)this,freeSpace,frame,hprop->offset) :
+			size=hprop->type.isCompound() ?
+				moveCompound(hprop->type,(byte*)this,freeSpace,frame,hprop->offset) :
 				(ushort)ceil(moveData((byte*)this+freeSpace,frame+hprop->offset,hprop->type),HP_ALIGN);
 			assert(size<=contFree()); hprop->offset=freeSpace; ldata+=size; freeSpace+=size;
 		}
 		if (!fModified) hpin->hdr.descr&=~HOH_MULTIPART;
 		else if (propIdx==ushort(~0u)) {assert(lhdr<=contFree()); hpin->hdr.descr|=HOH_MULTIPART; off=freeSpace; freeSpace+=lhdr;}
 		else {
-			hprop=&hpin->getPropTab()[propIdx]; assert(hprop->type.isCollection()&&hprop->type.getFormat()!=HDF_LONG);
+			hprop=&hpin->getPropTab()[propIdx]; assert(hprop->type.isCompound()&&hprop->type.getFormat()!=HDF_LONG);
 			const HeapVV *coll=(const HeapVV*)(frame+hprop->offset); size=dataLength(hprop->type,(byte*)coll,frame); assert(size<=contFree());
-			ushort clen=coll->length(),sht=0; HeapVV *dcoll=(HeapVV*)((byte*)this+freeSpace+size-clen); memcpy(dcoll,coll,clen);
+			ushort clen=coll->length(hprop->type.isCollection()),sht=0; HeapVV *dcoll=(HeapVV*)((byte*)this+freeSpace+size-clen); memcpy(dcoll,coll,clen);
 			for (unsigned i=0,j=coll->cnt; i<j; i++) if (!coll->start[i].type.isCompact())
 				sht+=(ushort)ceil(moveData((byte*)this+(dcoll->start[i].offset=freeSpace+sht),frame+coll->start[i].offset,coll->start[i].type),HP_ALIGN);
 			assert(sht+clen==size); assert(size<=contFree()); hprop->offset=freeSpace+sht; ldata+=size; freeSpace+=size; hpin->hdr.descr&=~HOH_MULTIPART;
@@ -866,19 +861,19 @@ RC HeapPageMgr::HeapPIN::serialize(byte *&buf,size_t& lbuf,const HeapPageMgr::He
 	const bool fMultipart=fExpand||(hdr.descr&HOH_MULTIPART)!=0;
 	ushort ldata=fMultipart?headerLength():hdr.length,off=ushort((const byte*)this-(const byte*)hp);
 	size_t lrec=len!=0?len:hdr.getLength(); if (lrec<sizeof(HeapPIN)) return RC_CORRUPTED;
-	if ((buf==NULL||lbuf<lrec) && (buf=(byte*)ma->realloc(buf,lrec))==NULL) return RC_NORESOURCES;
+	if ((buf==NULL||lbuf<lrec) && (buf=(byte*)ma->realloc(buf,lrec,lbuf))==NULL) return RC_NORESOURCES;
 	memcpy(buf,this,ldata); lbuf=lrec;
 	if (off!=0 || fMultipart) {
 		HeapV *hprop=((HeapPIN*)buf)->getPropTab();
 		for (int i=nProps; --i>=0; hprop++) if (!hprop->type.isCompact()) {
 			if (fMultipart) {
 				off=hprop->offset; hprop->offset=ldata;
-				if (!hprop->type.isCollection()) 
+				if (!hprop->type.isCompound()) 
 					ldata+=(ushort)ceil(moveData(buf+ldata,(const byte*)hp+off,hprop->type),HP_ALIGN);
 				else if (!fExpand || hprop->type.getFormat()==HDF_LONG)
-					ldata+=moveCollection(hprop->type,buf+ldata,0,(const byte*)hp,off);
+					ldata+=moveCompound(hprop->type,buf+ldata,0,(const byte*)hp,off);
 				else {
-					HeapVV *coll=(HeapVV*)(buf+ldata); ushort sht=((HeapVV*)((byte*)hp+off))->length();
+					HeapVV *coll=(HeapVV*)(buf+ldata); ushort sht=((HeapVV*)((byte*)hp+off))->length(hprop->type.isCollection());
 					memcpy(coll,(byte*)hp+off,sht); HeapV *elt=coll->start;
 					for (int i=coll->cnt; --i>=0; ++elt) {
 						if (!elt->type.isCompact()) {
@@ -891,7 +886,7 @@ RC HeapPageMgr::HeapPIN::serialize(byte *&buf,size_t& lbuf,const HeapPageMgr::He
 					ldata+=sht; assert(ldata<=lrec);
 				}
 			} else {
-				if (hprop->type.isCollection() && hprop->type.getFormat()!=HDF_LONG) {
+				if (hprop->type.isCompound() && hprop->type.getFormat()!=HDF_LONG) {
 					HeapVV *coll=(HeapVV*)(buf+hprop->offset-off); HeapV *elt=coll->start;
 					for (int i=coll->cnt; --i>=0; ++elt) if (!elt->type.isCompact()) elt->offset-=hprop->offset;
 				}
@@ -914,10 +909,10 @@ bool HeapPageMgr::HeapPIN::getAddr(PID& id) const
 	id.ident=STORE_OWNER; PageAddr addr;
 	HeapDataFmt fmt; const byte *p=getRemoteID(fmt); assert(p!=NULL);
 	switch (fmt) {
-	case HDF_COMPACT: if (lExtra==0) return false; p=(byte*)getOrigLoc();
+	case HDF_COMPACT: return false;
 	case HDF_SHORT: memcpy(&addr,p,PageAddrSize); id.pid=addr; break;
-	case HDF_NORMAL: memcpy(&id.pid,p,sizeof(OID)); break;
-	case HDF_LONG: memcpy(&id.pid,p,sizeof(OID)); memcpy(&id.ident,p+sizeof(OID),sizeof(IdentityID)); break;
+	case HDF_NORMAL: id.pid=__una_get(*(OID*)p); break;
+	case HDF_LONG: id.pid=__una_get(*(OID*)p); id.ident=__una_get(*(IdentityID*)(p+sizeof(OID))); break;
 	}
 	return true;
 }
@@ -925,10 +920,10 @@ bool HeapPageMgr::HeapPIN::getAddr(PID& id) const
 size_t HeapPageMgr::HeapPIN::expLength(const byte *frame) const
 {
 	const HeapV *hprop=getPropTab(); size_t len=hdr.length;
-	for (ulong i=nProps; i!=0; --i,++hprop) switch (hprop->type.getType()) {
+	for (unsigned i=nProps; i!=0; --i,++hprop) switch (hprop->type.getType()) {
 	default: break;
 	case VT_REFID: if (hprop->type.isCompact()) len+=PageAddrSize; break;
-	case VT_ARRAY: case VT_STRUCT:
+	case VT_ARRAY: case VT_STRUCT: case VT_MAP:
 		if (hprop->type.getFormat()!=HDF_LONG) {
 			const HeapVV *coll=(const HeapVV*)(frame+hprop->offset); const HeapV *elt=coll->start;
 			for (int i=coll->cnt; --i>=0; ++elt)
@@ -940,17 +935,17 @@ size_t HeapPageMgr::HeapPIN::expLength(const byte *frame) const
 	return len;
 }
 
-ulong HeapPageMgr::HeapPage::countRefs(const HeapPageMgr::HeapV *hprop) const
+unsigned HeapPageMgr::HeapPage::countRefs(const HeapPageMgr::HeapV *hprop) const
 {
-	ulong cnt=0; assert(hprop!=NULL && hprop->type.isCollection() && hprop->type.getFormat()!=HDF_LONG);
+	unsigned cnt=0; assert(hprop!=NULL && hprop->type.isCompound() && hprop->type.getFormat()!=HDF_LONG);
 	const HeapVV *coll=(const HeapVV*)((byte*)this+hprop->offset); const HeapV *elt=coll->start;
 	for (int i=coll->cnt; --i>=0; ++elt) if (elt->type.getType()==VT_REFID) cnt++;
 	return cnt;
 }
 
-void HeapPageMgr::HeapPage::getRefs(const HeapPageMgr::HeapV *hprop,PID *pids,ulong xPids) const
+void HeapPageMgr::HeapPage::getRefs(const HeapPageMgr::HeapV *hprop,PID *pids,unsigned xPids) const
 {
-	ulong cnt=0; assert(hprop!=NULL && hprop->type.isCollection() && hprop->type.getFormat()!=HDF_LONG);
+	unsigned cnt=0; assert(hprop!=NULL && hprop->type.isCompound() && hprop->type.getFormat()!=HDF_LONG);
 	const HeapVV *coll=(const HeapVV*)((byte*)this+hprop->offset); const HeapV *elt=coll->start;
 	for (int i=coll->cnt; --i>=0 && cnt<xPids; ++elt) 
 		if (elt->type.getType()==VT_REFID) getRef(pids[cnt++],elt->type.getFormat(),elt->offset);
@@ -996,7 +991,7 @@ RC PINPageMgr::addPagesToMap(const PageSet& ps,Session *ses,bool fCl)
 {
 	if (ses==NULL || ses->getTxState()!=TX_COMMITTING) return RC_INTERNAL;
 	const HeapDirMgr::HeapDirPage *hd; PageID last; PBlockP pb; RWLockP lck; RC rc=RC_OK; bool fLocked=false;
-	ulong nSlots=0,xSlots=ulong(HeapDirMgr::contentSize(ctx->bufMgr->getPageSize())/sizeof(PageID));
+	unsigned nSlots=0,xSlots=unsigned(HeapDirMgr::contentSize(ctx->bufMgr->getPageSize())/sizeof(PageID));
 	const MapAnchor maFirst=fCl?MA_CLASSDIRFIRST:MA_HEAPDIRFIRST,maLast=fCl?MA_CLASSDIRLAST:MA_HEAPDIRLAST;
 	if ((last=ctx->theCB->getRoot(maLast))==INVALID_PAGEID) {
 		lck.set(&ctx->hdirMgr->dirLock,RW_X_LOCK); fLocked=true;
@@ -1010,18 +1005,18 @@ RC PINPageMgr::addPagesToMap(const PageSet& ps,Session *ses,bool fCl)
 		}
 		nSlots=xSlots-hd->nSlots; ctx->hdirMgr->lock(pb);
 	}
-	ulong lrec=sizeof(HeapDirMgr::HeapDirUpdate)+((ulong(ps)>xSlots?xSlots:ulong(ps))-1)*sizeof(PageID);
-	HeapDirMgr::HeapDirUpdate hu0,*hu=ulong(ps)==1?&hu0:(HeapDirMgr::HeapDirUpdate*)ses->malloc(lrec); 
+	unsigned lrec=sizeof(HeapDirMgr::HeapDirUpdate)+((unsigned(ps)>xSlots?xSlots:unsigned(ps))-1)*sizeof(PageID);
+	HeapDirMgr::HeapDirUpdate hu0,*hu=unsigned(ps)==1?&hu0:(HeapDirMgr::HeapDirUpdate*)ses->malloc(lrec); 
 	if (hu==NULL) return RC_NORESOURCES;
 
 	PageSet::it it(ps);
 	if (nSlots>0) {
-		if (nSlots>ulong(ps)) nSlots=ulong(ps); hu->nHeapPages=nSlots; assert(!pb.isNull());
-		for (ulong i=0; i<nSlots; i++) {hu->heapPages[i]=++it; assert(hu->heapPages[i]!=INVALID_PAGEID);}
+		if (nSlots>unsigned(ps)) nSlots=unsigned(ps); hu->nHeapPages=nSlots; assert(!pb.isNull());
+		for (unsigned i=0; i<nSlots; i++) {hu->heapPages[i]=++it; assert(hu->heapPages[i]!=INVALID_PAGEID);}
 		rc=ctx->txMgr->update(pb,ctx->hdirMgr,HDU_HPAGES,(byte*)hu,sizeof(HeapDirMgr::HeapDirUpdate)+int(nSlots-1)*sizeof(PageID));
 	}
-	if (rc==RC_OK && nSlots<ulong(ps)) {
-		ulong nDirPages=(ulong(ps)-nSlots+xSlots-1)/xSlots; PageID dpgs[6],*dPages=dpgs; PBlockP pb2;
+	if (rc==RC_OK && nSlots<unsigned(ps)) {
+		unsigned nDirPages=(unsigned(ps)-nSlots+xSlots-1)/xSlots; PageID dpgs[6],*dPages=dpgs; PBlockP pb2;
 		if (nDirPages>6 && (dPages=(PageID*)ses->malloc(nDirPages*sizeof(PageID)))==NULL) rc=RC_NORESOURCES;
 		else {
 			{MiniTx mtx(ses); MapAnchorUpdate anchorUpdate;
@@ -1029,8 +1024,8 @@ RC PINPageMgr::addPagesToMap(const PageSet& ps,Session *ses,bool fCl)
 				if (pb2.newPage(dPages[0],ctx->hdirMgr,0,ses)==NULL) rc=RC_NORESOURCES;
 				else {
 					if (!pb.isNull()) {
-						rc=ctx->txMgr->update(pb,ctx->hdirMgr,HDU_NEXT,(byte*)&dPages[0],sizeof(PageID),0,pb2);
-					} else if (nDirPages>1 || (rc=ctx->txMgr->update(pb2,ctx->hdirMgr,HDU_NEXT,NULL,0))==RC_OK) {
+						pb->checkDepth(); rc=ctx->txMgr->update(pb,ctx->hdirMgr,HDU_NEXT,(byte*)&dPages[0],sizeof(PageID),0,pb2);
+					} else if (nDirPages>1 || (pb2->checkDepth(),rc=ctx->txMgr->update(pb2,ctx->hdirMgr,HDU_NEXT,NULL,0))==RC_OK) {
 						assert(ctx->theCB->getRoot(MA_HEAPDIRFIRST)==INVALID_PAGEID && fLocked);
 						anchorUpdate.oldPageID=INVALID_PAGEID; anchorUpdate.newPageID=dPages[0];
 						ctx->cbLSN=ctx->logMgr->insert(ses,LR_UPDATE,maFirst<<PGID_SHIFT|PGID_MASTER,INVALID_PAGEID,NULL,&anchorUpdate,sizeof(MapAnchorUpdate));
@@ -1040,10 +1035,10 @@ RC PINPageMgr::addPagesToMap(const PageSet& ps,Session *ses,bool fCl)
 						}
 					}
 					if (rc==RC_OK) {
-						for (ulong i=1; i<nDirPages; i++) {
+						for (unsigned i=1; i<nDirPages; i++) {
 							PBlock *next=ctx->bufMgr->newPage(dPages[i],ctx->hdirMgr,NULL,0,ses);
 							if (next==NULL) {rc=RC_NORESOURCES; break;}
-							rc=ctx->txMgr->update(pb2,ctx->hdirMgr,HDU_NEXT,(byte*)&dPages[i],sizeof(PageID),0,next);
+							pb2->checkDepth(); rc=ctx->txMgr->update(pb2,ctx->hdirMgr,HDU_NEXT,(byte*)&dPages[i],sizeof(PageID),0,next);
 							pb2.release(ses); pb2=next; if (rc!=RC_OK) break;
 						}
 						if (rc==RC_OK) {
@@ -1056,12 +1051,12 @@ RC PINPageMgr::addPagesToMap(const PageSet& ps,Session *ses,bool fCl)
 			}
 			if (rc!=RC_OK) pb2.release(ses); else mtx.ok();
 			}
-			for (ulong i=0; rc==RC_OK && i<nDirPages; i++) {
+			for (unsigned i=0; rc==RC_OK && i<nDirPages; i++) {
 				if (i+1==nDirPages) pb2.moveTo(pb); else pb.getPage(dPages[i],ctx->hdirMgr,PGCTL_XLOCK,ses);
 				if (pb.isNull()) rc=RC_NORESOURCES;
 				else {
-					ulong n=ulong(ps)-nSlots; assert(n>0); if (n>xSlots) n=xSlots; hu->nHeapPages=n; nSlots+=n;
-					for (ulong i=0; i<n; i++) {hu->heapPages[i]=++it; assert(hu->heapPages[i]!=INVALID_PAGEID);}
+					unsigned n=unsigned(ps)-nSlots; assert(n>0); if (n>xSlots) n=xSlots; hu->nHeapPages=n; nSlots+=n;
+					for (unsigned i=0; i<n; i++) {hu->heapPages[i]=++it; assert(hu->heapPages[i]!=INVALID_PAGEID);}
 					rc=ctx->txMgr->update(pb,ctx->hdirMgr,HDU_HPAGES,(byte*)hu,sizeof(HeapDirMgr::HeapDirUpdate)+int(n-1)*sizeof(PageID));
 				}
 			}
@@ -1088,12 +1083,12 @@ void PINPageMgr::reuse(PBlock *pb,Session *ses,size_t reserve,bool fMod)
 			}
 		}
 #ifdef _DEBUG
-		for (ulong i=0; i<ses->reuse.nPINPages; i++) assert(ses->reuse.pinPages[i].pid!=pid);
+		for (unsigned i=0; i<ses->reuse.nPINPages; i++) assert(ses->reuse.pinPages[i].pid!=pid);
 #endif
 		ses->reuse.pinPages=(TxReuse::ReusePage*)ses->realloc(ses->reuse.pinPages,(ses->reuse.nPINPages+1)*sizeof(TxReuse::ReusePage));
 		if (ses->reuse.pinPages==NULL) {ses->reuse.nPINPages=0; return;}
 		TxReuse::ReusePage *pg=ses->reuse.pinPages;
-		for (ulong n=ses->reuse.nPINPages,k; n>0;)
+		for (unsigned n=ses->reuse.nPINPages,k; n>0;)
 			if (pg[k=n>>1].space==spaceLeft || pg[k].space>spaceLeft && (n=k)==0 || pg[k].space<spaceLeft && (pg+=k+1,n-=k+1)==0) break;
 		if (pg<&ses->reuse.pinPages[ses->reuse.nPINPages]) memmove(pg+1,pg,(byte*)&ses->reuse.pinPages[ses->reuse.nPINPages]-(byte*)pg);
 		pg->pid=pid; pg->space=spaceLeft; pg->nSlots=hp->nSlots; ses->reuse.nPINPages++;
@@ -1117,13 +1112,13 @@ void SSVPageMgr::reuse(PBlockP &pb,Session *ses,bool fNew,bool fInsert)
 		}
 	} else if (spaceLeft>reserve) {
 #ifdef _DEBUG
-		for (ulong i=0; i<ses->reuse.nSSVPages; i++) assert(ses->reuse.ssvPages[i].pid!=pid);
+		for (unsigned i=0; i<ses->reuse.nSSVPages; i++) assert(ses->reuse.ssvPages[i].pid!=pid);
 #endif
 		ses->reuse.ssvPages=(TxReuse::ReusePage*)ses->realloc(ses->reuse.ssvPages,(ses->reuse.nSSVPages+1)*sizeof(TxReuse::ReusePage));
 		if (ses->reuse.ssvPages==NULL) {ses->reuse.nSSVPages=0; return;}
 		TxReuse::ReusePage *pg=ses->reuse.ssvPages;
-		for (ulong n=ses->reuse.nSSVPages;n>0;)
-			{ulong k=n>>1; if (pg[k].space==spaceLeft || pg[k].space>spaceLeft && (n=k)==0 || pg[k].space<spaceLeft && (pg+=k+1,n-=k+1)==0) break;}
+		for (unsigned n=ses->reuse.nSSVPages;n>0;)
+			{unsigned k=n>>1; if (pg[k].space==spaceLeft || pg[k].space>spaceLeft && (n=k)==0 || pg[k].space<spaceLeft && (pg+=k+1,n-=k+1)==0) break;}
 		if (pg<&ses->reuse.ssvPages[ses->reuse.nSSVPages]) memmove(pg+1,pg,(byte*)&ses->reuse.ssvPages[ses->reuse.nSSVPages]-(byte*)pg);
 		pg->pid=pid; pg->space=(ushort)spaceLeft; pg->nSlots=hp->nSlots; ses->reuse.nSSVPages++;
 	}
@@ -1136,7 +1131,7 @@ void HeapPageMgr::discardPage(PageID pid,Session *ses)
 
 RC HeapPageMgr::HeapSpace::set(StoreCtx *ctx,PageID pid,size_t size,bool fAdd)
 {
-	MutexP lck(&lock); HeapPageSpace *hps=spaceTab.find(pid); ulong idx;
+	MutexP lck(&lock); HeapPageSpace *hps=spaceTab.find(pid); unsigned idx;
 	if (hps!=NULL) {
 		if (hps->space==size && fAdd) return RC_OK;
 		if (pageTab!=NULL && (idx=find(hps))<nPages && pageTab[idx]==hps && idx<--nPages) 
@@ -1161,11 +1156,11 @@ RC HeapPageMgr::HeapSpace::getPage(size_t size,PBlock*& pb,HeapPageMgr *mgr)
 	MutexP lck(&lock);
 	if (nPages==0 || pageTab==NULL || pageTab[0]->space<size) pb=NULL;
 	else {
-		ulong midx=0;
+		unsigned midx=0;
 		if (pageTab[nPages-1]->space>=size) midx=nPages;
-		else for (ulong n=nPages; n>0; ) {ulong k=n>>1; if (pageTab[midx+k]->space<size) n=k; else {midx+=k+1; n-=k+1;}}
+		else for (unsigned n=nPages; n>0; ) {unsigned k=n>>1; if (pageTab[midx+k]->space<size) n=k; else {midx+=k+1; n-=k+1;}}
 		for (int i=0; midx>0 && i<SPACE_PAGE_TRIES; i++) {
-			ulong idx=rand()%midx; HeapPageSpace *hps=pageTab[idx];
+			unsigned idx=rand()%midx; HeapPageSpace *hps=pageTab[idx];
 			pb=mgr->ctx->bufMgr->getPage(hps->pageID,mgr,PGCTL_ULOCK|QMGR_TRY|QMGR_UFORCE,pb);
 			if (pb!=NULL) {
 				const HeapPage *hp=(const HeapPage*)pb->getPageBuf();
@@ -1185,13 +1180,13 @@ void HeapPageMgr::initPartial()
 {
 	if (ctx->theCB->nPartials>SPACE_TAB_SIZE) return;
 	MutexP lck(&freeSpace.lock); PGID pgid=getPGID();
-	for (ulong i=0; i<ctx->theCB->nPartials; i++) {
+	for (unsigned i=0; i<ctx->theCB->nPartials; i++) {
 		const PartialInfo &pi=ctx->theCB->partials[i];
 		if (pi.pageType==pgid) {
 			HeapSpace::HeapPageSpace *hps=new(ctx) HeapSpace::HeapPageSpace(pi.pageID,pi.spaceLeft); if (hps==NULL) break;
 			if (freeSpace.nPages>=SPACE_TAB_SIZE) continue;
 			if (freeSpace.pageTab==NULL && (freeSpace.pageTab=new(ctx) HeapSpace::HeapPageSpace*[SPACE_TAB_SIZE])==NULL) break;
-			freeSpace.spaceTab.insert(hps); ulong idx=freeSpace.find(hps);
+			freeSpace.spaceTab.insert(hps); unsigned idx=freeSpace.find(hps);
 			assert(idx<=freeSpace.nPages && freeSpace.nPages<SPACE_TAB_SIZE);
 			if (idx<freeSpace.nPages) memmove(&freeSpace.pageTab[idx+1],&freeSpace.pageTab[idx],(freeSpace.nPages-idx)*sizeof(HeapSpace::HeapPageSpace*));
 			freeSpace.pageTab[idx]=hps; freeSpace.nPages++;
@@ -1202,7 +1197,7 @@ void HeapPageMgr::initPartial()
 void HeapPageMgr::savePartial(HeapPageMgr *mgr1,HeapPageMgr *mgr2)
 {
 	MutexP lck(&mgr1->freeSpace.lock); uint32_t cnt=0; uint16_t pt;
-	for (ulong i=0,j=0; cnt<uint32_t(sizeof(mgr1->ctx->theCB->partials)/sizeof(mgr1->ctx->theCB->partials[0])) && (i<mgr1->freeSpace.nPages||j<mgr2->freeSpace.nPages); cnt++) {
+	for (unsigned i=0,j=0; cnt<uint32_t(sizeof(mgr1->ctx->theCB->partials)/sizeof(mgr1->ctx->theCB->partials[0])) && (i<mgr1->freeSpace.nPages||j<mgr2->freeSpace.nPages); cnt++) {
 		const HeapSpace::HeapPageSpace *hps=i<mgr1->freeSpace.nPages && (j>=mgr2->freeSpace.nPages||mgr1->freeSpace.pageTab[i]->space>=mgr2->freeSpace.pageTab[j]->space)?
 			(pt=mgr1->getPGID(),mgr1->freeSpace.pageTab[i++]):(pt=mgr2->getPGID(),mgr2->freeSpace.pageTab[j++]);
 		PartialInfo &pi=mgr1->ctx->theCB->partials[cnt]; pi.pageID=hps->pageID; pi.spaceLeft=(uint16_t)hps->space; pi.pageType=pt;
@@ -1221,7 +1216,7 @@ HeapDirMgr::~HeapDirMgr()
 {
 }
 
-RC HeapDirMgr::update(PBlock *pb,size_t len,ulong info,const byte *rec,size_t lrec,ulong flags,PBlock *newp)
+RC HeapDirMgr::update(PBlock *pb,size_t len,unsigned info,const byte *rec,size_t lrec,unsigned flags,PBlock *newp)
 {
 	byte *frame=pb->getPageBuf(); HeapDirPage *hp=(HeapDirPage*)frame,*hp2; const HeapDirUpdate *hd;
 	switch (info&HPOP_MASK) {
@@ -1246,10 +1241,10 @@ RC HeapDirMgr::update(PBlock *pb,size_t len,ulong info,const byte *rec,size_t lr
 		hd=(const HeapDirUpdate*)rec; assert(lrec==sizeof(HeapDirUpdate)+int(hd->nHeapPages-1)*sizeof(PageID));
 		if ((flags&TXMGR_UNDO)!=0) {
 			if (hd->nHeapPages>hp->nSlots) return RC_CORRUPTED; PageID *ids=(PageID*)(hp+1);
-			for (ulong i=0,j=hp->nSlots-hd->nHeapPages;;++ids,++i) 
+			for (unsigned i=0,j=hp->nSlots-hd->nHeapPages;;++ids,++i) 
 				if (i>j) return RC_CORRUPTED;
 				else if (*ids==hd->heapPages[0]) {
-					for (ulong j=1; j<hd->nHeapPages; j++) if (ids[j]!=hd->heapPages[j]) return RC_CORRUPTED;
+					for (unsigned j=1; j<hd->nHeapPages; j++) if (ids[j]!=hd->heapPages[j]) return RC_CORRUPTED;
 					if ((hp->nSlots-=hd->nHeapPages)>i) memmove(&ids[0],&ids[hd->nHeapPages],(hp->nSlots-i)*sizeof(PageID));
 					break;
 				}
@@ -1263,7 +1258,7 @@ RC HeapDirMgr::update(PBlock *pb,size_t len,ulong info,const byte *rec,size_t lr
 	return RC_OK;
 }
 
-PageID HeapDirMgr::multiPage(ulong info,const byte *rec,size_t lrec,bool& fMerge)
+PageID HeapDirMgr::multiPage(unsigned info,const byte *rec,size_t lrec,bool& fMerge)
 {
 	fMerge=false; return (info&HPOP_MASK)==HDU_NEXT && lrec>=sizeof(PageID) ? *(PageID*)rec : INVALID_PAGEID;
 }
@@ -1283,11 +1278,6 @@ bool HeapDirMgr::afterIO(PBlock *pb,size_t lPage,bool fLoad)
 bool HeapDirMgr::beforeFlush(byte *frame,size_t len,PageID pid)
 {
 	return TxPage::beforeFlush(frame,len,pid);		// ???
-}
-
-void HeapDirMgr::unchain(PBlock *pb,PBlock *)
-{
-	//...
 }
 
 PGID HeapDirMgr::getPGID() const

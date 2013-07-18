@@ -1,6 +1,6 @@
 /**************************************************************************************
 
-Copyright © 2004-2012 VMware, Inc. All rights reserved.
+Copyright © 2004-2013 GoPivotal, Inc. All rights reserved.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -29,8 +29,6 @@ Written by Mark Venguerov 2004-2012
 #include "idxtree.h"
 #include "pgheap.h"
 
-using namespace std;
-
 namespace AfyKernel
 {
 
@@ -52,7 +50,7 @@ struct ChangeInfo;
 struct FTIndexKey
 {
 	PID				id;
-	ulong			propID;
+	unsigned			propID;
 public:
 	operator uint32_t() const {return uint32_t(id.pid>>32)^uint32_t(id.pid)^id.ident^propID;}
 	bool operator==(const FTIndexKey& key2) const {return id==key2.id && propID==key2.propID;}
@@ -95,17 +93,17 @@ public:
 struct FTLocaleInfo
 {
 	HChain<FTLocaleInfo>	list;
-	ulong					localeID;
+	unsigned					localeID;
 	const char				*nonDelim;
 	size_t					lNonDelim;
 	Stemmer					*stemmer;
-	ulong					minSize;
+	unsigned					minSize;
 	HashTab<StopWord,const StrLen&,&StopWord::list> stopWordTable;
 	// stemming alg/data
 
-	FTLocaleInfo(StoreCtx *ct,ulong ID,const char *nDelim=NULL,ulong ms=DEFAULT_MINSIZE,Stemmer *stm=NULL,const char *stopWords[]=NULL,ulong nStopWords=0);
+	FTLocaleInfo(StoreCtx *ct,unsigned ID,const char *nDelim=NULL,unsigned ms=DEFAULT_MINSIZE,Stemmer *stm=NULL,const char *stopWords[]=NULL,unsigned nStopWords=0);
 	bool	isStopWord(const StrLen& word) const {return stopWordTable.find(word)!=NULL;}
-	ulong	getKey() const {return localeID;}
+	unsigned	getKey() const {return localeID;}
 };
 
 /**
@@ -174,7 +172,7 @@ struct FTInfo
 	long				count;
 	int					op;
 
-	static SListOp compare(const FTInfo& left,FTInfo& right,ulong) {
+	static SListOp compare(const FTInfo& left,FTInfo& right,unsigned,MemAlloc&) {
 		int cmp=memcmp(left.word,right.word,min(left.lw,right.lw));
 		if (cmp<0 || cmp==0 && (left.lw<right.lw || left.lw==right.lw && left.propID<right.propID)) return SLO_LT;
 		if (cmp>0 || cmp==0 && (left.lw>right.lw || left.lw==right.lw && left.propID>right.propID)) return SLO_GT;
@@ -227,15 +225,15 @@ class FTIndexMgr
 	StoreCtx	*const		ctx;		
 	TreeGlobalRoot			indexFT;
 	const	FTLocaleInfo	*defaultLocale;
-	HashTab<FTLocaleInfo,ulong,&FTLocaleInfo::list> localeTable;
+	HashTab<FTLocaleInfo,unsigned,&FTLocaleInfo::list> localeTable;
 	RWLock						lock;
-	RC				index(const ChangeInfo& ft,FTList *sl=NULL,ulong mode=0,MemAlloc *ma=NULL);
+	RC				index(const ChangeInfo& ft,FTList *sl=NULL,unsigned mode=0,MemAlloc *ma=NULL);
 public:
 					FTIndexMgr(class StoreCtx *ct);
 	virtual			~FTIndexMgr();
 	void			*operator new(size_t s,StoreCtx *ctx) {void *p=ctx->malloc(s); if (p==NULL) throw RC_NORESOURCES; return p;}
 	Tree&			getIndexFT() {return indexFT;}
-	RC				index(ChangeInfo& inf,FTList *sl,ulong flags,ulong mode,MemAlloc *ma);
+	RC				index(ChangeInfo& inf,FTList *sl,unsigned flags,unsigned mode,MemAlloc *ma);
 	RC				process(FTList& ftl,const PID& id,const PID& doc);
 	RC				rebuildIndex(Session *ses);
 	RC				listWords(Session *ses,const char *q,StringEnum *&sen);
@@ -246,7 +244,7 @@ public:
  * default English locale functions
  */
 extern const char	*defaultEnglishStopWords[];
-extern ulong		defaultEnglishStopWordsLen();
+extern unsigned		defaultEnglishStopWordsLen();
 extern const char	*stemPorter(const char *word,size_t& len,char *buf,size_t maxLen);
 
 };

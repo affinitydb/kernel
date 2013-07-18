@@ -1,6 +1,6 @@
 /**************************************************************************************
 
-Copyright © 2004-2012 VMware, Inc. All rights reserved.
+Copyright © 2004-2013 GoPivotal, Inc. All rights reserved.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -27,9 +27,9 @@ using namespace AfyKernel;
 
 static const IndexFormat ftIndexFmt(KT_BIN,KT_VARKEY,KT_VARMDPINREFS);
 
-FTIndexMgr::FTIndexMgr(StoreCtx *ct) : ctx(ct),indexFT(MA_FTINDEX,ftIndexFmt,ct,TF_WITHDEL),localeTable(LOCALE_TABLE_SIZE,ct)
+FTIndexMgr::FTIndexMgr(StoreCtx *ct) : ctx(ct),indexFT(MA_FTINDEX,ftIndexFmt,ct,TF_WITHDEL),localeTable(LOCALE_TABLE_SIZE,(MemAlloc*)ct)
 {
-	FTLocaleInfo *loc = new(ct) FTLocaleInfo(ct,0,"'_",DEFAULT_MINSIZE,new(STORE_HEAP) PorterStemmer,defaultEnglishStopWords,defaultEnglishStopWordsLen());
+	FTLocaleInfo *loc = new(ct) FTLocaleInfo(ct,0,"'_",DEFAULT_MINSIZE,new(ct) PorterStemmer,defaultEnglishStopWords,defaultEnglishStopWordsLen());
 	if (loc==NULL || loc->stemmer==NULL) throw RC_NORESOURCES;
 	localeTable.insert(loc); defaultLocale=loc;
 }
@@ -38,16 +38,16 @@ FTIndexMgr::~FTIndexMgr()
 {
 }
 
-FTLocaleInfo::FTLocaleInfo(StoreCtx *ct,ulong ID,const char *nDelim,ulong ms,Stemmer *stm,const char *stopWords[],ulong nStopWords) 
-	: list(this),localeID(ID),nonDelim(NULL),lNonDelim(0),stemmer(stm),minSize(ms),stopWordTable(nStopWords/4,ct)
+FTLocaleInfo::FTLocaleInfo(StoreCtx *ct,unsigned ID,const char *nDelim,unsigned ms,Stemmer *stm,const char *stopWords[],unsigned nStopWords) 
+	: list(this),localeID(ID),nonDelim(NULL),lNonDelim(0),stemmer(stm),minSize(ms),stopWordTable(nStopWords/4,(MemAlloc*)ct)
 {
 	if (nDelim!=NULL) {nonDelim=strdup(nDelim,ct); lNonDelim=strlen(nDelim);}
-	for (ulong i=0; i<nStopWords; i++) {StopWord *sw=new(ct) StopWord(StrLen(stopWords[i])); if (sw!=NULL) stopWordTable.insert(sw);}
+	for (unsigned i=0; i<nStopWords; i++) {StopWord *sw=new(ct) StopWord(StrLen(stopWords[i])); if (sw!=NULL) stopWordTable.insert(sw);}
 }
 
-RC FTIndexMgr::index(ChangeInfo& inf,FTList *ftl,ulong flags,ulong mode,MemAlloc *ma)
+RC FTIndexMgr::index(ChangeInfo& inf,FTList *ftl,unsigned flags,unsigned mode,MemAlloc *ma)
 {
-	const Value *newV=inf.newV,*oldV=inf.oldV; ElementID eid=inf.eid; const Value *v; ulong n; RC rc=RC_OK;
+	const Value *newV=inf.newV,*oldV=inf.oldV; ElementID eid=inf.eid; const Value *v; unsigned n; RC rc=RC_OK;
 	if (oldV!=NULL && (flags&IX_OFT)!=0) {
 		inf.newV=NULL;
 		switch (oldV->type) {
@@ -69,9 +69,10 @@ RC FTIndexMgr::index(ChangeInfo& inf,FTList *ftl,ulong flags,ulong mode,MemAlloc
 					if (v->stream.is->dataType()==VT_STRING && (rc=index(inf,ftl,mode,ma))!=RC_OK) return rc;
 					break;
 				case VT_STRING: if ((rc=index(inf,ftl,mode,ma))!=RC_OK) return rc; break;
+				case VT_STRUCT: if ((rc=index(inf,ftl,flags,mode,ma))!=RC_OK) return rc; break;
 				}
 			}
-			inf.oldV=NULL; break;
+			inf.oldV=NULL; inf.eid=STORE_COLLECTION_ID; break;
 		case VT_COLLECTION:
 			for (v=oldV->nav->navigate(GO_FIRST); rc==RC_OK && v!=NULL; v=oldV->nav->navigate(GO_NEXT)) {
 				inf.oldV=v; inf.eid=v->eid;
@@ -81,13 +82,25 @@ RC FTIndexMgr::index(ChangeInfo& inf,FTList *ftl,ulong flags,ulong mode,MemAlloc
 					assert((v->flags&VF_SSV)==0);
 					if (v->stream.is->dataType()==VT_STRING) rc=index(inf,ftl,mode,ma);
 					break;
+				case VT_STRUCT: if ((rc=index(inf,ftl,flags,mode,ma))!=RC_OK) return rc; break;
 				}
 			}
 			oldV->nav->navigate(GO_FINDBYID,STORE_COLLECTION_ID); if (rc!=RC_OK) return rc;
-			inf.oldV=NULL; break;
+			inf.oldV=NULL; inf.eid=STORE_COLLECTION_ID; break;
 		case VT_STRUCT:
-			//???
-			break;
+			for (n=0; n<oldV->length; n++) {
+				inf.oldV=v=&oldV->varray[n];
+				switch (v->type) {
+				case VT_STREAM:
+					assert((v->flags&VF_SSV)==0);
+					if (v->stream.is->dataType()==VT_STRING && (rc=index(inf,ftl,mode,ma))!=RC_OK) return rc;
+					break;
+				case VT_STRING: if ((rc=index(inf,ftl,mode,ma))!=RC_OK) return rc; break;
+				case VT_STRUCT: case VT_ARRAY: case VT_COLLECTION:
+					if ((rc=index(inf,ftl,flags,mode,ma))!=RC_OK) return rc; break;
+				}
+			}
+			inf.oldV=NULL; break;
 		}
 		inf.newV=newV; inf.eid=eid;
 	}
@@ -102,6 +115,7 @@ RC FTIndexMgr::index(ChangeInfo& inf,FTList *ftl,ulong flags,ulong mode,MemAlloc
 				switch (v->type) {
 				case VT_STRING: if ((rc=index(inf,ftl,mode,ma))!=RC_OK) return rc; break;
 				case VT_STREAM: if (v->stream.is->dataType()==VT_STRING && (rc=index(inf,ftl,mode,ma))!=RC_OK) return rc; break;
+				case VT_STRUCT: if ((rc=index(inf,ftl,flags,mode,ma))!=RC_OK) return rc; break;
 				}
 			}
 			break;
@@ -111,12 +125,20 @@ RC FTIndexMgr::index(ChangeInfo& inf,FTList *ftl,ulong flags,ulong mode,MemAlloc
 				switch (v->type) {
 				case VT_STRING: rc=index(inf,ftl,mode|FTMODE_SAVE_WORDS,ma); break;
 				case VT_STREAM: if (v->stream.is->dataType()==VT_STRING) rc=index(inf,ftl,mode,ma); break;
+				case VT_STRUCT: if ((rc=index(inf,ftl,flags,mode,ma))!=RC_OK) return rc; break;
 				}
 			}
 			newV->nav->navigate(GO_FINDBYID,STORE_COLLECTION_ID); 
 			if (rc!=RC_OK) return rc; break;
 		case VT_STRUCT:
-			//???
+			for (n=0; n<newV->length; n++) {
+				inf.newV=v=&newV->varray[n]; inf.eid=inf.newV->eid;
+				switch (v->type) {
+				case VT_STRING: if ((rc=index(inf,ftl,mode,ma))!=RC_OK) return rc; break;
+				case VT_STREAM: if (v->stream.is->dataType()==VT_STRING && (rc=index(inf,ftl,mode,ma))!=RC_OK) return rc; break;
+				case VT_STRUCT: case VT_ARRAY: case VT_COLLECTION: if ((rc=index(inf,ftl,flags,mode,ma))!=RC_OK) return rc; break;
+				}
+			}
 			break;
 		}
 		inf.oldV=oldV;
@@ -126,7 +148,7 @@ RC FTIndexMgr::index(ChangeInfo& inf,FTList *ftl,ulong flags,ulong mode,MemAlloc
 
 // Streams if any must be StreamX
 
-RC FTIndexMgr::index(const ChangeInfo& ft,FTList *ftl,ulong mode,MemAlloc *ma)
+RC FTIndexMgr::index(const ChangeInfo& ft,FTList *ftl,unsigned mode,MemAlloc *ma)
 {
 	Tokenizer *oT=NULL,*nT=NULL; ValueType oType=VT_ERROR,nType=VT_ERROR;
 	if (ft.oldV!=NULL) switch (ft.oldV->type) {
@@ -146,7 +168,7 @@ RC FTIndexMgr::index(const ChangeInfo& ft,FTList *ftl,ulong mode,MemAlloc *ma)
 		break;
 	}
 
-	ulong locID = 0;
+	unsigned locID = 0;
 	// getLocaleID
 
 	char wbuf[FTBUFSIZE],wbuf2[FTBUFSIZE];
@@ -203,7 +225,7 @@ RC FTIndexMgr::index(const ChangeInfo& ft,FTList *ftl,ulong mode,MemAlloc *ma)
 RC FTIndexMgr::process(FTList& ftl,const PID& id,const PID& doc)
 {
 	const FTInfo *fti; RC rc=RC_OK; byte ext[XPINREFSIZE]; byte lext=0;
-	PropertyID prev=STORE_INVALID_PROPID; long prevCnt=-1l;
+	PropertyID prev=STORE_INVALID_URIID; long prevCnt=-1l;
 	if (ftl.getCount()!=0) for (ftl.start(); (fti=ftl.next())!=NULL; ) {
 		SearchKey key(fti->word,ushort(min(fti->lw,size_t(MAX_WORD_SIZE))));
 		if (fti->propID!=prev || fti->count!=prevCnt) {
@@ -227,7 +249,7 @@ RC FTIndexMgr::process(FTList& ftl,const PID& id,const PID& doc)
 
 const FTLocaleInfo *FTIndexMgr::getLocale() const
 {
-	ulong locID=0;
+	unsigned locID=0;
 	// getLocaleID
 	const FTLocaleInfo *loc=locID==0 ? defaultLocale : localeTable.find(locID);
 	return loc!=NULL?loc:defaultLocale;
@@ -237,16 +259,15 @@ RC FTIndexMgr::rebuildIndex(Session *ses)
 {
 	RC rc=RC_OK; MiniTx tx(ses,MTX_FLUSH|MTX_GLOB);
 	if ((rc=indexFT.dropTree())==RC_OK) {
-		PINEx qr(ses),*pqr=&qr; ses->resetAbortQ(); QCtx qc(ses); qc.ref();
+		PINx qr(ses),*pqr=&qr; ses->resetAbortQ(); QCtx qc(ses); qc.ref();
 		FullScan fs(&qc,HOH_DELETED|HOH_HIDDEN); fs.connect(&pqr); RWLockP lck(&lock,RW_X_LOCK);
 		while ((rc=fs.next())==RC_OK) {
 #if 0
 			assert(!qr.pb.isNull() && qr.hpin!=NULL);
-			if ((qr.hpin->hdr.descr&HOH_NOINDEX)!=0) continue;
 			SubAlloc sa(ses); FTList ftl(sa); Value v; ctx->queryMgr->loadV(v,PROP_SPEC_DOCUMENT,qr,0,ses);
-			ChangeInfo inf={qr.id,v.type==VT_REFID?v.id:PIN::defPID,NULL,&v,STORE_INVALID_PROPID,STORE_COLLECTION_ID};
+			ChangeInfo inf={qr.id,v.type==VT_REFID?v.id:PIN::defPID,NULL,&v,STORE_INVALID_URIID,STORE_COLLECTION_ID};
 			const HeapPageMgr::HeapV *hprop=qr.hpin->getPropTab();
-			for (ulong k=0; k<qr.hpin->nProps; ++k,++hprop) if ((hprop->type.flags&META_PROP_NOFTINDEX)==0) {
+			for (unsigned k=0; k<qr.hpin->nProps; ++k,++hprop) if ((hprop->type.flags&META_PROP_FTINDEX)!=0) {
 				if ((rc=ctx->queryMgr->loadVH(v,hprop,qr,LOAD_SSV,NULL))!=RC_OK) break;
 				inf.propID=v.property;
 				rc=ctx->ftMgr->index(inf,&ftl,IX_NFT,(hprop->type.flags&META_PROP_STOPWORDS)!=0?FTMODE_STOPWORDS:0,ses);
@@ -314,10 +335,10 @@ const char *StringTokenizer::nextToken(size_t& lToken,const FTLocaleInfo *loc,ch
 		TokenizerState state=TK_NOWORD; fSave=false; size_t l=0; int lch=0; assert(loc!=NULL);
 		while (str<estr) {
 			if (state==TK_NOWORD) prev=str;
-			byte ch=*str++,ch2; ulong wch=0; TokenizerType ty;
+			byte ch=*str++,ch2; unsigned wch=0; TokenizerType ty;
 			if ((lch=UTF8::len(ch))>1) {
 				const byte *p=(byte*)str; 
-				if ((wch=UTF8::decode(ch,p,ulong(estr-str)))==~0u) {
+				if ((wch=UTF8::decode(ch,p,unsigned(estr-str)))==~0u) {
 					ty=TK_OTHER; lch=1;
 				} else {
 					str=(const char*)p;
@@ -341,7 +362,7 @@ const char *StringTokenizer::nextToken(size_t& lToken,const FTLocaleInfo *loc,ch
 			if (ts==TK_STOP) {
 				if (state==TK_NUMBER || loc->lNonDelim==0 || str>=estr || memchr(loc->nonDelim,ch,loc->lNonDelim)==NULL) {str-=lch; break;}
 				if (UTF8::len(ch2=*str)>1) {
-					const byte *p=(byte*)str+1; ulong wch2=UTF8::decode(ch2,p,ulong(estr-str-1));
+					const byte *p=(byte*)str+1; unsigned wch2=UTF8::decode(ch2,p,unsigned(estr-str-1));
 					if (wch2==~0u || !UTF8::iswalnum(wchar_t(wch2))) break;
 				} else if ((ch2<'0' || ch2>'9') && (ch2<'a' || ch2>'z') && (ch2<'A' || ch2>'Z')) {str-=lch; break;}
 				ts=state;
@@ -385,11 +406,11 @@ const char *StreamTokenizer::nextToken(size_t& lToken,const FTLocaleInfo *loc,ch
 		if (prev!=NULL && lPrev>0) {const char *p=prev; lToken=lPrev; prev=NULL; lPrev=0; return p;}
 		TokenizerState state=TK_NOWORD; size_t l=0,ll;
 		while (str<estr || estr>=sbuf+sizeof(sbuf) && (estr=(str=sbuf)+is->read(sbuf,sizeof(sbuf)))!=sbuf) {
-			byte ch=*str++,ch2; TokenizerType ty; int lch=UTF8::len(ch),lch2; ulong wch=0;
+			byte ch=*str++,ch2; TokenizerType ty; int lch=UTF8::len(ch),lch2; unsigned wch=0;
 			if (lch>1) {
 				if (str+lch>estr) {ll=estr-str; if (ll>0) memcpy(sbuf,str,ll); estr=(str=sbuf)+ll+is->read(sbuf+ll,sizeof(sbuf)-ll);}
 				const byte *p=(byte*)str; 
-				if ((wch=UTF8::decode(ch,p,ulong(estr-str)))==~0u) {
+				if ((wch=UTF8::decode(ch,p,unsigned(estr-str)))==~0u) {
 					ty=TK_OTHER; lch=1;
 				} else {
 					str=(const char*)p;
@@ -415,7 +436,7 @@ const char *StreamTokenizer::nextToken(size_t& lToken,const FTLocaleInfo *loc,ch
 				if (str>=estr && (estr<sbuf+sizeof(sbuf) || (estr=(str=sbuf)+is->read(sbuf,sizeof(sbuf)))==sbuf)) break;
 				if ((lch2=UTF8::len(ch2=*str))>1) {
 					if (str+lch2>estr) {ll=estr-str; if (ll>0) memcpy(sbuf,str,ll); estr=(str=sbuf)+ll+is->read(sbuf+ll,sizeof(sbuf)-ll);}
-					const byte *p=(byte*)str+1; ulong wch2=UTF8::decode(ch2,p,ulong(estr-str-1)); 
+					const byte *p=(byte*)str+1; unsigned wch2=UTF8::decode(ch2,p,unsigned(estr-str-1)); 
 					if (wch2==~0u || !UTF8::iswalnum(wchar_t(wch2))) break;
 				} else if ((ch2<'0' || ch2>'9') && (ch2<'a' || ch2>'z') && (ch2<'A' || ch2>'Z')) break;
 				ts=state;

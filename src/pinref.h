@@ -1,6 +1,6 @@
 /**************************************************************************************
 
-Copyright © 2008-2012 VMware, Inc. All rights reserved.
+Copyright © 2004-2013 GoPivotal, Inc. All rights reserved.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -28,7 +28,7 @@ Written by Mark Venguerov 2008 - 2012
 #include "affinity.h"
 #include "utils.h"
 
-using namespace AfyDB;
+using namespace Afy;
 
 namespace AfyKernel
 {
@@ -45,6 +45,10 @@ namespace AfyKernel
 #define	PR_U2		0x0010
 #define	PR_COUNT	0x0020
 #define	PR_FCOLL	0x0040
+#define	PR_PREF32	0x0080
+#define PR_PREF64	0x0100
+#define	PR_SPECIAL	0x0200
+#define	PR_HIDDEN	0x0400
 
 /**
  * decompressed representation
@@ -53,6 +57,7 @@ namespace AfyKernel
 struct PINRef
 {
 	const ushort	stID;
+	uint16_t		def;
 	PID				id;
 	PID				id2;
 	PageAddr		addr;
@@ -60,16 +65,20 @@ struct PINRef
 	uint32_t		u1;
 	uint32_t		u2;
 	uint32_t		count;
-	uint16_t		def;
+	uint64_t		prefix;
 
 	PINRef(ushort storeID,const byte *p,size_t l);
-	PINRef(ushort storeID,const PID& pid) : stID(storeID),id(pid),def(0) {}
-	PINRef(ushort storeID,const PID& pid,const PageAddr& ad) : stID(storeID),id(pid),addr(ad),def(PR_ADDR) {}
+	PINRef(ushort storeID,const PID& pid) : stID(storeID),def(0),id(pid) {}
+	PINRef(ushort storeID,const PID& pid,const PageAddr& ad) : stID(storeID),def(PR_ADDR),id(pid),addr(ad) {}
 	byte				enc(byte *buf) const;
 	RC					dec(const byte *p,size_t l);
 	static	bool		isColl(const byte *p,size_t l) {assert(l!=0); return (p[l-1]&0xA0)==0xA0;}
+	static	bool		isSpecial(const byte *p,size_t l) {assert(l!=0); return l>2 && (p[l-1]&0xC0)==0xC0 && (p[l-2]&0x08)!=0;}
+	static	bool		isHidden(const byte *p,size_t l) {assert(l!=0); return l>2 && (p[l-1]&0xC0)==0xC0 && (p[l-2]&0x04)!=0;}
 	static	void		changeFColl(byte *p,byte& l,bool fSet) {assert(l!=0); if ((*(p+=l-1)&0x80)==0) {if (fSet) *++p=0xA0,++l;} else if (fSet) *p|=0x20; else if ((*p&=~0x20)==0x80) --l;}
+	static	bool		hasCount(const byte *p,size_t l) {assert(l!=0); return (p[l-1]&0x90)==0x90;}
 	static	uint32_t	getCount(const byte *p,size_t l) {assert(l!=0); uint32_t c=1; if (l!=0 && (*(p+=l-1)&0x90)==0x90) {if ((*p&0x40)!=0) --p; afy_dec32r(p,c);} return c;}
+	static	bool		getPrefix(const byte *p,size_t l,uint64_t& pref) {assert(l!=0); pref=0; if ((p[l-1]&0x83)<0x81) return false; if ((p[l-1]&0x02)!=0) {afy_dec64(p,pref);} else {afy_dec32(p,*(uint32_t*)&pref);} return true;}
 	static	RC			getPID(const byte *p,size_t l,ushort stID,PID& id,PageAddr *paddr=NULL);
 	static	RC			adjustCount(byte *p,size_t& l,uint32_t cnt,byte *buf,bool fDec=false);
 	static	int			cmpPIDs(const byte *p1,unsigned l1,const byte *p2,unsigned l2);

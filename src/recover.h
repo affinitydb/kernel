@@ -1,6 +1,6 @@
 /**************************************************************************************
 
-Copyright © 2004-2012 VMware, Inc. All rights reserved.
+Copyright © 2004-2013 GoPivotal, Inc. All rights reserved.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -69,9 +69,9 @@ struct DirtyPg
 {
 	HChain<DirtyPg>	list;
 	const PageID	pageID;
-	ulong			flag;
+	unsigned			flag;
 	LSN				redoLSN;
-	DirtyPg(PageID pid,LSN lsn,ulong f=0) : list(this),pageID(pid),flag(f),redoLSN(lsn) {}
+	DirtyPg(PageID pid,LSN lsn,unsigned f=0) : list(this),pageID(pid),flag(f),redoLSN(lsn) {}
 	PageID			getKey() const {return pageID;}
 	void			*operator new(size_t s) throw() {return malloc(s,STORE_HEAP);}
 	void			operator delete(void *p) {free(p,STORE_HEAP);}

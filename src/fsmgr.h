@@ -1,6 +1,6 @@
 /**************************************************************************************
 
-Copyright © 2004-2012 VMware, Inc. All rights reserved.
+Copyright © 2004-2013 GoPivotal, Inc. All rights reserved.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -25,7 +25,7 @@ Written by Mark Venguerov 2004-2012
 #define _FSMGR_H_
 
 #include "utils.h"
-#include "txpage.h"
+#include "pagemgr.h"
 
 namespace AfyKernel
 {
@@ -36,7 +36,6 @@ namespace AfyKernel
 #define BITSPERELT		(sizeof(uint32_t)*8)
 #define	MAXBITNUMBER	0x0007FFFF
 #define	RESETBIT		0x00080000
-#define	EXTENTDIRMAGIC	0xEFAB
 #define	FREEPAGEFLAG	0x80000000
 
 /**
@@ -46,27 +45,16 @@ namespace AfyKernel
 class ExtentDirPage : public PageMgr
 {
 	friend	class	FSMgr;
-	struct ExtentDirHeader {
-		CRC			crc;
-		uint32_t	pageID;
-		uint16_t	magic;
-		uint16_t	len;
-		uint32_t	nslots;
-	};
-	struct ExtentDirFooter {
-		CRC			crc;
-		uint32_t	filler;
-	};
 	struct DirSlot {
 		uint32_t	extentStart;
 		uint32_t	nPages;
 	};
-	void	initPage(byte *page,size_t lPage,PageID pid);
+	ExtentDirPage(class StoreCtx *ct) : PageMgr(ct) {}
 	bool	afterIO(class PBlock *,size_t lPage,bool fLoad);
 	bool	beforeFlush(byte *page,size_t lPage,PageID pid);
 	PGID	getPGID() const;
-	static	size_t	contentSize(size_t lPage) {return lPage - sizeof(ExtentDirHeader) - sizeof(ExtentDirFooter);}
-	static	ulong	maxDirSlots(size_t lPage) {return ulong(lPage - sizeof(ExtentDirHeader) - sizeof(ExtentDirFooter))/sizeof(DirSlot);}
+	static	size_t		contentSize(size_t lPage) {return lPage - sizeof(PageHeader) - FOOTERSIZE;}
+	static	unsigned	maxDirSlots(size_t lPage) {return unsigned(lPage-sizeof(PageHeader)-FOOTERSIZE)/sizeof(DirSlot);}
 };
 
 #define	EXT_HDR_SIZE			(sizeof(TxPageHeader)+sizeof(uint32_t))
@@ -79,20 +67,16 @@ class ExtentDirPage : public PageMgr
 class ExtentMapPage : public TxPage
 {
 	friend	class	FSMgr;
-	ulong			lExtHdr;
-	struct ExtentMapHeader {
-		TxPageHeader	hdr;
-		uint32_t		nPages;
-	};
+	unsigned		lExtHdr;
 	ExtentMapPage(StoreCtx *ctx);
 	void	initPage(byte *page,size_t lPage,PageID pid);
 	bool	afterIO(class PBlock *,size_t lPage,bool fLoad);
 	bool	beforeFlush(byte *frame,size_t len,PageID pid);
-	RC		update(class PBlock *,size_t len,ulong info,const byte *rec,size_t lrec,ulong flags,class PBlock *newp=NULL);
+	RC		update(class PBlock *,size_t len,unsigned info,const byte *rec,size_t lrec,unsigned flags,class PBlock *newp=NULL);
 	PGID	getPGID() const;
-	uint32_t* getBMP(const ExtentMapHeader *emp) const {return (uint32_t*)((byte*)emp+lExtHdr);}
-	bool	isFree(const ExtentMapHeader *emp,ulong bitN) const {return bitN>=emp->nPages?false:(getBMP(emp)[bitN/BITSPERELT]&1<<bitN%BITSPERELT)==0;}
-	static	size_t	contentSize(size_t lPage) {return lPage - sizeof(ExtentMapHeader) - FOOTERSIZE;}
+	uint32_t* getBMP(const TxPageHeader *emp) const {return (uint32_t*)((byte*)emp+lExtHdr);}
+	bool	isFree(const TxPageHeader *emp,unsigned bitN) const {return bitN>=emp->nPages?false:(getBMP(emp)[bitN/BITSPERELT]&1<<bitN%BITSPERELT)==0;}
+	static	size_t	contentSize(size_t lPage) {return lPage - sizeof(TxPageHeader) - FOOTERSIZE;}
 };
 
 /**
@@ -101,19 +85,15 @@ class ExtentMapPage : public TxPage
 class FreeSpacePage : public TxPage
 {
 	friend	class	FSMgr;
-	struct FreeSpaceHeader {
-		TxPageHeader	hdr;
-		struct PageInfo {
-			uint16_t	pgid;
-			uint16_t	left;
-			uint32_t	pageID;
-		};
-		uint32_t		nPages;
+	struct PageInfo {
+		uint16_t	pgid;
+		uint16_t	left;
+		uint32_t	pageID;
 	};
 	FreeSpacePage(StoreCtx *ctx) : TxPage(ctx) {}
-	RC		update(class PBlock *,size_t len,ulong info,const byte *rec,size_t lrec,ulong flags,class PBlock *newp=NULL);
+	RC		update(class PBlock *,size_t len,unsigned info,const byte *rec,size_t lrec,unsigned flags,class PBlock *newp=NULL);
 	PGID	getPGID() const;
-	static	size_t	contentSize(size_t lPage) {return lPage - sizeof(FreeSpaceHeader) - FOOTERSIZE;}
+	static	size_t	contentSize(size_t lPage) {return lPage - sizeof(TxPageHeader) - FOOTERSIZE;}
 };
 
 class PBlock;
@@ -132,20 +112,20 @@ class FSMgr
 		HChain<ExtentInfo>	list;
 		PageID				extentStart;
 		PageID				dirPage;
-		ulong				pos;
-		ulong				nPages;
-		ulong				nFreePages;
-		ulong				maxContiguous;
-		ulong				firstFree;
-		ulong				state;
+		unsigned			pos;
+		unsigned			nPages;
+		unsigned			nFreePages;
+		unsigned			maxContiguous;
+		unsigned			firstFree;
+		unsigned			state;
 		ExtentInfo() : list(this),extentStart(INVALID_PAGEID),dirPage(INVALID_PAGEID),pos(0),nPages(0),nFreePages(0),maxContiguous(0),firstFree(0),state(0) {}
 	};
 	RWLock				lock;
 	RWLock				txLock;
 	ExtentInfo			**extentTable;
-	ulong				lExtentTable;
-	ulong				nExtents;
-	ulong				slotsLeft;
+	unsigned			lExtentTable;
+	unsigned			nExtents;
+	unsigned			slotsLeft;
 	HChain<ExtentInfo>	extentList;
 	FileID				dataFile;
 	ExtentMapPage		extentMapPage;
@@ -161,7 +141,7 @@ public:
 	void		close();
 
 	PBlock		*getNewPage(PageMgr *mgr);
-	RC			allocPages(ulong nPages,PageID *buf,PBlock **pAllocPage=NULL);
+	RC			allocPages(unsigned nPages,PageID *buf,PBlock **pAllocPage=NULL);
 	RC			reservePage(PageID pid);
 	PBlock		*getNewPage(PageMgr *mgr,PageID pad);
 	bool		isFreePage(PageID pid);

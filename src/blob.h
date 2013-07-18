@@ -1,6 +1,6 @@
 /**************************************************************************************
 
-Copyright © 2004-2012 VMware, Inc. All rights reserved.
+Copyright © 2004-2013 GoPivotal, Inc. All rights reserved.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -29,9 +29,9 @@ Written by Mark Venguerov 2004-2012
 #include "pgheap.h"
 #include "pgtree.h"
 #include "buffer.h"
-#include "affinityimpl.h"
+#include "pin.h"
 
-using namespace AfyDB;
+using namespace Afy;
 
 namespace AfyKernel
 {
@@ -117,6 +117,147 @@ public:
 	void				destroy();
 };
 
+/**
+ * Map implementation as in memory array
+ */
+class MemMap : public IMap
+{
+	MapElt				*elts;
+	unsigned			nElts;
+	MemAlloc *const		ma;
+	unsigned			idx;
+public:
+	MemMap(MapElt *es,unsigned nE,MemAlloc *m) : elts(es),nElts(nE),ma(m),idx(0) {}
+	~MemMap();
+	const	Value	*find(const Value &key);
+	RC				getNext(const Value *&key,const Value *&val,bool fFirst=false);
+	RC				set(const Value& key,const Value& val);
+	IMap			*clone() const;
+	unsigned		count() const;
+	void			destroy();
+};
+
+//-------------------------------------------------------------------------------------------------------------
+
+#if 0
+class MapFactory : public TreeFactory
+{
+public:
+	byte	getID() const;
+	byte	getParamLength() const;
+	void	getParams(byte *buf,const Tree& tr) const;
+	RC		createTree(const byte *params,byte lparams,Tree *&tree);
+	static	MapFactory	factory;
+};
+
+struct MapDataHdr {
+	HType			type;
+};
+
+/**
+ * Map position descriptor
+ */
+struct EMB : public TreeCtx
+{
+	StoreCtx								*const ctx;
+	Tree									&tree;
+	const	HeapPageMgr::HeapExtMap			*map;
+	PageID									cPage;
+	const	TreePageMgr::TreePage			*tp;
+	unsigned									pos;
+	ushort									lData;
+	const	MapDataHdr						*hdr;
+	EMB(StoreCtx *ct,Tree& tr,const HeapPageMgr::HeapExtMap *bc) : TreeCtx(tr),ctx(ct),tree(tr),
+					cPage(INVALID_PAGEID),tp(NULL),pos(~0u),lData(0),hdr(NULL) {}
+	RC		get(const Value& key,bool fRead=false);
+	void	release() {if (!pb.isNull()) {cPage=pb->getPageID(); pb.release();}}
+};
+
+/**
+ * map modification
+ */
+class MMap : public Tree
+{
+	const	unsigned				maxPages;
+	MemAlloc					*const allc;
+	HeapPageMgr::HeapExtMap		*hmap;
+	unsigned						stamp;
+	bool						fMod;
+	class MapFreeData : public TreeFreeData {public: RC freeData(const byte *data,StoreCtx *ctx);};
+public:
+	MMap(StoreCtx *ctx,const HeapPageMgr::HeapExtMap *c,MemAlloc *ma,unsigned xP=0);
+	virtual				~MMap();
+	TreeFactory			*getFactory() const;
+	IndexFormat			indexFormat() const;
+	unsigned				getMode() const;
+	PageID				startPage(const SearchKey*,int& level,bool,bool=false);
+	PageID				prevStartPage(PageID pid);
+	RC					addRootPage(const SearchKey& key,PageID& pageID,unsigned level);
+	RC					removeRootPage(PageID page,PageID leftmost,unsigned level);
+	unsigned				getStamp(TREE_NODETYPE) const;
+	void				getStamps(unsigned stamps[TREE_NODETYPE_ALL]) const;
+	void				advanceStamp(TREE_NODETYPE);
+	bool				lock(RW_LockType,bool fTry=false) const;
+	void				unlock() const;
+	void				destroy();
+
+	bool				isModified() const {return fMod;}
+	const HeapPageMgr::HeapExtMap	*getDescriptor() const {return hmap;}
+	RC					modify(ExprOp op,const Value *pv,Session *ses);
+
+	static	MMap		*create(const PageAddr& addr,PropertyID pid,StoreCtx *ctx,MemAlloc *ma,PBlock *pb=NULL);
+	static	RC			persist(const Value& v,HeapPageMgr::HeapExtMap& hmap,Session *ses,bool fForce=true,bool fOld=false,unsigned maxPages=0);
+	static	RC			persistElement(Session *ses,const Value& v,ushort& lval,byte *&buf,size_t& lbuf,size_t threshold,bool fOld=false);
+	static	RC			purge(const HeapPageMgr::HeapExtMap *hm,StoreCtx *ctx);
+
+	const static IndexFormat mapFormat;
+};
+
+/**
+ * map navigation (read-only)
+ */
+class Map : public IMap, public Tree, public ObjDealloc
+{
+	const	PageAddr	heapAddr;
+	const	PropertyID	propID;
+	const	unsigned		mode;
+	MemAlloc *const		allc;
+	EMB					emb;
+	Value				curKey;
+	Value				curValue;
+	ValueType			type;
+public:
+	Map(const PageAddr& addr,PropertyID pid,const HeapPageMgr::HeapExtMap *map,unsigned md,MemAlloc *ma);
+	virtual ~Map();
+	const	Value		*find(const Value &key);
+	RC					getNext(const Value *&key,const Value *&val,bool fFirst=false);
+	IMap				*clone() const;
+	unsigned			count() const;
+	void				destroy();
+	void				destroyObj();
+
+	TreeFactory			*getFactory() const;
+	IndexFormat			indexFormat() const;
+	PageID				startPage(const SearchKey*,int& level,bool,bool=false);
+	PageID				prevStartPage(PageID pid);
+	RC					addRootPage(const SearchKey& key,PageID& pageID,unsigned level);
+	RC					removeRootPage(PageID page,PageID leftmost,unsigned level);
+	unsigned				getStamp(TREE_NODETYPE) const;
+	void				getStamps(unsigned stamps[TREE_NODETYPE_ALL]) const;
+	void				advanceStamp(TREE_NODETYPE);
+	bool				lock(RW_LockType,bool fTry=false) const;
+	void				unlock() const;
+	TreeConnect			*persist(uint32_t& hndl) const;
+	void				setType(ValueType ty) {type=ty;}
+	
+	const HeapPageMgr::HeapExtMap	*getDescriptor() const {return emb.map;}
+	static	RC			getPageAddr(const MapDataHdr *edh,PageAddr&);
+	friend	class		MMap;
+};
+#endif
+
+//-------------------------------------------------------------------------------------------------------------
+
 class CollFactory : public TreeFactory
 {
 public:
@@ -145,13 +286,13 @@ struct ECB : public TreeCtx
 	ElementID								eid;
 	PageID									cPage;
 	const	TreePageMgr::TreePage			*tp;
-	ulong									pos;
+	unsigned									pos;
 	ushort									lData;
 	const	ElementDataHdr					*hdr;
 	ElementID								prevID;
 	ElementID								nextID;
 	ECB(StoreCtx *ct,Tree& tr,const HeapPageMgr::HeapExtCollection *bc) : TreeCtx(tr),ctx(ct),tree(tr),coll(bc),eid(STORE_COLLECTION_ID),
-					cPage(INVALID_PAGEID),tp(NULL),pos(~0ul),lData(0),hdr(NULL),prevID(STORE_COLLECTION_ID),nextID(STORE_COLLECTION_ID) {}
+					cPage(INVALID_PAGEID),tp(NULL),pos(~0u),lData(0),hdr(NULL),prevID(STORE_COLLECTION_ID),nextID(STORE_COLLECTION_ID) {}
 	RC		get(GO_DIR whence,ElementID ei=STORE_COLLECTION_ID,bool fRead=false);
 	RC		shift(ElementID ei,bool fPrev=false);
 	RC		setLinks(ElementID prev,ElementID next,bool fForce=false);
@@ -165,24 +306,24 @@ struct ECB : public TreeCtx
  */
 class Collection : public Tree
 {
-	const	ulong					maxPages;
+	const	unsigned					maxPages;
 	MemAlloc						*const allc;
 	HeapPageMgr::HeapExtCollection	*coll;
-	ulong							stamp;
+	unsigned							stamp;
 	bool							fMod;
 	class CollFreeData : public TreeFreeData {public: RC freeData(const byte *data,StoreCtx *ctx);};
 public:
-	Collection(StoreCtx *ctx,ulong stamp,const HeapPageMgr::HeapExtCollection *c,MemAlloc *ma,ulong xP=0);
+	Collection(StoreCtx *ctx,const HeapPageMgr::HeapExtCollection *c,MemAlloc *ma,unsigned xP=0);
 	virtual				~Collection();
 	TreeFactory			*getFactory() const;
 	IndexFormat			indexFormat() const;
-	ulong				getMode() const;
+	unsigned				getMode() const;
 	PageID				startPage(const SearchKey*,int& level,bool,bool=false);
 	PageID				prevStartPage(PageID pid);
-	RC					addRootPage(const SearchKey& key,PageID& pageID,ulong level);
-	RC					removeRootPage(PageID page,PageID leftmost,ulong level);
-	ulong				getStamp(TREE_NODETYPE) const;
-	void				getStamps(ulong stamps[TREE_NODETYPE_ALL]) const;
+	RC					addRootPage(const SearchKey& key,PageID& pageID,unsigned level);
+	RC					removeRootPage(PageID page,PageID leftmost,unsigned level);
+	unsigned				getStamp(TREE_NODETYPE) const;
+	void				getStamps(unsigned stamps[TREE_NODETYPE_ALL]) const;
 	void				advanceStamp(TREE_NODETYPE);
 	bool				lock(RW_LockType,bool fTry=false) const;
 	void				unlock() const;
@@ -193,9 +334,9 @@ public:
 	RC					modify(ExprOp op,const Value *pv,ElementID epos,ElementID eid,Session *ses);
 
 	static	Collection	*create(const PageAddr& addr,PropertyID pid,StoreCtx *ctx,MemAlloc *ma,PBlock *pb=NULL);
-	static	RC			persist(const Value& v,HeapPageMgr::HeapExtCollection& collection,Session *ses,bool fForce=true,bool fOld=false,ulong maxPages=0);
+	static	RC			persist(const Value& v,HeapPageMgr::HeapExtCollection& collection,Session *ses,bool fForce=true,bool fOld=false,unsigned maxPages=0);
 	static	RC			persistElement(Session *ses,const Value& v,ushort& lval,byte *&buf,size_t& lbuf,size_t threshold,
-											ulong prev=STORE_COLLECTION_ID,ulong next=STORE_COLLECTION_ID,bool fOld=false);
+											uint32_t prev=STORE_COLLECTION_ID,uint32_t next=STORE_COLLECTION_ID,bool fOld=false);
 	static	RC			purge(const HeapPageMgr::HeapExtCollection *hc,StoreCtx *ctx);
 
 	const static IndexFormat collFormat;
@@ -208,20 +349,20 @@ class Navigator : public INav, public Tree, public ObjDealloc
 {
 	const	PageAddr	heapAddr;
 	const	PropertyID	propID;
-	const	ulong		mode;
+	const	unsigned		mode;
 	MemAlloc *const		allc;
 	ECB					ecb;
 	Value				curValue;
 	ValueType			type;
 public:
-	Navigator(const PageAddr& addr,PropertyID pid,const HeapPageMgr::HeapExtCollection *coll,ulong md,MemAlloc *ma);
+	Navigator(const PageAddr& addr,PropertyID pid,const HeapPageMgr::HeapExtCollection *coll,unsigned md,MemAlloc *ma);
 	virtual				~Navigator();
 	const	Value		*navigate(GO_DIR=GO_NEXT,ElementID=STORE_COLLECTION_ID);
 	ElementID			getCurrentID();
 	const	Value		*getCurrentValue();
 	RC					getElementByID(ElementID,Value&);
 	INav				*clone() const;
-	unsigned	long	count() const;	
+	unsigned			count() const;	
 	void				destroy();
 	void				destroyObj();
 
@@ -229,10 +370,10 @@ public:
 	IndexFormat			indexFormat() const;
 	PageID				startPage(const SearchKey*,int& level,bool,bool=false);
 	PageID				prevStartPage(PageID pid);
-	RC					addRootPage(const SearchKey& key,PageID& pageID,ulong level);
-	RC					removeRootPage(PageID page,PageID leftmost,ulong level);
-	ulong				getStamp(TREE_NODETYPE) const;
-	void				getStamps(ulong stamps[TREE_NODETYPE_ALL]) const;
+	RC					addRootPage(const SearchKey& key,PageID& pageID,unsigned level);
+	RC					removeRootPage(PageID page,PageID leftmost,unsigned level);
+	unsigned				getStamp(TREE_NODETYPE) const;
+	void				getStamps(unsigned stamps[TREE_NODETYPE_ALL]) const;
 	void				advanceStamp(TREE_NODETYPE);
 	bool				lock(RW_LockType,bool fTry=false) const;
 	void				unlock() const;
@@ -254,7 +395,7 @@ struct BlobRead
 {
 	HChain<BlobRead>	list;
 	const PageAddr		start;
-	ulong				nReaders;
+	unsigned				nReaders;
 	bool				fDelete;
 	BlobRead(const PageAddr& addr) : list(this),start(addr),nReaders(1),fDelete(false) {}
 	const PageAddr&		getKey() const {return start;}
@@ -264,13 +405,13 @@ typedef SyncHashTab<BlobRead,const PageAddr&,&BlobRead::list> BlobReadTab;
 
 class BigMgr
 {
-	friend	class					StreamX;
-	friend	class					Navigator;
-	StoreCtx						*const ctx;
-	BlobReadTab						blobReadTab;
-	FreeQ<DEFAULT_BLOBREAD_BLOCK,Std_Alloc<STORE_HEAP> >	freeBlob;
+	friend	class	StreamX;
+	friend	class	Navigator;
+	StoreCtx		*const ctx;
+	BlobReadTab		blobReadTab;
+	FreeQ			freeBlob;
 public:
-	BigMgr(StoreCtx *ct,ulong blobReadTabSize=DEFAULT_BLOBREADTAB_SIZE);
+	BigMgr(StoreCtx *ct,unsigned blobReadTabSize=DEFAULT_BLOBREADTAB_SIZE);
 	void *operator new(size_t s,StoreCtx *ctx) {void *p=ctx->malloc(s); if (p==NULL) throw RC_NORESOURCES; return p;}
 	bool canBePurged(const PageAddr& addr);
 };

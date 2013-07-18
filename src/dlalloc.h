@@ -270,10 +270,10 @@ typedef struct malloc_state *mstate;
 
 static long getpagesize(void);
 static long getregionsize(void);
-static void *mmap(void *ptr, long size, long prot, long type, long handle, long arg);
-static long munmap(void *ptr, long size);
-static void vminfo (unsigned long*free, unsigned long*reserved, unsigned long*committed);
-static int cpuinfo (int whole, unsigned long*kernel, unsigned long*user);
+static void *mmap(void *ptr, size_t size, long prot, long type, long handle, long arg);
+static long munmap(void *ptr, size_t size);
+static void vminfo (size_t* free, size_t* reserved, size_t *committed);
+static int cpuinfo (int whole, size_t* kernel, size_t *user);
 
 #endif
 
@@ -372,7 +372,7 @@ extern "C" {
 */
 
 #ifndef CHUNK_SIZE_T
-#define CHUNK_SIZE_T unsigned long
+#define CHUNK_SIZE_T size_t
 #endif
 
 /* 
@@ -381,7 +381,7 @@ extern "C" {
   systems, intptr_t would suffice.
 */
 #ifndef PTR_UINT
-#define PTR_UINT unsigned long
+#define PTR_UINT ptrdiff_t
 #endif
 
 
@@ -842,15 +842,13 @@ extern Void_t*     sbrk();
   you must #include your system version and #define
   HAVE_USR_INCLUDE_MALLOC_H.
 */
-#ifndef Darwin
-#ifndef WIN32
+#if !defined(__APPLE__) && !defined(WIN32) && !defined(ANDROID)
 #define HAVE_USR_INCLUDE_MALLOC_H
-#endif
 #endif
 
 #ifdef HAVE_USR_INCLUDE_MALLOC_H
 #include "/usr/include/malloc.h"
-#else
+#elif !defined(ANDROID)
 
 /* SVID2/XPG mallinfo structure */
 

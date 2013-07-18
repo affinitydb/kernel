@@ -1,6 +1,6 @@
 /**************************************************************************************
 
-Copyright © 2004-2012 VMware, Inc. All rights reserved.
+Copyright © 2004-2013 GoPivotal, Inc. All rights reserved.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -25,7 +25,7 @@ Written by Mark Venguerov 2004-2012
 #ifndef _PGHEAP_H_
 #define _PGHEAP_H_
 
-#include "txpage.h"
+#include "pagemgr.h"
 #include "utils.h"
 #include "affinity.h"
 #include "session.h"
@@ -42,17 +42,15 @@ Written by Mark Venguerov 2004-2012
 
 #define HOH_TYPEMASK		0x0003
 
-#define	HOH_TEMP_ID			0x0004
-#define	HOH_SSVS			0x0008
-#define	HOH_ISPART			0x0010
-#define	HOH_PARTS			0x0020
-#define	HOH_REPLICATED		0x0040
-#define	HOH_NOTIFICATION	0x0080
-#define	HOH_MULTIPART		0x0100
-#define	HOH_COMPACTREF		0x0200
-#define	HOH_CLASS			0x0400
-#define	HOH_NOREPLICATION	0x0800
-#define	HOH_NOINDEX			0x1000
+#define	HOH_TEMP_ID			0x0010
+#define	HOH_SSVS			0x0020
+#define	HOH_IMMUTABLE		0x0040
+#define	HOH_PARTS			0x0080
+#define	HOH_REPLICATED		0x0100
+#define	HOH_NOTIFICATION	0x0200
+#define	HOH_MULTIPART		0x0400
+#define	HOH_COMPACTREF		0x0800
+#define	HOH_NOREPLICATION	0x1000
 #define	HOH_HIDDEN			0x2000
 #define	HOH_FT				0x4000
 #define HOH_DELETED			0x8000
@@ -67,7 +65,7 @@ Written by Mark Venguerov 2004-2012
 
 #define	META_PROP_LOCAL		0x04
 
-using namespace AfyDB;
+using namespace Afy;
 
 namespace AfyKernel
 {
@@ -85,6 +83,7 @@ struct HType
 	HeapDataFmt	getFormat() const {return HeapDataFmt(type>>6);}
 	bool		isCompact() const {return (type&0xC0)==(HDF_COMPACT<<6);}
 	bool		isCollection() const {return (type&0x3f)==VT_ARRAY;}
+	bool		isCompound() const {return (unsigned)((type&0x3f)-VT_ARRAY)<=(unsigned)(VT_MAP-VT_ARRAY);}
 	bool		isString() const {return (type&0x3f)==VT_STRING;}
 	bool		isLOB() const {return (type&0x3f)==VT_STREAM;}
 	bool		canBeSSV() const {byte ty=type&0x3f; return ty>=VT_STRING && ty<=VT_URL || ty==VT_STMT || ty==VT_EXPR;}
@@ -111,7 +110,7 @@ class HeapPageMgr : public TxPage
 {
 protected:
 	friend	class	QueryPrc;
-	friend	class	PINEx;
+	friend	class	PINx;
 	friend	class	BigMgr;
 	friend	class	Stmt;
 	friend	class	Expr;
@@ -119,18 +118,24 @@ protected:
 	friend	class	StreamX;
 	friend	struct	PropMod;
 	friend	struct	PropInfo;
-	friend	struct	ModData;
+	friend	struct	ModCtx;
 	friend	class	ClassPropIndex;
 	friend	struct	ECB;
 	friend	class	NavTxDelete;
 	friend	class	Navigator;
 	friend	class	Collection;
 	friend	class	InitCollection;
+	friend	struct	EMB;
+	friend	class	MapTxDelete;
+	friend	class	Map;
+	friend	class	MMap;
+	friend	class	InitMap;
 	friend	class	PathOp;
 	friend	class	FTIndexMgr;
 	friend	class	FullScan;
 	friend	class	Session;
 	friend	class	TransOp;
+#pragma pack(2)
 	struct HeapObjHeader {
 		uint16_t		descr;
 		uint16_t		length;		// total length of all pieces on this page
@@ -155,8 +160,7 @@ protected:
 		uint16_t		cnt		:15;
 		uint16_t		fUnord	:1;
 		HeapV			start[1];
-		ushort			length() const {return (ushort)(sizeof(HeapVV)+(cnt-1)*sizeof(HeapV)+sizeof(HeapKey));}
-		ushort			lengthS() const {return (ushort)(sizeof(HeapVV)+(cnt-1)*sizeof(HeapV));}
+		ushort			length(bool fA) const {return (ushort)(sizeof(HeapVV)+(cnt-1)*sizeof(HeapV)+(fA?sizeof(HeapKey):0));}
 		const	HeapV	*find(uint32_t id,HeapV **ins=NULL) const {return BIN<HeapV,PropertyID,HeapV::HVCmp>::find(id,start,cnt,ins);}
 		const	HeapV	*findElt(uint32_t id) const {
 			if (id==STORE_FIRST_ELEMENT) return start; else if (id==STORE_LAST_ELEMENT) return &start[cnt-1];
@@ -181,12 +185,21 @@ protected:
 		uint16_t		level;
 		uint16_t		nPages;
 		HeapExtCollPage	pages[1];
+		HeapExtCollection(Session *ses) : nElements(0),keygen(ses->getStore()->getPrefix()),anchor(INVALID_PAGEID),leftmost(INVALID_PAGEID),indexID(~0u),firstID(0),lastID(0),level(0),nPages(0) {pages[0].key=0; pages[0].page=INVALID_PAGEID;}
 	};
-	static const struct HeapTypeInfo {
-		ushort			length;
-		ushort			align;
-	}					typeInfo[];
-	static const ushort	refLength[];
+	struct HeapExtMapPage {		//????
+		uint32_t		key;
+		PageID			page;
+	};
+	struct HeapExtMap {
+		uint32_t		nElements;
+		PageID			anchor;
+		PageID			leftmost;
+		uint16_t		level;
+		uint16_t		nPages;
+		HeapExtMapPage	pages[1];
+		HeapExtMap() : nElements(0),anchor(INVALID_PAGEID),leftmost(INVALID_PAGEID),level(0),nPages(0) {pages[0].key=0; pages[0].page=INVALID_PAGEID;}
+	};
 	struct HeapLOB {
 		HeapObjHeader	hdr;
 		byte			prev[PageAddrSize];
@@ -208,7 +221,6 @@ protected:
 	struct HeapPINMod {
 		uint16_t		nops;
 		uint16_t		descr;
-		uint32_t		stamp;
 		HeapPropMod		ops[1];
 	};
 	struct HeapSetFlag {
@@ -224,21 +236,18 @@ protected:
 	struct HeapPage;
 	struct HeapPIN {
 		HeapObjHeader	hdr;
-		uint16_t		stamp[2];
 		uint16_t		nProps;
-		uint8_t			lExtra;
-		uint8_t			fmtExtra;
-		ushort			headerLength() const {return sizeof(HeapPIN)+nProps*sizeof(HeapV)+lExtra;}
+		uint16_t		fmtExtra	:2;
+		uint16_t		meta		:14;
+		ushort			headerLength() const {return sizeof(HeapPIN)+nProps*sizeof(HeapV)+refLength[fmtExtra];}
 		HeapV			*getPropTab() const {return (HeapV*)(this+1);}
 		const HeapV		*findProperty(uint32_t propID,HeapV **ins=NULL) const {return BIN<HeapV,PropertyID,HeapV::HVCmp>::find(propID,(HeapV*)(this+1),nProps,ins);}
 		RC				serialize(byte *&buf,size_t& lrec,const HeapPage *hp,MemAlloc *ma,size_t len=0,bool fExpand=false) const;
 		PageAddr		*getOrigLoc() const {return (PageAddr*)((byte*)(this+1)+nProps*sizeof(HeapV));}
-		void			setOrigLoc(const PageAddr& addr) {memcpy((byte*)(this+1)+nProps*sizeof(HeapV),&addr,PageAddrSize); fmtExtra|=0x80;}
-		bool			isMigrated() const {return (fmtExtra&0x80)!=0;}
-		bool			hasRemoteID() const {return (fmtExtra&0x03)!=0;}
-		byte			*getRemoteID(HeapDataFmt& fmt) const {fmt=(HeapDataFmt)(fmtExtra&0x03); return (byte*)(this+1)+nProps*sizeof(HeapV)+((fmtExtra&0x80)!=0?PageAddrSize:0);}
-		ulong			getStamp() const {return ulong(stamp[0])<<16|stamp[1];}
-		void			advanceStamp() {ulong st=(ulong(stamp[0])<<16|stamp[1])+1; stamp[0]=ushort(st>>16); stamp[1]=ushort(st);}
+		void			setOrigLoc(const PageAddr& addr) {assert(fmtExtra<=HDF_SHORT); memcpy((byte*)(this+1)+nProps*sizeof(HeapV),&addr,PageAddrSize); fmtExtra=HDF_SHORT;}
+		bool			isMigrated() const {return fmtExtra==HDF_SHORT;}
+		bool			hasRemoteID() const {return fmtExtra>=HDF_NORMAL;}
+		byte			*getRemoteID(HeapDataFmt& fmt) const {fmt=(HeapDataFmt)fmtExtra; return (byte*)(this+1)+nProps*sizeof(HeapV);}
 		bool			getAddr(PID& id) const;
 		size_t			expLength(const byte *) const;
 	};
@@ -259,13 +268,19 @@ protected:
 		PageOff			getOffset(PageIdx idx) const {PageOff off=checkIdx(idx)?(*this)[idx]:0; return off;}
 		HeapObjHeader	*getObject(PageOff off) const {return off==0||(off&1)!=0?NULL:(HeapObjHeader*)((char*)this+off);}
 		PageOff&		operator[](PageIdx idx) const {return ((PageOff*)((byte*)this+hdr.length()-FOOTERSIZE))[-idx-1];}
-		ulong			countRefs(const HeapV *hprop) const;
-		void			getRefs(const HeapV *hprop,PID *pids,ulong xPids) const;
+		unsigned			countRefs(const HeapV *hprop) const;
+		void			getRefs(const HeapV *hprop,PID *pids,unsigned xPids) const;
 		void			getRef(PID& id,HeapDataFmt fmt,PageOff offs) const;
 	};
-	static	ushort	adjustCollection(byte *frame,HeapV *hprop,ushort sht,StoreCtx *ctx=NULL);
-	static	ushort	moveCollection(HType vt,byte *dest,PageOff doff,const byte *src,PageOff soff);
-	static	ushort	moveData(byte *dest,const byte *src,HType vt) {assert(!vt.isCollection()); ushort size=dataLength(vt,src); memcpy(dest,src,size); return size;}
+#pragma pack()
+	static const struct HeapTypeInfo {
+		ushort			length;
+		ushort			align;
+	}					typeInfo[];
+	static const ushort	refLength[4];
+	static	ushort	adjustCompound(byte *frame,HeapV *hprop,ushort sht,StoreCtx *ctx=NULL);
+	static	ushort	moveCompound(HType vt,byte *dest,PageOff doff,const byte *src,PageOff soff);
+	static	ushort	moveData(byte *dest,const byte *src,HType vt) {assert(!vt.isCompound()); ushort size=dataLength(vt,src); memcpy(dest,src,size); return size;}
 	static	ushort	collDescrSize(const HeapExtCollection *bc) {return bc==NULL?0:sizeof(HeapExtCollection)+ushort(bc->nPages>0?(bc->nPages-1)*sizeof(HeapExtCollPage):0);}
 	static	HeapExtCollection *copyDescr(const HeapExtCollection *c,MemAlloc *ma) {size_t len=collDescrSize(c); byte *p=(byte*)ma->malloc(len); if (p!=NULL) memcpy(p,c,len); return (HeapExtCollection*)p;}
 
@@ -281,16 +296,16 @@ protected:
 		};
 		HashTab<HeapPageSpace,PageID,&HeapPageSpace::list>	spaceTab;
 		HeapPageSpace										**pageTab;
-		ulong												nPages;
+		unsigned												nPages;
 		Mutex												lock;
 	public:
 		HeapSpace(MemAlloc *ma) : spaceTab(SPACE_HASH_SIZE,ma),pageTab(NULL),nPages(0) {}
 		RC		set(StoreCtx *ctx,PageID,size_t,bool fAdd=true);
 		RC		getPage(size_t size,class PBlock*& pb,HeapPageMgr *mgr);
-		ulong	find(const HeapPageSpace *hps) const {
-			assert(hps!=NULL); ulong i=0;
-			if (pageTab!=NULL) for (ulong n=nPages; n>0; ) {
-				ulong k=n>>1; const HeapPageSpace *qq=pageTab[i+k]; if (qq==hps) return i+k;
+		unsigned	find(const HeapPageSpace *hps) const {
+			assert(hps!=NULL); unsigned i=0;
+			if (pageTab!=NULL) for (unsigned n=nPages; n>0; ) {
+				unsigned k=n>>1; const HeapPageSpace *qq=pageTab[i+k]; if (qq==hps) return i+k;
 				if (qq->space<hps->space || qq->space==hps->space && qq>hps) n=k; else {i+=k+1; n-=k+1;}
 			}
 			return i;
@@ -300,14 +315,14 @@ protected:
 
 public:
 	static	size_t	contentSize(size_t lPage) {return lPage - sizeof(HeapPage) - FOOTERSIZE;}
-	static	ushort	dataLength(HType vt,const byte *pData,const byte *frame=NULL,ulong *idxMask=NULL);
-	static	ulong	getPrefix(const PID& id);
+	static	ushort	dataLength(HType vt,const byte *pData,const byte *frame=NULL,unsigned *idxMask=NULL);
+	static	unsigned	getPrefix(const PID& id);
 public:
 	HeapPageMgr(StoreCtx*,PGID);
 	virtual	~HeapPageMgr();
 	void	initPage(byte *page,size_t lPage,PageID pid);
 	bool	beforeFlush(byte *frame,size_t len,PageID pid);
-	RC		update(class PBlock *,size_t,ulong info,const byte *rec,size_t lrec,ulong flags,class PBlock *newp=NULL);
+	RC		update(class PBlock *,size_t,unsigned info,const byte *rec,size_t lrec,unsigned flags,class PBlock *newp=NULL);
 
 	class	PBlock *getPartialPage(size_t size) {class PBlock *pb=NULL; freeSpace.getPage(size,pb,this); return pb;}
 	void	reuse(PageID pid,size_t space,StoreCtx *ctx) {freeSpace.set(ctx,pid,space);}
@@ -359,9 +374,8 @@ public:
 	void	initPage(byte *page,size_t lPage,PageID pid);
 	bool	afterIO(class PBlock *,size_t lPage,bool fLoad);
 	bool	beforeFlush(byte *frame,size_t len,PageID pid);
-	RC		update(class PBlock *,size_t len,ulong info,const byte *rec,size_t lrec,ulong flags,class PBlock *newp=NULL);
-	PageID	multiPage(ulong info,const byte *rec,size_t lrec,bool& fMerge);
-	void	unchain(class PBlock *,class PBlock* =NULL);		
+	RC		update(class PBlock *,size_t len,unsigned info,const byte *rec,size_t lrec,unsigned flags,class PBlock *newp=NULL);
+	PageID	multiPage(unsigned info,const byte *rec,size_t lrec,bool& fMerge);
 	PGID	getPGID() const;
 
 //	void	getMax(PageID& pid,PageIdx& idx) {dirLock.lock(RW_S_LOCK); pid=maxPage; idx=maxIdx; dirLock.unlock();}

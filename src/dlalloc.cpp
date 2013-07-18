@@ -385,11 +385,11 @@ static Void_t* sYSMALLOc(INTERNAL_SIZE_T nb, mstate av)
   INTERNAL_SIZE_T old_size;       /* its size */
   char*           old_end;        /* its end address */
 
-  long            size;           /* arg to first MORECORE or mmap call */
-  long            minSize;        /* minimal block size for this request */
+  size_t          size;           /* arg to first MORECORE or mmap call */
+  size_t          minSize;        /* minimal block size for this request */
   char*           brk;            /* return value from MORECORE */
 
-  long            correction;     /* arg to 2nd MORECORE call */
+  size_t          correction;     /* arg to 2nd MORECORE call */
   char*           snd_brk;        /* 2nd return val */
 
   INTERNAL_SIZE_T front_misalign; /* unusable bytes at front of new space */
@@ -2290,7 +2290,7 @@ static long getregionsize (void) {
 }
 
 /* mmap for windows */
-static void *mmap (void *ptr, long size, long prot, long type, long handle, long arg) {
+static void *mmap (void *ptr, size_t size, long prot, long type, long handle, long arg) {
     static long g_pagesize;
     static long g_regionsize;
 #ifdef TRACE
@@ -2302,7 +2302,7 @@ static void *mmap (void *ptr, long size, long prot, long type, long handle, long
     if (! g_regionsize) 
         g_regionsize = getregionsize ();
     /* Assert preconditions */
-    assert ((unsigned) ptr % g_regionsize == 0);
+    assert ((ptrdiff_t) ptr % g_regionsize == 0);
     assert (size % g_pagesize == 0);
     /* Allocate this */
     ptr = VirtualAlloc (ptr, size,
@@ -2321,7 +2321,7 @@ mmap_exit:
 }
 
 /* munmap for windows */
-static long munmap (void *ptr, long size) {
+static long munmap (void *ptr, size_t size) {
     static long g_pagesize;
     static long g_regionsize;
     int rc = MUNMAP_FAILURE;
@@ -2334,7 +2334,7 @@ static long munmap (void *ptr, long size) {
     if (! g_regionsize) 
         g_regionsize = getregionsize ();
     /* Assert preconditions */
-    assert ((unsigned) ptr % g_regionsize == 0);
+    assert ((ptrdiff_t) ptr % g_regionsize == 0);
     assert (size % g_pagesize == 0);
     /* Free this */
     if (! VirtualFree (ptr, 0, 

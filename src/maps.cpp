@@ -1,6 +1,6 @@
 /**************************************************************************************
 
-Copyright © 2004-2012 VMware, Inc. All rights reserved.
+Copyright © 2004-2013 GoPivotal, Inc. All rights reserved.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -31,7 +31,7 @@ URIMgr::URIMgr(StoreCtx *ct,int hashSize,int nameHashSize,unsigned xObj) : Named
 
 CachedObject *URIMgr::create()
 {
-	return new(ctx) URI(STORE_INVALID_PROPID,*this);
+	return new(ctx) URI(STORE_INVALID_URIID,*this);
 }
 
 URI *URIMgr::insert(const char *uri)
@@ -39,6 +39,15 @@ URI *URIMgr::insert(const char *uri)
 	URIInfo info; if (uri==NULL || *uri=='\0') return NULL;
 	SInCtx::getURIFlags(uri,strlen(uri),info);
 	return (URI*)NamedObjMgr::insert(uri,&info,sizeof(URIInfo));
+}
+
+char *URIMgr::getURI(URIID uid,Session *ses)
+{
+	if (uid>STORE_MAX_URIID) return NULL;
+	URI *uri=(URI*)ObjMgr::find(uid); if (uri==NULL) return NULL;
+	const char *name=uri->getName(); char *p=NULL;
+	if (name!=NULL) p=strdup(name,ses);
+	uri->release(); return p;
 }
 
 RC URI::deserializeCachedObject(const void *buf,size_t size)
@@ -130,7 +139,8 @@ RC Identity::deserializeCachedObject(const void *buf,size_t size)
 		if (size!=sizeof(Identity::IdentityInfo)) return RC_CORRUPTED;
 		const Identity::IdentityInfo *pi=(Identity::IdentityInfo*)buf;
 		if (pi->fPwd!=0) {memcpy(pwd,pi->pwd,PWD_ENC_SIZE); fPwd=true;}
-		fMayInsert=pi->fMayInsert!=0; certificate.pageID=pi->pid; certificate.idx=pi->idx; lCert=pi->lCert; 
+		fMayInsert=pi->fMayInsert!=0; certificate.pageID=__una_get(pi->pid); 
+		certificate.idx=__una_get(pi->idx); lCert=__una_get(pi->lCert); 
 	}
 	return RC_OK; 
 }

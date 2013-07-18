@@ -1,6 +1,6 @@
 /**************************************************************************************
 
-Copyright © 2004-2012 VMware, Inc. All rights reserved.
+Copyright © 2004-2013 GoPivotal, Inc. All rights reserved.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -30,11 +30,11 @@ const char *AfyKernel::defaultEnglishStopWords[] =
 	"did", "didn't", "do", "does", "doesn't", "doing", "don't", "done", "each",
     "either", "else", "etc", "ever", "every", "for", "from", "get", "gets", "getting",
     "got", "gotten", "had","hadn't", "has", "hasn't", "have", "haven't", "having", "he", "he's", 
-	"her", "here", "here's", "hers", "herself", "hi", "him", "himself", "his", "how", "i'd", "i'll", 
+	"her", "here", "here's", "hers", "herself", "him", "himself", "his", "how", "i'd", "i'll", 
 	"i'm", "i've", "ie", "if", "in", "into", "is", "isn't", "it", "it'd", "it'll", "it's", "its", 
 	"itself", "just", "let's", "like", "mainly", "many", "may", "maybe", "me", "might", "more",
 	"much", "my", "myself", "new", "no", "non", "none", "not", "nothing", "now", "of", "off", "ok",
-	"okay", "on", "one", "only", "or", "other", "others", "ought", "our", "ours", "ourselves", "out",
+	"okay", "on", "only", "or", "other", "others", "ought", "our", "ours", "ourselves", "out",
 	"per", "same", "shall", "she", "she's", "she'll", "should", "shouldn't", "so", "some", "somebody",
 	"somehow", "someone", "something", "sometime", "sometimes", "somewhat", "somewhere", "such",
 	"th", "than", "that", "that's", "thats", "the", "their", "theirs", "them", "themselves", "then",
@@ -47,7 +47,7 @@ const char *AfyKernel::defaultEnglishStopWords[] =
 	"yourself", "yourselves",
 };
 
-ulong AfyKernel::defaultEnglishStopWordsLen()
+unsigned AfyKernel::defaultEnglishStopWordsLen()
 {
 	return sizeof(defaultEnglishStopWords)/sizeof(defaultEnglishStopWords[0]);
 }

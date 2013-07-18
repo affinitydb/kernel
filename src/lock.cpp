@@ -1,6 +1,6 @@
 /**************************************************************************************
 
-Copyright © 2004-2012 VMware, Inc. All rights reserved.
+Copyright © 2004-2013 GoPivotal, Inc. All rights reserved.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -23,11 +23,11 @@ Written by Mark Venguerov 2004-2012
 #include "buffer.h"
 #include "startup.h"
 #include "queryop.h"
-#include "affinityimpl.h"
+#include "pin.h"
 
 using namespace AfyKernel;
 
-const ulong LockMgr::lockConflictMatrix[LOCK_ALL] = {
+const unsigned LockMgr::lockConflictMatrix[LOCK_ALL] = {
 	0<<LOCK_IS|0<<LOCK_IX|0<<LOCK_SHARED|1<<LOCK_SIX|1<<LOCK_UPDATE|1<<LOCK_EXCLUSIVE,	//	IS
 	0<<LOCK_IS|0<<LOCK_IX|1<<LOCK_SHARED|1<<LOCK_SIX|1<<LOCK_UPDATE|1<<LOCK_EXCLUSIVE,	//	IX
 	0<<LOCK_IS|1<<LOCK_IX|0<<LOCK_SHARED|1<<LOCK_SIX|1<<LOCK_UPDATE|1<<LOCK_EXCLUSIVE,	//	SHARED
@@ -36,6 +36,7 @@ const ulong LockMgr::lockConflictMatrix[LOCK_ALL] = {
 	1<<LOCK_IS|1<<LOCK_IX|1<<LOCK_SHARED|1<<LOCK_SIX|1<<LOCK_UPDATE|1<<LOCK_EXCLUSIVE	//	EXCLUSIVE
 };
 
+#if 0
 LockStoreHdr LockMgr::lockStoreHdr;
 
 #ifdef WIN32
@@ -43,19 +44,12 @@ static DWORD WINAPI _lockDaemon(void *param) {((LockStoreHdr*)param)->lockDaemon
 #else
 static void *_lockDaemon(void *param) {((LockStoreHdr*)param)->lockDaemon(); return NULL;}
 #endif
+#endif
 
-LockMgr::LockMgr(StoreCtx *ct,ILockNotification *lno)
-: ctx(ct),lockNotification(lno),nFreeBlocks(0),pageVTab(VB_HASH_SIZE),topmost(NULL),oldSes(NULL),oldTimestamp(0)
+LockMgr::LockMgr(StoreCtx *ct) : ctx(ct),nFreeBlocks(0),pageVTab(VB_HASH_SIZE,(MemAlloc*)ct),topmost(NULL),oldSes(NULL),oldTimestamp(0)
 {
-	if ((lockStore=new(lockStoreHdr.freeLS.alloc(sizeof(LockStore))) LockStore(this))==NULL) throw RC_NORESOURCES;
-	InterlockedPushEntrySList(&lockStoreHdr.stores,lockStore); InitializeSListHead(&freeHeaders); InitializeSListHead(&freeGranted);
-}
-
-LockMgr::~LockMgr()
-{
-	if (lockStore!=NULL) 
-		for (LockMgr *mgr=lockStore->mgr; mgr!=NULL && 
-			!casP((void* volatile *)&lockStore->mgr,(void*)this,(void*)0); mgr=lockStore->mgr) threadYield();
+	InitializeSListHead(&freeHeaders); InitializeSListHead(&freeGranted);
+	RC rc=ct->tqMgr->add(new(ct) DLD(ct)); if (rc!=RC_OK) throw rc;
 }
 
 template<class T> inline T* LockMgr::alloc(SLIST_HEADER& sHdr)
@@ -70,11 +64,11 @@ template<class T> inline T* LockMgr::alloc(SLIST_HEADER& sHdr)
 #endif
 	freeBlocks.insertFirst(&lb->list); nFreeBlocks++; T *t0=(T*)(lb+1),*t=t0+1;
 	lb->nFree=lb->nBlocks=(FREE_BLOCK_SIZE-sizeof(LockBlock))/sizeof(T);
-	for (ulong i=1; i<lb->nBlocks; ++i,++t) InterlockedPushEntrySList(&sHdr,(SLIST_ENTRY*)t);
+	for (unsigned i=1; i<lb->nBlocks; ++i,++t) InterlockedPushEntrySList(&sHdr,(SLIST_ENTRY*)t);
 	return t0;
 }
 
-RC LockMgr::lock(LockType lt,PINEx& pe,ulong flags)
+RC LockMgr::lock(LockType lt,PINx& pe,unsigned flags)
 {
 	RC rc=RC_OK; assert(lt<LOCK_ALL);
 	Session *ses=pe.getSes(); if (ses==NULL) return RC_NOSESSION;
@@ -88,13 +82,13 @@ RC LockMgr::lock(LockType lt,PINEx& pe,ulong flags)
 		else if ((pe.tv->hdr=lh=new(alloc<LockHdr>(freeHeaders)) LockHdr(pe.tv))==NULL) return RC_NORESOURCES;
 	} else {
 		++lh->fixCount; lh->sem.lock(ses->lockReq.sem);
-		fLocked=true; ulong mask=lockConflictMatrix[lt];
+		fLocked=true; unsigned mask=lockConflictMatrix[lt];
 		for (og=(GrantedLock*)lh->grantedLocks.next; ;og=(GrantedLock*)og->next)
 			if (og==&lh->grantedLocks) {og=NULL; break;} else if (og->ses==ses) break;
-		ulong grantedCnts[LOCK_ALL]; memset(grantedCnts,0,sizeof(grantedCnts));
+		unsigned grantedCnts[LOCK_ALL]; memset(grantedCnts,0,sizeof(grantedCnts));
 		if ((gl=og)!=NULL) do {
-			ulong ty=gl->lt;
-			if (ty==(ulong)lt) {
+			unsigned ty=gl->lt;
+			if (ty==(unsigned)lt) {
 				if (ses->tx.subTxID>gl->subTxID) {mask=0; break;}
 				gl->count++; lh->grantedCnts[lt]++; --lh->fixCount;
 				lh->sem.unlock(ses->lockReq.sem); return RC_OK;
@@ -102,7 +96,6 @@ RC LockMgr::lock(LockType lt,PINEx& pe,ulong flags)
 			if ((grantedCnts[ty]+=gl->count)==lh->grantedCnts[ty]) mask&=~(1<<ty);
 		} while ((gl=gl->other)!=NULL);
 		while ((lh->grantedMask&mask)!=0) {
-			//if (lockNotification!=NULL && (rc=lockNotification->beforeWait(ses,pe.id,ILockNotification::LT_SHARED))!=RC_OK) ...
 			bool fDL=ses->releaseAllLatches()!=RC_OK; if (!fDL && !pe.pb.isNull()) pe.pb.release(ses);
 			if (fDL || ses->nLatched>0) {lh->release(this,ses->lockReq.sem); return RC_DEADLOCK;}	//  rollback???
 			lh->conflictMask|=lockConflictMatrix[lt]; ses->lockReq.lt=lt; ses->lockReq.rc=RC_REPEAT;
@@ -110,15 +103,13 @@ RC LockMgr::lock(LockType lt,PINEx& pe,ulong flags)
 			waitQLock.lock(); ses->lockReq.lh=lh; getTimestamp(ses->lockReq.stamp);
 			if (waitQ.getFirst()==NULL) {oldSes=ses; oldTimestamp=ses->lockReq.stamp;}
 			waitQ.insertFirst(&ses->lockReq.wait); waitQLock.unlock(); lh->sem.unlock(ses->lockReq.sem);
-			if (lockStoreHdr.lockDaemonThread==(HTHREAD)0) {HTHREAD h; while (createThread(_lockDaemon,&lockStoreHdr,h)==RC_REPEAT);}
 			do ses->lockReq.sem.wait(); while ((rc=ses->lockReq.rc)==RC_REPEAT);
 			assert(!ses->lockReq.wait.isInList() && ses->lockReq.lh==NULL);
-			//if (lockNotification!=NULL && (rc=lockNotification->afterWait(ses,pe.id,ILockNotification::LT_SHARED,rc))!=RC_OK) ...
 			if (rc!=RC_OK) {--lh->fixCount; if (rc==RC_DEADLOCK) ses->abortTx(); return rc;}
 			lh->sem.lock(ses->lockReq.sem);
 			if ((lh->grantedMask&mask)!=0 && (gl=og)!=NULL) {
 				memset(grantedCnts,0,sizeof(grantedCnts));
-				do {ulong ty=gl->lt; if ((grantedCnts[ty]+=gl->count)==lh->grantedCnts[ty]) mask&=~(1<<ty);}
+				do {unsigned ty=gl->lt; if ((grantedCnts[ty]+=gl->count)==lh->grantedCnts[ty]) mask&=~(1<<ty);}
 				while ((gl=gl->other)!=NULL);
 			}
 		}
@@ -133,11 +124,11 @@ RC LockMgr::lock(LockType lt,PINEx& pe,ulong flags)
 	return rc;
 }
 
-void LockMgr::releaseLocks(Session *ses,ulong subTxID,bool fAbort)
+void LockMgr::releaseLocks(Session *ses,unsigned subTxID,bool fAbort)
 {
 	for (GrantedLock *lock=ses->heldLocks; lock!=NULL && lock->subTxID>=subTxID; lock=ses->heldLocks) {
 		LockHdr *lh=lock->header; ses->heldLocks=lock->txNext; assert(ses==lock->ses);
-		lh->sem.lock(ses->lockReq.sem); ulong ty=lock->lt;
+		lh->sem.lock(ses->lockReq.sem); unsigned ty=lock->lt;
 #ifdef _DEBUG
 		for (int i=0; i<LOCK_ALL; i++) assert((lh->grantedCnts[i]==0)==((lh->grantedMask&1<<i)==0));
 		assert((lh->grantedMask&1<<ty)!=0 && lock->count>0 && lh->grantedCnts[ty]>=lock->count);
@@ -147,13 +138,13 @@ void LockMgr::releaseLocks(Session *ses,ulong subTxID,bool fAbort)
 		if ((lh->conflictMask&1<<ty)!=0) {
 			lh->conflictMask=0;
 			for (Session **ps=&lh->waiting,*ws; (ws=*ps)!=NULL; ) {
-				ulong mask=lockConflictMatrix[ws->lockReq.lt]; bool fConflict=true;
+				unsigned mask=lockConflictMatrix[ws->lockReq.lt]; bool fConflict=true;
 				if ((lh->grantedMask&mask)==0) fConflict=false;
 				else if ((1<<ty&mask)!=0) for (GrantedLock *gl=(GrantedLock*)lh->grantedLocks.next; gl!=&lh->grantedLocks; gl=(GrantedLock*)gl->next)
 					if (gl->ses==ws) {
-						ulong grantedCnts[LOCK_ALL]; memset(grantedCnts,0,sizeof(grantedCnts));
+						unsigned grantedCnts[LOCK_ALL]; memset(grantedCnts,0,sizeof(grantedCnts));
 						do {
-							ulong ty=gl->lt;
+							unsigned ty=gl->lt;
 							if ((grantedCnts[ty]+=gl->count)==lh->grantedCnts[ty]) mask&=~(1<<ty);
 						} while ((gl=gl->other)!=NULL);
 						if ((lh->grantedMask&mask)==0) fConflict=false;
@@ -207,7 +198,7 @@ void PageV::release()
 	else {mgr.pageVTab.removeNoLock(this); mgr.ctx->free(this);}
 }
 
-RC LockMgr::getTVers(PINEx& pe,TVOp tvo)
+RC LockMgr::getTVers(PINx& pe,TVOp tvo)
 {
 	assert(tvo==TVO_READ || pe.pb.isNull() || pe.pb->isXLocked() || pe.pb->isULocked());
 	if (pe.tv==NULL) {
@@ -243,7 +234,7 @@ RC LockMgr::getTVers(PINEx& pe,TVOp tvo)
 						{pv->nTV=pv->xTV=0; return RC_NORESOURCES;}
 					ins=(const TVers**)pv->vArray+sht;
 				}
-				if (ins<&pv->vArray[pv->nTV]) memmove(ins+1,ins,(byte*)&pv->vArray[pv->nTV]-(byte*)ins); *ins=pe.tv; pv->nTV++;
+				if (ins<(const TVers**)&pv->vArray[pv->nTV]) memmove(ins+1,ins,(byte*)&pv->vArray[pv->nTV]-(byte*)ins); *ins=pe.tv; pv->nTV++;
 			}
 		}
 	}
@@ -252,28 +243,14 @@ RC LockMgr::getTVers(PINEx& pe,TVOp tvo)
 
 //-------------------------------------------------------------------------------------------------
 
-void LockStoreHdr::lockDaemon()
+void DLD::processTimeRQ()
 {
-	if (!casP((void *volatile*)&lockDaemonThread,(void*)0,(void*)getThread())) return;
+	ctx->lockMgr->process();
+}
 
-	for (;;) {
-		TIMESTAMP ts1,ts2; getTimestamp(ts1);
-#ifdef _M_X64
-		for (SLIST_ENTRY **pse=NULL,*se=(SLIST_ENTRY*)((stores.HeaderX64.HeaderType!=0?stores.HeaderX64.NextEntry:stores.Header8.NextEntry)<<4); se!=NULL; se=*pse) {
-#elif defined(_M_IA64)
-		for (SLIST_ENTRY **pse=NULL,*se=(SLIST_ENTRY*)((stores.Header16.HeaderType!=0?stores.Header16.NextEntry:stores.Header8.NextEntry)<<4); se!=NULL; se=*pse) {
-#else
-		for (SLIST_ENTRY **pse=NULL,*se=stores.Next.Next; se!=NULL; se=*pse) {
-#endif
-			LockMgr *mgr=((LockStore*)se)->mgr;
-			if (mgr!=NULL && casP((void *volatile*)&((LockStore*)se)->mgr,(void*)mgr,(void*)(~0ULL))) {
-				if (mgr->oldTimestamp!=0) {getTimestamp(ts2); if ((ts2-mgr->oldTimestamp)/500000>0) RequestQueue::postRequest(mgr,mgr->ctx);}
-				((LockStore*)se)->mgr=mgr;
-			} else if (pse!=NULL) {*pse=se->Next; freeLS.dealloc(se); continue;}
-			pse=&se->Next;
-		}
-		getTimestamp(ts2); if ((ts2-ts1)/1000000==0) threadSleep(1000-long((ts2-ts1)/1000));
-	}
+void DLD::destroyTimeRQ()
+{
+	ctx->free(this);
 }
 
 void LockMgr::process()
@@ -283,7 +260,7 @@ void LockMgr::process()
 	SemData sem; ses->lockReq.back=NULL;
 	for (LockHdr *lh=NULL;;) {
 		LockHdr *lh2=ses->lockReq.lh; assert(lh2!=NULL); topmost=ses; ++lh2->fixCount; lck.set(NULL);
-		if (lh!=NULL) lh->release(this,sem); (lh=lh2)->sem.lock(sem); ulong mask=lockConflictMatrix[ses->lockReq.lt];
+		if (lh!=NULL) lh->release(this,sem); (lh=lh2)->sem.lock(sem); unsigned mask=lockConflictMatrix[ses->lockReq.lt];
 		for (GrantedLock *gl=(GrantedLock*)lh->grantedLocks.next; ;gl=(GrantedLock*)gl->next)
 			if (gl==&lh->grantedLocks || ses->lockReq.lh!=lh) {												// ses ???
 				lh->release(this,sem); lh=NULL; lck.set(&waitQLock); ses=topmost==ses?topmost=ses->lockReq.back:topmost;
@@ -297,8 +274,8 @@ void LockMgr::process()
 #ifdef _DEBUG_DEADLOCK_DETECTION
 					fprintf(stderr,"\nCycle found:\n");
 					for (s=topmost; s!=NULL; s=s->lockReq.back) {
-						fprintf(stderr,"\t\t%X(%s) <- %X: ",(ulong)*(uint64_t*)s->lockReq.lh->keybuf&0xFFFF,s->lockReq.lt==LOCK_SHARED?"r":"w",(ulong)s->getTXID());
-						for (GrantedLock *g=s->heldLocks; g!=NULL; g=g->txNext) fprintf(stderr,"%s%X(%s)",g==s->heldLocks?"":",",(ulong)*(uint64_t*)g->header->keybuf&0xFFFF,g->lt==LOCK_SHARED?"r":"w");
+						fprintf(stderr,"\t\t%X(%s) <- %X: ",(unsigned)*(uint64_t*)s->lockReq.lh->keybuf&0xFFFF,s->lockReq.lt==LOCK_SHARED?"r":"w",(unsigned)s->getTXID());
+						for (GrantedLock *g=s->heldLocks; g!=NULL; g=g->txNext) fprintf(stderr,"%s%X(%s)",g==s->heldLocks?"":",",(unsigned)*(uint64_t*)g->header->keybuf&0xFFFF,g->lt==LOCK_SHARED?"r":"w");
 						fprintf(stderr,"\n");
 					}
 					fprintf(stderr,"\n");
@@ -322,17 +299,4 @@ void LockMgr::process()
 				gl->ses->lockReq.back=ses; ses->lockReq.gl=gl; ses=gl->ses; break;
 			}
 	}
-}
-
-void LockMgr::destroy()
-{
-}
-
-void LockMgr::stopThreads()
-{
-#ifdef WIN32
-	TerminateThread(lockStoreHdr.lockDaemonThread,0);
-#else
-	if (lockStoreHdr.lockDaemonThread!=0) pthread_cancel(lockStoreHdr.lockDaemonThread);
-#endif
 }

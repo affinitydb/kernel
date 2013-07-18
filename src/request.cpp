@@ -1,6 +1,6 @@
 /**************************************************************************************
 
-Copyright © 2004-2012 VMware, Inc. All rights reserved.
+Copyright © 2004-2013 GoPivotal, Inc. All rights reserved.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -18,10 +18,11 @@ Written by Mark Venguerov 2004-2012
 
 **************************************************************************************/
 
-#include "affinityimpl.h"
+#include "pin.h"
 #include "startup.h"
+#include "request.h"
 
-using namespace	AfyDB;
+using namespace	Afy;
 using namespace AfyKernel;
 
 #define	MAX_THREADS		100
@@ -35,16 +36,22 @@ volatile long	RequestQueue::fStart = 0;
 static DWORD WINAPI callProcessRequests(void *param) {((ThreadGroup*)param)->processRequests(); return 0;}
 #else
 #include <sys/mman.h>
-#include "storeio.h"
-#ifdef Darwin
+#include "fio.h"
+#ifdef __APPLE__
 #define MAP_ANONYMOUS MAP_ANON
 #endif
 
-void *RQ_Alloc::alloc(size_t s) {
-	size_t pagesize=sysconf(_SC_PAGE_SIZE);
-	return mmap(0, s+(pagesize-1)&~(pagesize-1), PROT_READ|PROT_WRITE, MAP_PRIVATE|MAP_ANONYMOUS, -1, 0);
-}
-FreeQ<512,RQ_Alloc> ThreadGroup::freeQE;
+static class RQ_Alloc : public IMemAlloc
+{
+public:
+	void *malloc(size_t s) {
+		size_t pagesize=sysconf(_SC_PAGE_SIZE);
+		return mmap(0, s+(pagesize-1)&~(pagesize-1), PROT_READ|PROT_WRITE, MAP_PRIVATE|MAP_ANONYMOUS, -1, 0);
+	}
+	void *realloc(void*,size_t,size_t) {return NULL;}
+	void free(void *) {}
+} rq_Alloc;
+FreeQ ThreadGroup::freeQE(&rq_Alloc,512);
 static void *callProcessRequests(void *param) {((ThreadGroup*)param)->processRequests(); return NULL;}
 static sigset_t sigSIO,sigAIO;
 #endif
@@ -98,7 +105,7 @@ RC RequestQueue::addStore(StoreCtx& ctx)
 volatile static long nPendingHW = 0;
 volatile static long nThreadHW = 0;
 
-void RequestQueue::removeStore(StoreCtx& ctx,ulong timeout)
+void RequestQueue::removeStore(StoreCtx& ctx,unsigned timeout)
 {
 	if (ctx.ref!=NULL) {
 		for (long cnt=ctx.ref->cnt; !cas(&ctx.ref->cnt,cnt,long(cnt|0x80000000)); cnt=ctx.ref->cnt);

@@ -1,6 +1,6 @@
 /**************************************************************************************
 
-Copyright © 2004-2012 VMware, Inc. All rights reserved.
+Copyright © 2004-2013 GoPivotal, Inc. All rights reserved.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -28,6 +28,10 @@ Written by Mark Venguerov 2004-2012
 #include "pagemgr.h"
 #include "session.h"
 
+class IStoreNotification;
+
+namespace AfyKernel
+{
 #define	MAX_PGID		15
 #define	PGID_MASK		0x0F
 #define	PGID_SHIFT		4
@@ -41,10 +45,13 @@ Written by Mark Venguerov 2004-2012
 
 #define	DEFAULT_MAX_SS	20	/**< maximum number of snapshots */
 
-class IStoreNotification;
-
-namespace AfyKernel
+/**
+ * flags for transaction abort
+ */
+enum AbortType
 {
+	TXA_NORMAL, TXA_EXTERNAL, TXA_ALL
+};
 
 /**
  * snapshot descriptor
@@ -53,7 +60,7 @@ class Snapshot
 {
 	const TXCID		txcid;		/**< snapshot ID */
 	Snapshot		*next;		/**< next snapshot in stack */
-	ulong			txCnt;		/**< counter of r/o transactions reading this snapshot */
+	unsigned			txCnt;		/**< counter of r/o transactions reading this snapshot */
 	DLList			data;		/**< snapshot data */
 	Snapshot(TXCID txc,Snapshot *nxt) : txcid(txc),next(nxt),txCnt(0) {}
 	friend class	TxMgr;
@@ -69,33 +76,33 @@ class TxMgr
 	Mutex							lock;
 	TXID							nextTXID;
 	HChain<Session>					activeList;
-	ulong							nActive;
+	unsigned							nActive;
 	TXCID							lastTXCID;
 	Snapshot						*snapshots;
-	ulong							nSS;
-	ulong							xSS;
+	unsigned							nSS;
+	unsigned							xSS;
 public:
-					TxMgr(StoreCtx *cx,TXID startTXID=0,IStoreNotification *notItf=NULL,ulong xSnap=DEFAULT_MAX_SS);
+					TxMgr(StoreCtx *cx,TXID startTXID=0,IStoreNotification *notItf=NULL,unsigned xSnap=DEFAULT_MAX_SS);
 	void *operator	new(size_t s,StoreCtx *ctx) {void *p=ctx->malloc(s); if (p==NULL) throw RC_NORESOURCES; return p;}
 
-	RC				startTx(Session *ses,ulong,ulong);
-	RC				abortTx(Session *ses,bool fAll);
+	RC				startTx(Session *ses,unsigned,unsigned);
+	RC				abortTx(Session *ses,AbortType at);
 	RC				commitTx(Session *ses,bool fAll);
 	TXCID			assignSnapshot();
 	void			releaseSnapshot(TXCID);
 
-	RC				update(class PBlock *pb,PageMgr *,ulong info,const byte *rec=NULL,size_t lrec=0,uint32_t f=0,class PBlock *newp=NULL) const;
+	RC				update(class PBlock *pb,PageMgr *,unsigned info,const byte *rec=NULL,size_t lrec=0,uint32_t f=0,class PBlock *newp=NULL) const;
 	TXID			getLastTXID() {lock.lock(); TXID txid=++nextTXID; lock.unlock(); return txid;}
 	void			setTXID(TXID);
-	ulong			getNActive() const {return nActive;}
+	unsigned			getNActive() const {return nActive;}
 	struct LogActiveTransactions *getActiveTx(LSN&);
-	static PageMgr	*getPageMgr(ulong info,StoreCtx *ctx) {return ctx->getPageMgr(PGID(info&PGID_MASK));}
-	static bool		isMaster(ulong info) {return (info&PGID_MASK)==PGID_MASTER;}
+	static PageMgr	*getPageMgr(unsigned info,StoreCtx *ctx) {return ctx->getPageMgr(PGID(info&PGID_MASK));}
+	static bool		isMaster(unsigned info) {return (info&PGID_MASK)==PGID_MASTER;}
 
 private:
-	RC				start(Session *ses,ulong flags);
+	RC				start(Session *ses,unsigned flags);
 	RC				commit(Session *ses,bool fAll=false,bool fFlush=true);
-	RC				abort(Session *ses,bool fAll=false);
+	RC				abort(Session *ses,AbortType at=TXA_NORMAL);
 	void			cleanup(Session *ses,bool fAbort=false);
 	friend	class	Session;
 	friend	class	MiniTx;
@@ -126,9 +133,9 @@ private:
 	TXID					oldId;
 	TXID					newId;
 	TXCID					txcid;
-	ulong					state;
-	ulong					identity;
-	ulong					mtxFlags;
+	unsigned					state;
+	unsigned					identity;
+	unsigned					mtxFlags;
 	SubTx					tx;
 	LSN						firstLSN;
 	LSN						undoNextLSN;
@@ -137,7 +144,7 @@ private:
 	RW_LockType				classLocked;
 	void					cleanup(TxMgr *txMgr);
 public:
-	MiniTx(Session *s,ulong mtxf=MTX_FLUSH);
+	MiniTx(Session *s,unsigned mtxf=MTX_FLUSH);
 	~MiniTx();
 	void ok() {mtxFlags|=MTX_OK;}
 };
@@ -152,11 +159,12 @@ class TxSP
 	void	operator delete(void *p) {}
 private:
 	Session	*const	ses;
-	ulong			flags;
+	unsigned			flags;
+	unsigned			subTxID;
 public:
-	TxSP(Session *s) : ses(s),flags(0) {assert(s!=NULL);}
+	TxSP(Session *s) : ses(s),flags(0),subTxID(0) {assert(s!=NULL);}
 	~TxSP();
-	RC		start(ulong,ulong txf=0);
+	RC		start(unsigned,unsigned txf=0);
 	RC		start();
 	void	ok() {flags|=MTX_OK;}
 	void	resetOk() {flags&=~MTX_OK;}

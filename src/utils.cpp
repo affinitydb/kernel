@@ -1,6 +1,6 @@
 /**************************************************************************************
 
-Copyright © 2004-2012 VMware, Inc. All rights reserved.
+Copyright © 2004-2013 GoPivotal, Inc. All rights reserved.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -22,23 +22,13 @@ Written by Mark Venguerov 2004-2012
 #include <wchar.h>
 #include <float.h>
 #include <math.h>
+#include <stdio.h>
 #include "utils.h"
 #include "session.h"
-#include "affinityimpl.h"
+#include "pin.h"
 
-using namespace	AfyDB;
+using namespace	Afy;
 using namespace AfyKernel;
-
-CRC32 CRC32::_CRC;
-
-CRC32::CRC32()
-{
-     for (int n=0; n<256; n++) {
-		ulong c = (ulong)n;
-		for (int k=0; k<8; k++) c = c&1 ? 0xedb88320L ^ (c >> 1) : c >> 1;
-		CRCTable[n] = c;
-     }
-}
 
 const byte UTF8::slen[] = 
 {
@@ -122,7 +112,7 @@ const ushort UTF8::upperrng[] =
 	0xff21,	0xff3a, 532,	/* A-Z a-z */
 };
 
-const ulong UTF8::nupperrng = sizeof(upperrng)/(sizeof(upperrng[0]*3));
+const unsigned UTF8::nupperrng = sizeof(upperrng)/(sizeof(upperrng[0]*3));
 
 const ushort UTF8::uppersgl[] =
 {
@@ -461,7 +451,7 @@ const ushort UTF8::uppersgl[] =
 	0x1ffc, 491,	/* ? ? */
 };
 
-const ulong UTF8::nuppersgl = sizeof(uppersgl)/(sizeof(uppersgl[0]*2));
+const unsigned UTF8::nuppersgl = sizeof(uppersgl)/(sizeof(uppersgl[0]*2));
 
 const ushort UTF8::lowerrng[] =
 {
@@ -502,7 +492,7 @@ const ushort UTF8::lowerrng[] =
 	0xff41,	0xff5a, 468,	/* a-z A-Z */
 };
 
-const ulong UTF8::nlowerrng = sizeof(lowerrng)/(sizeof(lowerrng[0]*3));
+const unsigned UTF8::nlowerrng = sizeof(lowerrng)/(sizeof(lowerrng[0]*3));
 
 const ushort UTF8::lowersgl[] =
 {
@@ -848,7 +838,7 @@ const ushort UTF8::lowersgl[] =
 	0x1ff3, 509,	/* ? ? */
 };
 
-const ulong UTF8::nlowersgl = sizeof(lowersgl)/(sizeof(lowersgl[0]*2));
+const unsigned UTF8::nlowersgl = sizeof(lowersgl)/(sizeof(lowersgl[0]*2));
 
 const ushort UTF8::otherrng[] = 
 {
@@ -1006,7 +996,7 @@ const ushort UTF8::otherrng[] =
 	0xffda,	0xffdc,	/* ? - ? */
 };
 
-const ulong UTF8::notherrng = sizeof(otherrng)/(sizeof(otherrng[0]*2));
+const unsigned UTF8::notherrng = sizeof(otherrng)/(sizeof(otherrng[0]*2));
 
 const ushort UTF8::othersgl[] = 
 {
@@ -1044,7 +1034,7 @@ const ushort UTF8::othersgl[] =
 	0xfe74,	/* ? */
 };
 
-const ulong UTF8::nothersgl = sizeof(othersgl)/sizeof(othersgl[0]);
+const unsigned UTF8::nothersgl = sizeof(othersgl)/sizeof(othersgl[0]);
 
 const ushort UTF8::spacerng[] =
 {
@@ -1057,14 +1047,14 @@ const ushort UTF8::spacerng[] =
 	0xfeff,	0xfeff,	/* ? */
 };
 
-const ulong UTF8::nspacerng = sizeof(spacerng)/(sizeof(spacerng[0])*2);
+const unsigned UTF8::nspacerng = sizeof(spacerng)/(sizeof(spacerng[0])*2);
 
 char *AfyKernel::forceCaseUTF8(const char *str,size_t ilen,uint32_t& olen,MemAlloc *ma,char *extBuf,bool fUpper)
 {
 	const byte *in=(byte*)str,*end=in+(extBuf==NULL||ilen<olen?ilen:olen); byte ch;
 	const byte mch=fUpper?'a':'A',nch='Z'-'A';
 	while (in<end && byte((ch=*in)-mch)>nch && ch<0x80) in++;
-	size_t l=in-(byte*)str; ulong wch; bool fAlc=false;
+	size_t l=in-(byte*)str; unsigned wch; bool fAlc=false;
 	if (extBuf==NULL) {
 		if (l>=ilen && ma==NULL) return (char*)str;
 		if ((fAlc=true,extBuf=(char*)ma->malloc(olen=uint32_t(ilen)))==NULL) return NULL;
@@ -1088,10 +1078,10 @@ char *AfyKernel::forceCaseUTF8(const char *str,size_t ilen,uint32_t& olen,MemAll
 #define	TN_NEXP	0x0008
 #define	TN_FLT	0x0010
 
-RC AfyKernel::strToNum(const char *str,size_t lstr,Value& res,const char **pend,bool fInt)
+RC Session::strToNum(const char *str,size_t lstr,Value& res,const char **pend,bool fInt)
 {
 	try {
-		ulong flags=0; int exp=0,dpos=0; byte ch; const char *const end=str+lstr; Units units=Un_NDIM;
+		unsigned flags=0; int exp=0,dpos=0; byte ch; const char *const end=str+lstr; Units units=Un_NDIM;
 		for (;;++str) if (str>=end) return RC_SYNTAX; else if (!isspace((byte)*str)) break;	// iswspace??? -> skipSpace()
 		if (*str=='+') ++str; else if (*str=='-') flags|=TN_NEG,++str;
 		if (str>=end) return RC_SYNTAX;
@@ -1208,7 +1198,7 @@ RC AfyKernel::strToNum(const char *str,size_t lstr,Value& res,const char **pend,
 	} catch (RC rc) {return rc;} catch (...) {return RC_SYNTAX;}		// ???
 }
 
-RC AfyKernel::strToTimestamp(const char *p,size_t l,TIMESTAMP& res)
+RC Session::strToTimestamp(const char *p,size_t l,TIMESTAMP& res) const
 {
 	DateTime dt; memset(&dt,0,sizeof(dt));
 	if (l<10 || !isD(p[0]) || !isD(p[1]) || !isD(p[2]) || !isD(p[3]) || p[4]!='-'
@@ -1233,10 +1223,10 @@ RC AfyKernel::strToTimestamp(const char *p,size_t l,TIMESTAMP& res)
 			}
 		}
 	}
-	return convDateTime(NULL,dt,res);
+	return convDateTime(dt,res);
 }
 
-RC AfyKernel::strToInterval(const char *p,size_t l,int64_t& res)
+RC Session::strToInterval(const char *p,size_t l,int64_t& res)
 {
 	if (p==NULL || l==0) return RC_INVPARAM;
 	const char *const end=p+l; int64_t v; int i; bool fNeg=false;
@@ -1264,16 +1254,16 @@ RC AfyKernel::strToInterval(const char *p,size_t l,int64_t& res)
 	res=fNeg?-v:v; return RC_OK;
 }
 
-RC AfyKernel::convDateTime(Session *ses,TIMESTAMP ts,char *buf,int& l,bool fUTC)
+RC Session::convDateTime(TIMESTAMP ts,char *buf,size_t& l,bool fUTC) const
 {
 	RC rc; DateTime dt;
-	if ((rc=convDateTime(ses,ts,dt,fUTC))!=RC_OK) return rc;
+	if ((rc=convDateTime(ts,dt,fUTC))!=RC_OK) return rc;
 	l=sprintf(buf,DATETIMEFORMAT,dt.year,dt.month,dt.day,dt.hour,dt.minute,dt.second);
 	if (dt.microseconds!=0) l+=sprintf(buf+l,FRACTIONALFORMAT,dt.microseconds);
 	return RC_OK;
 }
 
-RC AfyKernel::convInterval(int64_t it,char *buf,int& l)
+RC Session::convInterval(int64_t it,char *buf,size_t& l)
 {
 	const bool fNeg=it<0; if (fNeg) it=-it;
 	l=sprintf(buf,"%s"INTERVALFORMAT,fNeg?"-":"",(int)(it/3600000000LL),(int)(it/60000000)%60,(int)(it/1000000)%60);
@@ -1281,9 +1271,9 @@ RC AfyKernel::convInterval(int64_t it,char *buf,int& l)
 	return RC_OK;
 }
 
-RC AfyKernel::convDateTime(Session *ses,TIMESTAMP dt,DateTime& dts,bool fUTC)
+RC Session::convDateTime(TIMESTAMP dt,DateTime& dts,bool fUTC) const
 {
-	dt-=TS_DELTA; if (!fUTC && ses!=NULL) dt-=ses->tzShift;
+	dt-=TS_DELTA; if (!fUTC) dt-=tzShift;
 	dts.microseconds	= (uint32_t)(dt%1000000ul);
 #ifdef WIN32
 	ULARGE_INTEGER ul; FILETIME ft; SYSTEMTIME st;
@@ -1310,7 +1300,7 @@ RC AfyKernel::convDateTime(Session *ses,TIMESTAMP dt,DateTime& dts,bool fUTC)
 	return RC_OK;
 }
 
-RC AfyKernel::convDateTime(Session *ses,const DateTime& dts,uint64_t& dt,bool fUTC)
+RC Session::convDateTime(const DateTime& dts,TIMESTAMP& dt,bool fUTC) const
 {
 #ifdef WIN32
 	ULARGE_INTEGER ul; FILETIME ft; SYSTEMTIME st;
@@ -1337,11 +1327,11 @@ RC AfyKernel::convDateTime(Session *ses,const DateTime& dts,uint64_t& dt,bool fU
 	time_t t=timegm(&tt); if (t==(time_t)(-1)) return RC_INVPARAM;
 	dt=uint64_t(t)*1000000ul+dts.microseconds;
 #endif
-	dt+=TS_DELTA; if (!fUTC && ses!=NULL) dt+=ses->tzShift;
+	dt+=TS_DELTA; if (!fUTC) dt+=tzShift;
 	return RC_OK;
 }
 
-RC AfyKernel::getDTPart(TIMESTAMP dt,unsigned& res,int part)
+RC Session::getDTPart(TIMESTAMP dt,unsigned& res,int part)
 {
 	dt-=TS_DELTA; if (part==0) {res=dt%1000000; return RC_OK;}
 #ifdef WIN32
@@ -1379,23 +1369,23 @@ RC AfyKernel::getDTPart(TIMESTAMP dt,unsigned& res,int part)
 
 RC PageSet::add(PageID from,PageID to)
 {
-	PageSetChunk *pc=chunks,*end=&chunks[nChunks]; ulong npg=to-from+1; assert(to>=from);
+	PageSetChunk *pc=chunks,*end=&chunks[nChunks]; unsigned npg=to-from+1; assert(to>=from);
 	if (pc!=NULL && nChunks>0) {
 		if (pc[0].from>=from && end[-1].to<=to) {
-			for (ulong i=0; i<nChunks; i++) if (chunks[i].bmp!=NULL) ma->free(chunks[i].bmp);
+			for (unsigned i=0; i<nChunks; i++) if (chunks[i].bmp!=NULL) ma->free(chunks[i].bmp);
 			nChunks=0; nPages=0;
 		} else {
-			for (ulong n=nChunks; n>0;) {
-				ulong k=n>>1; PageSetChunk &ch=pc[k];
+			for (unsigned n=nChunks; n>0;) {
+				unsigned k=n>>1; PageSetChunk &ch=pc[k];
 				if (ch.from>to) n=k; else if (ch.to<from) {pc=&ch+1; n-=k+1;} else {pc=&ch; break;}
 			}
 			if (pc<end && pc->from<=from && pc->to>=to) {
 				if (pc->bmp!=NULL) {
 					if (pc->from==from && pc->to==to) {
 						assert(npg>=pc->npg); ma->free(pc->bmp); pc->bmp=NULL; nPages+=npg-pc->npg; pc->npg=npg;
-					} else for (ulong idx0=from/SZ_BMP-pc->from/SZ_BMP,end=to/SZ_BMP-pc->from/SZ_BMP,idx=idx0; idx<=end; idx++) {
-						ulong mask=idx==end?(1<<(to%SZ_BMP+1))-1:~0u; if (idx==idx0) mask&=~((1<<from%SZ_BMP)-1);
-						ulong d=AfyKernel::pop((pc->bmp[idx]^mask)&mask); pc->bmp[idx]|=mask; pc->npg+=d; nPages+=d;
+					} else for (unsigned idx0=from/SZ_BMP-pc->from/SZ_BMP,end=to/SZ_BMP-pc->from/SZ_BMP,idx=idx0; idx<=end; idx++) {
+						unsigned mask=idx==end?(1<<(to%SZ_BMP+1))-1:~0u; if (idx==idx0) mask&=~((1<<from%SZ_BMP)-1);
+						unsigned d=Afy::pop((pc->bmp[idx]^mask)&mask); pc->bmp[idx]|=mask; pc->npg+=d; nPages+=d;
 					}
 				}
 #ifdef _DEBUG
@@ -1409,7 +1399,7 @@ RC PageSet::add(PageID from,PageID to)
 			assert(prev>=chunks||next<end);
 			if ((pc=prev+1)<next) {
 				for (PageSetChunk *p=pc; p<next; p++) {assert(nPages>=p->npg); nPages-=p->npg; if (p->bmp!=NULL) ma->free(p->bmp);}
-				if (next<end) memmove(pc,next,(byte*)end-(byte*)next); nChunks-=ulong(next-pc); next=pc;
+				if (next<end) memmove(pc,next,(byte*)end-(byte*)next); nChunks-=unsigned(next-pc); next=pc;
 			}
 			assert(prev+1==next);
 			if (prev>=chunks) {
@@ -1426,11 +1416,11 @@ RC PageSet::add(PageID from,PageID to)
 							// from=prev->to+1; npg=to-from+1; goto add_chunk;
 						}
 					}
-					ulong d=to-prev->to; prev->npg+=d; nPages+=d; prev->to=to;
+					unsigned d=to-prev->to; prev->npg+=d; nPages+=d; prev->to=to;
 					if (next<end && prev->to+1>=next->from) {
 						if (prev->bmp==NULL) {
 							if (next->bmp==NULL) {
-								ulong overlap=prev->to>=next->from?prev->to-next->from+1:0;
+								unsigned overlap=prev->to>=next->from?prev->to-next->from+1:0;
 								prev->npg+=next->npg-overlap; nPages-=overlap; prev->to=next->to;
 								if (next+1<end) memmove(next,next+1,(byte*)end-(byte*)(next+1));
 								nChunks--;
@@ -1469,7 +1459,7 @@ RC PageSet::add(PageID from,PageID to)
 							// to=next->from-1; npg=to-from+1; goto add_chunk;
 						}
 					}
-					ulong d=next->from-from; next->npg+=d; nPages+=d; next->from=from;
+					unsigned d=next->from-from; next->npg+=d; nPages+=d; next->from=from;
 #ifdef _DEBUG
 					test();
 #endif
@@ -1507,8 +1497,8 @@ RC PageSet::add(const PageSet& rhs)
 
 RC PageSet::operator-=(PageID pid)
 {
-	for (ulong n=nChunks,base=0; n>0;) {
-		ulong k=n>>1; PageSetChunk &ch=chunks[base+k];
+	for (unsigned n=nChunks,base=0; n>0;) {
+		unsigned k=n>>1; PageSetChunk &ch=chunks[base+k];
 		if (ch.from>pid) n=k; else if (ch.to<pid) {base+=k+1; n-=k+1;}
 		else {
 			if (ch.to==ch.from) {
@@ -1519,7 +1509,7 @@ RC PageSet::operator-=(PageID pid)
 				else if (ch.to==pid) {ch.to--; ch.npg--;}
 				else //if (ch.to/SZ_BMP-ch.from/SZ_BMP+1<sizeof(PageSetChunk)/sizeof(uint32_t)) {
 					//if ((ch.bmp=(uint32_t*)malloc((ch.to/SZ_BMP-ch.from/SZ_BMP+1)*sizeof(uint32_t),alloc))==NULL) return RC_NORESOURCES;
-					//for (ulong idx=0,end=ch.to/SZ_BMP-ch.from/SZ_BMP,idx0=pid/SZ_BMP-ch.from/SZ_BMP,u; idx<=end; idx++)
+					//for (unsigned idx=0,end=ch.to/SZ_BMP-ch.from/SZ_BMP,idx0=pid/SZ_BMP-ch.from/SZ_BMP,u; idx<=end; idx++)
 					//	{u=idx==end?(1<<(ch.to%SZ_BMP+1))-1:~0u; if (idx==0) u&=~((1<<ch.from%SZ_BMP)-1); if (idx==idx0) u&=~(1<<pid%SZ_BMP); ch.bmp[idx]=u;}
 				//} else 
 				{
@@ -1537,12 +1527,12 @@ RC PageSet::operator-=(PageID pid)
 				assert(ch.npg>1);
 				if (ch.npg==2) {ma->free(ch.bmp); ch.bmp=NULL; if (ch.to==pid) ch.to=ch.from; else ch.from=ch.to;}
 				else if (ch.to==pid) {
-					ulong idx=pid/SZ_BMP-ch.from/SZ_BMP,end=idx;
+					unsigned idx=pid/SZ_BMP-ch.from/SZ_BMP,end=idx;
 					for (ch.bmp[idx]&=~(1<<pid%SZ_BMP); ch.bmp[idx]==0; idx--) assert(idx>0);
 					ch.to=ch.from-ch.from%SZ_BMP+idx*SZ_BMP+(SZ_BMP-1-nlz(ch.bmp[idx]));
 					if (end-idx>10) ch.bmp=(uint32_t*)ma->realloc(ch.bmp,(idx+1)*sizeof(uint32_t));
 				} else {
-					ulong idx=0,end=ch.to/SZ_BMP-ch.from/SZ_BMP;
+					unsigned idx=0,end=ch.to/SZ_BMP-ch.from/SZ_BMP;
 					for (ch.bmp[0]&=~(1<<pid%SZ_BMP); ch.bmp[idx]==0; idx++) assert(idx+1<=end);
 					ch.from=ch.from-ch.from%SZ_BMP+idx*SZ_BMP+ntz(ch.bmp[idx]);
 					if (idx>0) memmove(&ch.bmp[0],&ch.bmp[idx],(end-idx+1)*sizeof(uint32_t));
@@ -1567,7 +1557,7 @@ RC PageSet::operator-=(const PageSet& rhs)
 	return RC_INTERNAL;
 }
 
-RC PageSet::remove(const PageID *pages,ulong npg)
+RC PageSet::remove(const PageID *pages,unsigned npg)
 {
 	//...
 	return RC_INTERNAL;
@@ -1581,7 +1571,7 @@ PageID PageSet::pop()
 		if (pc->bmp!=NULL) {
 			if (pc->npg<=2) {ma->free(pc->bmp); pc->bmp=NULL; if (pc->npg==1) --nChunks; else pc->to=pc->from;}
 			else {
-				ulong idx=pc->to/SZ_BMP-pc->from/SZ_BMP,idx0=idx; pc->bmp[idx]&=~(1<<pc->to%SZ_BMP);
+				unsigned idx=pc->to/SZ_BMP-pc->from/SZ_BMP,idx0=idx; pc->bmp[idx]&=~(1<<pc->to%SZ_BMP);
 				while (pc->bmp[idx]==0) {assert(idx>0); idx--;}
 				pc->to=pc->from-pc->from%SZ_BMP+idx*SZ_BMP+(SZ_BMP-1-nlz(pc->bmp[idx]));
 				if (idx0-idx>10) pc->bmp=(uint32_t*)ma->realloc(pc->bmp,(idx+1)*sizeof(uint32_t));
@@ -1596,14 +1586,14 @@ PageID PageSet::pop()
 
 void PageSet::test() const
 {
-	ulong cnt=0;
+	unsigned cnt=0;
 	assert(nChunks<=xChunks); assert((nPages==0)==(nChunks==0)); 
-	if (chunks!=NULL && nChunks>0) for (ulong i=0; i<nChunks; i++) {
+	if (chunks!=NULL && nChunks>0) for (unsigned i=0; i<nChunks; i++) {
 		const PageSetChunk &ch=chunks[i]; cnt+=ch.npg;
 		assert(ch.to>=ch.from);
 		if (ch.bmp!=NULL) {
-			ulong cnt2=0; assert(ch.to>ch.from);
-			for (ulong i=0,j=ch.to/SZ_BMP-ch.from/SZ_BMP; i<=j; i++) cnt2+=AfyKernel::pop(ch.bmp[i]);
+			unsigned cnt2=0; assert(ch.to>ch.from);
+			for (unsigned i=0,j=ch.to/SZ_BMP-ch.from/SZ_BMP; i<=j; i++) cnt2+=Afy::pop(ch.bmp[i]);
 			assert(cnt2==ch.npg);
 		} else assert(ch.npg==ch.to-ch.from+1);
 		if (i!=0) assert(chunks[i-1].to<ch.from);

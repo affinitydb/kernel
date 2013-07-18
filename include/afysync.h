@@ -1,6 +1,6 @@
 /**************************************************************************************
 
-Copyright © 2004-2012 VMware, Inc. All rights reserved.
+Copyright © 2004-2013 GoPivotal, Inc. All rights reserved.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -22,39 +22,75 @@ Written by Mark Venguerov, Max Windish, Michael Andronov 2004-2012
  * synchronisation functions and data structures
  * partially platform dependent
  */
-#ifndef _SYNC_H_
-#define _SYNC_H_
+#ifndef _AFYSYNC_H_
+#define _AFYSYNC_H_
 
-#include "types.h"
+#include "affinity.h"
+#include <stdlib.h>
 
-#ifdef __arm__
+using namespace Afy;
+
+#ifdef WIN32
+	#ifndef _WIN32_WINNT
+		#define _WIN32_WINNT 0x0600
+	#endif
+	#ifndef WIN32_LEAN_AND_MEAN
+		#define WIN32_LEAN_AND_MEAN
+	#endif
+	#include <windows.h>
+	typedef HANDLE			HTHREAD;
+	typedef	DWORD			THREADID;
+	#define	getThreadId()	GetCurrentThreadId()
+	inline	HTHREAD	getThread() {return GetCurrentThread();}
+	inline	int				getNProcessors() {SYSTEM_INFO si; GetSystemInfo(&si); return si.dwNumberOfProcessors;}
+	#define THREAD_SIGNATURE DWORD WINAPI
+	#define	WAIT_SPIN_COUNT	18					/**< threshold between spin count and wait queue */
+	#define	SPIN_COUNT		1000				/**< number of cycles before testing for lock in spin mode */
+#else
+	#include <pthread.h>
+	#include <semaphore.h>
+	#include <unistd.h>
+	#include <errno.h>
+	#include <sys/time.h>
+	#ifdef __APPLE__
+		#include <TargetConditionals.h>
+		#include <mach/mach.h>
+	#else
+		#include <malloc.h>
+		#include <new>
+	#endif
+	typedef pthread_t		HTHREAD;
+	typedef	pthread_t		THREADID;
+	#define	getThreadId()	pthread_self()
+	inline	HTHREAD			getThread() {return pthread_self();}
+	inline	int				getNProcessors() {return (int)sysconf(_SC_NPROCESSORS_ONLN);}
+	#define THREAD_SIGNATURE void *
+	#define	WAIT_SPIN_COUNT	18					/**< threshold between spin count and wait queue */
+	#define	SPIN_COUNT		1000				/**< number of cycles before testing for lock in spin mode */
+#endif
+
+#if defined __arm__ && !defined __llvm__
 extern "C" {
 bool __sync_bool_compare_and_swap_8(volatile void* destination, long long unsigned comperand, long long unsigned exchange);		// on ARM this function doesn't exists and implemented via assembler
 }
 #endif
 
-#ifdef Darwin
+#ifdef __APPLE__
+extern "C" {
+#if defined __x86_64__
+bool __sync_bool_compare_and_swap_16(volatile __uint128_t * destination, __uint128_t comperand, __uint128_t exchange);			// on ARM this function doesn't exists and implemented via assembler
+
+#else
 /* !!! Warning !!!
 At this point of time, the code for OSX is compiled in 64bit mode only. 
 For 32-bit mode, the  ...swap_8() function may be needed...
 */
-extern "C" {
-bool __sync_bool_compare_and_swap_16(volatile __uint128_t * destination, __uint128_t comperand, __uint128_t exchange);			// on ARM this function doesn't exists and implemented via assembler
+#endif
 }
 #endif
 
-namespace AfyKernel
+namespace Afy
 {
-
-#ifdef WIN32
-	#define THREAD_SIGNATURE DWORD WINAPI
-	#define	WAIT_SPIN_COUNT	18					/**< threshold between spin count and wait queue */
-	#define	SPIN_COUNT		1000				/**< number of cycles before testing for lock in spin mode */
-#else
-	#define THREAD_SIGNATURE void *
-	#define	WAIT_SPIN_COUNT	18					/**< threshold between spin count and wait queue */
-	#define	SPIN_COUNT		1000				/**< number of cycles before testing for lock in spin mode */
-#endif
 
 /**
  * platform dependent wait functions
@@ -76,7 +112,7 @@ inline void threadsWaitFor(int pNumThreads, HTHREAD * pThreads)
  * for non-blocking lists standard InterlockedSList functions are used
  */
 template<typename T> __forceinline bool cas(volatile T *ptr,T oldV,T newV) {return InterlockedCompareExchange(ptr,newV,oldV)==oldV;}
-template<typename T> __forceinline bool casP(T *volatile *ptr,T *oldV,T *newV) {return InterlockedCompareExchangePointer(ptr,newV,oldV)==oldV;}
+template<typename T> __forceinline bool casP(T *volatile *ptr,T *oldV,T *newV) {return InterlockedCompareExchangePointer((volatile PVOID *)ptr,newV,oldV)==oldV;}
 template<typename T> __forceinline T casV(volatile T *ptr,T oldV,T newV) {return InterlockedCompareExchange(ptr,newV,oldV);}
 #elif !defined(__arm__)
 /**
@@ -87,49 +123,6 @@ template<typename T> __forceinline T casV(volatile T *ptr,T oldV,T newV) {return
 #define	casV(a,b,c)									__sync_val_compare_and_swap(a,b,c)
 #define	InterlockedIncrement(a)						__sync_add_and_fetch(a,1)
 #define	InterlockedDecrement(a)						__sync_sub_and_fetch(a,1)
-/**
- * non-blocking list implementation using cas() functions for Linux and OSX
- * names are preserved from WIN32 API
- */
-struct SLIST_ENTRY
-{
-	SLIST_ENTRY		*Next;
-};
-union SLIST_HEADER {
-#ifdef __x86_64__
-	volatile __uint128_t dword;
-    struct {
-        SLIST_ENTRY	Next;
-		volatile uint64_t cnt;
-    };
-#else
-	volatile uint64_t dword;
-    struct {
-        SLIST_ENTRY	Next;
-		volatile uint32_t cnt;
-    };
-#endif
-};
-
-inline void InitializeSListHead(SLIST_HEADER *head)
-{
-	head->dword=0;
-}
-inline void InterlockedPushEntrySList(SLIST_HEADER *pHeader,SLIST_ENTRY *entry)
-{
-	SLIST_HEADER nHdr,oHdr; nHdr.Next.Next=entry;
-	do {oHdr.dword=pHeader->dword; nHdr.cnt=oHdr.cnt+1; entry->Next=oHdr.Next.Next;}
-	while (!__sync_bool_compare_and_swap(&pHeader->dword,oHdr.dword,nHdr.dword));
-}
-inline SLIST_ENTRY *InterlockedPopEntrySList(SLIST_HEADER *pHeader)
-{
-	SLIST_HEADER nHdr,oHdr; SLIST_ENTRY *pe;
-	do {
-		oHdr.dword=pHeader->dword; if ((pe=oHdr.Next.Next)==NULL) return NULL;
-		nHdr.cnt=oHdr.cnt+1; nHdr.Next.Next=pe->Next;
-	} while (!__sync_bool_compare_and_swap(&pHeader->dword,oHdr.dword,nHdr.dword));
-	return pe;
-}
 #else		//__arm__
 /**
  * ARM compare-and-swap functions use the same names as glibc but implemented in assembler
@@ -139,40 +132,6 @@ inline SLIST_ENTRY *InterlockedPopEntrySList(SLIST_HEADER *pHeader)
 #define	casV(a,b,c)									__sync_val_compare_and_swap(a,b,c)
 #define	InterlockedIncrement(a)						__sync_add_and_fetch(a,1)
 #define	InterlockedDecrement(a)						__sync_sub_and_fetch(a,1)
-/**
- * non-blocking list implementation using cas() functions for ARM
- */
-struct SLIST_ENTRY
-{
-	SLIST_ENTRY		*Next;
-};
-union SLIST_HEADER {
-	volatile uint64_t dword;
-    struct {
-        SLIST_ENTRY	Next;
-		volatile uint32_t cnt;
-    };
-}__attribute__((aligned(16)));
-
-inline void InitializeSListHead(SLIST_HEADER *head)
-{
-	head->dword=0;
-}
-inline void InterlockedPushEntrySList(SLIST_HEADER *pHeader,SLIST_ENTRY *entry)
-{
-	SLIST_HEADER nHdr,oHdr; nHdr.Next.Next=entry;
-	do {oHdr.dword=pHeader->dword; nHdr.cnt=oHdr.cnt+1; entry->Next=oHdr.Next.Next;}
-	while (!__sync_bool_compare_and_swap(&pHeader->dword,oHdr.dword,nHdr.dword));
-}
-inline SLIST_ENTRY *InterlockedPopEntrySList(SLIST_HEADER *pHeader)
-{
-	SLIST_HEADER nHdr,oHdr; SLIST_ENTRY *pe;
-	do {
-		oHdr.dword=pHeader->dword; if ((pe=oHdr.Next.Next)==NULL) return NULL;
-		nHdr.cnt=oHdr.cnt+1; nHdr.Next.Next=pe->Next;
-	} while (!__sync_bool_compare_and_swap(&pHeader->dword,oHdr.dword,nHdr.dword));
-	return pe;
-}
 #endif
 
 /**
@@ -182,7 +141,7 @@ inline void threadYield()
 {
 	#ifdef WIN32
 		::SwitchToThread();
-	#elif defined(Darwin)
+	#elif defined(__APPLE__)
 		::sched_yield();
 	#else
 		::pthread_yield();
@@ -204,16 +163,15 @@ inline void threadSleep(long pMilli)
 /**
  * spin counter for spin locks
  */
-struct SpinC {
-	const long	spinCount;
-	SpinC() : spinCount(getNProcessors()>1?SPIN_COUNT:0) {}
-	static SpinC SC;
+class AFY_EXP SC {
+public:
+	static long getSC();
 };
 
 /**
  * semaphore data used for queue of threads waiting for resource
  */
-struct SemData {
+struct AFY_EXP SemData {
 	SemData		*next;
 #ifdef WIN32
 	/**
@@ -225,8 +183,8 @@ struct SemData {
 	~SemData()	{detach();}
 	void		detach() {if (thread!=0) {CloseHandle(thread); thread=0;}}
 	void		wait() {if (thread==0) {HANDLE hProc=GetCurrentProcess(); DuplicateHandle(hProc,GetCurrentThread(),hProc,&thread,THREAD_SUSPEND_RESUME,FALSE,0);} SuspendThread(thread);}
-	void		wakeup() {for (long spinCount=SpinC::SC.spinCount; thread==(HTHREAD)0||ResumeThread(thread)!=1;) if (--spinCount<0) threadYield();}
-#elif defined(Darwin)
+	void		wakeup() {for (long spinCount=SC::getSC(); thread==(HTHREAD)0||ResumeThread(thread)!=1;) if (--spinCount<0) threadYield();}
+#elif defined(__APPLE__)
 	//OS X does not support un-named pthread semaphores. The named phtread semaphores are implemented on base of MACH semaphores... 
 	semaphore_t machsem;
 	SemData() {kern_return_t kr;
@@ -254,7 +212,7 @@ struct SemData {
  * simple semaphore implementation
  * no protection against long waits as any random thread is woken up when resource becomes available
  */
-class SimpleSem
+class AFY_EXP SimpleSem
 {
 	SemData* volatile	chain;
 public:
@@ -268,7 +226,7 @@ public:
 /**
  * variation of simple semaphore
  */
-class SimpleSemNC
+class AFY_EXP SimpleSemNC
 {
 	SemData* volatile	chain;
 public:
@@ -284,7 +242,7 @@ public:
  * semaphore implementation with ordered waiting queue
  * protected against long waits but more overhead than simple semaphore
  */
-class Semaphore
+class AFY_EXP Semaphore
 {
 	SemData*	volatile	chain;
 	SemData*	volatile	owner;
@@ -300,7 +258,7 @@ public:
 /**
  * platform-dependent Mutex implementation
  */
-class Mutex
+class AFY_EXP Mutex
 {
 #ifdef WIN32
 	CRITICAL_SECTION	CS;
@@ -311,7 +269,7 @@ public:
 	void lock() {EnterCriticalSection(&CS);}
 	bool trylock() {return TryEnterCriticalSection(&CS)!=0;}
 	void unlock() {LeaveCriticalSection(&CS);}
-#elif defined(POSIX)
+#else
 	pthread_mutex_t				mutex;
 	static volatile long		fInit;
 	static pthread_mutexattr_t	mutexAttrs;
@@ -329,19 +287,19 @@ public:
  * Mutex holder
  * releases Mutex when goes out of scope
  */
-class MutexP
+class AFY_EXP MutexP
 {
 	Mutex	*lock;
 public:
 	MutexP(Mutex *m=NULL) : lock(m) {if (m!=NULL) m->lock();}
 	~MutexP() {if (lock!=NULL) lock->unlock();}
-	void set(Mutex *m) {if (lock!=NULL) lock->unlock(); if ((lock=m)!=NULL) m->lock();}
+	void set(Mutex *m) {if (lock!=m) {if (lock!=NULL) lock->unlock(); if ((lock=m)!=NULL) m->lock();}}
 };
 
 /**
  * Spin lock implementation
  */
-class SLock
+class AFY_EXP SLock
 {
 	volatile	long	count;
 #ifdef _DEBUG
@@ -350,7 +308,7 @@ class SLock
 public:
 	SLock() : count(0) {}
 	void lock() {
-		for (long spinCount=SpinC::SC.spinCount; !cas(&count,0L,1L); ) if (--spinCount<0) threadYield();
+		for (long spinCount=SC::getSC(); !cas(&count,0L,1L); ) if (--spinCount<0) threadYield();
 #ifdef _DEBUG
 		threadID=getThreadId();
 #endif
@@ -365,49 +323,54 @@ public:
  * supports waits with timeouts
  * platform-dependent implementation
  */
-class Event
+class AFY_EXP Event
 {
 #ifdef WIN32
 	HANDLE			event;
 public:
 	Event() {event=CreateEvent(NULL,TRUE,FALSE,NULL);}
 	~Event() {if (event!=NULL) CloseHandle(event);}
-	void wait(Mutex& lock,ulong timeout) {lock.unlock(); /* ??? */ WaitForSingleObject(event,timeout==0?INFINITE:timeout); lock.lock();}
+	void wait(Mutex& lock,unsigned timeout) {lock.unlock(); /* ??? */ WaitForSingleObject(event,timeout==0?INFINITE:timeout); lock.lock();}
 	void signal() {PulseEvent(event);}
 	void signalAll() {SetEvent(event);}
 	void reset() {ResetEvent(event);}
 	operator HANDLE() const {return event;}
 #elif defined(POSIX)
 	pthread_cond_t	cond;
+	volatile unsigned	nsig;
 public:
-	Event() {pthread_cond_init(&cond,NULL);}
+	Event() : nsig(0) {pthread_cond_init(&cond,NULL);}
 	~Event() {pthread_cond_destroy(&cond);}
-	void wait(Mutex& lock,ulong timeout) {
-		if (timeout==0) pthread_cond_wait(&cond,lock);
-		else {
-			struct timespec ts; 
-#ifdef Darwin
-			struct timeval tv; gettimeofday(&tv, NULL);
-			ts.tv_sec=tv.tv_sec; ts.tv_nsec=tv.tv_usec*1000;
-			if (timeout%1000!=0) {
-				ts.tv_nsec+=timeout%1000*1000000;
-				ts.tv_sec+=ts.tv_nsec/1000000000;
-				ts.tv_nsec%=1000000000;
-			}
+	void wait(Mutex& lock,unsigned timeout) {
+		if (nsig==0) {
+			if (timeout==0) pthread_cond_wait(&cond,lock);
+			else {
+				struct timespec ts;
+#ifdef __APPLE__
+				struct timeval tv; gettimeofday(&tv, NULL);
+				ts.tv_sec=tv.tv_sec; ts.tv_nsec=tv.tv_usec*1000;
+				if (timeout%1000!=0) {
+					ts.tv_nsec+=timeout%1000*1000000;
+					ts.tv_sec+=ts.tv_nsec/1000000000;
+					ts.tv_nsec%=1000000000;
+				}
 #else
-			clock_gettime(CLOCK_REALTIME,&ts);
-			if (timeout%1000!=0) {
-				ts.tv_nsec+=timeout%1000*1000000;
-				ts.tv_sec+=ts.tv_nsec/1000000000;
-				ts.tv_nsec%=1000000000;
-			}
+				clock_gettime(CLOCK_REALTIME,&ts);
+				if (timeout%1000!=0) {
+					ts.tv_nsec+=timeout%1000*1000000;
+					ts.tv_sec+=ts.tv_nsec/1000000000;
+					ts.tv_nsec%=1000000000;
+				}
 #endif
-			ts.tv_sec+=timeout/1000;
-			pthread_cond_timedwait(&cond,lock,&ts);
+				ts.tv_sec+=timeout/1000;
+				pthread_cond_timedwait(&cond,lock,&ts);
+			}
 		}
+		if (nsig!=0) --nsig;
+		
 	}
-	void signal() {pthread_cond_signal(&cond);}
-	void signalAll() {pthread_cond_broadcast(&cond);}
+	void signal() {++nsig; pthread_cond_signal(&cond);}
+	void signalAll() {++nsig; pthread_cond_broadcast(&cond);}
 	void reset() const {}
 #endif
 };
@@ -451,7 +414,7 @@ enum RW_LockType
 /**
  * RW lock with a waiting queue
  */
-class RWLock
+class AFY_EXP RWLock
 {
 	enum {
 		RU_BIT	= 0x10000000,	// requested update lock
@@ -472,13 +435,13 @@ public:
 		// For U/X locks, first set the RU_BIT/RX_BIT (don't wait for open lock),
 		// to reserve the lock asap, then wait.
 		// Note: Let X compete with X by setting RX_BIT even when X_BIT is already set.
-		long spinCount=SpinC::SC.spinCount,waitSpinCount=WAIT_SPIN_COUNT; SemData *volatile q=(SemData*)~0ULL;
+		long spinCount=SC::getSC(),waitSpinCount=WAIT_SPIN_COUNT; SemData *volatile q=(SemData*)~0ULL;
 		switch (lock) {
 		case RW_NO_LOCK: break;
 		case RW_S_LOCK: RW_LOCK((c&(RX_BIT|X_BIT))!=0,c+1); break;
 		case RW_U_LOCK:
 			RW_LOCK((c&RU_BIT)!=0,c|RU_BIT);
-			spinCount=SpinC::SC.spinCount; waitSpinCount=WAIT_SPIN_COUNT;
+			spinCount=SC::getSC(); waitSpinCount=WAIT_SPIN_COUNT;
 			RW_LOCK((c&(U_BIT|RX_BIT|X_BIT))!=0,((c|U_BIT)&~RU_BIT)+1);
 #ifdef _DEBUG
 			threadID=getThreadId();
@@ -486,7 +449,7 @@ public:
 			break;
 		case RW_X_LOCK:
 			RW_LOCK((c&RX_BIT)!=0,c|RX_BIT);
-			spinCount=SpinC::SC.spinCount; waitSpinCount=WAIT_SPIN_COUNT;
+			spinCount=SC::getSC(); waitSpinCount=WAIT_SPIN_COUNT;
 			RW_LOCK(c!=RX_BIT&&c!=(RU_BIT|RX_BIT),((c|X_BIT)&~RX_BIT)+1);
 #ifdef _DEBUG
 			threadID=getThreadId();
@@ -515,7 +478,7 @@ public:
 	}
 	bool upgradelock(RW_LockType lock) {
 		bool unset=false; SemData *volatile q=(SemData*)~0ULL;
-		long mask=0,spinCount=SpinC::SC.spinCount,waitSpinCount=WAIT_SPIN_COUNT;
+		long mask=0,spinCount=SC::getSC(),waitSpinCount=WAIT_SPIN_COUNT;
 		switch (lock) {
 		case RW_NO_LOCK: break;
 		case RW_S_LOCK: assert(false); return false;
@@ -524,7 +487,7 @@ public:
 			assert((count&U_BIT)!=0);
 			for (long c=count; ;c=count)
 				if ((c&(RX_BIT|X_BIT))!=0 || (unset=cas(&count,c,c|RX_BIT))) break; else {RW_WAIT}
-			mask=unset?(U_BIT|RX_BIT):U_BIT; spinCount=SpinC::SC.spinCount; waitSpinCount=WAIT_SPIN_COUNT;
+			mask=unset?(U_BIT|RX_BIT):U_BIT; spinCount=SC::getSC(); waitSpinCount=WAIT_SPIN_COUNT;
 			RW_LOCK((c&~(RU_BIT|U_BIT|RX_BIT|X_BIT))!=1,(c&~mask)|X_BIT);
 #ifdef _DEBUG
 			threadID=getThreadId();
@@ -595,7 +558,7 @@ public:
 /**
  * RW spin lock, no waiting queue
  */
-class RWSpin
+class AFY_EXP RWSpin
 {
 	enum {
 		RU_BIT	= 0x10000000,	// requested update lock
@@ -615,13 +578,13 @@ public:
 		// to reserve the lock asap, then wait.
 		// Note: Let X compete with X by setting RX_BIT even when X_BIT is already set.
 		assert((count&(X_BIT|U_BIT))!=(X_BIT|U_BIT));
-		long spinCount=SpinC::SC.spinCount;
+		long spinCount=SC::getSC();
 		switch (lock) {
 		case RW_NO_LOCK: break;
 		case RW_S_LOCK: RW_LOCK((c&(RX_BIT|X_BIT))!=0,c+1); break;
 		case RW_U_LOCK:
 			RW_LOCK((c&RU_BIT)!=0,c|RU_BIT);
-			spinCount=SpinC::SC.spinCount;
+			spinCount=SC::getSC();
 			RW_LOCK((c&(U_BIT|RX_BIT|X_BIT))!=0,(c&~RU_BIT|U_BIT)+1);
 #ifdef _DEBUG
 			threadID=getThreadId();
@@ -629,7 +592,7 @@ public:
 			break;
 		case RW_X_LOCK:
 			RW_LOCK((c&RX_BIT)!=0,c|RX_BIT);
-			spinCount=SpinC::SC.spinCount;
+			spinCount=SC::getSC();
 			RW_LOCK(c!=RX_BIT&&c!=(RU_BIT|RX_BIT),(c&~RX_BIT|X_BIT)+1);
 #ifdef _DEBUG
 			threadID=getThreadId();
@@ -660,7 +623,7 @@ public:
 		return true;
 	}
 	bool upgradelock(RW_LockType lock) {
-		long mask=0,spinCount=SpinC::SC.spinCount; bool unset=false;
+		long mask=0,spinCount=SC::getSC(); bool unset=false;
 		assert((count&(X_BIT|U_BIT))!=(X_BIT|U_BIT));
 		switch (lock) {
 		case RW_NO_LOCK: break;
@@ -671,7 +634,7 @@ public:
 			for (long c=count; ;c=count)
 				if ((c&(RX_BIT|X_BIT))!=0 || (unset=cas(&count,c,c|RX_BIT))) break;
 				else if (--spinCount<0) threadYield();
-			mask=unset?(U_BIT|RX_BIT):U_BIT; spinCount=SpinC::SC.spinCount;
+			mask=unset?(U_BIT|RX_BIT):U_BIT; spinCount=SC::getSC();
 			RW_LOCK((c&~(RU_BIT|U_BIT|RX_BIT|X_BIT))!=1,(c&~mask)|X_BIT);
 #ifdef _DEBUG
 			threadID=getThreadId();
@@ -714,7 +677,7 @@ public:
  * RW lock holder
  * releases the lock when goes out of scope
  */
-class RWLockP
+class AFY_EXP RWLockP
 {
 	RWLock	*lock;
 public:
@@ -726,7 +689,7 @@ public:
 /**
  * concurrent counter
  */
-class SharedCounter
+class AFY_EXP SharedCounter
 {
 	volatile long	cnt;
 public:
@@ -739,12 +702,124 @@ public:
 	operator long() const {return cnt;}
 };
 
+#ifdef WIN32
+// uses WIN32 provided SLIST API
+#elif defined(_NO_DCAS)
+struct SLIST_ENTRY
+{
+	SLIST_ENTRY		*Next;
+};
+struct SLIST_HEADER
+{
+	uint8_t	lock[sizeof(RWSpin)];
+	SLIST_ENTRY	Next;
+};
+
+inline void InitializeSListHead(SLIST_HEADER *head)
+{
+	new((void*)head->lock) RWSpin; head->Next.Next=NULL;
+}
+inline void InterlockedPushEntrySList(SLIST_HEADER *pHeader,SLIST_ENTRY *entry)
+{
+	((RWSpin*)pHeader->lock)->lock(RW_X_LOCK);
+	entry->Next=pHeader->Next.Next; pHeader->Next.Next=entry;
+	((RWSpin*)pHeader->lock)->unlock();
+}
+inline SLIST_ENTRY *InterlockedPopEntrySList(SLIST_HEADER *pHeader)
+{
+	((RWSpin*)pHeader->lock)->lock(RW_X_LOCK);
+	SLIST_ENTRY *pe=pHeader->Next.Next;
+	if (pe!=NULL) pHeader->Next.Next=pe->Next;
+	((RWSpin*)pHeader->lock)->unlock();
+	return pe;
+}
+#elif !defined(__arm__)
+/**
+ * non-blocking list implementation using cas() functions for Linux and OSX
+ * names are preserved from WIN32 API
+ */
+struct SLIST_ENTRY
+{
+	SLIST_ENTRY		*Next;
+};
+union SLIST_HEADER {
+#ifdef __x86_64__
+	volatile __uint128_t dword;
+    struct {
+        SLIST_ENTRY	Next;
+		volatile uint64_t cnt;
+    };
+#else
+	volatile uint64_t dword;
+    struct {
+        SLIST_ENTRY	Next;
+		volatile uint32_t cnt;
+    };
+#endif
+};
+
+inline void InitializeSListHead(SLIST_HEADER *head)
+{
+	head->dword=0;
+}
+inline void InterlockedPushEntrySList(SLIST_HEADER *pHeader,SLIST_ENTRY *entry)
+{
+	SLIST_HEADER nHdr,oHdr; nHdr.Next.Next=entry;
+	do {oHdr.dword=pHeader->dword; nHdr.cnt=oHdr.cnt+1; entry->Next=oHdr.Next.Next;}
+	while (!__sync_bool_compare_and_swap(&pHeader->dword,oHdr.dword,nHdr.dword));
+}
+inline SLIST_ENTRY *InterlockedPopEntrySList(SLIST_HEADER *pHeader)
+{
+	SLIST_HEADER nHdr,oHdr; SLIST_ENTRY *pe;
+	do {
+		oHdr.dword=pHeader->dword; if ((pe=oHdr.Next.Next)==NULL) return NULL;
+		nHdr.cnt=oHdr.cnt+1; nHdr.Next.Next=pe->Next;
+	} while (!__sync_bool_compare_and_swap(&pHeader->dword,oHdr.dword,nHdr.dword));
+	return pe;
+}
+#else		//__arm__
+/**
+ * non-blocking list implementation using cas() functions for ARM
+ */
+struct SLIST_ENTRY
+{
+	SLIST_ENTRY		*Next;
+};
+union SLIST_HEADER {
+	volatile uint64_t dword;
+    struct {
+        SLIST_ENTRY	Next;
+		volatile uint32_t cnt;
+    };
+}__attribute__((aligned(16)));
+
+inline void InitializeSListHead(SLIST_HEADER *head)
+{
+	head->dword=0;
+}
+inline void InterlockedPushEntrySList(SLIST_HEADER *pHeader,SLIST_ENTRY *entry)
+{
+	SLIST_HEADER nHdr,oHdr; nHdr.Next.Next=entry;
+	do {oHdr.dword=pHeader->dword; nHdr.cnt=oHdr.cnt+1; entry->Next=oHdr.Next.Next;}
+	while (!__sync_bool_compare_and_swap(&pHeader->dword,oHdr.dword,nHdr.dword));
+}
+inline SLIST_ENTRY *InterlockedPopEntrySList(SLIST_HEADER *pHeader)
+{
+	SLIST_HEADER nHdr,oHdr; SLIST_ENTRY *pe;
+	do {
+		oHdr.dword=pHeader->dword; if ((pe=oHdr.Next.Next)==NULL) return NULL;
+		nHdr.cnt=oHdr.cnt+1; nHdr.Next.Next=pe->Next;
+	} while (!__sync_bool_compare_and_swap(&pHeader->dword,oHdr.dword,nHdr.dword));
+	return pe;
+}
+#endif
+
 /**
  * thread local storage
  * used to associate Session and StoreCtx references with a thread
  * platform-dependent implementation
  */
-class Tls
+class AFY_EXP Tls
 {
 #ifdef WIN32
 	DWORD	key;
@@ -764,35 +839,33 @@ public:
 };
 
 /**
- * allocator for aligned blocks of memory
- */
-template<HEAP_TYPE allc> class Std_Alloc
-{
-public:
-	static void *alloc(size_t s) {
-#if defined(_WIN64) || defined(__x86_64__) || defined(__arm__)
-		return memalign(16,s,allc);
-#else
-		return malloc(s,allc);
-#endif
-	}
-};
-
-/**
  * template for non-blocking concurrent queue of objects
  */
-template<unsigned blockSize=0x200,class Alloc=Std_Alloc<SERVER_HEAP> > class FreeQ
+class AFY_EXP FreeQ
 {
-	SLIST_HEADER	qfree;
-	SLock			lock;
+	IMemAlloc	*const	ma;
+	const unsigned		blockSize;
+	SLIST_HEADER		qfree;
+	SLock				lock;
 public:
-	FreeQ() {InitializeSListHead(&qfree);}
+	FreeQ(IMemAlloc *m=NULL,unsigned blkSize=0x200) : ma(m),blockSize(blkSize) {InitializeSListHead(&qfree);}
 	void *alloc(size_t s) {
 		SLIST_ENTRY *se=InterlockedPopEntrySList(&qfree); 
 		if (se==NULL) {
 			lock.lock();
-			if ((se=InterlockedPopEntrySList(&qfree))==NULL && (se=(SLIST_ENTRY*)Alloc::alloc(blockSize*(s=s+(sizeof(void*)*2-1)&~(sizeof(void*)*2-1))))!=NULL)
-				for (byte *q=(byte*)se+s,*end=(byte*)se+blockSize*s; q<end; q+=s) InterlockedPushEntrySList(&qfree,(SLIST_ENTRY*)q);
+			if ((se=InterlockedPopEntrySList(&qfree))==NULL) {
+				size_t l=blockSize*(s=s+(sizeof(void*)*2-1)&~(sizeof(void*)*2-1));
+				if (ma!=NULL) se=(SLIST_ENTRY*)ma->malloc(l);
+				else
+#ifdef __APPLE__
+					{void *tmp; se=posix_memalign(&tmp,16,l)?NULL:(SLIST_ENTRY*)tmp;}
+#elif defined(__x86_64__) || defined(__arm__)
+					se=(SLIST_ENTRY*)::memalign(16,l);
+#else
+					se=(SLIST_ENTRY*)::malloc(l);
+#endif
+				if (se!=NULL) for (uint8_t *q=(uint8_t*)se+s,*end=(uint8_t*)se+blockSize*s; q<end; q+=s) InterlockedPushEntrySList(&qfree,(SLIST_ENTRY*)q);
+			}
 			lock.unlock();
 		}
 		return se;
@@ -803,107 +876,6 @@ public:
 #else
 };
 #endif
-
-/**
- * pool of working threads implementation
- * used for async requests like log checkpoints, tree repair requests, i/o completion requests, etc.
- */
-
-#define	RQ_SKIP			0x0001				/**< skip this request: not necessary to process */
-#define	RQ_IN_PROGRESS	0x0002				/**< request processing in progress */
-#define	RQ_IN_QUEUE		0x0004				/**< request is queued for execution */
-
-/**
- * store reference
- * indirect referencing with reference counting is used to prevent request crash during asynchronous store shutdown
- */
-struct StoreRef
-{
-	class	StoreCtx&	ctx;
-	volatile	long	cnt;
-	SharedCounter		cntRef;
-	StoreRef(class StoreCtx& ct) : ctx(ct),cnt(0) {++cntRef;}
-};
-
-/**
- * request abstract class
- */
-class Request
-{
-	volatile	long	state;	
-protected:
-	Request() : state(0) {}
-	virtual				~Request();
-	virtual	void		process() = 0;
-	virtual	void		destroy() = 0;
-public:
-	bool				isMarked() const {return (state&(RQ_SKIP|RQ_IN_PROGRESS))==RQ_SKIP;}
-	bool				markSkip(bool fSkip=true) {return (casV(&state,state&~RQ_IN_PROGRESS,long(fSkip?RQ_SKIP:0))&RQ_IN_PROGRESS)==0;}
-	friend	class		RequestQueue;
-	friend	class		ThreadGroup;
-};
-
-/**
- * request priority types
- */
-enum RQType {RQ_NORMAL, RQ_HIGHPRTY, RQ_IO};
-
-/**
- * request object allocator
- */
-class RQ_Alloc {
-public:
-	static void *alloc(size_t s);
-};
-
-/**
- * ThreadGroup defines a queue of requests with the same priority
- */
-class ThreadGroup {
-	volatile	long	nThreads;
-	volatile	long	nPendingRequests;
-	const		int		nProcessors;
-	const		RQType	rqt;
-#ifdef WIN32
-	HANDLE				completionPort;
-#else
-	struct	RQElt {
-		RQElt		*next;
-		Request		*req;
-		StoreRef	*ref;
-	};
-	pthread_mutex_t	lock;
-	pthread_cond_t	wait;
-	RQElt			*first;
-	RQElt			*last;
-	static	FreeQ<512,RQ_Alloc>	freeQE;
-#endif
-	ThreadGroup(RQType);
-	~ThreadGroup();
-	friend	class	RequestQueue;
-public:
-	void			processRequests();
-};
-
-/**
- * request queue implementation
- * consists of a few ThreadGroup's
- */
-class RequestQueue
-{
-	ThreadGroup		normal;
-	ThreadGroup		higher;
-	ThreadGroup		io;
-	static RequestQueue	reqQ;
-	static volatile long fStart;
-public:
-	RequestQueue() : normal(RQ_NORMAL),higher(RQ_HIGHPRTY),io(RQ_IO) {}
-	static	RC		addStore(class StoreCtx& ctx);
-	static	void	removeStore(class StoreCtx& ctx,ulong timeout);
-	static	bool	postRequest(Request *req,class StoreCtx *ctx,RQType=RQ_NORMAL);
-	static	void	startThreads();
-	static	void	stopThreads();
-};
 
 };
 
