@@ -125,7 +125,7 @@ void FSMgr::close()
 	for (unsigned i=0; i<nExtents; i++) if ((ext=extentTable[i])!=NULL && (ext->state&EXTMAP_MODIFIED)!=0) {
 		if (ext->dirPage!=dirPage) {
 			dirPage = ext->dirPage;
-			dir = ctx->bufMgr->getPage(dirPage,&extentDirPage,PGCTL_XLOCK,dir);
+			dir = ctx->bufMgr->getPage(dirPage,&extentDirPage,PGCTL_XLOCK|QMGR_UFORCE,dir);
 			ds = dir==NULL ? NULL : (ExtentDirPage::DirSlot*)(((PageHeader*)dir->getPageBuf())+1);
 		}
 		if (ds!=NULL) {
@@ -137,7 +137,7 @@ void FSMgr::close()
 			}
 		}
 	}
-	if (dir!=NULL) dir->release();
+	if (dir!=NULL) dir->release(QMGR_UFORCE);
 	lock.unlock();
 }
 
@@ -158,7 +158,7 @@ FSMgr::ExtentInfo *FSMgr::findExtent(PageID pid,bool fReserve)
 
 PBlock *FSMgr::getExtentMapPage(ExtentInfo *ext,PBlock *pb)
 {
-	pb = ctx->bufMgr->getPage(ext->extentStart,&extentMapPage,PGCTL_XLOCK,pb);
+	pb = ctx->bufMgr->getPage(ext->extentStart,&extentMapPage,PGCTL_XLOCK|QMGR_UFORCE,pb);
 	if (pb!=NULL && (ext->state&EXTMAP_READ)==0) {
 		TxPageHeader *emp = (TxPageHeader*)pb->getPageBuf();
 		ext->nPages = emp->nPages;
@@ -303,7 +303,7 @@ RC FSMgr::allocNewExtent(ExtentInfo*& ext,PBlock*& pb,bool fForce)
 	TxPageHeader *emp=(TxPageHeader*)pb->getPageBuf();
 	emp->nPages=ext->nPages; lck.set(NULL); pb->flushPage();
 	if (dir.isNull()) {
-		dir=ctx->bufMgr->getPage(ext->dirPage,&extentDirPage,PGCTL_XLOCK);
+		dir=ctx->bufMgr->getPage(ext->dirPage,&extentDirPage,PGCTL_XLOCK); dir.set(QMGR_UFORCE);
 		if (dir.isNull()) {
 			// panic!!!
 			return RC_CORRUPTED;

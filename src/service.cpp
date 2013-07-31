@@ -59,7 +59,7 @@ void IService::shutdown()
 }
 
 ServiceCtx::ServiceCtx(Session *s,const Value *par,uint32_t nPar,bool fW,IListener *ls) 
-	: PIN(s),list(this),id(PIN::defPID),fWrite(fW),lst(ls),cst(fW?CST_WRITE:CST_READ),sstate(0),procs(NULL),nProcs(0),cur(0),resume(0),
+	: PIN(s),list(this),id(PIN::noPID),fWrite(fW),lst(ls),cst(fW?CST_WRITE:CST_READ),sstate(0),procs(NULL),nProcs(0),cur(0),resume(0),
 	toggleIdx(~0u),flushIdx(~0u),params(par),nParams(nPar),pR(NULL),bufCache(NULL),msgLength(0ULL),bufAlloc(s),pins((MemAlloc*)this),xpins(SRV_DEFAULT_BATCH),crs(NULL)
 {
 	action.setEmpty();
@@ -144,7 +144,7 @@ RC ServiceCtx::build(const Value *vals,unsigned nVals)
 		if (id==STORE_INVALID_CLASSID) {
 			sstate|=ISRV_NOCACHE; prc->srvInfo=vals; prc->nSrvInfo=nVals;
 		} else if (id==SERVICE_AFFINITY) {
-			prc->srvInfo=vals; prc->nSrvInfo=nVals;
+			prc->srvInfo=vals; prc->nSrvInfo=nVals; prc->dscr|=ISRV_SERVER;
 			if (cst==CST_READ && cur!=nProcs+1 && lst!=NULL) {cst=CST_SERVER; if (toggleIdx==~0u) toggleIdx=cur++;}
 		} else if (lst!=NULL && (cur==0 || cst==CST_SERVER && cur+1==nProcs)) {
 			prc->dscr=cur==0?ISRV_ENDPOINT|ISRV_READ:ISRV_ENDPOINT|ISRV_WRITE;
@@ -329,9 +329,9 @@ RC ServiceCtx::invoke(const Value *vals,unsigned nVals,Value *res)
 					if (cur+1==nProcs && (cst==CST_READ || cst==CST_REQUEST)) {
 						rc=RC_OK;
 						if (cst==CST_READ && !action.isEmpty()) {
-							PIN **en=NULL,**v=NULL,*pin=NULL; unsigned ne=0,nv=0; ValueV *par=NULL; unsigned nP=0;
-							if (out.type==VT_REF) {pin=(PIN*)out.pin; en=v=&pin; ne=nv=1;} else {par->vals=&out; nP=1;}
-							EvalCtx ectx(ses,en,ne,v,nv,par,nP,NULL,NULL,ECT_ACTION);
+							PIN *en[2]={NULL,this},**v=NULL,*pin=NULL; unsigned nv=0; ValueV *par=NULL; unsigned nP=0;
+							if (out.type==VT_REF) {en[0]=pin=(PIN*)out.pin; v=&pin; nv=1;} else {par->vals=&out; nP=1;}
+							EvalCtx ectx(ses,en,2,v,nv,par,nP,NULL,NULL,ECT_ACTION);
 							rc=ses->getStore()->queryMgr->eval(&action,ectx); freeV(out); if (rc!=RC_OK) return rc;
 							prc=&procs[cur=resume]; sstate|=prc->dscr&ISRV_MOREOUT; prc->dscr&=~ISRV_MOREOUT;
 							inp=prc->inp; out.setEmpty(); continue;
@@ -344,8 +344,8 @@ RC ServiceCtx::invoke(const Value *vals,unsigned nVals,Value *res)
 								case VT_STRUCT: pR->setProps(out.varray,out.length,0); break;
 								case VT_REF:
 									pR->copy((PIN*)out.pin,0);
-									pR->mode=(pR->mode&~(PIN_NO_FREE|PIN_PARTIAL))|(((PIN*)out.pin)->mode&PIN_NO_FREE);
-									((PIN*)out.pin)->mode|=PIN_NO_FREE; freeV(out); break;
+									pR->fNoFree=((PIN*)out.pin)->fNoFree; pR->fPartial=0;
+									((PIN*)out.pin)->fNoFree=1; freeV(out); break;
 								default:
 									if ((pv=new(this) Value)==NULL) rc=RC_NORESOURCES;
 									else {
@@ -465,6 +465,7 @@ RC ServiceCtx::server(ProcDscr *prc,Value& inp,Value& out)
 		// start continue if there are PINs to pass back
 	} else switch (inp.type) {
 	case VT_REF:
+		if (inp.pin==NULL) return RC_INVPARAM;
 		if (inp.op!=OP_ADD) {
 			PID id=inp.pin->getPID();
 			if (id.pid==STORE_INVALID_PID || id.ident==STORE_INVALID_IDENTITY) rc=RC_INVPARAM;
@@ -479,6 +480,7 @@ RC ServiceCtx::server(ProcDscr *prc,Value& inp,Value& out)
 			}
 #endif
 		} else if ((rc=pins+=(PIN*)inp.pin)==RC_OK) {
+			((PIN*)inp.pin)->id=PIN::noPID;
 			if (pins<xpins) {prc->dscr|=ISRV_FLUSH; if (cur<flushIdx) flushIdx=cur;}
 			else {
 				rc=commitPINs();
@@ -487,6 +489,7 @@ RC ServiceCtx::server(ProcDscr *prc,Value& inp,Value& out)
 		}
 		break;
 	case VT_STMT:
+		if (inp.stmt==NULL) return RC_INVPARAM;
 		if (((Stmt*)inp.stmt)->op<=STMT_UNDELETE) {
 			// query and data manipulation
 			rc=((Stmt*)inp.stmt)->execute(cur+1<nProcs/*&&is.oi.rtt!=RTT_COUNT*/?(ICursor**)&crs:(ICursor**)0/*,is.stmt->params,is.stmt->nParams,is.stmt->limit,is.stmt->offset,is.stmt->mode,&res.cnt*/);
@@ -580,8 +583,8 @@ RC Session::prepare(ServiceCtx *&srv,const PID& id,const Value *vals,unsigned nV
 			if (serviceTab==NULL && (serviceTab=new(this) ServiceTab(20,this,false))==NULL) rc=RC_NORESOURCES;
 			else {
 				if (nSrvCtx>=xSrvCtx) {
-					ServiceCtx *discard=(ServiceCtx*)srvCtx.prev; discard->remove(); assert(serviceTab!=NULL);
-					serviceTab->remove(discard); discard->destroy(); nSrvCtx--;
+					ServiceCtx *discard=(ServiceCtx*)srvCtx.prev; assert(serviceTab!=NULL && srvCtx.prev!=&srvCtx); 
+					discard->remove(); serviceTab->remove(discard); discard->destroy(); nSrvCtx--;
 				}
 				serviceTab->insert(srv); srvCtx.insertFirst(srv); nSrvCtx++;
 			}
@@ -656,8 +659,9 @@ RC Session::stopListener(URIID lid,bool fSuspend)
 
 void Session::removeServiceCtx(const PID& id)
 {
-	assert(id.pid!=STORE_INVALID_PID && id.ident!=STORE_INVALID_IDENTITY);
-	if (serviceTab!=NULL) {ServiceCtx *srv=serviceTab->find(id); if (srv!=NULL) {serviceTab->remove(srv); srv->destroy();}}
+	ServiceCtx *srv; assert(id.pid!=STORE_INVALID_PID && id.ident!=STORE_INVALID_IDENTITY);
+	if (serviceTab!=NULL && (srv=serviceTab->find(id))!=NULL)
+		{assert(nSrvCtx!=0); serviceTab->remove(srv); srv->destroy(); nSrvCtx--;}
 }
 
 StartListener::StartListener(const Value *p,unsigned n,MemAlloc *ma) : props(NULL),nProps(n)
@@ -674,6 +678,14 @@ void StartListener::destroy(Session *ses)
 {
 	if (props!=NULL) freeV(props,nProps,ses);
 	ses->free(this);
+}
+
+RC StartListener::loadListener(PINx& cb)
+{
+	RC rc;
+	if ((rc=cb.load(LOAD_SSV))!=RC_OK) return rc; assert((cb.meta&PMT_LISTENER)!=0);
+	if ((rc=cb.ses->listen(cb.properties,cb.nProperties,cb.mode))!=RC_OK) return rc;
+	cb.properties=NULL; cb.nProperties=0; return RC_OK;
 }
 
 LoadService::LoadService(const Value *p,unsigned n,MemAlloc *ma) : props(NULL),nProps(n)
@@ -696,6 +708,17 @@ void LoadService::destroy(Session *ses)
 	ses->free(this);
 }
 
+RC LoadService::loadLoader(PINx &cb)
+{
+	RC rc; Value v;
+	if ((rc=cb.load(LOAD_SSV))!=RC_OK) return rc; assert((cb.getMetaType()&PMT_LOADER)!=0);
+	if ((rc=cb.getV(PROP_SPEC_LOAD,v,0,NULL))!=RC_OK) return rc;
+	if (v.type!=VT_STRING) rc=RC_CORRUPTED;
+	else if ((rc=cb.getSes()->getStore()->fileMgr->loadExt(v.str,v.length,cb.getSes(),cb.properties,cb.nProperties,false))!=RC_OK
+																					&& (v.meta&META_PROP_OPTIONAL)!=0) rc=RC_OK;
+	freeV(v); return rc;
+}
+
 RC StoreCtx::registerLangExtension(const char *langID,IStoreLang *ext,URIID *pID)
 {
 	try {
@@ -706,7 +729,7 @@ RC StoreCtx::registerLangExtension(const char *langID,IStoreLang *ext,URIID *pID
 			ses=Session::createSession(this); if (ses==NULL) return RC_NOSESSION;
 			ses->setIdentity(STORE_OWNER,true); fDestroy=true;
 		}
-		URI *uri=(URI*)uriMgr->insert(langID); RC rc=RC_NORESOURCES;
+		URI *uri=(URI*)uriMgr->insert(langID,strlen(langID)); RC rc=RC_NORESOURCES;
 		if (uri!=NULL) {
 			URIID uid=uri->getID(); uri->release(); if (pID!=NULL) *pID=uid;
 			rc=registerLangExtension(uid,ext);
@@ -725,7 +748,7 @@ RC StoreCtx::registerService(const char *sname,IService *handler,URIID *puid,ILi
 			ses=Session::createSession(this); if (ses==NULL) return RC_NOSESSION;
 			ses->setIdentity(STORE_OWNER,true); fDestroy=true;
 		}
-		URI *uri=(URI*)uriMgr->insert(sname); RC rc=RC_NORESOURCES;
+		URI *uri=(URI*)uriMgr->insert(sname,strlen(sname)); RC rc=RC_NORESOURCES;
 		if (uri!=NULL) {URIID uid=uri->getID(); uri->release(); if (puid!=NULL) *puid=uid; rc=registerService(uid,handler,lnot);}
 		if (fDestroy) Session::terminateSession();
 		return rc;
@@ -758,7 +781,7 @@ RC StoreCtx::unregisterService(const char *sname,IService *handler)
 			ses=Session::createSession(this); if (ses==NULL) return RC_NOSESSION;
 			ses->setIdentity(STORE_OWNER,true); fDestroy=true;
 		}
-		URI *uri=(URI*)uriMgr->insert(sname); RC rc=RC_NORESOURCES;
+		URI *uri=(URI*)uriMgr->insert(sname,strlen(sname)); RC rc=RC_NORESOURCES;
 		if (uri!=NULL) {
 			URIID uid=uri->getID(); uri->release();
 			rc=unregisterService(uid,handler);

@@ -104,26 +104,26 @@ void BufMgr::checkState()
 
 PBlock* BufMgr::getPage(PageID pid,PageMgr *pageMgr,unsigned flags,PBlock *old,Session *ses)
 {
-	if (old!=NULL && old->pageID==pid) {
-		if ((flags&PGCTL_XLOCK)!=0) {
-			if (old->isULocked() && (flags&QMGR_UFORCE)!=0) old->upgradeLock();
-			else if (!old->isXLocked())
-				{if ((ses!=NULL || (ses=Session::getSession())!=NULL) && !ses->relatch(old)) old=NULL; else relock(old,RW_X_LOCK);}
-		} else if ((flags&PGCTL_ULOCK)!=0) {
-			if (old->isXLocked()) old->downgradeLock(RW_U_LOCK);
-			else if (!old->isULocked() || (flags&QMGR_UFORCE)==0)
-				{if ((ses!=NULL || (ses=Session::getSession())!=NULL) && !ses->relatch(old)) old=NULL; else relock(old,RW_U_LOCK);}
-		} else if (old->isXLocked() || old->isULocked() && (flags&QMGR_UFORCE)!=0)
-			old->downgradeLock(RW_S_LOCK);
-		return old;
-	}
 	PBlock *ret=NULL; LatchedPage *lp; if (ses==NULL) ses=Session::getSession();
 	if (ses!=NULL && (lp=(LatchedPage*)BIN<LatchedPage,PageID,LatchedPage::Cmp>::find(pid,ses->latched,ses->nLatched))!=NULL) {
 		if (old!=NULL) {
-			const bool fAfter=pid>old->getPageID(); old->release(flags,ses); 
+			if (old->pageID==pid) {
+				assert(lp->pb==old); 
+				if ((old->isXLocked() || old->isULocked()) && (flags&QMGR_UFORCE)!=0) {
+					assert(lp->cntX!=0);
+					if ((flags&PGCTL_XLOCK)!=0) {if (!old->isXLocked()) old->upgradeLock();}
+					else if ((flags&PGCTL_ULOCK)!=0) {if (old->isXLocked()) old->downgradeLock(RW_U_LOCK);}
+					else {if (--lp->cntX==0) old->downgradeLock(RW_S_LOCK); if (lp->cntS!=0xFFFF) lp->cntS++; else old=NULL;}
+				} else if ((flags&(PGCTL_XLOCK|PGCTL_ULOCK))!=0) {
+					assert(lp->cntS!=0); lp->cntS--; if (lp->cntX==0xFFFF) return NULL;
+					if (lp->cntX==0) relock(old,(flags&PGCTL_XLOCK)!=0?RW_X_LOCK:RW_U_LOCK); lp->cntX++;
+				}
+				return old;
+			}
+			const bool fAfter=pid>old->pageID; old->release(flags,ses); old=NULL;
 			if (fAfter) {lp=(LatchedPage*)BIN<LatchedPage,PageID,LatchedPage::Cmp>::find(pid,ses->latched,ses->nLatched); assert(lp!=NULL);}
 		}
-		assert(lp->pb->getPageID()==pid);
+		assert(lp->pb->pageID==pid);
 		if ((flags&(PGCTL_ULOCK|PGCTL_XLOCK))==0) {if (lp->cntS==0xFFFF) return NULL; lp->cntS++; return lp->pb;}
 		if (lp->cntX!=0) {if (lp->cntX==0xFFFF) return NULL; lp->cntX++; return lp->pb;}
 		assert(lp->cntS!=0); ses->releaseLatches(pid,pageMgr,true);
@@ -572,9 +572,12 @@ void PBlock::setKey(PageID pid,void *mg)
 
 PBlock*	PBlockP::getPage(PageID pid,PageMgr *mgr,unsigned f,Session *ses)
 {
-	PBlock *tmp=(flags&PGCTL_NOREL)==0?pb:(PBlock*)0; pb=NULL; if (ses==NULL) ses=Session::getSession();
-	pb=(ses!=NULL?ses->getStore():StoreCtx::get())->bufMgr->getPage(pid,mgr,(f&~QMGR_UFORCE)|(flags&QMGR_UFORCE),tmp,ses);
-	flags=f|((f&(PGCTL_XLOCK|PGCTL_ULOCK))!=0?QMGR_UFORCE:0); return pb;
+	if (pb==NULL || pb->getPageID()!=pid || (f&(PGCTL_XLOCK|PGCTL_ULOCK))!=0 && !pb->isXLocked()) {
+		PBlock *tmp=(flags&PGCTL_NOREL)==0?pb:(PBlock*)0; pb=NULL; if (ses==NULL) ses=Session::getSession();
+		pb=(ses!=NULL?ses->getStore():StoreCtx::get())->bufMgr->getPage(pid,mgr,(f&~QMGR_UFORCE)|(flags&QMGR_UFORCE),tmp,ses);
+		flags=f|((f&(PGCTL_XLOCK|PGCTL_ULOCK))!=0?QMGR_UFORCE:0);
+	}
+	return pb;
 }
 
 PBlock*	PBlockP::newPage(PageID pid,PageMgr *mgr,unsigned f,Session *ses)

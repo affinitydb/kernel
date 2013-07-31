@@ -68,7 +68,7 @@ class URI : public CachedObject
 	URIInfo			info;
 public:
 	URI(unsigned id,class URIMgr& mg) : CachedObject(id,*(NamedObjMgr*)&mg) {info.flags=info.lSuffix=0;}
-	const	char	*getURI() const {return getName();}
+	const	StrLen	*getURI() const {return getName();}
 	const	URIInfo	getInfo() const {return info;}
 	RC				deserializeCachedObject(const void *buf,size_t size);
 	RC				setAddr(const PageAddr& ad);
@@ -83,7 +83,7 @@ class URIMgr : public NamedObjMgr
 public:
 	URIMgr(class StoreCtx *ct,int hashSize=DEFAULT_URIHASH_SIZE,int nameHashSize=DEFAULT_URINAME_SIZE,unsigned xObj=DEFAULT_CACHED_URIS);
 	CachedObject	*create();
-	URI				*insert(const char *URI);
+	URI				*insert(const char *URI,size_t l);
 	char			*getURI(URIID uid,class Session *ses);
 };
 
@@ -127,7 +127,7 @@ class IdentityMgr : public NamedObjMgr
 public:
 	IdentityMgr(class StoreCtx *ct,int hashSize=DEFAULT_IDENTHASH_SIZE,int nameHashSize=DEFAULT_IDENTNAME_SIZE,unsigned xObj=DEFAULT_CACHED_IDENTS);
 	CachedObject	*create();
-	Identity		*insert(const char *ident,const byte *key,const byte *cert,size_t lcert,bool fMayInsert);
+	Identity		*insert(const char *ident,size_t l,const byte *key,const byte *cert,size_t lcert,bool fMayInsert);
 	RC				setInsertPermission(IdentityID,bool fMayInsert);
 	RC				changePassword(IdentityID,const char *oldPwd,const char *newPwd);
 	RC				changeCertificate(IdentityID,const char *pwd,const unsigned char *cert,unsigned lcert);

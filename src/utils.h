@@ -255,21 +255,6 @@ public:
 };
 
 /**
- * string reference key for hash tables
- */
-class StrRefKey
-{
-	friend class StrKey;
-	const char	*const str;
-public:
-	StrRefKey(const char *s) : str(s) {}
-	operator uint32_t() const {uint32_t hash=0; for (const char *s=str; *s!='\0'; hash=hash<<1^*s++); return hash;}
-	operator const char*() const {return str;}
-	bool operator==(const char *key2) const {return strcmp(str,key2)==0;}
-	bool operator!=(const char *key2) const {return strcmp(str,key2)!=0;}
-};
-
-/**
  * string key (copied, zero terminated) for hash tables
  */
 class StrKey
@@ -283,8 +268,6 @@ public:
 	operator const char*() const {return str;}
 	bool operator==(const char *key2) const {return strcmp(str,key2)==0;}
 	bool operator!=(const char *key2) const {return strcmp(str,key2)!=0;}
-	bool operator==(const StrRefKey& key2) const {return strcmp(str,key2.str)==0;}
-	bool operator!=(const StrRefKey& key2) const {return strcmp(str,key2.str)!=0;}
 	void operator=(const char *key) {if (str!=NULL) free(str,STORE_HEAP); str=strdup(key,STORE_HEAP);}
 	void set(char *s) {if (str!=NULL) free(str,STORE_HEAP); str=s;}
 	void reset() {str=NULL;}
@@ -300,6 +283,7 @@ struct StrLen
 	StrLen() : str(NULL),len(0) {}
 	StrLen(const char *s) : str(s),len(strlen(s)) {}
 	StrLen(const char *s,size_t l) : str(s),len(l) {}
+	StrLen(const char *s,size_t l,MemAlloc *ma) : str(s),len(l) {if (ma!=NULL && (str=(char*)ma->malloc(l+1))!=NULL) {memcpy((char*)str,s,l); ((char*)str)[l]=0;}}
 public:
 	operator const char*() const {return str;}
 	operator uint32_t() const {uint32_t hash=uint32_t(len); for (unsigned i=0; i<len; i++) hash=hash<<1^str[i]; return hash;}

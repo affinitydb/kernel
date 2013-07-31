@@ -40,6 +40,9 @@ using namespace Afy;
 #define	DEFAULT_ASYNC_TIMEOUT		30000											/**< default timeout for asynchronous operations */
 #define	DEFAULT_LOGSEG_SIZE			0x1000000										/**< log segment size in bytes (16Mb) */
 #define	DEFAULT_LOGBUF_SIZE			0x40000											/**< log buffer size in bytes (256Kb) */
+#define	DEFAULT_MAX_SYNC_ACTION		16												/**< default maximum depth of synchronous actions evaluation stack */
+#define	DEFAULT_MAX_ON_COMMIT		1024											/**< default maximum number of actions evaluated at transaction commit */
+#define	DEFAULT_MAX_OBJ_SESSION		256												/**< default maximum number of objects per session */
 
 /**
  * startup flags
@@ -56,10 +59,19 @@ using namespace Afy;
 #define	STARTUP_REDUCED_DURABILITY	0x0100											/**< no log flush on transaction commit for improved performance */
 #define	STARTUP_LOG_PREALLOC		0x0200											/**< pre-allocate log files */
 #define	STARTUP_TOUCH_FILE			0x0400											/**< change file access date if even only read access */
+#define STARTUP_NO_LOAD				0x0800											/**< don't load classes/timers/listeners until the first session is created */
 
 #define	STARTUP_MODE_DESKTOP		0x0000											/**< database is running as a part of a desktop application */
 #define	STARTUP_MODE_SERVER			0x8000											/**< database is opened on a server */
 #define	STARTUP_MODE_CLOUD			0x4000											/**< in a cloud */
+
+/**
+ * store creation flags
+ * @see StoreCreationParameters::mode
+ */
+#define	STORE_CREATE_ENCRYPTED		0x0001											/**< created store to be encrypted */
+#define	STORE_CREATE_PAGE_INTEGRITY	0x0002											/**< check integrity of store pages by calculating HMAC */
+#define	STORE_CREATE_NO_PREFIX		0x0004											/**< don't augment #names with a store specific prefix */
 
 /**
  * error/debug information report interface; if not set platform-specific standard report channel is used (e.g. STDERR)
@@ -123,17 +135,17 @@ public:
  */
 struct StartupParameters
 {
-	unsigned				mode;								/**< open flags */
-	const char				*directory;							/**< db file directory */
-	unsigned				maxFiles;							/**< maximum number of files which can be simultaneously open */
-	unsigned				nBuffers;							/**< number of memory buffers for pages to allocate */
-	unsigned				shutdownAsyncTimeout;				/**< shutdown wait timeout */
+	unsigned			mode;								/**< open flags */
+	const char			*directory;							/**< db file directory */
+	unsigned			maxFiles;							/**< maximum number of files which can be simultaneously open */
+	unsigned			nBuffers;							/**< number of memory buffers for pages to allocate */
+	unsigned			shutdownAsyncTimeout;				/**< shutdown wait timeout */
 	IService			*service;							/**< default external service handler */
-	IStoreNotification		*notification;						/**< event notification interface */
-	const char				*password;							/**< store password */
-	const char				*logDirectory;						/**< optional directory for log files */
-	size_t					logBufSize;							/**< size of log buffer in memory */
-	const char				*serviceDirectory;					/**< optional directory for service libraries */
+	IStoreNotification	*notification;						/**< event notification interface */
+	const char			*password;							/**< store password */
+	const char			*logDirectory;						/**< optional directory for log files */
+	size_t				logBufSize;							/**< size of log buffer in memory */
+	const char			*serviceDirectory;					/**< optional directory for service libraries */
 	StartupParameters(unsigned md=STARTUP_MODE_DESKTOP,const char *dir=NULL,unsigned xFiles=DEFAULT_MAX_FILES,unsigned nBuf=DEFAULT_BLOCK_NUM,
 						unsigned asyncTimeout=DEFAULT_ASYNC_TIMEOUT,IService *srv=NULL,IStoreNotification *notItf=NULL,
 						const char *pwd=NULL,const char *logDir=NULL,size_t lbs=DEFAULT_LOGBUF_SIZE,const char *srvDir=NULL) 
@@ -153,16 +165,19 @@ struct StoreCreationParameters
 	const	char	*identity;									/**< store owner identity */
 	unsigned short	storeId;									/**< store ID for this identity; 0-65535, must be unique for this identity */
 	const	char	*password;									/**< store owner password */
-	bool			fEncrypted;									/**< if true, store is encrypted with AES-128 */
 	uint64_t		maxSize;									/**< maximum store size in bytes; for quotas in multi-tenant environments */
 	float			pctFree;									/**< percentage of free space on pages when new PINs are allocated */
 	size_t			logSegSize;									/**< size of log segment */
-	bool			fPageIntegrity;								/**< calculate page HMAC even when store is not encrypted */
+	unsigned		mode;										/**< store creation flags */
+	unsigned		xSyncStack;									/**< maximum depth of synchronous action invocations */
+	unsigned		xOnCommit;									/**< maximum number of OnCommit actions */
+	unsigned		xObjSession;								/**< maximum number of objects per session */
+#define	DEAFULT_MAX_OBJ_SESSION		256												
 	StoreCreationParameters(unsigned nCtl=0,unsigned lPage=DEFAULT_PAGE_SIZE,
-		unsigned extSize=DEFAULT_EXTENT_SIZE,const char *ident=NULL,unsigned short stId=0,const char *pwd=NULL,
-									bool fEnc=false,uint64_t xSize=0,float pctF=-1.f,size_t lss=DEFAULT_LOGSEG_SIZE,bool fPI=false)
+		unsigned extSize=DEFAULT_EXTENT_SIZE,const char *ident=NULL,unsigned short stId=0,const char *pwd=NULL,unsigned md=0,uint64_t xSize=0,
+		float pctF=-1.f,size_t lss=DEFAULT_LOGSEG_SIZE,unsigned xSync=DEFAULT_MAX_SYNC_ACTION,unsigned xoc=DEFAULT_MAX_ON_COMMIT,unsigned xoses=DEFAULT_MAX_OBJ_SESSION)
 		: nControlRecords(nCtl),pageSize(lPage),fileExtentSize(extSize),identity(ident),
-		storeId(stId),password(pwd),fEncrypted(fEnc),maxSize(xSize),pctFree(pctF),logSegSize(lss),fPageIntegrity(fPI) {}
+		storeId(stId),password(pwd),maxSize(xSize),pctFree(pctF),logSegSize(lss),mode(md),xSyncStack(xSync),xOnCommit(xoc),xObjSession(xoses) {}
 };
 
 /**
@@ -191,7 +206,6 @@ extern "C" AFY_EXP void			setReport(IReport *);																												/**< 
 #endif
 extern "C" AFY_EXP	bool		initService(ISession *ses,const Value *pars,unsigned nPars,bool fNew);																/**< prototype of the service initializatio function; called when the service library is loaded by a store */
 
-extern "C" AFY_EXP size_t		errorToString(RC rc,const CompilationError *err,char buf[],size_t lbuf);															/**< convert error information to string */
 extern "C" AFY_EXP void			stopThreads();																														/**< stops all threads started by Affinity kernel */
 extern "C" AFY_EXP RC			shutdownStore();																													/**< shutdown "current" store */ 
 

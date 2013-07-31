@@ -600,14 +600,20 @@ noconv:
 			case VT_URIID:
 				if (ps->uid==STORE_INVALID_URIID) dst.set("",0);
 				else if ((uri=(URI*)StoreCtx::get()->uriMgr->ObjMgr::find(ps->uid))==NULL) return RC_NOTFOUND;
-				else {dst.set(strdup(uri->getName(),ma)); dst.flags=ma->getAType(); uri->release();}
+				else {
+					const StrLen *sl=uri->getName(); char *p=new(ma) char[sl->len+1]; if (p==NULL) return RC_NORESOURCES;
+					memcpy(p,sl->str,sl->len); p[sl->len]=0; dst.set(p,(uint32_t)sl->len); dst.flags=ma->getAType(); uri->release();
+				}
 				break;
 			case VT_IDENTITY:
 				iid=ps->iid;
 			ident_to_str:
 				if (iid==STORE_INVALID_IDENTITY) dst.set("",0);
 				else if ((ident=(Identity*)StoreCtx::get()->identMgr->ObjMgr::find(iid))==NULL) return RC_NOTFOUND;
-				else {dst.set(strdup(ident->getName(),ma)); dst.flags=ma->getAType(); ident->release();}
+				else {
+					const StrLen *sl=ident->getName(); char *p=new(ma) char[sl->len+1]; if (p==NULL) return RC_NORESOURCES;
+					memcpy(p,sl->str,sl->len); p[sl->len]=0; dst.set(p,(uint32_t)sl->len); dst.flags=ma->getAType(); ident->release();
+				}
 				break;
 			case VT_STMT:
 				if ((p=ps->stmt->toString())==NULL) return RC_NORESOURCES;
@@ -800,13 +806,13 @@ noconv:
 			break;
 		case VT_URIID:
 			if (ps->type!=VT_STRING && ps->type!=VT_URL) return RC_TYPE;
-			uri=StoreCtx::get()->uriMgr->insert(ps->str);
+			uri=StoreCtx::get()->uriMgr->insert(ps->str,ps->length);
 			if (&dst==ps) freeV(dst);
 			dst.setURIID(uri!=NULL?uri->getID():STORE_INVALID_URIID);
 			if (uri!=NULL) uri->release(); break;
 		case VT_IDENTITY:
 			if (ps->type!=VT_STRING) return RC_TYPE;
-			ident=(Identity*)StoreCtx::get()->identMgr->find(ps->str);
+			ident=(Identity*)StoreCtx::get()->identMgr->find(ps->str,ps->length);
 			if (&dst==ps) freeV(dst);
 			dst.setIdentity(ident!=NULL?ident->getID():STORE_INVALID_IDENTITY);
 			if (ident!=NULL) ident->release(); break;
@@ -934,6 +940,44 @@ RC AfyKernel::convURL(const Value& src,Value& dst,HEAP_TYPE alloc)
 		break;
 	}
 	return RC_OK;
+}
+
+RC AfyKernel::substitute(Value &v,const Value *pars,unsigned nPars,MemAlloc *ma)
+{
+	RC rc=RC_OK; unsigned i;
+	switch (v.type) {
+	default: break;
+	case VT_VARREF:
+		if ((v.refV.flags&VAR_TYPE_MASK)==VAR_PARAM && v.refV.refN<nPars) {
+			PropertyID pid=v.property; ElementID eid=v.eid; uint8_t meta=v.meta,op=v.op; 
+			if ((rc=copyV(pars[v.refV.refN],v,ma))!=RC_OK) return rc;
+			v.property=pid; v.eid=eid; v.meta=meta; v.op=op;
+		}
+		break;
+	case VT_EXPR:
+		if ((((Expr*)v.expr)->getFlags()&EXPR_PARAMS)!=0) {
+			Expr *exp=(Expr*)v.expr;
+			if ((rc=Expr::substitute(exp,pars,nPars,ma))==RC_OK) {
+				PropertyID pid=v.property; ElementID eid=v.eid; uint8_t meta=v.meta,op=v.op,fc=v.fcalc;
+				freeV(v); v.set(exp,fc); setHT(v,ma->getAType());  v.property=pid; v.eid=eid; v.meta=meta; v.op=op;
+			}
+		}
+		break;
+	case VT_EXPRTREE:
+		rc=((ExprTree*)v.exprt)->substitute(pars,nPars,ma); break;
+	case VT_STMT:
+		if (((Stmt*)v.stmt)->hasParams()) rc=((Stmt*)v.stmt)->substitute(pars,nPars,ma);
+		break;
+	case VT_ARRAY:
+	case VT_STRUCT:
+		for (i=0; i<v.length; i++) if ((rc=substitute(*(Value*)&v.varray[i],pars,nPars,ma))!=RC_OK) break;
+		break;
+	case VT_COLLECTION:
+		// copy
+		break;
+	//case VT_MAP:
+	}
+	return rc;
 }
 
 void AfyKernel::freeV(Value *v,unsigned nv,MemAlloc *ma)

@@ -90,7 +90,7 @@ int Sort::cmp(const EncPINRef *p1,const EncPINRef *p2) const
 {
 #if 0
 	// compare two pins
-	PIN pin1(qx->ses,p1->id,PageAddr::invAddr,PIN_NO_FREE,p1->id.ptr,nValues),pin2(qx->ses,p2->id,PageAddr::invAddr,PIN_NO_FREE,p2->id.ptr,nValues);
+	PIN pin1(qx->ses,p1->id,PageAddr::noAddr,PIN_NO_FREE,p1->id.ptr,nValues),pin2(qx->ses,p2->id,PageAddr::noAddr,PIN_NO_FREE,p2->id.ptr,nValues);
 	const PIN *pp[2] = {&pin1,&pin2}; Value res; RC rc=Expr::eval(&sortExpr,1,res,pp,2,NULL,0,qx->ses);
 	switch (rc) {
 	default: break;		// ???
@@ -764,7 +764,7 @@ RC Sort::init()
 
 RC Sort::advance(const PINx *skip)
 {
-	RC rc=RC_OK; if (res!=NULL) {res->cleanup(); *res=PIN::defPID;}
+	RC rc=RC_OK; if (res!=NULL) {res->cleanup(); *res=PIN::noPID;}
 	assert(idx<nAllPins);
 	if ((state&QST_BOF)!=0) state&=~QST_BOF; else idx++;
 	if (idx+1>=nAllPins) state|=QST_EOF;
@@ -783,7 +783,7 @@ RC Sort::advance(const PINx *skip)
 	if (pins!=NULL) loadEPR(pins[idx],*res);
 	else if (esRuns==NULL) return RC_EOF;
 	else if ((rc=esnext(*res))!=RC_OK) return rc;
-	if ((res->epr.flags&PINEX_DERIVED)!=0) *res=PIN::defPID;
+	if ((res->epr.flags&PINEX_DERIVED)!=0) *res=PIN::noPID;
 	return qx->ses->testAbortQ();
 }
 

@@ -26,7 +26,6 @@ Written by Mark Venguerov 2004-2013
 #define _CLASSIFIER_H_
 
 #include "named.h"
-#include "timerq.h"
 #include "startup.h"
 
 using namespace Afy;
@@ -49,6 +48,8 @@ namespace AfyKernel
  */
 class Stmt;
 class Expr;
+class PIN;
+class PINx;
 class SimpleVar;
 class IndexInit;
 class ClassIndex;
@@ -59,12 +60,6 @@ class ClassPropIndex;
  * class/family index operations
  */
 enum ClassIdxOp {CI_INSERT, CI_UPDATE, CI_DELETE, CI_SDELETE, CI_UDELETE, CI_PURGE};
-
-struct SpecPINProps
-{
-	uint64_t	mask[4];
-	unsigned	meta;
-};
 
 /**
  * window descriptor
@@ -219,11 +214,12 @@ class ClassCreate : public OnCommit, public ClassRef
 	PageAddr	addr;
 public:
 	ClassCreate(ClassID cid,const PID& pd,ushort np,unsigned flags,ClassActs *ac,ClassWindow *w) 
-		: ClassRef(cid,pd,np,0,flags,ac,w),query(NULL),cidx(NULL),id(PIN::defPID),addr(PageAddr::invAddr) {}
+		: ClassRef(cid,pd,np,0,flags,ac,w),query(NULL),cidx(NULL),id(PIN::noPID),addr(PageAddr::noAddr) {}
 	IndexInit	*getIndex() const {return cidx;}
 	ClassCreate	*getClass();
 	RC			process(Session *s);
 	void		destroy(Session *s);
+	static RC	loadClass(PINx& cb);
 };
 
 class ClassDrop : public OnCommit
@@ -464,13 +460,6 @@ public:
 	void	operator	delete(void *p) {if (p!=NULL) ((IndexNavImpl*)p)->ses->free(p);}
 };
 
-struct BuiltinURI
-{
-	size_t		lname;
-	const char	*name;
-	URIID		uid;
-};
-
 typedef QMgr<Class,ClassID,ClassID,int> ClassHash;
 
 /**
@@ -487,26 +476,19 @@ class Classifier : public ClassHash, public TreeFactory, public TreeConnect
 	friend	class		TimerQueue;
 	StoreCtx			*const ctx;
 	RWLock				rwlock;
-	Mutex				lock;
-	bool				fInit;
 	ClassPropIndex		classIndex;
 	TreeGlobalRoot		classMap;
 	SharedCounter		nCached;
 	int					xCached;
-	volatile long		xPropID;
+	Mutex				lock;
 public:
 	Classifier(StoreCtx *ct,unsigned timeout,unsigned hashSize=DEFAULT_CLASS_HASH_SIZE,unsigned cacheSize=DEFAULT_CLASS_CACHE_SIZE);
-	bool				isInit() const {return fInit;}
-	RC					initBuiltin(Session *ses);
-	RC					restoreXPropID(Session *ses);
 	RC					classify(PIN *pin,ClassResult& res);
 	RC					enable(Session *ses,Class *cls,unsigned notifications);
 	void				disable(Session *ses,Class *cls,unsigned notifications);
 	RWLock				*getLock() {return &rwlock;}
-	void				setMaxPropID(PropertyID id);
 	RC					getClassInfo(ClassID cid,Class *&cls,uint64_t& nPINs);
 	RC					index(Session *ses,PIN *pin,const ClassResult& clr,ClassIdxOp op,const struct PropInfo **ppi=NULL,unsigned npi=0,const PageAddr *old=NULL);
-	RC					initClasses(Session *ses);
 	RC					rebuildAll(Session *ses);
 	RC					classifyAll(PIN *const *pins,unsigned nPins,Session *ses,bool fDrop=false);
 	RC					dropClass(Class *cls,Session *ses);
@@ -514,20 +496,15 @@ public:
 	TreeGlobalRoot&		getClassMap() {return classMap;}
 	Class				*getClass(ClassID cid,RW_LockType lt=RW_S_LOCK);
 	RC					setFlags(ClassID,unsigned,unsigned);
-	PropertyID			getXPropID() const {return (PropertyID)xPropID;}
 	RC					findEnumVal(Session *ses,URIID enumid,const char *name,size_t lname,ElementID& ei);
 	RC					findEnumStr(Session *ses,URIID enumid,ElementID ei,char *buf,size_t& lbuf);
+	RC					initClassPIN(Session *ses,ClassID cid,const PropertyID *props,unsigned nProps,PIN *&pin);
 	
 	byte				getID() const;
 	byte				getParamLength() const;
 	void				getParams(byte *buf,const Tree& tr) const;
 	RC					createTree(const byte *params,byte lparams,Tree *&tree);
-	static	const char	*getBuiltinName(URIID uid,size_t& lname);
-	static	URIID		getBuiltinURIID(const char *name,size_t lname,bool fSrv);
-	static	uint16_t	getMeta(ClassID cid);
-	static	const		SpecPINProps specPINProps[9];
 private:
-	static	const		BuiltinURI	builtinURIs[];
 	RC					add(Session *ses,const ClassRef& cr,const Stmt *qry);
 	ClassRefT			*findBaseRef(const Class *base,Session *ses);
 	ClassPropIndex		*getClassPropIndex(const SimpleVar *qv,Session *ses,bool fAdd=true);

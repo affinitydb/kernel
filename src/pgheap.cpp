@@ -355,7 +355,7 @@ RC HeapPageMgr::update(PBlock *pb,size_t len,unsigned info,const byte *rec,size_
 						if (newPtr->type.isCompact()) elt->offset=newPtr->ptr.offset;
 						else {
 							memcpy(frame+elt->offset,data,newPtr->ptr.len);
-							if (newPtr->type.isCollection()) hpin->hdr.descr|=adjustCompound(frame,elt,elt->offset,ctx);
+							if (newPtr->type.isCompound()) hpin->hdr.descr|=adjustCompound(frame,elt,elt->offset,ctx);
 						}
 					}
 					hpin->hdr.length+=ushort(delta); break;
@@ -408,7 +408,7 @@ RC HeapPageMgr::update(PBlock *pb,size_t len,unsigned info,const byte *rec,size_
 					hprop->offset=newPtr->ptr.offset;
 				} else {
 					assert(nl!=0); memcpy(frame+hprop->offset,data,nl);
-					if (hprop->type.isCollection()) hpin->hdr.descr|=adjustCompound(frame,hprop,hprop->offset,ctx);
+					if (hprop->type.isCompound()) hpin->hdr.descr|=adjustCompound(frame,hprop,hprop->offset,ctx);
 				}
 			} else {
 				const ushort nElts=newPtr->type.isCollection()?((const HeapVV*)data)->cnt:1;
@@ -636,7 +636,7 @@ const HeapPageMgr::HeapTypeInfo HeapPageMgr::typeInfo[VT_ALL] =
 	{0,					0},						//	VT_EXPRTREE
 };
 
-const ushort HeapPageMgr::refLength[4] = {0,PageAddrSize,sizeof(OID),sizeof(OID)+sizeof(IdentityID)};
+const ushort HeapPageMgr::refLength[4] = {0,PageAddrSize,sizeof(uint64_t),sizeof(uint64_t)+sizeof(IdentityID)};
 
 ushort HeapPageMgr::dataLength(HType vt,const byte *pData,const byte *frame,unsigned *idxMask)
 {
@@ -911,8 +911,8 @@ bool HeapPageMgr::HeapPIN::getAddr(PID& id) const
 	switch (fmt) {
 	case HDF_COMPACT: return false;
 	case HDF_SHORT: memcpy(&addr,p,PageAddrSize); id.pid=addr; break;
-	case HDF_NORMAL: id.pid=__una_get(*(OID*)p); break;
-	case HDF_LONG: id.pid=__una_get(*(OID*)p); id.ident=__una_get(*(IdentityID*)(p+sizeof(OID))); break;
+	case HDF_NORMAL: id.pid=__una_get(*(uint64_t*)p); break;
+	case HDF_LONG: id.pid=__una_get(*(uint64_t*)p); id.ident=__una_get(*(IdentityID*)(p+sizeof(uint64_t))); break;
 	}
 	return true;
 }
@@ -956,8 +956,8 @@ void HeapPageMgr::HeapPage::getRef(PID& id,HeapDataFmt fmt,PageOff offs) const
 	PageAddr addr;
 	switch (fmt) {
 	default: id.pid=STORE_INVALID_PID; id.ident=STORE_INVALID_IDENTITY; break;
-	case HDF_LONG: memcpy(&id.pid,(byte*)this+offs,sizeof(OID)); memcpy(&id.ident,(byte*)this+offs+sizeof(OID),sizeof(IdentityID)); break;
-	case HDF_NORMAL: memcpy(&id.pid,(byte*)this+offs,sizeof(OID)); id.ident=STORE_OWNER; break; 
+	case HDF_LONG: memcpy(&id.pid,(byte*)this+offs,sizeof(uint64_t)); memcpy(&id.ident,(byte*)this+offs+sizeof(uint64_t),sizeof(IdentityID)); break;
+	case HDF_NORMAL: memcpy(&id.pid,(byte*)this+offs,sizeof(uint64_t)); id.ident=STORE_OWNER; break; 
 	case HDF_SHORT: memcpy(&addr,(byte*)this+offs,PageAddrSize); id.pid=addr; id.ident=STORE_OWNER; break;
 	case HDF_COMPACT: addr.pageID=hdr.pageID; addr.idx=(PageIdx)offs; id.pid=addr; id.ident=STORE_OWNER; break;
 	}
@@ -1039,7 +1039,7 @@ RC PINPageMgr::addPagesToMap(const PageSet& ps,Session *ses,bool fCl)
 							PBlock *next=ctx->bufMgr->newPage(dPages[i],ctx->hdirMgr,NULL,0,ses);
 							if (next==NULL) {rc=RC_NORESOURCES; break;}
 							pb2->checkDepth(); rc=ctx->txMgr->update(pb2,ctx->hdirMgr,HDU_NEXT,(byte*)&dPages[i],sizeof(PageID),0,next);
-							pb2.release(ses); pb2=next; if (rc!=RC_OK) break;
+							pb2.release(ses); pb2=next; pb2.set(QMGR_UFORCE); if (rc!=RC_OK) break;
 						}
 						if (rc==RC_OK) {
 							anchorUpdate.oldPageID=last; anchorUpdate.newPageID=dPages[nDirPages-1];

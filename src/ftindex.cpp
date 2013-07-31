@@ -265,7 +265,7 @@ RC FTIndexMgr::rebuildIndex(Session *ses)
 #if 0
 			assert(!qr.pb.isNull() && qr.hpin!=NULL);
 			SubAlloc sa(ses); FTList ftl(sa); Value v; ctx->queryMgr->loadV(v,PROP_SPEC_DOCUMENT,qr,0,ses);
-			ChangeInfo inf={qr.id,v.type==VT_REFID?v.id:PIN::defPID,NULL,&v,STORE_INVALID_URIID,STORE_COLLECTION_ID};
+			ChangeInfo inf={qr.id,v.type==VT_REFID?v.id:PIN::noPID,NULL,&v,STORE_INVALID_URIID,STORE_COLLECTION_ID};
 			const HeapPageMgr::HeapV *hprop=qr.hpin->getPropTab();
 			for (unsigned k=0; k<qr.hpin->nProps; ++k,++hprop) if ((hprop->type.flags&META_PROP_FTINDEX)!=0) {
 				if ((rc=ctx->queryMgr->loadVH(v,hprop,qr,LOAD_SSV,NULL))!=RC_OK) break;

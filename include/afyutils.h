@@ -300,6 +300,20 @@ public:
 };
 
 /**
+ * simple single-linked list with counter
+ */
+template<typename T,T *T::*pList> struct Queue
+{
+	T			*head;
+	T			*tail;
+	uint32_t	count;
+	Queue() : head(NULL),tail(NULL),count(0) {}
+	void		operator+=(T *t) {if (tail==NULL) head=t; else tail->*pList=t; tail=t; t->*pList=NULL; count++;}
+	void		operator+=(Queue<T,pList>& q) {if (q.head!=NULL) {if (tail==NULL) head=q.head; else tail->*pList=q.head; tail=q.tail; count+=q.count;}}
+	void		reset() {head=tail=NULL; count=0;}
+};
+
+/**
  * double-linked circular list
  * trades space for O(1) insertion and deletion operations
  */

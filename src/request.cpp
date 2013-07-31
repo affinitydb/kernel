@@ -156,8 +156,8 @@ void ThreadGroup::processRequests()
 		for (long s=req->state; !cas(&req->state,s,s|RQ_IN_PROGRESS); s=req->state);
 		if ((req->state&RQ_SKIP)==0 && (ref==NULL||!ref->ctx.inShutdown())) try {req->process();} catch (...) {}
 		for (long s=req->state; !cas(&req->state,s,s&~(RQ_IN_PROGRESS|RQ_IN_QUEUE)); s=req->state);
-		req->destroy(); assert(ses->getTxState()==TX_NOTRAN && !ses->hasLatched()); ses->set(NULL);
-		if (ref!=NULL) InterlockedDecrement(&ref->cnt);
+		req->destroy(); assert(ses->getTxState()==TX_NOTRAN && !ses->hasLatched());
+		ses->cleanup(); ses->set(NULL); if (ref!=NULL) InterlockedDecrement(&ref->cnt);
 		nth=InterlockedDecrement(&nThreads); if (rqt!=RQ_IO && nth>nProcessors && nth>nPendingRequests/THREAD_FACTOR+THREAD_DELTA) break;
 		InterlockedIncrement(&nThreads);
 	}

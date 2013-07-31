@@ -74,6 +74,13 @@ RC Expr::create(uint16_t langID,const byte *body,uint32_t lBody,uint16_t flags,E
 	memcpy(&exp->hdr+1,body,lBody); return RC_OK;
 }
 
+RC Expr::substitute(Expr *&exp,const Value *pars,unsigned nPars,MemAlloc *ma)
+{
+	ExprTree *et=NULL; RC rc; if ((rc=exp->decompile(et,ma))!=RC_OK) return rc;
+	if ((rc=et->substitute(pars,nPars,ma))!=RC_OK || (rc=Expr::compile(et,exp,ma,false))!=RC_OK) return rc;
+	return RC_OK;
+}
+
 void Expr::getExtRefs(ushort var,const PropertyID *&pids,unsigned& nPids) const
 {
 	pids=NULL; nPids=0;
@@ -307,13 +314,14 @@ RC ExprCompileCtx::compileNode(const ExprTree *node,unsigned flg)
 					if ((p=alloc(4))!=NULL) {p[0]=OP_PARAM; p[1]=0xFF; p[2]=QV_AGGS; p[3]=byte(aggs->nValues);} else return RC_NORESOURCES;
 				} else return RC_NORESOURCES;
 				assert(aggs->vals==NULL||aggs->fFree); aggs->fFree=true;
-				if ((aggs->vals=(Value*)ma->realloc((Value*)aggs->vals,(aggs->nValues+1)*sizeof(Value)))==NULL) return RC_NORESOURCES;
-				Value &to=((Value*)aggs->vals)[aggs->nValues];
+				if ((aggs->vals=(Value*)ma->realloc((Value*)aggs->vals,(aggs->nValues+1)*sizeof(Value),aggs->nValues*sizeof(Value)))==NULL) return RC_NORESOURCES;
+				Value &to=((Value*)aggs->vals)[aggs->nValues++];
 				if (node->operands[0].type==VT_EXPRTREE) {
 					Expr *ag; if ((rc=Expr::compile((ExprTree*)node->operands[0].exprt,ag,ma,false))!=RC_OK) return rc; to.set(ag,1);
 				} else if ((rc=copyV(node->operands[0],to,ma))!=RC_OK) return rc;
 				to.op=node->op; //if ((node->flags&DISTINCT_OP)!=0) ->META_PROP_DISTINCT
-				lStack++; return RC_OK;
+				if (++lStack>pHdr->hdr.lStack) pHdr->hdr.lStack=lStack;
+				return RC_OK;
 			}
 			if ((node->flags&DISTINCT_OP)!=0) {f|=CND_DISTINCT; if (l==1) l=2;}
 		}
@@ -335,7 +343,7 @@ RC ExprCompileCtx::compileValue(const Value& v,unsigned flg) {
 		case VT_VARREF: 
 			switch (v.refV.flags&VAR_TYPE_MASK) {
 			default: break;
-			case VAR_SELF: vdx=(0xFFFE)-v.refV.refN; goto addref;
+			case VAR_CTX: vdx=(0xFFFE)-v.refV.refN; goto addref;
 			case 0: vdx=v.refV.refN;
 			addref: if ((flg&CV_NDATA)==0 && v.length!=0 && (rc=addExtRef(v.refV.id,vdx,((flg&CV_CARD)?PROP_ORD:0)|((flg&CV_OPT)!=0?PROP_OPTIONAL:0),vdx,pdx))!=RC_OK) return rc;
 			}
@@ -362,7 +370,7 @@ RC ExprCompileCtx::compileValue(const Value& v,unsigned flg) {
 	switch (v.type) {
 	case VT_EXPRTREE: return compileNode((const ExprTree*)v.exprt);
 	case VT_VARREF:
-		if ((pdx=v.refV.flags&VAR_TYPE_MASK)==0 || pdx==VAR_SELF) {
+		if ((pdx=v.refV.flags&VAR_TYPE_MASK)==0 || pdx==VAR_CTX) {
 			const bool fSelf=pdx!=0;
 			if (v.length==0 || v.refV.id==PROP_SPEC_SELF) {
 				if ((p=alloc(2))==NULL) return RC_NORESOURCES; p[0]=(fSelf?OP_ENVV:OP_VAR)|fc; p[1]=v.refV.refN; pHdr->hdr.flags|=EXPR_SELF;
@@ -549,7 +557,7 @@ RC ExprCompileCtx::compileCondition(const ExprTree *node,unsigned mode,uint32_t 
 	return rc;
 }
 
-RC Expr::decompile(ExprTree*&res,Session *ses) const
+RC Expr::decompile(ExprTree*&res,MemAlloc *ma) const
 {
 	if ((hdr.flags&EXPR_EXTN)!=0) {res=NULL; return RC_INVPARAM;}
 	if ((hdr.flags&EXPR_NO_CODE)!=0) {
@@ -562,7 +570,7 @@ RC Expr::decompile(ExprTree*&res,Session *ses) const
 		switch (op&=0x7F) {
 		case OP_CON:
 			if (top>=end) {rc=RC_NORESOURCES; break;}
-			if ((rc=AfyKernel::deserialize(*top,codePtr,codeEnd,ses,true))==RC_OK) top++;
+			if ((rc=AfyKernel::deserialize(*top,codePtr,codeEnd,ma,true))==RC_OK) top++;
 			break;
 		case OP_CONID:
 			l=*codePtr++; if (l==0xFF) {l=codePtr[0]|codePtr[1]<<8; codePtr+=2;}
@@ -583,29 +591,29 @@ RC Expr::decompile(ExprTree*&res,Session *ses) const
 				if (op==OP_ELT||op==OP_ENVV_ELT) {afy_dec32(codePtr,eid); eid=afy_dec32zz(eid);}
 				else if (op==OP_SETPROP) {if (top>stack) {top[-1].property=l; if (ff) top[-1].meta=*codePtr++;} else rc=RC_CORRUPTED; break;}
 			}
-			top->setVarRef((byte)idx,l); top->eid=eid; if (op<=OP_ENVV) top->refV.flags=VAR_SELF;
-			if (ff) {if ((exp=new(1,ses) ExprTree(OP_COUNT,1,0,0,top,ses))!=NULL) top->set(exp); else rc=RC_NORESOURCES;}
+			top->setVarRef((byte)idx,l); top->eid=eid; if (op<=OP_ENVV) top->refV.flags=VAR_CTX;
+			if (ff) {if ((exp=new(1,ma) ExprTree(OP_COUNT,1,0,0,top,ma))!=NULL) top->set(exp); else rc=RC_NORESOURCES;}
 			top++; break;
 		case OP_PARAM: case OP_RXREF:
 			if (top>=end) {rc=RC_NORESOURCES; break;}
 			if (op==OP_RXREF) {top->setParam(0); top->refV.flags=VAR_REXP; top->refV.id=codePtr[0]|codePtr[1]<<8; codePtr+=2; top->length=1;}
 			else if ((idx=*codePtr++)!=0xFF) {top->setParam(idx&0x3F); top->refV.flags=(uint16_t(idx&0xC0)+0x40)<<7;}
 			else {top->setParam(codePtr[1]); top->refV.flags=(uint16_t(codePtr[0])+1)<<13; codePtr+=2;}
-			if (ff) {if ((exp=new(1,ses) ExprTree(OP_COUNT,1,0,0,top,ses))!=NULL) top->set(exp); else rc=RC_NORESOURCES;}
+			if (ff) {if ((exp=new(1,ma) ExprTree(OP_COUNT,1,0,0,top,ma))!=NULL) top->set(exp); else rc=RC_NORESOURCES;}
 			top++; break;
 		case OP_PATH:
 			l=*codePtr++; if (ff) flg=*codePtr++;
 			for (idx=0; idx<l; idx++) {
 				byte f=*codePtr++; Value operands[4]; unsigned nops=2; operands[0].setError(); Expr *filter; ExprTree *et; uint16_t rm,rx;
 				if ((f&0x02)!=0) {assert(top>=stack+1); operands[1]=*--top;}
-				else if ((rc=AfyKernel::deserialize(operands[1],codePtr,codeEnd,ses,true))!=RC_OK) break;
+				else if ((rc=AfyKernel::deserialize(operands[1],codePtr,codeEnd,ma,true))!=RC_OK) break;
 				switch (f&0x18) {
 				case 0: break;
 				case 0x08: afy_dec32(codePtr,jsht); jsht=afy_dec32zz((uint32_t)jsht); operands[2].set((unsigned)jsht); nops=3; break;
 				case 0x10: assert(top>=stack+1); operands[2]=*--top; nops=3; break;
 				case 0x18: 
-					if ((rc=deserialize(filter,codePtr,codeEnd,ses))==RC_OK) {		 //classID ??
-						if ((rc=filter->decompile(et,ses))==RC_OK) {operands[2].set(et); nops=3;}
+					if ((rc=deserialize(filter,codePtr,codeEnd,ma))==RC_OK) {		 //classID ??
+						if ((rc=filter->decompile(et,ma))==RC_OK) {operands[2].set(et); nops=3;}
 						filter->destroy();
 					}
 					break;
@@ -616,7 +624,7 @@ RC Expr::decompile(ExprTree*&res,Session *ses) const
 				case 0x80: afy_dec16(codePtr,rm); afy_dec16(codePtr,rx); operands[3].set((unsigned)rx<<16|rm); nops=4; break;
 				case 0xA0: assert(top>=stack+1); operands[3]=*--top; nops=4; break;
 				}
-				ExprTree *ex=new(nops,ses) ExprTree(OP_PATH,nops,0,(flg>>5&0x06)|(flg&0x01),operands,ses);
+				ExprTree *ex=new(nops,ma) ExprTree(OP_PATH,nops,0,(flg>>5&0x06)|(flg&0x01),operands,ma);
 				if (ex==NULL) rc=RC_NORESOURCES; else if (exp==NULL) exp=exp0=ex; else {exp->operands[0].set(ex); exp=ex;}
 			}
 			if (rc==RC_OK) {
@@ -650,34 +658,34 @@ RC Expr::decompile(ExprTree*&res,Session *ses) const
 				if (top[-2].type==VT_EXPRTREE && ((ExprTree*)top[-2].exprt)->op==OP_IN && top[-1].type!=VT_EXPRTREE) {
 					Value &v=((ExprTree*)top[-2].exprt)->operands[1];
 					if (v.type==VT_ARRAY) {
-						Value *pv=(Value*)ses->realloc((void*)v.varray,(v.length+1)*sizeof(Value));
+						Value *pv=(Value*)ma->realloc((void*)v.varray,(v.length+1)*sizeof(Value));
 						if (pv!=NULL) {pv[v.length++]=*--top; v.varray=pv;} else {rc=RC_NORESOURCES; break;}
 					} else {
-						Value *pv=new(ses) Value[2]; if (pv==NULL) {rc=RC_NORESOURCES; break;}
+						Value *pv=new(ma) Value[2]; if (pv==NULL) {rc=RC_NORESOURCES; break;}
 						pv[0]=v; pv[1]=*--top; v.set(pv,2); v.flags=SES_HEAP;
 					}
 					if (op==OP_IN) {exp=(ExprTree*)(--top)->exprt; goto bool_op;} else break;
 				}
 			}
 			assert(top>=stack+2);
-			if ((exp=new(2,ses) ExprTree(OP_IN,2,0,0,top-2,ses))==NULL) {rc=RC_NORESOURCES; break;}
+			if ((exp=new(2,ma) ExprTree(OP_IN,2,0,0,top-2,ma))==NULL) {rc=RC_NORESOURCES; break;}
 			if (op==OP_IN) {top-=2; goto bool_op;} else {--top; top[-1].set(exp); break;}
 		case OP_ISLOCAL:
 			assert(top>stack);
-			if ((exp=new(1,ses) ExprTree((ExprOp)op,1,0,0,top-1,ses))==NULL) {rc=RC_NORESOURCES; break;}
+			if ((exp=new(1,ma) ExprTree((ExprOp)op,1,0,0,top-1,ma))==NULL) {rc=RC_NORESOURCES; break;}
 			--top; goto bool_op;
 		case OP_IS_A:
 			l=ff?*codePtr++:2; assert(top>=stack+l);
-			if ((exp=new(l,ses) ExprTree((ExprOp)op,(ushort)l,0,0,top-l,ses))==NULL) {rc=RC_NORESOURCES; break;}
+			if ((exp=new(l,ma) ExprTree((ExprOp)op,(ushort)l,0,0,top-l,ma))==NULL) {rc=RC_NORESOURCES; break;}
 			top-=l; goto bool_op;
 		case OP_EXISTS:
 			assert(top>=stack);
 			if (top[-1].type==VT_EXPRTREE && (exp=(ExprTree*)top[-1].exprt)->op==OP_COUNT) exp->op=OP_EXISTS;
-			else if ((exp=new(1,ses) ExprTree(OP_EXISTS,1,0,0,top-1,ses))==NULL) {rc=RC_NORESOURCES; break;}
+			else if ((exp=new(1,ma) ExprTree(OP_EXISTS,1,0,0,top-1,ma))==NULL) {rc=RC_NORESOURCES; break;}
 			--top; goto bool_op;
 		case OP_EQ: case OP_NE: case OP_LT: case OP_LE: case OP_GT: case OP_GE: case OP_CONTAINS: case OP_BEGINS: case OP_ENDS: case OP_SIMILAR:
 			assert(top>=stack+2);
-			if ((exp=new(2,ses) ExprTree((ExprOp)op,2,0,0,top-2,ses))==NULL) {rc=RC_NORESOURCES; break;}
+			if ((exp=new(2,ma) ExprTree((ExprOp)op,2,0,0,top-2,ma))==NULL) {rc=RC_NORESOURCES; break;}
 			top-=2;
 		bool_op:
 			if (((l=*codePtr++)&CND_EXT)!=0) {
@@ -698,7 +706,7 @@ RC Expr::decompile(ExprTree*&res,Session *ses) const
 			top->set(exp); top->meta=byte(l); top->eid=jsht; top++;
 			while (top>=stack+2 && (logOp[l][idx=0]==top[-2].meta || logOp[l][idx=1]==top[-2].meta)
 							&& (jumpOp[l][idx]?codePtr-(const byte*)(this+1):jsht)==top[-2].eid) {
-				if ((exp=new(2,ses) ExprTree((ExprOp)(idx+OP_LAND),2,0,0,top-2,ses))==NULL) {rc=RC_NORESOURCES; break;}
+				if ((exp=new(2,ma) ExprTree((ExprOp)(idx+OP_LAND),2,0,0,top-2,ma))==NULL) {rc=RC_NORESOURCES; break;}
 				--top; top[-1].set(exp); top[-1].meta=(byte)l; top[-1].eid=jsht;
 			}
 			break;
@@ -714,14 +722,14 @@ RC Expr::decompile(ExprTree*&res,Session *ses) const
 				}
 			}
 			assert(top>=stack+l);
-			if ((exp=new(l,ses) ExprTree((ExprOp)op,(ushort)l,0,flg,top-l,ses))==NULL) rc=RC_NORESOURCES;
+			if ((exp=new(l,ma) ExprTree((ExprOp)op,(ushort)l,0,flg,top-l,ma))==NULL) rc=RC_NORESOURCES;
 			else {top-=l-1; top[-1].set(exp);}
 			break;
 		}
 		if (rc!=RC_OK) {while (top>stack) freeV(*--top); return rc;}
 	}
 	assert(top==stack+1);
-	if ((rc=ExprTree::forceExpr(*stack,ses))==RC_OK) res=(ExprTree*)stack->exprt;
+	if ((rc=ExprTree::forceExpr(*stack,ma))==RC_OK) res=(ExprTree*)stack->exprt;
 	return RC_OK;
 }
 
@@ -1095,11 +1103,11 @@ RC ExprTree::cvNot(Value& v)
 	return rc;
 }
 
-RC ExprTree::forceExpr(Value& v,Session *ses,bool fCopyV)
+RC ExprTree::forceExpr(Value& v,MemAlloc *ma,bool fCopyV)
 {
 	if (v.type!=VT_EXPRTREE) {
-		ExprTree *pe=new(1,ses) ExprTree((ExprOp)OP_CON,1,vRefs(v),fCopyV?COPY_VALUES_OP:0,&v,ses);
-		if (pe==NULL) return RC_NORESOURCES; v.set(pe); v.flags=SES_HEAP;
+		ExprTree *pe=new(1,ma) ExprTree((ExprOp)OP_CON,1,vRefs(v),fCopyV?COPY_VALUES_OP:0,&v,ma);
+		if (pe==NULL) return RC_NORESOURCES; v.set(pe); v.flags=ma->getAType();
 	}
 	return RC_OK;
 }
@@ -1194,15 +1202,11 @@ RC ExprTree::normalizeMap(Value *vals,unsigned nvals,Value &res,MemAlloc *ma)
 	res.set(mm); res.flags=ma->getAType(); return RC_OK;	// nExpr???
 }
 
-RC ExprTree::substitute(Value& v,const Value *params,unsigned nParams,MemAlloc *ma)
+RC ExprTree::substitute(const Value *pars,unsigned nPars,MemAlloc *ma)
 {
-	if (v.type==VT_EXPRTREE) {
-		ExprTree *et=(ExprTree*)v.exprt; RC rc;
-		for (unsigned i=0; i<et->nops; i++) if ((rc=substitute(*(Value*)&et->operands[i],params,nParams,ma))!=RC_OK) return rc;
-	} else if (v.type==VT_VARREF && (v.refV.flags&VAR_TYPE_MASK)==VAR_PARAM && v.refV.refN<nParams) {
-		RC rc=copyV(params[v.refV.refN],v,ma); if (rc!=RC_OK) return rc;
-	}
-	return RC_OK;
+	RC rc=RC_OK;
+	for (unsigned i=0; i<nops; i++) if ((rc=AfyKernel::substitute(*(Value*)&operands[i],pars,nPars,ma))!=RC_OK) break;
+	return rc;
 }
 
 ExprTree::ExprTree(ExprOp o,ushort no,ushort vr,unsigned f,const Value *ops,MemAlloc *m) 

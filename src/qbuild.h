@@ -60,6 +60,8 @@ namespace AfyKernel
 #define	MODE_CHECKBI		0x00002000
 #define	MODE_CASCADE		0x00001000
 #define	MODE_FSM			0x00001000
+#define	MODE_PID			0x00000800
+#define	MODE_INMEM			0x00000400
 
 /**
  * internal Value::flags flags (maximum 0x40)
@@ -142,14 +144,14 @@ struct ValueV
  */
 enum QCtxVT
 {
-	QV_PARAMS, QV_CORRELATED, QV_AGGS, QV_GROUP, QV_REXP, QV_SELF, QV_ALL
+	QV_PARAMS, QV_CORRELATED, QV_AGGS, QV_GROUP, QV_REXP, QV_CTX, QV_ALL
 };
 
 #define	VAR_CORR	((QV_CORRELATED+1)<<13)
 #define	VAR_AGGS	((QV_AGGS+1)<<13)
 #define	VAR_GROUP	((QV_GROUP+1)<<13)
 #define	VAR_REXP	((QV_REXP+1)<<13)
-#define	VAR_SELF	((QV_SELF+1)<<13)
+#define	VAR_CTX		((QV_CTX+1)<<13)
 #define	VAR_NAMED	((QV_ALL+1)<<13)
 
 /**

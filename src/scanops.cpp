@@ -120,7 +120,7 @@ RC FullScan::advance(const PINx *skip)
 				res->addr.idx=(PageIdx)slot++; const HeapPageMgr::HeapPage *hp=(HeapPageMgr::HeapPage*)pb->getPageBuf();
 				const HeapPageMgr::HeapPIN *hpin=(const HeapPageMgr::HeapPIN *)hp->getObject(hp->getOffset(PageIdx(res->addr.idx)));
 				if (hpin==NULL) {
-					res->pb=(PBlock*)pb;
+					res->pb=(PBlock*)pb; if ((qflags&QO_FORUPDATE)!=0) res->pb.set(QMGR_UFORCE);
 					if (qx->ses->getStore()->lockMgr->getTVers(*res,(qflags&QO_FORUPDATE)!=0?TVO_UPD:TVO_READ)==RC_OK && res->tv!=NULL) {
 						// check deleted in uncommitted tx
 					}
@@ -131,7 +131,8 @@ RC FullScan::advance(const PINx *skip)
 						// check deleted before/inserted in uncommited
 					}
 					if ((hpin->hdr.descr&mask)==mask>>16) {
-						res->pb=(PBlock*)pb; res->hpin=hpin; res->copyFlags(); res->epr.flags|=PINEX_ADDRSET; return RC_OK;
+						res->pb=(PBlock*)pb; if ((qflags&QO_FORUPDATE)!=0) res->pb.set(QMGR_UFORCE);
+						res->hpin=hpin; res->copyFlags(); res->epr.flags|=PINEX_ADDRSET; return RC_OK;
 					}
 				}
 			}
@@ -155,7 +156,7 @@ void FullScan::print(SOutCtx& buf,int level) const
 
 //-----------------------------------------------------------------------------------------------
 
-ClassScan::ClassScan(QCtx *s,ClassID cid,unsigned qflags) : QueryOp(s,qflags|QO_UNIQUE|QO_STREAM|QO_IDSORT),scan(NULL),meta(Classifier::getMeta(cid))
+ClassScan::ClassScan(QCtx *s,ClassID cid,unsigned qflags) : QueryOp(s,qflags|QO_UNIQUE|QO_STREAM|QO_IDSORT),scan(NULL),meta(NamedMgr::getMeta(cid))
 {
 	new(&key) SearchKey((uint64_t)cid);
 //	if (s->ses->getIdentity()!=STORE_OWNER && (cls->getFlags()&META_PROP_ACL)!=0) {	-> qflags
@@ -178,7 +179,7 @@ RC ClassScan::init()
 
 RC ClassScan::advance(const PINx *skip)
 {
-	if (res!=NULL) {res->cleanup(); *res=PIN::defPID;} if (scan==NULL) return RC_NORESOURCES;
+	if (res!=NULL) {res->cleanup(); *res=PIN::noPID;} if (scan==NULL) return RC_NORESOURCES;
 	size_t lData; const byte *er; byte *sk=NULL,lsk=0; RC rc;
 	if (skip!=NULL && (skip->epr.lref!=0 || skip->pack()==RC_OK)) {sk=skip->epr.buf; lsk=skip->epr.lref;}
 	while ((er=(const byte*)scan->nextValue(lData,GO_NEXT,sk,lsk))!=NULL) {
@@ -218,8 +219,8 @@ RC ClassScan::count(uint64_t& cnt,unsigned nAbort)
 void ClassScan::print(SOutCtx& buf,int level) const
 {
 	buf.fill('\t',level); buf.append("class: ",7);
-	URI *uri=(URI*)qx->ses->getStore()->uriMgr->ObjMgr::find((uint32_t)key.v.u); char cbuf[20]; const char *s;
-	if (uri!=NULL&&(s=uri->getName())!=NULL) buf.append(s,strlen(s));
+	URI *uri=(URI*)qx->ses->getStore()->uriMgr->ObjMgr::find((uint32_t)key.v.u); char cbuf[20]; const StrLen *s;
+	if (uri!=NULL&&(s=uri->getName())!=NULL) buf.append(s->str,s->len);
 	else {sprintf(cbuf,"%08X",(uint32_t)key.v.u); buf.append(cbuf,8);}
 	if (uri!=NULL) uri->release(); buf.append("\n",1);
 }
@@ -289,7 +290,7 @@ RC SpecClassScan::count(uint64_t& cnt,unsigned nAbort)
 void SpecClassScan::print(SOutCtx& buf,int level) const
 {
 	buf.fill('\t',level); buf.append("class: ",7);
-	size_t l; const char *name=qx->ses->getStore()->classMgr->getBuiltinName(cls,l);
+	size_t l; const char *name=qx->ses->getStore()->namedMgr->getBuiltinName(cls,l);
 	if (name!=NULL && l!=0) buf.append(name,l); else buf.append("???",3);
 	buf.append("\n",1);
 }
@@ -376,7 +377,7 @@ RC IndexScan::advance(const PINx *skip)
 				(*pids)+=pex;
 			}
 			if (res!=NULL) {
-				*res=PIN::defPID; memcpy(res->epr.buf,er,res->epr.lref=(byte)l);
+				*res=PIN::noPID; memcpy(res->epr.buf,er,res->epr.lref=(byte)l);
 				if ((qflags&QO_CHECKED)!=0) res->epr.flags|=PINEX_ACL_CHKED;
 			}
 			return RC_OK;
@@ -405,7 +406,7 @@ RC IndexScan::count(uint64_t& cnt,unsigned nAbort)
 			if ((rc=qx->ses->testAbortQ())!=RC_OK) return rc;
 			// if (PINRef::hasU1() && PINRef::u1!=classID) continue;
 			if ((qflags&QO_UNIQUE)!=0 && PINRef::isColl(er,l)) {
-				cb=PIN::defPID; memcpy(cb.epr.buf,er,cb.epr.lref=(byte)l);
+				cb=PIN::noPID; memcpy(cb.epr.buf,er,cb.epr.lref=(byte)l);
 				if (pids!=NULL) {if ((*pids)[cb]) continue;}
 				else if ((pids=new(qx->ses) PIDStore(qx->ses))==NULL) return RC_NORESOURCES;
 				(*pids)+=cb;
@@ -467,9 +468,9 @@ ExprScan::ExprScan(QCtx *qc,const Value& v,unsigned qf) : QueryOp(qc,qf|QO_STREA
 {
 	if ((qf&QO_VCOPIED)!=0) copyV(v,expr,qc->ses); else expr=v; r.setError();
 	switch (expr.type) {
-	case VT_REF: case VT_REFID: case VT_STRUCT: qflags|=QO_UNIQUE|QO_IDSORT; break;
+	case VT_REF: case VT_REFID: case VT_STRUCT: case VT_RANGE: qflags|=QO_UNIQUE|QO_IDSORT; break;
 	case VT_VARREF:
-		if ((expr.refV.flags&VAR_TYPE_MASK)==VAR_SELF) qflags|=QO_UNIQUE|QO_IDSORT;
+		if ((expr.refV.flags&VAR_TYPE_MASK)==VAR_CTX) qflags|=QO_UNIQUE|QO_IDSORT;
 		else {
 			//???
 		}
@@ -518,13 +519,17 @@ RC ExprScan::init()
 	case VT_VARREF:
 		if ((rc=qx->ses->getStore()->queryMgr->eval(&expr,EvalCtx(qx->ses,qx->ectx!=NULL?qx->ectx->env:NULL,qx->ectx!=NULL?qx->ectx->nEnv:0,NULL,0,qx->vals,QV_ALL,qx->ectx),&r))!=RC_OK) return rc;
 		break;
+	case VT_RANGE:
+		if (expr.varray[0].type!=VT_INT && expr.varray[0].type!=VT_UINT || expr.varray[0].type!=expr.varray[1].type) return RC_EOF;
+		if (expr.varray[0].type==VT_INT) {if (expr.varray[0].i>expr.varray[1].i) return RC_EOF;} else if (expr.varray[0].ui>expr.varray[1].ui) return RC_EOF;
+		r=expr; setHT(r); idx=expr.varray[0].ui; break;
 	}
 	return RC_OK;
 }
 
 RC ExprScan::advance(const PINx *skip)
 {
-	const Value *cv;
+	const Value *cv; Value *pv;
 	if ((state&QST_BOF)!=0) {state&=~QST_BOF; if ((state&QST_EOF)!=0) return RC_OK;}
 	if (res!=NULL) {res->cleanup(); res->epr.flags=PINEX_EXTPID;}
 	switch (r.type) {
@@ -549,6 +554,12 @@ RC ExprScan::advance(const PINx *skip)
 		break;
 	case VT_REFID: case VT_REF:
 		state|=QST_EOF; if (res!=NULL) {if (r.type==VT_REFID) *res=r.id; else res->copy((PIN*)r.pin,(qflags&QO_FORUPDATE)!=0?PGCTL_ULOCK:0);} return RC_OK;
+		break;
+	case VT_RANGE:
+		if (r.varray[0].type==VT_INT) {if ((int)idx>r.varray[1].i) break;} else if (idx>r.varray[1].ui) break;
+		if ((pv=new(qx->ses) Value)==NULL) return RC_NORESOURCES;
+		pv->set(idx); pv->type=r.varray[0].type; pv->setPropID(PROP_SPEC_VALUE); idx++;
+		res->setProps(pv,1,0); res->epr.flags|=PINEX_DERIVED; return RC_OK;
 	}
 	state|=QST_EOF; return RC_EOF;
 }
@@ -570,7 +581,7 @@ RC ExprScan::count(uint64_t& cnt,unsigned)
 	case VT_ARRAY: cnt=expr.length; break;
 	case VT_COLLECTION: cnt=expr.nav->count(); break;
 	case VT_VARREF:
-		if ((expr.refV.flags&VAR_TYPE_MASK)==VAR_SELF) {cnt=1; break;}
+		if ((expr.refV.flags&VAR_TYPE_MASK)==VAR_CTX) {cnt=1; break;}
 	case VT_STMT: case VT_EXPR:
 		//???
 		break;
@@ -606,7 +617,7 @@ RC FTScan::init()
 
 RC FTScan::advance(const PINx *skip)
 {
-	if (res!=NULL) {res->cleanup(); res->epr.lref=0; *res=PIN::defPID;}
+	if (res!=NULL) {res->cleanup(); res->epr.lref=0; *res=PIN::noPID;}
 	RC rc=RC_OK; size_t lData; const byte *er=NULL; byte *sk0=NULL; byte lsk0=0;
 //	if (skip!=NULL && skip->type==VT_REFID)
 //		{PINRef pr(qx->ses->getStore()->storeID,skip->id); pr.def|=PR_PID2; pr.id2=skip->id; lsk0=pr.enc(skbuf); sk0=skbuf;}
@@ -688,7 +699,7 @@ PhraseFlt::~PhraseFlt()
 
 RC PhraseFlt::advance(const PINx *skip)
 {
-	RC rc=RC_OK; if (res!=NULL) {res->cleanup(); *res=PIN::defPID;}
+	RC rc=RC_OK; if (res!=NULL) {res->cleanup(); *res=PIN::noPID;}
 //		if ((state&QOS_FIRST)==0) {for (unsigned i=0; i<nScans; i++) scans[i].state|=QOS_FIRST; state&=~(QOS_BEG|QOS_EOF);}
 //	if (skip!=NULL && skip->type!=VT_REFID) skip=NULL; 
 //	if (skip!=NULL && (current.type!=VT_REFID || cmpPIDs(current.id,skip->id)<=0)) current.set(skip->id);

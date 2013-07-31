@@ -1505,7 +1505,7 @@ RC TreePageMgr::split(TreeCtx& tctx,const SearchKey *key,unsigned& idx,ushort sp
 			pbn->getPageID(),double(xSize-((TreePage*)pbn->getPageBuf())->info.freeSpaceLength)*100./xSize);
 	}
 #endif
-	if (pRight!=NULL) *pRight=pbn; else if (fInsR) {tctx.pb.release(); tctx.pb=pbn;} else pbn->release();
+	if (pRight!=NULL) *pRight=pbn; else if (fInsR) {tctx.pb.release(); tctx.pb=pbn; tctx.pb.set(QMGR_UFORCE);} else pbn->release();
 
 	PageID newSibling=tps->newSibling;
 	if (tctx.depth!=0) {
@@ -1552,7 +1552,7 @@ void TreePageMgr::addNewPage(TreeCtx& tctx,const SearchKey& key,PageID pid,bool 
 							pbn->release(PGCTL_DISCARD|QMGR_UFORCE);
 						else {
 							if (fTry && tp->findData(tctx.index,off,&pvp)!=NULL && pvp!=NULL) tctx.vp=__una_get(*pvp);
-							assert(tctx.pb->isDependent()); tctx.pb.moveTo(tctx.parent); tctx.pb=pbn;
+							assert(tctx.pb->isDependent()); tctx.pb.moveTo(tctx.parent); tctx.pb=pbn; tctx.pb.set(QMGR_UFORCE);
 							tctx.stack[++tctx.depth]=pbn->getPageID(); tctx.lvl2++;
 							if (insert(tctx,key,&pid,sizeof(PageID))==RC_OK) {tx.ok(); return;}
 						}
@@ -1629,7 +1629,7 @@ RC TreePageMgr::modSubTree(TreeCtx& tctx,const SearchKey& key,unsigned kidx,cons
 							//??? which key insret in split?
 							if ((rc=split(tctx,NULL,idx2,0,false,&right))!=RC_OK ||
 								(rc=insertSubTree(tctx,pv,lVal,ifmt,from,idx,pageCnt,pages,indcs,xSz,&from))!=RC_OK || from>=to) break;
-							tctx.pb.release(); tctx.pb=right; tp=(const TreePage*)right->getPageBuf(); continue;
+							tctx.pb.release(); tctx.pb=right; tctx.pb.set(QMGR_UFORCE); tp=(const TreePage*)right->getPageBuf(); continue;
 						}
 					} else if (cmp>0) tp->findSubKey(pf,lf,sidx);
 					SearchKey first(pf,lf,fPR),*skey=NULL; lPref=tp->calcPrefixSize(first,0,true);
@@ -1678,7 +1678,7 @@ RC TreePageMgr::modSubTree(TreeCtx& tctx,const SearchKey& key,unsigned kidx,cons
 						if ((rc=insertSubTree(tctx,pv,lVal,ifmt,from,idx,pageCnt,pages,indcs,xSize))!=RC_OK) break;
 						from=idx; assert(pageCnt==1);
 					}
-					tctx.pb.release(); tctx.pb=right; tp=(const TreePage*)right->getPageBuf();
+					tctx.pb.release(); tctx.pb=right; tctx.pb.set(QMGR_UFORCE); tp=(const TreePage*)right->getPageBuf();
 				}
 				if (rc!=RC_OK || from<to && (rc=insertSubTree(tctx,pv,lVal,ifmt,from,to,pageCnt,pages,indcs,fFits?xSize:xSz))!=RC_OK) break;
 				assert(!fFits || pageCnt==1);

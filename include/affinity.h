@@ -168,7 +168,7 @@ namespace Afy
 	#define MODE_SUBPIN					0x00010000	/**< in createPIN() - not topmost PIN, used by services */
 	#define MODE_NO_EID					0x00010000	/**< in modify() - don't update "eid" field of Value structure */
 	#define	MODE_FOR_UPDATE				0x00020000	/**< in IStmt::execute(): lock pins for update while reading them */
-	#define	MODE_NEW_COMMIT				0x00040000	/**< used in PIN::clone(), ISession::createPIN() to immediately commit new pin */
+	#define	MODE_PERSISTENT				0x00040000	/**< used in PIN::clone(), ISession::createPIN() to immediately commit new pin */
 	#define	MODE_PURGE					0x00040000	/**< in deletePINs(): purge pins rather than just delete */
 	#define	MODE_ALL					0x00040000	/**< for STMT_COMMIT, STMT_ROLLBACK, STMT_PERSIST - commit/rollback all nested transactions or persist all transient pins */
 	#define	MODE_READONLY				0x00040000	/**< for STMT_START_TX - start r/o transaction */
@@ -180,7 +180,7 @@ namespace Afy
 	#define	MODE_HOLD_RESULT			0x00200000	/**< for IStmt::execute(): don't close result set on transaction commit/rollback */
 	#define	MODE_ALL_WORDS				0x00400000	/**< all words must be present in FT condition */
 	#define	MODE_DELETED				0x00800000	/**< for query: return only (soft)deleted pins */
-	#define	MODE_RAW					0x01000000	/**< SELECT/UPDATE: return PIN properties as they are stores, no calculation/communication */
+	#define	MODE_RAW					0x01000000	/**< SELECT/UPDATE: return PIN properties as they are stored, no calculation/communication */
 
 	/**
 	 * PIN creation flags (starts with 0x40000000 for compatibility with protobuf)
@@ -189,7 +189,7 @@ namespace Afy
 	#define	PIN_NOTIFY					0x20000000	/**< PIN generates notifications when committed, modified or deleted */
 	#define	PIN_REPLICATED				0x10000000	/**< PIN is replicated to another store or is a replica */
 	#define	PIN_HIDDEN					0x08000000	/**< special PIN - totally hidden from search/replication - accessible only through its PID */
-	#define	PIN_INMEM					0x04000000	/**< PIN is not persisted (no PID generated) */
+	#define	PIN_PERSISTENT				0x04000000	/**< PIN is committed to persistent storage */
 	#define	PIN_TRANSIENT				0x02000000	/**< PIN used as a message, not indexed, not persisted */
 	#define	PIN_IMMUTABLE				0x01000000	/**< immutable PIN (e.g. external event) */
 	#define	PIN_DELETED					0x00800000	/**< immutable PIN (e.g. external event) */
@@ -284,6 +284,9 @@ namespace Afy
 	#define TRACE_STORE_IO				0x0004		/**< not implemented yet */
 	#define	TRACE_EXEC_PLAN				0x0008		/**< output execution plan for all queries in this session */
 	#define	TRACE_ACTIONS				0x0010		/**< trace class action invocation */
+	#define	TRACE_TIMERS				0x0020		/**< trace timer events */
+	#define	TRACE_COMMS					0x0040		/**< trace communication stacks */
+	#define	TRACE_FSMS					0x0080		/**< trace FSM state transitions */
 
 	/**
 	 * External timestamp (VT_DATETIME) representation
@@ -782,13 +785,11 @@ namespace Afy
 	public:
 		virtual	const PID&	getPID() const  = 0;						/**< returns PIN ID */
 		virtual	bool		isLocal() const = 0;						/**< check the PIN is local, i.e. neither replicated, nor remoted cached */
-		virtual	bool		isPersistent() const = 0;					/**< is PIN committed to persistent storage? */
 		virtual	unsigned	getFlags() const = 0;						/**< retireve PIN flags (PIN_*) */
 		virtual	unsigned	getMetaType() const = 0;					/**< retrieve PIN metatype as a set of flags (@see PMT_* flags) */
 		virtual	uint32_t	getNumberOfProperties() const = 0;			/**< number of PIN properties */
 		virtual	const Value	*getValueByIndex(unsigned idx) const = 0;	/**< get property value by index [0..getNumberOfProperties()-1] */
 		virtual	const Value	*getValue(PropertyID pid) const = 0;		/**< get property value by property ID */
-		virtual	IPIN		*getSibling() const = 0;					/**< get PIN's sibling (for results of join queries */
 
 		virtual	RC			getPINValue(Value& res) const = 0;			/**< get PIN 'value', based on PROP_SPEC_VALUE */
 
@@ -834,6 +835,8 @@ namespace Afy
 		unsigned		line;
 		unsigned		pos;
 	};
+	
+	extern "C" AFY_EXP size_t	errorToString(RC rc,const CompilationError *err,char buf[],size_t lbuf);		/**< convert error information to string */
 
 	/**
 	 * Expression tree node interface
@@ -1169,7 +1172,7 @@ namespace Afy
 		virtual	void		setInterfaceMode(unsigned flags) = 0;												/**< set interface mode, see ITF_XXX flags above */
 		virtual	unsigned	getInterfaceMode() const = 0;														/**< get current interface mode */
 		virtual	void		setDefaultExpiration(uint64_t defExp) = 0;											/**< set default expiration time for cached remore PINs */
-		virtual	void		changeTraceMode(unsigned mask,bool fReset=false) = 0;								/**< change query execution trace mode, see TRACE_XXX flags above  */
+		virtual	void		changeTraceMode(unsigned mask,bool fReset=false) = 0;								/**< change trace mode, see TRACE_XXX flags above  */
 		virtual	void		setTrace(ITrace *) = 0;																/**< set query execution trace interface */
 		virtual	void		terminate() = 0;																	/**< terminate session; drops the session */
 
@@ -1220,15 +1223,13 @@ namespace Afy
 
 		virtual	IPIN		*getPIN(const PID& id,unsigned mode=0) = 0;											/**< retrieve a PIN by its ID */
 		virtual	IPIN		*getPIN(const Value& ref,unsigned mode=0) = 0;										/**< retrive a PIN by its reference in a Value */
-		virtual	IPIN		*getPINByURI(const char *uri,unsigned mode=0) = 0;									/**< retrieve a PIN by its URI (not implemented yet) */
 		virtual	RC			getValues(Value *vals,unsigned nVals,const PID& id) = 0;							/**< get PIN property values by its ID */
 		virtual	RC			getValue(Value& res,const PID& id,PropertyID,ElementID=STORE_COLLECTION_ID) = 0;	/**< get property value for a value reference */
 		virtual	RC			getValue(Value& res,const PID& id) = 0;												/**< get PIN value based on its PROP_SPEC_VALUE */
 		virtual	RC			getPINClasses(ClassID *&clss,unsigned& nclss,const PID& id) = 0;					/**< array of ClassIDs the PIN is a member of */
 		virtual	bool		isCached(const PID& id) = 0;														/**< check if a PIN is in remote PIN cache by its ID */
 		virtual	IBatch		*createBatch() = 0;																	/**< create PIN batch insert interface */
-		virtual	IPIN		*createPIN(Value* values=0,unsigned nValues=0,unsigned mode=0,const PID *original=NULL) = 0;		/**< create uncommitted PIN, to be used in commitPINs() */
-		virtual	RC			createPINAndCommit(PID& res,const Value values[],unsigned nValues,unsigned mode=0,const AllocCtrl* =NULL) = 0;		/**< create and commit PIN */
+		virtual	RC			createPIN(Value *values,unsigned nValues,IPIN **result,unsigned mode=0,const PID *original=NULL) = 0; /**< create a PIN */
 		virtual	RC			commitPINs(IPIN *const *pins,unsigned nPins,unsigned mode=0,const AllocCtrl* =NULL,const Value *params=NULL,unsigned nParams=0,const IntoClass *into=NULL,unsigned nInto=0) = 0;	/**< commit to persistent memory a set of uncommitted PINs; assignes PIN IDs */
 		virtual	RC			modifyPIN(const PID& id,const Value *values,unsigned nValues,unsigned mode=0,const ElementID *eids=NULL,unsigned *pNFailed=NULL,const Value *params=NULL,unsigned nParams=0) = 0;	/**< modify committed or uncommitted PIN */
 		virtual	RC			deletePINs(IPIN **pins,unsigned nPins,unsigned mode=0) = 0;							/**< (soft-)delete or purge committed PINs from persistent memory */
@@ -1238,6 +1239,7 @@ namespace Afy
 		virtual	RC			startTransaction(TX_TYPE=TXT_READWRITE,TXI_LEVEL=TXI_DEFAULT) = 0;					/**< start transaction, READ-ONLY or READ_WRITE */
 		virtual	RC			commit(bool fAll=false) = 0;														/**< commit transaction */
 		virtual	RC			rollback(bool fAll=false) = 0;														/**< rollback (abort) transaction */
+		virtual	void		setLimits(unsigned xSyncStack,unsigned xOnCommit) = 0;								/**< set transaction guard limits */
 
 		virtual	RC			reservePage(uint32_t) = 0;															/**< used in dump/load entire store */
 
@@ -1256,6 +1258,10 @@ namespace Afy
 		virtual	void		setTimeZone(int64_t tzShift) = 0;													/**< set session time zone */
 		virtual	RC			convDateTime(TIMESTAMP dt,DateTime& dts,bool fUTC=true) const = 0;					/**< convert timestamp from internal representation to DateTiem structure */
 		virtual	RC			convDateTime(const DateTime& dts,TIMESTAMP& dt,bool fUTC=true) const = 0;			/**< convert tiemstamp from DateTime to internal representation */
+
+		// for compatibility with the old interface, temporary
+		inline	IPIN		*createPIN(Value* values=NULL,unsigned nValues=0,unsigned mode=0,const PID *original=NULL) {IPIN *pin=NULL; return createPIN(values,nValues,&pin,mode,original)==RC_OK?pin:NULL;}
+		inline	RC			createPINAndCommit(PID& res,const Value values[],unsigned nValues,unsigned mode=0,const AllocCtrl* =NULL) {IPIN *pin=NULL; RC rc=createPIN((Value*)values,nValues,&pin,mode|MODE_COPY_VALUES|MODE_PERSISTENT); if (rc==RC_OK) {res=pin->getPID(); pin->destroy();} return rc;}
 	};
 
 
@@ -1377,6 +1383,7 @@ namespace Afy
 		virtual	ISession	*startSession(const char *identityName=NULL,const char *password=NULL) = 0;									/**< start new session, optional login */
 		virtual	unsigned	getState() const = 0;																						/**< get current store state asynchronously */
 		virtual	size_t		getPublicKey(uint8_t *buf,size_t lbuf,bool fB64=false) = 0;													/**< get store public key */
+		virtual	void		changeTraceMode(unsigned mask,bool fReset=false) = 0;														/**< change trace mode, see TRACE_XXX flags above  */
 		virtual	RC			registerLangExtension(const char *langID,IStoreLang *ext,URIID *pID=NULL) = 0;								/**< register external langauge interpreter */
 		virtual	RC			registerService(const char *sname,IService *handler,URIID *puid=NULL,IListenerNotification *lnot=NULL) = 0;	/**< register a handler for external actions */
 		virtual	RC			registerService(URIID serviceID,IService *handler,IListenerNotification *lnot=NULL) = 0;					/**< register a handler for external actions */

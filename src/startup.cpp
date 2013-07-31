@@ -72,7 +72,7 @@ RC manageStores(const char *cmd,size_t lcmd,IAffinity *&store,IMapDir *id,const 
 
 static const char *errorMsgs[] =
 {
-	"",
+	"OK",
 	"resources (pin,property,element,page,etc.) not found",
 	"resource (element,key,file,store etc.) already exists",
 	"internal error",
@@ -108,7 +108,7 @@ static const char *errorMsgs[] =
 	"PIN doesn't satisfy membership constraints or not unique, or transaction was aborted in a class action"
 };
 
-size_t errorToString(RC rc,const CompilationError *err,char obuf[],size_t lbuf)
+size_t Afy::errorToString(RC rc,const CompilationError *err,char obuf[],size_t lbuf)
 {
 	try {
 		char buf[256]; size_t l=0;
@@ -121,6 +121,11 @@ size_t errorToString(RC rc,const CompilationError *err,char obuf[],size_t lbuf)
 		}
 		obuf[l]=0; return l;
 	} catch (...) {report(MSG_ERROR,"Exception in ISession::errorToString()\n"); return 0;}
+}
+
+const char *AfyKernel::getErrMsg(RC rc)
+{
+	return (size_t)rc<sizeof(errorMsgs)/sizeof(errorMsgs[0])?errorMsgs[rc]:"???";
 }
 
 char *StoreCtx::getDirString(const char *d,bool fRel)
@@ -238,7 +243,10 @@ static void checkStoreTable()
 
 RC openStore(const StartupParameters& params,IAffinity *&aff)
 {
-	StoreCtx *ctx=NULL; RC rc=RC_OK; if ((ProcFlags::pf.flg&PRCF_CMPXCHG16B)==0) return RC_INVOP;
+	StoreCtx *ctx=NULL; RC rc=RC_OK;
+#if defined(_M_X64) || defined(_M_AMD64) || defined(IA64) || defined(__x86_64__)
+	if ((ProcFlags::pf.flg&PRCF_CMPXCHG16B)==0) return RC_INVOP;
+#endif
 	try {
 		checkStoreTable(); RequestQueue::startThreads(); initReport(); aff=NULL;
 
@@ -365,7 +373,7 @@ RC openStore(const StartupParameters& params,IAffinity *&aff)
 			report(MSG_NOTICE,fRecv ? "Affinity hasn't been properly shut down\n    automatic recovery in progress...\n" :
 																					"Rollforward in progress...\n");
 			Session *ses=Session::createSession(ctx); if (ses!=NULL) ses->setIdentity(STORE_OWNER,true);
-			if ((rc=ctx->logMgr->recover(ses,(params.mode&STARTUP_ROLLFORWARD)!=0))==RC_OK && (rc=ctx->classMgr->restoreXPropID(ses))==RC_OK) 
+			if ((rc=ctx->logMgr->recover(ses,(params.mode&STARTUP_ROLLFORWARD)!=0))==RC_OK && (rc=ctx->namedMgr->restoreXPropID(ses))==RC_OK)
 				report(MSG_NOTICE,fRecv?"Recovery finished\n":"Rollforward finished\n");
 			else {
 				report(MSG_CRIT,fRecv?"Recovery failed (%d)\n":"Rollforward failed (%d)\n",rc);
@@ -376,7 +384,15 @@ RC openStore(const StartupParameters& params,IAffinity *&aff)
 			ctx->theCB->preload(ctx); ctx->heapMgr->initPartial(); ctx->ssvMgr->initPartial();
 		}
 
+		if ((rc=ctx->namedMgr->initStorePrefix())!=RC_OK) {report(MSG_CRIT,"Cannot initialize store prefix(%d)\n",rc); throw rc;}
+
 		if ((rc=ctx->tqMgr->startThread())!=RC_OK) throw rc;
+		
+		if ((params.mode&STARTUP_NO_LOAD)==0) {
+			Session *ses=Session::createSession(ctx); if (ses!=NULL) ses->setIdentity(STORE_OWNER,true);
+			if ((rc=ctx->namedMgr->loadObjects(ses))!=RC_OK) {report(MSG_CRIT,"Cannot load persisted objects(%d)\n",rc); throw rc;}
+			Session::terminateSession();
+		}
 
 		if ((params.mode&STARTUP_TOUCH_FILE)!=0 || ctx->logMgr->isInit())
 			{ctx->theCB->state=ctx->logMgr->isInit()?SST_LOGGING:SST_READ_ONLY; rc=ctx->theCB->update(ctx);}
@@ -400,7 +416,10 @@ RC openStore(const StartupParameters& params,IAffinity *&aff)
 
 RC createStore(const StoreCreationParameters& create,const StartupParameters& params,IAffinity *&aff,ISession **pLoad)
 {
-	StoreCtx *ctx=NULL; aff=NULL; RC rc=RC_OK; if ((ProcFlags::pf.flg&PRCF_CMPXCHG16B)==0) return RC_INVOP;
+	StoreCtx *ctx=NULL; aff=NULL; RC rc=RC_OK;
+#if defined(_M_X64) || defined(_M_AMD64) || defined(IA64) || defined(__x86_64__)
+	if ((ProcFlags::pf.flg&PRCF_CMPXCHG16B)==0) return RC_INVOP;
+#endif
 	try {
 		if (create.password!=params.password &&
 			(create.password==NULL || params.password==NULL || strcmp(create.password,params.password)!=0)) return RC_INVPARAM;
@@ -498,7 +517,7 @@ RC createStore(const StoreCreationParameters& create,const StartupParameters& pa
 
 		Session *ses=Session::createSession(ctx); if (ses!=NULL) ses->setIdentity(STORE_OWNER,true);
 
-		if ((rc=ctx->classMgr->initBuiltin(ses))!=RC_OK) {report(MSG_CRIT,"Cannot create builtin classes and properties (%d)\n",rc); throw rc;}
+		if ((rc=ctx->namedMgr->createBuiltinObjects(ses))!=RC_OK) {report(MSG_CRIT,"Cannot create builtin classes and properties (%d)\n",rc); throw rc;}
 		
 		PWD_ENCRYPT pwd((const byte*)create.password,create.password!=NULL?strlen(create.password):0);
 		const byte *enc=create.password!=NULL&&*create.password!='\0'?pwd.encrypted():NULL;
@@ -513,8 +532,9 @@ RC createStore(const StoreCreationParameters& create,const StartupParameters& pa
 			if (rc!=RC_OK) {report(MSG_CRIT,"Cannot get host name (%d)\n",rc); throw rc;}
 			identity=dirbuf;
 		}
-		Identity *ident=ctx->identMgr->insert(identity,enc,NULL,0,true);
+		Identity *ident=ctx->identMgr->insert(identity,strlen(identity),enc,NULL,0,true);
 		if (ident==NULL) {report(MSG_CRIT,"Cannot initialize identity map\n"); throw RC_OTHER;}
+		if ((rc=ctx->namedMgr->initStorePrefix(ident))!=RC_OK) {report(MSG_CRIT,"Cannot initialize store prefix(%d)\n",rc); throw rc;}
 		assert(ident->getID()==STORE_OWNER);
 		ident->release();
 
@@ -558,11 +578,14 @@ RC getStoreCreationParameters(StoreCreationParameters& params,IAffinity *aff)
 		params.identity=NULL;		// ???
 		params.storeId=ctx->theCB->storeID;
 		params.password=NULL;
-		params.fEncrypted=ctx->theCB->fIsEncrypted!=0;
+		params.mode=(ctx->theCB->flags&STFLG_ENCRYPTED)!=0?STORE_CREATE_ENCRYPTED:0;
+		if ((ctx->theCB->flags&STFLG_PAGEHMAC)!=0) params.mode|=STORE_CREATE_PAGE_INTEGRITY;
 		params.maxSize=ctx->theCB->maxSize;
 		params.pctFree=ctx->theCB->pctFree;
 		params.logSegSize=ctx->theCB->logSegSize;
-		params.fPageIntegrity=ctx->theCB->fHMAC!=0;
+		params.xSyncStack=ctx->theCB->xSyncStack;
+		params.xOnCommit=ctx->theCB->xOnCommit;
+		params.xObjSession=ctx->theCB->xSesObjects;
 		return RC_OK;
 	} catch (RC rc) {return rc;} catch (...) {report(MSG_ERROR,"Exception in getStoreCreationParameters\n"); return RC_INTERNAL;}
 }
@@ -646,8 +669,8 @@ RC StoreCtx::shutdown()
 					if ((pr.def&PR_U1)!=0 && (pr.u1&PMT_CLASS)!=0 && (pr.def&PR_PID2)!=0) {
 						const SearchKey& ky=sc->getKey(); assert(ky.type==KT_UINT);
 						URI *uri=NULL; char buf[20]; const char *name=buf; size_t lname;
-						if (ky.v.u>MAX_BUILTIN_URIID || (name=Classifier::getBuiltinName((URIID)ky.v.u,lname))==NULL)
-							{if ((uri=(URI*)uriMgr->ObjMgr::find((uint32_t)ky.v.u))!=NULL) name=uri->getURI(); else sprintf(buf,"%u",(uint32_t)ky.v.u);}
+						if (ky.v.u>MAX_BUILTIN_URIID || (name=NamedMgr::getBuiltinName((URIID)ky.v.u,lname))==NULL)
+							{if ((uri=(URI*)uriMgr->ObjMgr::find((uint32_t)ky.v.u))!=NULL) name=uri->getURI()->str; else sprintf(buf,"%u",(uint32_t)ky.v.u);}
 						reportTree(PageID(pr.id2.pid>>16),name,this);
 						if (uri!=NULL) uri->release();
 					}
@@ -662,7 +685,7 @@ RC StoreCtx::shutdown()
 		if ((rc=logMgr->close())!=RC_OK) return rc;
 
 		HeapPageMgr::savePartial(heapMgr,ssvMgr);
-		theCB->xPropID=classMgr->getXPropID();
+		theCB->xPropID=namedMgr->getXPropID();
 
 		bool fDelLog=false;
 		if (theCB->state!=SST_SHUTDOWN_COMPLETE && theCB->state!=SST_NO_SHUTDOWN)

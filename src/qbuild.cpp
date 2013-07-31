@@ -635,7 +635,7 @@ RC QBuildCtx::out(QueryOp *&qop,const QVar *qv)
 				break;
 			case VT_VARREF:
 				vty=v.refV.flags&VAR_TYPE_MASK;
-				if (vty==VAR_SELF || vty==0 && (v.length==0 || v.length==1 && v.refV.id==PROP_SPEC_SELF)) f|=QO_LOADALL;
+				if (vty==VAR_CTX || vty==0 && (v.length==0 || v.length==1 && v.refV.id==PROP_SPEC_SELF)) f|=QO_LOADALL;
 				else if (vty==0 && v.length==1 && (rc=plp.merge(v.refV.refN,&v.refV.id,1))!=RC_OK) return rc;
 				break;
 			}

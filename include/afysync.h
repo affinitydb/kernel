@@ -52,12 +52,12 @@ using namespace Afy;
 	#include <unistd.h>
 	#include <errno.h>
 	#include <sys/time.h>
+	#include <new>
 	#ifdef __APPLE__
 		#include <TargetConditionals.h>
 		#include <mach/mach.h>
 	#else
 		#include <malloc.h>
-		#include <new>
 	#endif
 	typedef pthread_t		HTHREAD;
 	typedef	pthread_t		THREADID;

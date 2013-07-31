@@ -24,8 +24,7 @@ Written by Mark Venguerov 2004-2012
 #ifndef _CRYPT_H_
 #define _CRYPT_H_
 
-#include "afyutils.h"
-#include "types.h"
+#include "utils.h"
 
 #ifndef __arm__
 #ifndef __APPLE__
@@ -151,13 +150,48 @@ protected:
 #endif
 	uint32_t	Nr;
 public:
-	enum AESMode {AES_CBC, AES_CFB};
+	enum AESMode {AES_CBC, AES_CTR, AES_GCM};
 public:
 	AES(const byte *key,unsigned lkey,bool fDec);
 	void encryptBlock(uint32_t buf[4]);
 	void decryptBlock(uint32_t buf[4]);
 	void encrypt(byte *buf,size_t lbuf,const uint32_t IV[4],AESMode mode=AES_CBC);
 	void decrypt(byte *buf,size_t lbuf,const uint32_t IV[4],AESMode mode=AES_CBC);
+};
+
+class MPN
+{
+	union {
+		struct {
+			uint16_t	fNeg	:1;
+			uint16_t	fNegY	:1;
+			uint16_t	nBits	:14;
+		};
+		uint32_t		words[1];
+	};
+public:
+	MPN&	add(MPN& mpn1,MPN& mpn2);
+	MPN&	sub(MPN& mpb1,MPN& mpn2);
+	MPN&	mul(MPN& mpb1,MPN& mpn2,SubAlloc& ma);
+	MPN&	div(MPN& mpb1,MPN& mpn2,SubAlloc& ma);
+	MPN&	mod(MPN& mpb1,MPN& mpn2,SubAlloc& ma);
+	MPN&	square(MPN& mpn,SubAlloc& ma);
+	MPN&	sqrt(MPN& mpn,SubAlloc& ma);
+	MPN&	random(unsigned bits,SubAlloc& ma);
+	MPN&	random(const MPN& range,SubAlloc& ma);
+private:
+	MPN&	operator+=(const MPN&);
+	MPN&	operator-=(const MPN&);
+	MPN&	operator*=(const MPN&);
+	MPN&	operator/=(const MPN&);
+	MPN&	operator%=(const MPN&);
+};
+
+struct ECParams
+{
+	MPN		*A;
+	MPN		*B;
+	//...
 };
 
 class StoreCtx;

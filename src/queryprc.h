@@ -43,18 +43,11 @@ namespace AfyKernel
 /**
  * PIN skew calculation constants
  */
-#define	SKEW_PAGE_PCT			10
-#define	SKEW_FACTOR				2
+#define	SKEW_PAGE_PCT		10
+#define	SKEW_FACTOR			2
 
-#define	ARRAY_THRESHOLD			256		/**< threshold of 'big' collections */
-#define STRING_THRESHOLD		64		/**< string length threshold for SSV data */
-
-/**
- * bit flags for eval()
- */
-#define EV_PID					0x0001
-#define	EV_COPY					0x0002
-#define	EV_ASYNC				0x0004
+#define	ARRAY_THRESHOLD		256		/**< threshold of 'big' collections */
+#define STRING_THRESHOLD	64		/**< string length threshold for SSV data */
 
 /**
  * passed to FT indexer

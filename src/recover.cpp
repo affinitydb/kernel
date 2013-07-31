@@ -224,7 +224,7 @@ RC LogMgr::recover(Session *ses,bool fRollforward)
 					report(MSG_ERROR,"Invalid PGID %d in recovery:redo, LSN: "_LX_FM"\n",extra&PGID_MASK,ctx->logMgr->recv.lsn);
 				else {
 					pb=rctx.type==LR_CREATE||rctx.type==LR_COMPENSATE3 ? ctx->bufMgr->newPage(rctx.logRec.pageID,pageMgr,pb,0,ses) :
-															ctx->bufMgr->getPage(rctx.logRec.pageID,pageMgr,PGCTL_XLOCK,pb,ses);
+															ctx->bufMgr->getPage(rctx.logRec.pageID,pageMgr,PGCTL_XLOCK|QMGR_UFORCE,pb,ses);
 					if (pb==NULL)
 						report(MSG_ERROR,"%s redo: cannot read page %08X , LSN: "_LX_FM"\n",LR_Tab[rctx.type],rctx.logRec.pageID,ctx->logMgr->recv.lsn);
 					else if (pageMgr->getLSN(pb->getPageBuf(),lPage)<ctx->logMgr->recv) {
@@ -296,7 +296,7 @@ RC LogMgr::recover(Session *ses,bool fRollforward)
 					report(MSG_ERROR,"LR_UPDATE(lundo): update failed: %d, page: %08X, tx: "_LX_FM", LSN: "_LX_FM"\n",rc,rctx.logRec.pageID,rctx.logRec.txid,lastLSN.lsn);
 				act->lastLSN=insert(ses,LR_COMPENSATE,extra,INVALID_PAGEID,&rctx.logRec.undoNext,NULL,0);
 			} else {
-				pb=ctx->bufMgr->getPage(rctx.logRec.pageID,pageMgr,PGCTL_XLOCK,pb,ses);
+				pb=ctx->bufMgr->getPage(rctx.logRec.pageID,pageMgr,PGCTL_XLOCK|QMGR_UFORCE,pb,ses);
 				if (pb==NULL)
 					report(MSG_ERROR,"Cannot read page %08X in recovery:undo, LSN: "_LX_FM"\n",rctx.logRec.pageID,lastLSN.lsn);
 				else if (pageMgr->getLSN(pb->getPageBuf(),lPage)>=lastLSN) {

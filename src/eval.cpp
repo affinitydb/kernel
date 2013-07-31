@@ -70,6 +70,30 @@ static int __cdecl cmpProps(const void *v1, const void *v2)
 	return cmp3(*(const PropertyID*)v1,*(const PropertyID*)v2);
 }
 
+const static ExprOp aggops[] = {OP_MAX, OP_MIN, OP_CONCAT, OP_AVG, OP_SUM};
+
+namespace AfyKernel
+{
+class OnRelease : public LatchHolder
+{
+	const EvalCtx&	ectx;
+	Value	*const	stack;
+	Value	**const	pTop;
+	bool			fCheck;
+public:
+	OnRelease(const EvalCtx& ct,Value *stk,Value **pT) : LatchHolder(ct.ses),ectx(ct),stack(stk),pTop(pT),fCheck(false) {}
+	void releaseLatches(PageID,PageMgr*,bool) {
+		// ectx?
+		if (fCheck) {
+			for (Value *pv=stack; pv<*pTop; pv++) if ((pv->flags&HEAP_TYPE_MASK)==PAGE_HEAP) copyV(*pv,*pv,ectx.ma);
+			fCheck=false;
+		}
+	}
+	void checkNotHeld(PBlock*) {}
+	void setCheck() {fCheck=true;}
+};
+}
+						
 RC Expr::eval(const Expr *const *exprs,unsigned nExp,Value& result,const EvalCtx& ctx)
 {
 	if (nExp==1 && (exprs[0]->hdr.flags&EXPR_EXTN)!=0) {
@@ -79,10 +103,12 @@ RC Expr::eval(const Expr *const *exprs,unsigned nExp,Value& result,const EvalCtx
 		return RC_INTERNAL;
 	}
 	unsigned idx=0,pgcnt=0; const Expr *exp; RExpCtx rctx(ctx.ma); assert(exprs!=NULL && nExp>0 && exprs[0]!=NULL);
-	const byte *codePtr=NULL,*codeEnd=NULL; unsigned cntCatch=0,lStack=0; Value *stack=NULL,*top=NULL; VarD vds[4],*evds=NULL;
-	for (;;) {
+	const byte *codePtr=NULL,*codeEnd=NULL; unsigned cntCatch=0,xStack=0; VarD vds[4],*evds=NULL;
+	for (unsigned i=0; i<nExp; i++) if (exprs[i]->hdr.lStack>xStack) xStack=exprs[i]->hdr.lStack;
+	Value *stack=(Value*)alloca(xStack*sizeof(Value)),*top=stack; if (stack==NULL) return RC_NORESOURCES;
+	for (OnRelease onr(ctx,stack,&top);;) {
 		if (codePtr>=codeEnd) {
-			if (codePtr>codeEnd || top!=stack && top!=stack+1) return RC_INTERNAL;
+			assert(codePtr<=codeEnd && (top==stack || top==stack+1));
 			if (idx>=nExp) {if (top==stack) return RC_TRUE; result=top[-1]; return !result.isEmpty()?RC_OK:RC_NOTFOUND;}
 			if ((exp=exprs[idx++])==NULL || (ctx.params==NULL||ctx.nParams==0||ctx.params[0].nValues==0) && 
 				ctx.ect==ECT_CLASS && (exp->hdr.flags&EXPR_PARAMS)!=0) continue;
@@ -96,10 +122,6 @@ RC Expr::eval(const Expr *const *exprs,unsigned nExp,Value& result,const EvalCtx
 			vds[0].fInit=vds[1].fInit=vds[2].fInit=vds[3].fInit=false; pgcnt=0;
 			if (evds!=NULL) {
 				//...
-			}
-			if (exp->hdr.lStack>lStack) {
-				if ((stack=(Value*)alloca((exp->hdr.lStack-lStack)*sizeof(Value)))==NULL) return RC_NORESOURCES;
-				top=stack; lStack=exp->hdr.lStack;
 			}
 		}
 		assert(top>=stack && top<=stack+exp->hdr.lStack);
@@ -156,27 +178,27 @@ RC Expr::eval(const Expr *const *exprs,unsigned nExp,Value& result,const EvalCtx
 				top[-1].property=vd->props[u]&STORE_MAX_URIID; if (ff) top[-1].meta=*codePtr++;
 			} else if (!vd->fLoaded) {
 				if (op==OP_ELT||op==OP_ENVV_ELT) {afy_dec32(codePtr,eid); eid=afy_dec32zz(eid);} else eid=STORE_COLLECTION_ID;
+				if (eid>=STORE_MAX_ELEMENT && eid<=STORE_SUM_COLLECTION) {op=aggops[eid-STORE_MAX_ELEMENT]; eid=STORE_COLLECTION_ID;} else op=0;
 				rc=vd->pp!=NULL?vd->pp->getV(vd->props[u],*top,ff?LOAD_CARDINALITY|LOAD_SSV:LOAD_SSV,NULL,eid):RC_NOTFOUND;
-				if (rc==RC_OK) {if (top->fcalc!=0 && isString((ValueType)top->type)) pgcnt++;} else if (cntCatch!=0 && rc==RC_NOTFOUND) {top->setError(); rc=RC_OK;}
+				if (rc!=RC_OK) {if (cntCatch!=0 && rc==RC_NOTFOUND) {top->setError(); rc=RC_OK;}}
+				else if ((op==0 || (rc=calcAgg((ExprOp)op,*top,NULL,1,0,ctx))==RC_OK) && top->fcalc!=0 && isString((ValueType)top->type)) pgcnt++;
 			} else {
 				v=&vd->vals[u]; assert(u<vd->nVals && vd->vals!=NULL); 
 				if (op==OP_PROP||op==OP_ENVV_PROP) {*top=*v; setHT(*top);}		// pgcnt?
 				else {
-					afy_dec32(codePtr,eid); eid=afy_dec32zz(eid);
+					afy_dec32(codePtr,eid); eid=afy_dec32zz(eid); *top=*v; setHT(*top);
 					if (v->type==VT_ARRAY || v->type==VT_COLLECTION) {
-						// get elt
-					} else if (eid==STORE_FIRST_ELEMENT || eid==STORE_LAST_ELEMENT) {
-						*top=*v; setHT(*top);
-					} else {
-						// notfound
-					}
+						if (eid<STORE_MAX_ELEMENT || eid>STORE_SUM_COLLECTION) {
+							// find eid
+						} else rc=calc(aggops[eid-STORE_MAX_ELEMENT],*top,NULL,1,0,ctx);
+					} else if (eid<STORE_MAX_ELEMENT) {if (cntCatch!=0) top->setError(); else rc=RC_NOTFOUND;}
 				}
 			}
 			if (top->type==VT_EXPR && (((Expr*)top->expr)->hdr.flags&EXPR_PARAMS)==0) {
 				Expr *expr=(Expr*)top->expr; const bool fFree=(top->flags&HEAP_TYPE_MASK)>=SES_HEAP;
 				if ((rc=Expr::eval(&expr,1,*top,ctx))==RC_OK) {if (fFree) ctx.ma->free(expr);}
 				else if (cntCatch!=0) {top->setError(); rc=RC_OK;}
-			}
+			} else if ((top->flags&HEAP_TYPE_MASK)==PAGE_HEAP) onr.setCheck();
 			top++; break;
 		case OP_CONID:
 			if ((u=*codePtr++)==0xFF) {u=codePtr[0]|codePtr[1]<<8; codePtr+=2;}
@@ -1229,7 +1251,7 @@ RC Expr::calc(ExprOp op,Value& arg,const Value *moreArgs,int nargs,unsigned flag
 	case OP_READ:
 		if (arg.type!=VT_URIID && (rc=convV(arg,arg,VT_URIID,ctx.ma))!=RC_OK) return rc;
 		arg.setPropID(PROP_SPEC_SERVICE);
-		if ((rc=ctx.ses->prepare(srv,PIN::defPID,&arg,nargs,nargs!=0?ISRV_NOCACHE:0))!=RC_OK) return rc;
+		if ((rc=ctx.ses->prepare(srv,PIN::noPID,&arg,nargs,nargs!=0?ISRV_NOCACHE:0))!=RC_OK) return rc;
 		rc=srv->invoke(&arg,nargs,&arg); srv->destroy(); if (rc!=RC_OK) return rc;
 		break;
 	default:

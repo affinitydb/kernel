@@ -141,12 +141,11 @@ public:
  * PathSQL parsing control flags
  */
 #define	SIM_SIMPLE_NAME		0x0001			/**< parse simple names only (no qname) (e.g. in FROM ... AS name) */
-#define	SIM_NO_BASE			0x0002			/**< don't use BASE */
-#define	SIM_INT_NUM			0x0004			/**< force parsing integer number (don't treat '.' as a part of number) */
-#define	SIM_SELECT			0x0008			/**< expression is part of SELECT list - special parsing for identifiers */
-#define	SIM_DML_EXPR		0x0010			/**< expression in INSERT or UPDATE statements, can contain nested INSERTs */
-#define	SIM_HAVING			0x0020			/**< expression in HAVING - aggregates with '*' are allowed */
-#define	SIM_INSERT			0x0040			/**< expression in INSERT, can contain references to other INSERTs */
+#define	SIM_INT_NUM			0x0002			/**< force parsing integer number (don't treat '.' as a part of number) */
+#define	SIM_SELECT			0x0004			/**< expression is part of SELECT list - special parsing for identifiers */
+#define	SIM_DML_EXPR		0x0008			/**< expression in INSERT or UPDATE statements, can contain nested INSERTs */
+#define	SIM_HAVING			0x0010			/**< expression in HAVING - aggregates with '*' are allowed */
+#define	SIM_INSERT			0x0020			/**< expression in INSERT, can contain references to other INSERTs */
 
 #define	META_PROP_OBJECT	0x04			/**< #name flag set in lex() */
 
@@ -286,7 +285,7 @@ protected:
 public:
 	SInCtx(Session *se,const char *s,size_t ls,const URIID *i=NULL,unsigned ni=0,MemAlloc *m=NULL)
 		: ses(se),ma(m!=NULL?m:se),mtype(ma!=NULL?ma->getAType():SHARED_HEAP),str(s),end(s+ls),ids(i),nids(ni),ptr(s),lbeg(s),lmb(0),line(1),errpos(NULL),
-		mode(SIM_NO_BASE),base(NULL),lBase(0),lBaseBuf(0),qNames(NULL),nQNames(0),lastQN(~0u),dnames(ma),nextLex(LX_ERR),tids(NULL),txi(TXI_DEFAULT) {v.setEmpty();}
+		mode(0),base(NULL),lBase(0),lBaseBuf(0),qNames(NULL),nQNames(0),lastQN(~0u),dnames(ma),nextLex(LX_ERR),tids(NULL),txi(TXI_DEFAULT) {v.setEmpty();}
 	~SInCtx();
 	Stmt	*parseStmt();																			/**< parse PathSQL statement; can be called recursively for nested statements */
 	RC		exec(const Value *params,unsigned nParams,char **result=NULL,uint64_t *nProcessed=NULL,unsigned nProcess=~0u,unsigned nSkip=0);	/**< parse PathSQL, execute and return result as JSON */
@@ -342,7 +341,7 @@ private:
 protected:
 	void	init(const char *s,size_t ls) {
 		const_cast<const char *&>(str)=s; const_cast<const char *&>(end)=s+ls; ptr=s; lbeg=s; lmb=0; line=1; errpos=NULL;
-		mode=SIM_NO_BASE; base=NULL; lBase=0; lBaseBuf=0; qNames=NULL; nQNames=0; lastQN=~0u;
+		mode=0; base=NULL; lBase=0; lBaseBuf=0; qNames=NULL; nQNames=0; lastQN=~0u;
 		dnames.clear(); nextLex=LX_ERR; if (tids!=NULL) {/*???*/ tids=NULL;} v.setEmpty();
 	}
 };

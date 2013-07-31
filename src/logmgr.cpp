@@ -29,11 +29,11 @@ using namespace AfyKernel;
 static int nLogOpen = 0;
 
 LogMgr::LogMgr(StoreCtx *c,size_t logBufS,bool fAL,const char *lDir) : ctx(c),sectorSize(getSectorSize()),lPage(c->fileMgr->getPageSize()),
-	logSegSize(max(ceil(c->theCB->logSegSize,sectorSize),(size_t)MINSEGSIZE)),bufLen(max(ceil(logBufS,sectorSize),lPage*4)),LRsize(c->fHMAC?sizeof(LogRecHM):sizeof(LogRec)),
-	logBufBeg(NULL),logBufEnd(NULL),ptrWrite(NULL),ptrInsert(NULL),ptrRead(NULL),maxLSN(c->theCB->logEnd),minLSN(c->theCB->logEnd),prevLSN(0),
-	writtenLSN(c->theCB->logEnd),wrapLSN(0),fFull(false),fRecovery(false),fAnalizing(false),recFileSize(0),maxAllocated(0),prevTruncate(~0),
-	nRecordsSinceCheckpoint(0),newPage(NULL),currentLogFile(~0u),logFile(INVALID_FILEID),nReadLogSegs(0),pcb(&aio),fArchive(fAL),
-	fReadFromCurrent(false),logDirectory(c->getDirString(lDir,true)),fInit(false),checkpointRQ(this),segAllocRQ(this)
+	logSegSize(max(ceil(c->theCB->logSegSize,sectorSize),(size_t)MINSEGSIZE)),bufLen(max(ceil(logBufS,sectorSize),lPage*4)),
+	LRsize((c->theCB->flags&STFLG_PAGEHMAC)!=0?sizeof(LogRecHM):sizeof(LogRec)),logBufBeg(NULL),logBufEnd(NULL),ptrWrite(NULL),ptrInsert(NULL),ptrRead(NULL),
+	maxLSN(c->theCB->logEnd),minLSN(c->theCB->logEnd),prevLSN(0),writtenLSN(c->theCB->logEnd),wrapLSN(0),fFull(false),fRecovery(false),fAnalizing(false),
+	recFileSize(0),maxAllocated(0),prevTruncate(~0),nRecordsSinceCheckpoint(0),newPage(NULL),currentLogFile(~0u),logFile(INVALID_FILEID),nReadLogSegs(0),
+	pcb(&aio),fArchive(fAL),fReadFromCurrent(false),logDirectory(c->getDirString(lDir,true)),fInit(false),checkpointRQ(this),segAllocRQ(this)
 {
 	memset(&aio,0,sizeof(myaio)); aio.aio_ctx=c;
 }
@@ -194,7 +194,7 @@ LSN LogMgr::insert(Session *ses,LRType type,unsigned extra,PageID pid,const LSN 
 	}
 
 	bool fDel=false;
-	if (ctx->fHMAC) {
+	if ((ctx->theCB->flags&STFLG_PAGEHMAC)!=0) {
 		HMAC hmac(ctx->getHMACKey(),HMAC_KEY_SIZE);
 		if (pData==NULL || lData==0)
 			hmac.add((const byte*)&logRec,sizeof(LogRec));
@@ -490,7 +490,7 @@ RC LogReadCtx::read(LSN& lsn)
 
 	if (rc==RC_OK) {
 		type=logRec.getType(); bool fCorrupted=type>=LR_ALL;
-		if (!fCorrupted && logMgr->ctx->fHMAC) {
+		if (!fCorrupted && (logMgr->ctx->theCB->flags&STFLG_PAGEHMAC)!=0) {
 			HMAC hmac(logMgr->ctx->getHMACKey(),HMAC_KEY_SIZE);
 			hmac.add((const byte*)&logRec,sizeof(LogRec)); if (lbuf!=0) hmac.add(rbuf,lbuf);
 			fCorrupted=memcmp(logRec.hmac,hmac.result(),HMAC_SIZE)!=0;

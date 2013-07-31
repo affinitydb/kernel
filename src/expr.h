@@ -192,10 +192,12 @@ public:
 	static	RC		compile(const ExprTree *,Expr *&,MemAlloc *ma,bool fCond,ValueV *aggs=NULL);
 	static	RC		compileConds(const ExprTree *const *,unsigned nExp,Expr *&,MemAlloc*);
 	static	RC		create(uint16_t langID,const byte *body,uint32_t lBody,uint16_t flags,Expr *&,MemAlloc*);
-	RC				decompile(ExprTree*&,Session *ses) const;
+	static	RC		substitute(Expr *&exp,const Value *pars,unsigned nPars,MemAlloc *ma);
+	RC				decompile(ExprTree*&,MemAlloc *ses) const;
 	static	RC		calc(ExprOp op,Value& arg,const Value *moreArgs,int nargs,unsigned flags,const EvalCtx& ctx);
 	static	RC		calcAgg(ExprOp op,Value& res,const Value *more,unsigned nargs,unsigned flags,const EvalCtx& ctx);
 	ushort			getFlags() const {return hdr.flags;}
+	ushort			getNVars() const {return hdr.nVars;}
 	size_t			serSize() const {return hdr.lExpr;}
 	byte			*serialize(byte *buf) const {memcpy(buf,&hdr,hdr.lExpr); return buf+hdr.lExpr;}
 	RC				render(int prty,SOutCtx&) const;
@@ -262,14 +264,14 @@ public:
 	void			setFlags(unsigned flags,unsigned mask);
 	IExpr			*compile();
 	char			*toString(unsigned mode=0,const QName *qNames=NULL,unsigned nQNames=0) const;
+	RC				substitute(const Value *pars,unsigned nPars,MemAlloc*);
 	IExprTree		*clone() const;
 	void			destroy();
 	static	RC		node(Value&,Session*,ExprOp,unsigned,const Value *,unsigned);
-	static	RC		forceExpr(Value&,Session *ses,bool fCopy=false);
+	static	RC		forceExpr(Value&,MemAlloc *ma,bool fCopy=false);
 	static	RC		normalizeArray(Value *vals,unsigned nvals,Value& res,MemAlloc *ma,StoreCtx *ctx);
 	static	RC		normalizeStruct(Value *vals,unsigned nvals,Value& res,MemAlloc *ma);
 	static	RC		normalizeMap(Value *vals,unsigned nvals,Value& res,MemAlloc *ma);
-	static	RC		substitute(Value& et,const Value *params,unsigned nParams,MemAlloc *ma);
 	static	ushort	vRefs(const Value& v) {return v.type==VT_VARREF&&(v.refV.flags==0xFFFF||(v.refV.flags&VAR_TYPE_MASK)==0)?v.refV.refN<<8|v.refV.refN:v.type==VT_EXPRTREE?((ExprTree*)v.exprt)->vrefs:NO_VREFS;}
 	static	void	vRefs(ushort& vr1,ushort vr2) {if (vr1==NO_VREFS||vr2==MANY_VREFS) vr1=vr2; else if (vr1!=vr2&&vr1!=MANY_VREFS&&vr2!=NO_VREFS) mergeVRefs(vr1,vr2);}
 	static	void	mergeVRefs(ushort& vr1,ushort vr2);

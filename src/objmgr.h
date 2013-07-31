@@ -45,16 +45,16 @@ class ObjName {
 	friend	class			ObjMgr;
 	class	NamedObjMgr		&mgr;
 	HChain<ObjName>			nameList;
-	StrKey					name;
-	unsigned					ID;
+	StrLen					name;
+	uint32_t				ID;
 	SharedCounter			count;
 	RWLock					lock;
 	bool					fBad;
-	void					operator delete(void *p) {free(p,STORE_HEAP);}
-	ObjName(const char *nm,unsigned id,class NamedObjMgr& mg,bool fCopy=true) : mgr(mg),nameList(this),name(nm,fCopy),ID(id),fBad(false) {}
+	ObjName(const char *nm,size_t ln,uint32_t id,class NamedObjMgr& mg,bool fCopy=true);
+	~ObjName();
 	void					destroy();
 public:
-	const	StrKey&	getKey() const {return name;}
+	const	StrLen&	getKey() const {return name;}
 };
 
 /**
@@ -64,36 +64,36 @@ class CachedObject
 {
 	friend	class			ObjMgr;
 	friend	class			NamedObjMgr;
-	typedef	QElt<CachedObject,unsigned,unsigned> QE;
+	typedef	QElt<CachedObject,uint32_t,uint32_t> QE;
 	QE						*qe;
 	class	ObjName			*name;
 	void					downgradeLock() {if (qe!=NULL) qe->downgradeLock(RW_S_LOCK);}
 protected:
-	unsigned					ID;
+	uint32_t				ID;
 	class	ObjMgr			&mgr;
-	CachedObject(unsigned id,ObjMgr& mg) : qe(NULL),name(NULL),ID(id),mgr(mg) {}
+	CachedObject(uint32_t id,ObjMgr& mg) : qe(NULL),name(NULL),ID(id),mgr(mg) {}
 public:
 	virtual					~CachedObject();
-	unsigned					getID() const {return ID;}
-	const char*				getName() const {return name!=NULL?(const char*)name->name:(char*)0;}
-	void					setKey(unsigned id,void*);
+	uint32_t				getID() const {return ID;}
+	const StrLen*			getName() const {return name!=NULL?&name->name:(StrLen*)0;}
+	void					setKey(uint32_t id,void*);
 	QE						*getQE() const {return qe;}
 	void					setQE(QE *q) {qe=q;}
 	bool					isDirty() const {return false;}
 	RW_LockType				lockType(RW_LockType lt) const {return lt;}
 	bool					save() const {return true;}
-	RC						load(PageID,unsigned);
+	RC						load(PageID,uint32_t);
 	void					release();
 	void					destroy();
 	virtual	RC				deserializeCachedObject(const void *buf,size_t size) = 0;
 	void					operator delete(void *p) {free(p,STORE_HEAP);}
 	void					initNew() const {}
-	static	CachedObject	*createNew(unsigned id,void *mg);
+	static	CachedObject	*createNew(uint32_t id,void *mg);
 	static	void			waitResource(void *mg);
 	static	void			signal(void *mg);
 };
 
-typedef QMgr<CachedObject,unsigned,unsigned,PageID> ObjHash;
+typedef QMgr<CachedObject,uint32_t,uint32_t,PageID> ObjHash;
 
 /**
  * abstract unnamed cached object manager
@@ -113,10 +113,10 @@ protected:
 	virtual					~ObjMgr();
 	virtual	CachedObject	*create() = 0;
 public:
-	CachedObject			*find(unsigned id) {CachedObject *obj; return get(obj,id,INVALID_PAGEID)==RC_OK?obj:(CachedObject*)0;}
+	CachedObject			*find(uint32_t id) {CachedObject *obj; return get(obj,id,INVALID_PAGEID)==RC_OK?obj:(CachedObject*)0;}
 	TreeScan				*scan(class Session *ses) {return map.scan(ses,NULL);}
 	CachedObject			*insert(const void *,size_t);
-	RC						modify(unsigned id,const void *data,size_t lData,size_t sht=0);
+	RC						modify(uint32_t id,const void *data,size_t lData,size_t sht=0);
 	void *operator new(size_t s,StoreCtx *ctx) {void *p=ctx->malloc(s); if (p==NULL) throw RC_NORESOURCES; return p;}
 };
 
@@ -135,18 +135,18 @@ class NamedObjMgr : public ObjMgr
 		PageID	pageID;		
 	};
 protected:
-	typedef SyncHashTab<ObjName,const StrKey&,&ObjName::nameList,StrRefKey,const char*> NameHash;
-	NameHash			nameHash;
+	typedef SyncHashTab<ObjName,const StrLen&,&ObjName::nameList,StrLen,const StrLen&> NameHash;
+	NameHash		nameHash;
 	TreeGlobalRoot	nameMap;
 	NamedObjMgr(StoreCtx *ct,MapAnchor ma,int hashSize,MapAnchor nma,int nameHashSize,int xO=DEFAULT_MAX_OBJECTS);
 	virtual			~NamedObjMgr();
 public:
-	CachedObject	*find(const char *name);
-	CachedObject	*insert(const char *name,const void *pv,size_t lv);
-	bool			exists(const char *name);
+	CachedObject	*find(const char *name,size_t ln);
+	CachedObject	*insert(const char *name,size_t ln,const void *pv,size_t lv);
+	bool			exists(const char *name,size_t ln);
 	TreeScan		*scanNames(Session *ses) {return nameMap.scan(ses,NULL);}
 	RC				modify(const CachedObject *co,const void *data,size_t lData,size_t sht=0);
-	RC				rename(unsigned id,const char *name);
+	RC				rename(uint32_t id,const char *name,size_t ln);
 };
 
 };

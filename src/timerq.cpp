@@ -1,6 +1,6 @@
 /**************************************************************************************
 
-Copyright © 2004-2013 GoPivotal, Inc. All rights reserved.
+Copyright ï¿½ 2004-2013 GoPivotal, Inc. All rights reserved.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -20,6 +20,9 @@ Written by Mark Venguerov 2012
 
 #include "timerq.h"
 #include "affinity.h"
+#include "queryprc.h"
+#include "pinex.h"
+#include "maps.h"
 
 using namespace Afy;
 using namespace AfyKernel;
@@ -42,6 +45,21 @@ TimerQ::~TimerQ()
 {
 	if (tqStore!=NULL) for (TimerQ *tq=tqStore->tq; tq!=NULL && 
 			!casP((void* volatile *)&tqStore->tq,(void*)this,(void*)0); tq=tqStore->tq) threadYield();
+}
+
+RC TimerQ::loadTimer(PINx &cb)
+{
+	RC rc; Value v[2];
+	if ((rc=cb.getV(PROP_SPEC_OBJID,v[0],0,NULL))!=RC_OK) return rc;
+	if (v[0].type!=VT_URIID || v[0].uid==STORE_INVALID_CLASSID) {freeV(v[0]); return RC_CORRUPTED;}
+	URIID cid=v[0].uid; assert((cb.getMetaType()&PMT_TIMER)!=0);
+	if ((rc=cb.getV(PROP_SPEC_INTERVAL,v[0],LOAD_SSV,cb.getSes()))==RC_OK) {
+		if (v[0].type!=VT_INTERVAL) {freeV(v[0]); return RC_CORRUPTED;}
+		if ((rc=cb.getV(PROP_SPEC_ACTION,v[1],LOAD_SSV,cb.getSes()))!=RC_OK) return rc;
+		rc=add(new(ctx) TimerQElt(cid,v[0].i64,cb.getPID(),v[1],ctx));
+		freeV(v[1]);
+	}
+	return rc;
 }
 
 RC TimerQ::add(TimeRQ *tr,TIMESTAMP start)
@@ -115,6 +133,32 @@ void TimerQHdr::timerDaemon()
 			lock.unlock();
 		}
 	}
+}
+
+void TimerQElt::processTimeRQ()
+{
+	Session *ses=Session::getSession();
+	if (ses!=NULL) {
+		ses->setIdentity(STORE_OWNER,true);
+		PINx self(ses,pid); PIN autop(ses); PIN *pp[5]={NULL,&self,NULL,NULL,&autop}; TIMESTAMP ts; char buf[100]; size_t l;
+		if ((ses->getTraceMode()&TRACE_TIMERS)!=0) {
+			URI *uri=(URI*)ctx->uriMgr->ObjMgr::find(id);  const StrLen unk("???",3),*nm=uri!=NULL?uri->getName():&unk;
+			getTimestamp(ts); ses->convDateTime(ts,buf,l);
+			ses->trace(0,"Timer \"%.*s\": START at %s\n",nm->len,nm->str,buf); if (uri!=NULL) uri->release();
+		}
+		RC rc=ses->getStore()->queryMgr->eval(&act,EvalCtx(ses,pp,5,NULL,0,NULL,0,NULL,NULL,ECT_ACTION));
+		if ((ses->getTraceMode()&TRACE_TIMERS)!=0) {
+			URI *uri=(URI*)ctx->uriMgr->ObjMgr::find(id);  const StrLen unk("???",3),*nm=uri!=NULL?uri->getName():&unk;
+			getTimestamp(ts); ses->convDateTime(ts,buf,l);
+			ses->trace(0,"Timer \"%.*s\": END at %s -> %s\n",nm->len,nm->str,buf,getErrMsg(rc)); if (uri!=NULL) uri->release();
+		}
+		ses->setIdentity(STORE_INVALID_IDENTITY,false);
+	}
+}
+
+void TimerQElt::destroyTimeRQ()
+{
+	freeV(act); ctx->free(this);
 }
 
 StartTimer::StartTimer(uint32_t t,uint64_t intv,PID i,const Value *act,MemAlloc *ma) : tid(t),interval(intv),id(i)

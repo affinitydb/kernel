@@ -34,11 +34,11 @@ Written by Mark Venguerov 2004-2012
 
 using namespace AfyKernel;
 
-const PID PIN::defPID = {STORE_INVALID_PID,STORE_INVALID_IDENTITY};
+const PID PIN::noPID = {STORE_INVALID_PID,STORE_INVALID_IDENTITY};
 
 PIN::~PIN()
 {
-	if ((mode&PIN_NO_FREE)==0) {
+	if (fNoFree==0) {
 		assert(ses==NULL || ses==Session::getSession());
 		freeV(properties,nProperties,ses!=NULL?(MemAlloc*)ses:(MemAlloc*)StoreCtx::get());
 	}
@@ -80,15 +80,9 @@ bool PIN::isLocal() const
 	return true;
 }
 
-bool PIN::isPersistent() const
-{
-	try {return addr.defined();} catch (RC) {} catch (...) {report(MSG_ERROR,"Exception in IPIN::isPersistent()\n");}
-	return false;
-}
-
 unsigned PIN::getFlags() const
 {
-	try {return mode&(PIN_NO_REPLICATION|PIN_NOTIFY|PIN_REPLICATED|PIN_HIDDEN|PIN_INMEM|PIN_TRANSIENT|PIN_IMMUTABLE|PIN_DELETED);}
+	try {return mode&(PIN_NO_REPLICATION|PIN_NOTIFY|PIN_REPLICATED|PIN_HIDDEN|PIN_PERSISTENT|PIN_TRANSIENT|PIN_IMMUTABLE|PIN_DELETED);}
 	catch (...) {report(MSG_ERROR,"Exception in IPIN::getFlags()\n"); return 0;}
 }
 
@@ -112,11 +106,6 @@ const Value	*PIN::getValue(PropertyID pid) const
 	try {return VBIN::find(pid,properties,nProperties);} catch (...) {report(MSG_ERROR,"Exception in IPIN::getValue()\n"); return NULL;}
 }
 
-IPIN *PIN::getSibling() const
-{
-	try {return sibling;} catch (...) {report(MSG_ERROR,"Exception in IPIN::getSibling()\n"); return NULL;}
-}
-
 RC PIN::setReplicated()
 {
 	try {
@@ -135,6 +124,16 @@ RC PIN::hide()
 		StoreCtx *ctx=ses->getStore(); if (ctx->inShutdown()) return RC_SHUTDOWN; if (ctx->isServerLocked()) return RC_READONLY;
 		TxGuard txg(ses); return addr.defined()?ctx->queryMgr->setFlag(EvalCtx(ses,ECT_INSERT),id,&addr,HOH_HIDDEN,false):RC_OK;
 	} catch (RC rc) {return rc;} catch (...) {report(MSG_ERROR,"Exception in IPIN::setNoIndex()\n"); return RC_INTERNAL;}
+}
+
+RC PIN::setNotification(bool fReset)
+{
+	try {
+		if (ses==NULL) return RC_NOSESSION; if (ses->inReadTx()) return RC_READTX;
+		StoreCtx *ctx=ses->getStore(); if (ctx->inShutdown()) return RC_SHUTDOWN; if (ctx->isServerLocked()) return RC_READONLY;
+		if (fReset) mode&=~PIN_NOTIFY; else mode|=PIN_NOTIFY;
+		TxGuard txg(ses); return addr.defined()?ctx->queryMgr->setFlag(EvalCtx(ses,ECT_INSERT),id,&addr,HOH_NOTIFICATION,fReset):RC_OK;
+	} catch (RC rc) {return rc;} catch (...) {report(MSG_ERROR,"Exception in IPIN::setNotification(...)\n"); return RC_INTERNAL;}
 }
 
 RC PIN::deletePIN()
@@ -218,7 +217,7 @@ IPIN *PIN::clone(const Value *overwriteValues,unsigned nOverwriteValues,unsigned
 			}
 		if (overwriteValues!=NULL && nOverwriteValues>0) for (unsigned j=0; j<nOverwriteValues; j++)
 			{const Value *pv=&overwriteValues[j]; newp->modify(pv,pv->eid,STORE_COLLECTION_ID,0,ses);}
-		if ((md&MODE_NEW_COMMIT)!=0 && ses!=NULL) {
+		if ((md&MODE_PERSISTENT)!=0 && ses!=NULL) {
 			if (ses->getStore()->isServerLocked()) {delete newp; return NULL;}
 			TxGuard txg(ses); assert(newp->id.pid==STORE_INVALID_PID && ses==Session::getSession());
 			if (ses->getStore()->queryMgr->persistPINs(EvalCtx(ses,ECT_INSERT),&newp,1,md)!=RC_OK) {delete newp; newp=NULL;}
@@ -254,7 +253,7 @@ IPIN *PIN::project(const PropertyID *props,unsigned nProps,const PropertyID *new
 				newProp->setPropID(newpid); newp->nProperties++;
 			}
 		}
-		if ((md&MODE_NEW_COMMIT)!=0 && ses!=NULL) {
+		if ((md&MODE_PERSISTENT)!=0 && ses!=NULL) {
 			if (ses->getStore()->isServerLocked()) {delete newp; return NULL;}
 			TxGuard txg(ses); assert(newp->id.pid==STORE_INVALID_PID && ses==Session::getSession());
 			if (ses->getStore()->queryMgr->persistPINs(EvalCtx(ses,ECT_INSERT),&newp,1,md)!=RC_OK) {delete newp; newp=NULL;}
@@ -283,12 +282,12 @@ RC PIN::modify(const Value *pv,unsigned epos,unsigned eid,unsigned flags,MemAllo
 	if (fAdd) {
 		if (pval==NULL) {
 			ptrdiff_t sht=ins==NULL?0:ins-properties;
-			if ((mode&PIN_NO_FREE)==0) {
+			if (fNoFree==0) {
 				if ((properties=(Value*)ma->realloc(properties,(nProperties+1)*sizeof(Value),nProperties*sizeof(Value)))==NULL) {nProperties=0; return RC_NORESOURCES;}
 			} else if ((pv2=new(ma) Value[nProperties+1])!=NULL) {
 				memcpy(pv2,properties,nProperties*sizeof(Value));
 				for (unsigned i=0; i<nProperties; i++) setHT(pv2[i]);
-				properties=pv2; mode&=~PIN_NO_FREE;
+				properties=pv2; fNoFree=0;
 			} else {nProperties=0; return RC_NORESOURCES;}
 			ins=&properties[sht];
 			if ((unsigned)sht<nProperties) memmove(ins+1,ins,sizeof(Value)*(nProperties-sht));
@@ -418,16 +417,6 @@ RC PIN::modify(const Value *pv,unsigned epos,unsigned eid,unsigned flags,MemAllo
 	return rc;
 }
 
-RC PIN::setNotification(bool fReset)
-{
-	try {
-		if (ses==NULL) return RC_NOSESSION; if (ses->inReadTx()) return RC_READTX;
-		StoreCtx *ctx=ses->getStore(); if (ctx->inShutdown()) return RC_SHUTDOWN; if (ctx->isServerLocked()) return RC_READONLY;
-		if (fReset) mode&=~PIN_NOTIFY; else mode|=PIN_NOTIFY;
-		TxGuard txg(ses); return addr.defined()?ctx->queryMgr->setFlag(EvalCtx(ses,ECT_INSERT),id,&addr,HOH_NOTIFICATION,fReset):RC_OK;
-	} catch (RC rc) {return rc;} catch (...) {report(MSG_ERROR,"Exception in IPIN::setNotification(...)\n"); return RC_INTERNAL;}
-}
-
 bool PIN::testClassMembership(ClassID classID,const Value *params,unsigned nParams) const
 {
 	try {
@@ -436,11 +425,6 @@ bool PIN::testClassMembership(ClassID classID,const Value *params,unsigned nPara
 		TxGuard txg(ses); return ses->getStore()->queryMgr->test((PIN*)this,classID,EvalCtx(ses,NULL,0,NULL,0,&vv,1),true);
 	} catch (RC) {} catch (...) {report(MSG_ERROR,"Exception in IPIN::testClassMembership(ClassID=%08X)\n",classID);}
 	return false;
-}
-
-PINx *PIN::getPINx() const
-{
-	return NULL;
 }
 
 bool PIN::defined(const PropertyID *pids,unsigned nProps) const
@@ -474,7 +458,7 @@ RC PIN::getV(PropertyID pid,const Value *&pv)
 {
 	assert(pid!=STORE_INVALID_URIID && (pid&STORE_MAX_URIID)!=PROP_SPEC_PINID);
 	if ((pv=VBIN::find(pid&=STORE_MAX_URIID,properties,nProperties))!=NULL) return RC_OK;
-	if ((mode&PIN_PARTIAL)!=0 && load(LOAD_SSV/*,&pid,1*/)==RC_OK && 
+	if (fPartial!=0 && load(LOAD_SSV/*,&pid,1*/)==RC_OK && 
 		(pv=VBIN::find(pid,properties,nProperties))!=NULL) return RC_OK;
 	return RC_NOTFOUND;
 }
@@ -484,7 +468,7 @@ RC PIN::getV(PropertyID pid,Value& v,unsigned md,MemAlloc *ma,ElementID eid)
 	if (pid==STORE_INVALID_URIID) {if ((md&LOAD_CARDINALITY)==0) {v.setError(); return RC_INVPARAM;} else {v.set(0u); return RC_OK;}}
 	if ((pid&=STORE_MAX_URIID)==PROP_SPEC_PINID) {
 		if (id.pid==STORE_INVALID_PID) {
-			if ((mode&PIN_PARTIAL)!=0) return ((PINx*)this)->getVx(pid,v,md,ma,eid);
+			if (fPartial!=0) return ((PINx*)this)->getVx(pid,v,md,ma,eid);
 			if ((md&LOAD_CARDINALITY)!=0) {v.set(0u); return RC_OK;}
 			v.setError(pid); return RC_NOTFOUND;
 		}
@@ -493,7 +477,7 @@ RC PIN::getV(PropertyID pid,Value& v,unsigned md,MemAlloc *ma,ElementID eid)
 	}
 	const Value *pv=VBIN::find(pid,properties,nProperties);
 	if (pv==NULL) {
-		if ((mode&PIN_PARTIAL)!=0) return ((PINx*)this)->getVx(pid,v,md,ma,eid);
+		if (fPartial!=0) return ((PINx*)this)->getVx(pid,v,md,ma,eid);
 		if ((md&LOAD_CARDINALITY)!=0) {v.set(0u); return RC_OK;}
 		v.setError(pid); return RC_NOTFOUND;
 	}
@@ -542,22 +526,30 @@ PIN *PIN::getPIN(const PID& id,VersionID vid,Session *ses,unsigned md)
 {
 	try {
 		if (ses==NULL||ses->getStore()->inShutdown()) return NULL; assert(ses==Session::getSession());
-		TxGuard txg(ses); bool fRemote=isRemote(id); PageAddr addr=PageAddr::invAddr; PIN *pin=NULL;
-		if (!fRemote && (md&LOAD_EXT_ADDR)!=0 && addr.convert(OID(id.pid))) ses->setExtAddr(addr);
+		TxGuard txg(ses); bool fRemote=isRemote(id); PageAddr addr=PageAddr::noAddr; PIN *pin=NULL;
+		if (!fRemote && (md&LOAD_EXT_ADDR)!=0 && addr.convert(uint64_t(id.pid))) ses->setExtAddr(addr);
 		if (ses->getStore()->queryMgr->loadPIN(ses,id,pin,md|LOAD_ENAV,NULL,vid)!=RC_OK) {delete pin; pin=NULL;}
-		ses->setExtAddr(PageAddr::invAddr); return pin;
+		ses->setExtAddr(PageAddr::noAddr); return pin;
 	} catch (RC) {} catch (...) {report(MSG_ERROR,"Exception in IPIN::getPIN(PID="_LX_FM",IdentityID=%08X)\n",id.pid,id.ident);}
 	return NULL;
 }
 
-RC PIN::copySet(const Value *&pv,const Value& w)
+RC PIN::checkSet(const Value *&pv,const Value& w)
 {
-	assert((mode&PIN_NO_FREE)!=0 && properties!=NULL && nProperties!=0);
-	ptrdiff_t sht=pv-properties;
-	Value *pp=new(ses) Value[nProperties]; if (pp==NULL) return RC_NORESOURCES;
-	memcpy(pp,properties,nProperties*sizeof(Value));
-	for (unsigned i=0; i<nProperties; i++) setHT(pp[i]);
-	properties=pp; mode&=~PIN_NO_FREE; pv=pp+=sht; *pp=w; return RC_OK;
+	assert(properties!=NULL && nProperties!=0);
+	PropertyID pid=pv->property; uint8_t meta=pv->meta,op=pv->op;
+	if (fNoFree==0) freeV(*(Value*)pv);
+	else {
+		ptrdiff_t sht=pv-properties;
+		Value *pp=new(ses) Value[nProperties]; if (pp==NULL) return RC_NORESOURCES;
+		memcpy(pp,properties,nProperties*sizeof(Value));
+		for (unsigned i=0; i<nProperties; i++) setHT(pp[i]);
+		properties=pp; fNoFree=0; pv=pp+sht;
+	}
+	if (!w.isEmpty()) {*(Value*)pv=w; ((Value*)pv)->property=pid; ((Value*)pv)->meta=meta; ((Value*)pv)->op=op;}
+	else if (--nProperties==0) {ses->free((Value*)properties); properties=NULL;}
+	else if (pv<&properties[nProperties]) memmove((Value*)pv,pv+1,(byte*)&properties[nProperties]-(byte*)pv);
+	return RC_OK;
 }
 
 void PIN::destroy()
@@ -570,7 +562,7 @@ void PIN::destroy()
 void PINx::releaseLatches(PageID pid,PageMgr *mgr,bool fX)
 {
 	if (!pb.isNull() && (pid==INVALID_PAGEID || fX && pid==pb->getPageID() || mgr!=NULL && mgr->getPGID()==PGID_HEAP && pid<pb->getPageID())) {
-		if ((mode&(PIN_RLOAD|PIN_PARTIAL))==(PIN_RLOAD|PIN_PARTIAL) && hpin!=NULL) ses->getStore()->queryMgr->loadProps(this,0/*,flt,nFlt*/);	// LOAD_SSV ??? if failed?
+		if (fReload!=0 && fPartial!=0 && hpin!=NULL) ses->getStore()->queryMgr->loadProps(this,0/*,flt,nFlt*/);	// LOAD_SSV ??? if failed?
 		hpin=NULL; pb.release(ses);
 	}
 }
@@ -583,12 +575,7 @@ void PINx::checkNotHeld(PBlock *p)
 void PINx::moveTo(PINx& cb)
 {
 	cb.id=id; cb.addr=addr; cb.properties=properties; cb.nProperties=nProperties; cb.mode=mode; cb.meta=meta; pb.moveTo(cb.pb); cb.hpin=hpin; cb.epr=epr; cb.tv=tv;
-	id=PIN::defPID; addr=PageAddr::invAddr; properties=NULL; nProperties=0; mode=0; meta=0; hpin=NULL; tv=NULL; epr.lref=0; epr.flags=0;
-}
-
-PINx *PINx::getPINx() const
-{
-	return (PINx*)this;
+	id=PIN::noPID; addr=PageAddr::noAddr; properties=NULL; nProperties=0; mode=0; meta=0; hpin=NULL; tv=NULL; epr.lref=0; epr.flags=0;
 }
 
 bool PINx::defined(const PropertyID *pids,unsigned nP) const
@@ -598,7 +585,7 @@ bool PINx::defined(const PropertyID *pids,unsigned nP) const
 		for (unsigned i=0; i<nP; i++) {
 			const PropertyID pid=pids[i]&STORE_MAX_URIID;
 			if (pid==PROP_SPEC_PINID) {if (id.pid==STORE_INVALID_PID || id.ident==STORE_INVALID_IDENTITY) return false;}
-			else if (VBIN::find(pid,properties,nProperties)==NULL && ((mode&PIN_PARTIAL)==0 || hpin->findProperty(pid)==NULL)) return false;
+			else if (VBIN::find(pid,properties,nProperties)==NULL && (fPartial==0 || hpin->findProperty(pid)==NULL)) return false;
 		}
 	}
 	return true;
@@ -619,7 +606,7 @@ bool PINx::isCollection(PropertyID pid) const
 
 RC PINx::getVx(PropertyID pid,Value& v,unsigned md,MemAlloc *ma,ElementID eid)
 {
-	RC rc; assert((mode&PIN_PARTIAL)!=0);
+	RC rc; assert(fPartial!=0);
 	if (pid!=PROP_SPEC_PINID) {
 		if (!pb.isNull() || (rc=ses->getStore()->queryMgr->getBody(*this))==RC_OK)
 			return ses->getStore()->queryMgr->loadV(v,pid,*this,md,ma,eid);
@@ -699,7 +686,7 @@ RC PINx::pack() const
 void PINx::copyFlags()
 {
 	assert(!pb.isNull() && hpin!=NULL);
-	mode&=~(MODE_DELETED|PIN_DELETED); meta=hpin->meta; const uint16_t dscr=hpin->hdr.descr;
+	mode&=~(MODE_DELETED|PIN_DELETED); meta=hpin->meta; const uint16_t dscr=hpin->hdr.descr; mode|=PIN_PERSISTENT;
 	if (isRemote(id)) {
 		if ((dscr&HOH_REPLICATED)==0) mode|=PIN_IMMUTABLE; else mode=mode&~PIN_IMMUTABLE|PIN_REPLICATED;
 	} else if ((dscr&HOH_NOREPLICATION)!=0) mode|=PIN_NO_REPLICATION;
@@ -707,13 +694,13 @@ void PINx::copyFlags()
 	if ((dscr&HOH_NOTIFICATION)!=0) mode|=PIN_NOTIFY;
 	if ((dscr&HOH_HIDDEN)!=0) mode|=PIN_HIDDEN;
 	if ((dscr&HOH_DELETED)!=0) mode|=PIN_DELETED;
-	if (hpin->nProps!=0) mode|=PIN_PARTIAL;		// cb.tv ????
+	if (hpin->nProps!=0) fPartial=1;		// cb.tv ????
 }
 
 RC PINx::load(unsigned md,const PropertyID *flt,unsigned nFlt)
 {
 	if (id.pid==STORE_INVALID_PID) {RC rc=unpack(); if (rc!=RC_OK) return rc;}
-	if (properties!=NULL || (mode&PIN_PARTIAL)==0) return RC_OK; // check LOAD_ENAV, LOAD_SSV/PIN_SSV, MODE_FORCED_SSV_AS_STREAM
+	if (properties!=NULL || fPartial==0) return RC_OK; // check LOAD_ENAV, LOAD_SSV/PIN_SSV, MODE_FORCED_SSV_AS_STREAM
 	if (hpin==NULL) {
 		if (id.pid==STORE_INVALID_PID) return RC_NOTFOUND;
 		RC rc=ses->getStore()->queryMgr->getBody(*this,TVO_READ,(md&MODE_DELETED)!=0?GB_DELETED:0);
@@ -724,9 +711,9 @@ RC PINx::load(unsigned md,const PropertyID *flt,unsigned nFlt)
 
 const Value *PINx::loadProperty(PropertyID pid)
 {
-	const HeapPageMgr::HeapV *hprop; pid&=STORE_MAX_URIID; Value v,*pv; assert((mode&PIN_PARTIAL)!=0);
+	const HeapPageMgr::HeapV *hprop; pid&=STORE_MAX_URIID; Value v,*pv; assert(fPartial!=0);
 	if (hpin==NULL || (hprop=hpin->findProperty(pid))==NULL) return NULL;
-	if ((mode&PIN_NO_FREE)!=0) {
+	if (fNoFree!=0) {
 		// copy properties
 	}
 	if (ses->getStore()->queryMgr->loadV(v,pid,*this,LOAD_SSV,ses)!=RC_OK) return NULL;
@@ -742,8 +729,9 @@ const void *PINx::getPropTab(unsigned& nProps) const
 
 void PINx::copy(const PIN *pin,unsigned flags)
 {
-	id=pin->id; addr=pin->addr; properties=pin->properties; nProperties=pin->nProperties; mode=pin->mode|PIN_NO_FREE; meta=pin->meta; epr.lref=0; epr.flags=0;
-	if ((pin->mode&PIN_PARTIAL)!=0) {
+	id=pin->id; addr=pin->addr; properties=pin->properties; nProperties=pin->nProperties; mode=pin->mode; fNoFree=1; meta=pin->meta; epr.lref=0;
+	if (!addr.defined()) epr.flags=PINEX_DERIVED;
+	else if (pin->fPartial!=0) {
 		const PINx *px=(const PINx *)pin; epr=px->epr; tv=px->tv;
 		if (!px->pb.isNull() && pb.getPage(px->pb->getPageID(),px->pb->getPageMgr(),flags,pin->ses)!=NULL) fill();
 	}
@@ -751,8 +739,8 @@ void PINx::copy(const PIN *pin,unsigned flags)
 
 void PINx::free()
 {
-	if (properties!=NULL && (mode&PIN_NO_FREE)==0) freeV((Value*)properties,nProperties,ses);
-	properties=NULL; nProperties=0; mode=PIN_PARTIAL; meta=0;
+	if (properties!=NULL && fNoFree==0) freeV((Value*)properties,nProperties,ses);
+	properties=NULL; nProperties=0; fPartial=1; fNoFree=fSSV=fReload=0; meta=0;
 	//if (tv!=NULL) ???
 }
 
@@ -765,10 +753,10 @@ static int __cdecl cmpValues(const void *v1, const void *v2)
 				pv2->eid==STORE_LAST_ELEMENT&&pv2>pv1?-1:pv1->eid==STORE_LAST_ELEMENT?1:pv1<pv2?-1:1;
 }
 
-RC Session::normalize(const Value *&pv,uint32_t& nv,unsigned f,ElementID prefix,MemAlloc *ma)
+RC Session::normalize(const Value *&pv,uint32_t& nv,unsigned f,ElementID prefix,MemAlloc *ma,bool fNF)
 {
 	if (pv==NULL || nv==0) return RC_OK; if (ma==NULL) ma=this;
-	bool fCV=(f&MODE_COPY_VALUES)!=0,fNF=(f&PIN_NO_FREE)!=0,fEID=(f&MODE_FORCE_EIDS)==0;
+	bool fCV=(f&MODE_COPY_VALUES)!=0,fEID=(f&MODE_FORCE_EIDS)==0;
 	Value *pn; unsigned sort=0; HEAP_TYPE ht=ma->getAType(); HEAP_TYPE flags=fCV?NO_HEAP:ht;
 	TIMESTAMP ts=0ULL; RC rc; unsigned nBI=0;
 
@@ -847,45 +835,18 @@ RC Session::normalize(const Value *&pv,uint32_t& nv,unsigned f,ElementID prefix,
 	return RC_OK;
 }
 
-RC Session::createPINAndCommit(PID& res,const Value values[],unsigned nValues,unsigned md,const AllocCtrl *actrl)
+RC Session::createPIN(Value *values,unsigned nValues,IPIN **result,unsigned md,const PID *orig)
 {
 	try {
-		if (ctx->inShutdown()) return RC_SHUTDOWN; if (ctx->isServerLocked()) return RC_READONLY;
-		const Value *pv=values; uint32_t nv=(uint32_t)nValues; if (nv==0) pv=NULL;
-		RC rc=pv!=NULL&&nv!=0?normalize(pv,nv,MODE_COPY_VALUES|PIN_NO_FREE,ctx->getPrefix(),this):RC_OK; if (rc!=RC_OK) return rc;
-		unsigned pm=md&(PIN_NO_REPLICATION|PIN_REPLICATED|PIN_HIDDEN|PIN_NOTIFY|PIN_TRANSIENT);
-		if ((itf&ITF_DEFAULT_REPLICATION)!=0 && (md&PIN_NO_REPLICATION)==0) pm|=PIN_REPLICATED;
-		PIN pn(this,pm,(Value*)pv,nv),*ppn=&pn; 
-		// check (pin->mode&PIN_INMEM)==0
-		TxGuard txg(this);
-		if ((rc=ctx->queryMgr->persistPINs(EvalCtx(this,ECT_INSERT),&ppn,1,md,actrl))==RC_OK) {
-			res=pn.id;
-			if ((md&MODE_NO_EID)==0 && pv!=NULL) for (unsigned i=0; i<nv; i++) if (pv[i].type==VT_ARRAY) {
-				if (values[i].property==pv[i].property && values[i].type==VT_ARRAY && values[i].length==pv[i].length)
-					for (unsigned j=0; j<pv[i].length; j++) values[i].varray[j].eid=pv[i].varray[j].eid;
-				else 
-					for (unsigned j=0,k=0; j<nValues && k<pv[i].length; j++) if (values[j].property==pv[i].property)
-						if (values[j].type!=VT_ARRAY) values[j].eid=pv[i].varray[k++].eid;
-						else for (unsigned m=0; m<values[j].length; m++) {assert(k<pv[i].length); values[j].varray[m].eid=pv[i].varray[k++].eid;}
-			}
-		}
-		return rc;
-	} catch (RC rc) {return rc;} catch (...) {report(MSG_ERROR,"Exception in ISession::createPINAndCommit(...)\n"); return RC_INTERNAL;}
-}
-
-IPIN *Session::createPIN(Value* values,unsigned nValues,unsigned md,const PID *orig)
-{
-	try {
-		if (ctx->inShutdown()) return NULL;
-		unsigned pmd=md; if (newPINFlags(pmd,orig)!=RC_OK) return NULL;
+		if (ctx->inShutdown()) return RC_SHUTDOWN;
+		unsigned pmd=md; RC rc=newPINFlags(pmd,orig); if (rc!=RC_OK) return rc;
 		PIN *pin=active!=NULL?active->createPIN(values,nValues,pmd,orig):NULL;
 		if (pin==NULL) {
-			if ((pin=new(this) PIN(this,pmd))!=NULL && orig!=NULL) *pin=*orig;
+			if ((pin=new(this) PIN(this,pmd))==NULL) rc=RC_NORESOURCES; else if (orig!=NULL) *pin=*orig;
 			if (values!=NULL && nValues!=0) {
 				if (pin!=NULL) {
 					uint32_t nv=(uint32_t)nValues; const Value *pv=values;
-					RC rc=normalize(pv,nv,md,orig!=NULL?ctx->genPrefix(ushort(orig->pid>>48)):ctx->getPrefix(),this); 
-					if (rc!=RC_OK) {pin->destroy(); pin=NULL;} else {pin->properties=(Value*)pv; pin->nProperties=nv;}
+					if ((rc=normalize(pv,nv,md,orig!=NULL?ctx->genPrefix(ushort(orig->pid>>48)):ctx->getPrefix(),this))==RC_OK) {pin->properties=(Value*)pv; pin->nProperties=nv;}
 				} else if ((md&MODE_COPY_VALUES)==0) {
 					for (unsigned i=0; i<nValues; i++) {
 						if (values[i].type==VT_ARRAY) for (unsigned j=0; j<values[i].length; j++) setHT(values[i].varray[i],SES_HEAP);
@@ -896,14 +857,13 @@ IPIN *Session::createPIN(Value* values,unsigned nValues,unsigned md,const PID *o
 				}
 			}
 		}
-		if (pin!=NULL && (md&MODE_NEW_COMMIT)!=0 && (pin->mode&PIN_INMEM)==0) {
-			RC rc=RC_READONLY;
-			if (!ctx->isServerLocked()) {TxGuard txg(this); rc=ctx->queryMgr->persistPINs(EvalCtx(this,ECT_INSERT),&pin,1,md);}
-			if (rc!=RC_OK) {pin->destroy(); pin=NULL;}
+		if (pin!=NULL) {
+			if (rc==RC_OK && (md&MODE_PERSISTENT)!=0)
+				{if (!ctx->isServerLocked()) {TxGuard txg(this); rc=ctx->queryMgr->persistPINs(EvalCtx(this,ECT_INSERT),&pin,1,md);} else rc=RC_READONLY;}
+			if (rc==RC_OK && result!=NULL) *result=pin; else pin->destroy();
 		}
-		return pin;
-	} catch (RC) {} catch (...) {report(MSG_ERROR,"Exception in ISession::createPIN(...)\n");}
-	return NULL;
+		return rc;
+	} catch (RC rc) {return rc;} catch (...) {report(MSG_ERROR,"Exception in ISession::createPIN(...)\n"); return RC_INTERNAL;}
 }
 
 RC Session::checkBuiltinProp(Value &v,TIMESTAMP &ts,bool fInsert)
@@ -947,7 +907,12 @@ RC Session::checkBuiltinProp(Value &v,TIMESTAMP &ts,bool fInsert)
 	case PROP_SPEC_OBJID:
 		if (!fInsert) return RC_INVPARAM;
 		if (v.type==VT_STRING || v.type==VT_URL) {
-			URI *uri=ctx->uriMgr->insert(v.str); if (uri==NULL) return RC_NORESOURCES;
+			const char *p=v.str,*pref; size_t l=v.length,lPref;
+			if (!hasPrefix(p,l) && (pref=ctx->namedMgr->getStorePrefix(lPref))!=NULL) {
+				if ((p=(char*)alloca(lPref+l))==NULL) return RC_NORESOURCES;
+				memcpy((char*)p,pref,lPref); memcpy((char*)p+lPref,v.str,l); l+=lPref;
+			}
+			URI *uri=ctx->uriMgr->insert(p,l); if (uri==NULL) return RC_NORESOURCES;
 			w.setURIID(uri->getID()); w.setPropID(PROP_SPEC_OBJID); w.setMeta(v.meta); uri->release(); v=w;
 		} else if (v.type!=VT_URIID) return RC_TYPE;
 		if (v.uid==STORE_INVALID_CLASSID || v.uid<=MAX_BUILTIN_PROPID && v.uid>MAX_BUILTIN_CLASSID) return RC_INVPARAM;

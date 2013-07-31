@@ -49,9 +49,22 @@ void StartFSM::destroy(Session *ses)
 	freeV(ctx); ses->free(this);
 }
 
-RC FSMMgr::addTransition(const Value *tr,void *table)
+RC StartFSM::loadFSM(PINx &cb)
 {
+	RC rc;
+	if ((rc=cb.load(LOAD_SSV))!=RC_OK) return rc; assert((cb.getMetaType()&PMT_FSMCTX)!=0);
+		// start machine
+	//cb.properties=NULL; cb.nProperties=0;
+	return RC_OK;
+}
+
+RC FSMMgr::addTransition(const Value *tr,DynArray<Value> *table)
+{
+	switch (tr->type) {
+	case VT_STRUCT:
 	//...
+		break;
+	}
 	return RC_OK;
 }
 
@@ -62,7 +75,8 @@ RC FSMMgr::process(Session *ses,PIN *fsm,const Value *event,ElementID tid)
 	if ((rc=fsm->getV(PROP_SPEC_STATE,pv))!=RC_OK) return rc;
 	if (pv==NULL || (pv->type!=VT_REF && pv->type!=VT_REFID)) return RC_CORRUPTED;
 	if (pv->type==VT_REF) state=(PIN*)pv->pin; else {cb=pv->id; state=&cb;}
-	PIN *spec[5]={NULL,NULL,NULL,fsm,event->type==VT_REF?(PIN*)event->pin:(PIN*)0};
+	// locctx
+	PIN *spec[5]={NULL,fsm,NULL,event->type==VT_REF?(PIN*)event->pin:(PIN*)0,NULL};
 	EvalCtx ectx(ses,spec,sizeof(spec)/sizeof(spec[0]),NULL,0);
 	if (tid!=STORE_COLLECTION_ID) {
 		if ((rc=state->getV(PROP_SPEC_TRANSITION,trns,LOAD_SSV,ses,tid))!=RC_OK) return rc==RC_NOTFOUND?RC_CORRUPTED:rc;
@@ -71,7 +85,7 @@ RC FSMMgr::process(Session *ses,PIN *fsm,const Value *event,ElementID tid)
 		trans=&trns;
 	}
 	for (const Value *pv;;) {
-		// tx ???
+		// tx ??? EV_ASYNC???
 		if (trans!=NULL) {
 			assert(state!=NULL);
 			if ((rc=state->getV(PROP_SPEC_ONLEAVE,pv))==RC_OK) {

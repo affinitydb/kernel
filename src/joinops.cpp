@@ -189,7 +189,7 @@ RC MergeOp::advance(const PINx *skip)
 		if ((state&QOS_EOF1)!=0) return RC_EOF;	// if not right/full outer
 		if ((state&QOS_ADV1)!=0) {
 			cleanup(pV1); state&=~QST_BOF;
-			res->mode&=~PIN_RLOAD; if (op!=QRY_SEMIJOIN) pR->mode|=PIN_RLOAD;
+			res->fReload=0; if (op!=QRY_SEMIJOIN) pR->fReload=1;
 			if ((rc=queryOp->next(skip))!=RC_OK) {
 				if (rc!=RC_EOF || (state&QOS_STR)==0) {state=(state&~QOS_ADV1)|(QOS_EOF1|QOS_EOF2); return rc;}		// if not right/full outer
 				memcpy(pV1,pV2,nej*sizeof(Value)); memset(pV2,0,nej*sizeof(Value));
@@ -208,7 +208,7 @@ RC MergeOp::advance(const PINx *skip)
 		}
 		if ((state&QOS_EOF2)!=0) return RC_EOF;	// if not left/full outer
 		if ((state&QOS_ADV2)!=0) {
-			cleanup(pV2); res->mode|=PIN_RLOAD; pR->mode&=~PIN_RLOAD;
+			cleanup(pV2); res->fReload=1; pR->fReload=0;
 			if ((rc=queryOp2->next(skip))!=RC_OK) {
 				state=(state&~QOS_ADV2)|QOS_EOF2; if (rc!=RC_EOF) state|=QST_EOF; return rc;
 			}
@@ -294,7 +294,7 @@ RC MergeOp::advance(const PINx *skip)
 				PIN *pp[2]={res,pR};
 				if (!Expr::condSatisfied(conds,nConds,EvalCtx(qx->ses,NULL,0,pp,2,qx->vals,QV_ALL,qx->ectx,qx->ses,(qflags&QO_CLASS)!=0?ECT_CLASS:ECT_QUERY))) continue;
 			}
-			res->mode|=PIN_RLOAD; pR->mode|=PIN_RLOAD; return RC_OK;
+			res->fReload=pR->fReload=1; return RC_OK;
 		}
 	}
 }

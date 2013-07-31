@@ -163,6 +163,7 @@ public:
 	virtual	byte	*serialize(byte *buf) const = 0;
 	virtual	const	QVar *getRefVar(unsigned refN) const;
 	virtual	RC		mergeProps(PropListP& plp,bool fForce=false,bool fFlags=false) const;
+	virtual	RC		substitute(const Value *pv,unsigned np,MemAlloc *ma);
 	static	RC		deserialize(const byte *&buf,const byte *const ebuf,MemAlloc *ma,QVar*& res);
 	void	operator delete(void *p) {if (p!=NULL) ((QVar*)p)->ma->free(p);}
 	QVarID			getID() const {return id;}
@@ -208,6 +209,7 @@ class SimpleVar : public QVar
 	byte			*serialize(byte *buf) const;
 	static	RC		deserialize(const byte *&buf,const byte *const ebuf,QVarID,MemAlloc *ma,QVar*& res);
 	RC				mergeProps(PropListP& plp,bool fForce=false,bool fFlags=false) const;
+	RC				substitute(const Value *pv,unsigned np,MemAlloc *ma);
 	RC				getPropDNF(struct PropDNF *&dnf,size_t& ldnf,MemAlloc *ma) const;
 	bool			checkXPropID(PropertyID xp) const;
 public:
@@ -307,7 +309,7 @@ class Stmt : public IStmt
 	unsigned	nNested;		/**< number of nested PINs to be inserterd */
 	IntoClass	*into;			/**< class membership constraints */
 	uint32_t	nInto;			/**< number of class membership constraints */
-	unsigned	pmode;			/**< PIN creation flags */
+	unsigned	pmode;			/**< PIN creation flags or index in @... for UPDATE */
 	uint64_t	tpid;			/**< root PIN id for cross-references in graph insert */
 
 public:
@@ -339,7 +341,6 @@ public:
 	RC		execute(ICursor **result=NULL,const Value *params=NULL,unsigned nParams=0,unsigned nReturn=~0u,unsigned nSkip=0,unsigned mode=0,uint64_t *nProcessed=NULL,TXI_LEVEL=TXI_DEFAULT) const;
 	RC		asyncexec(IStmtCallback *cb,const Value *params=NULL,unsigned nParams=0,unsigned nProcess=~0u,unsigned nSkip=0,unsigned mode=0,TXI_LEVEL=TXI_DEFAULT) const;
 	RC		execute(IStreamOut*& result,const Value *params=NULL,unsigned nParams=0,unsigned nReturn=~0u,unsigned nSkip=0,unsigned mode=0,TXI_LEVEL=TXI_DEFAULT) const;
-	RC		execute(const EvalCtx& ectx,Cursor **pResult=NULL,unsigned nReturn=~0u,unsigned nSkip=0,unsigned md=0,uint64_t *nProcessed=NULL,TXI_LEVEL txl=TXI_DEFAULT) const;
 	RC		count(uint64_t& cnt,const Value *params=NULL,unsigned nParams=0,unsigned nAbort=~0u,unsigned mode=0,TXI_LEVEL=TXI_DEFAULT) const;
 	RC		exist(const Value *params=NULL,unsigned nParams=0,unsigned mode=0,TXI_LEVEL=TXI_DEFAULT) const;
 	RC		analyze(char *&plan,const Value *pars=NULL,unsigned nPars=0,unsigned md=0) const;
@@ -350,7 +351,7 @@ public:
 	char	*toString(unsigned mode=0,const QName *qNames=NULL,unsigned nQNames=0) const;
 	IStmt	*clone(STMT_OP=STMT_OP_ALL) const;
 	Stmt	*clone(STMT_OP sop,MemAlloc *ma) const;
-	void	trace(const EvalCtx& ectx,const char *op,RC rc,unsigned cnt,const Value *mods=NULL,unsigned nMods=0) const;
+	void	trace(const EvalCtx& ectx,const char *op,RC rc,unsigned cnt) const;
 	void	destroy();
 
 	bool	hasParams() const {return (mode&QRY_PARAMS)!=0;}
@@ -360,12 +361,14 @@ public:
 	QVar	*getTop() const {return top;}
 	unsigned getMode() const {return mode;}
 	void	setVarFlags(QVarID var,byte flg);
+	void	checkParams(const Value& v,bool fRecurs=false);
 	
 	RC		setValuesNoCopy(PINDscr *values,unsigned nVals);
 	RC		setValuesNoCopy(Value *values,unsigned nVals);
 	RC		getNested(PIN **ppins,PIN *pins,unsigned& cnt,Session *ses,PIN *parent=NULL) const;
 	static	RC	getNested(const Value *pv,unsigned nV,PIN **ppins,PIN *pins,unsigned& cnt,Session *ses,PIN *parent);
 	RC		insert(const EvalCtx& ectx,Value *ids,unsigned& cnt) const;
+	RC		substitute(const Value *params,unsigned nParams,MemAlloc *ma);
 
 	RC		render(SOutCtx&) const;
 	size_t	serSize() const;
@@ -380,6 +383,7 @@ protected:
 	RC		render(const QVar *qv,SOutCtx& out) const;
 	RC		copyValues(Value *vals,unsigned nVals,unsigned& pn,DynOArrayBuf<uint64_t,uint64_t>& tids,Session *ses=NULL);
 	RC		countNestedNoCopy(Value *vals,unsigned nVals);
+	RC		execute(const EvalCtx& ectx,Value *res,unsigned nReturn=~0u,unsigned nSkip=0,unsigned md=0,uint64_t *nProcessed=NULL,TXI_LEVEL txl=TXI_DEFAULT,Cursor **pResult=NULL) const;
 	static	bool	classOK(const QVar *);
 	friend	class	Class;
 	friend	class	Classifier;
@@ -414,6 +418,7 @@ class Cursor : public ICursor
 	TXCID				txcid;
 	uint64_t			cnt;
 	TxSP				tx;
+	ValueC				retres;
 	bool				fSnapshot;
 	bool				fProc;
 	bool				fAdvance;
@@ -435,7 +440,9 @@ public:
 	RC					connect();
 	SelectType			selectType() const {return stype;}
 	Session				*getSession() const {return ectx.ses;}
+	unsigned			getNResults() const {return nResults;}
 	RC					next(const PINx *&);
+	RC					rewindInt();
 	friend	class		CursorNav;
 };
 

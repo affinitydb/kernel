@@ -46,7 +46,7 @@ RC QueryPrc::deletePINs(const EvalCtx& ectx,const PIN *const *pins,const PID *pi
 		for (unsigned np=0; np<nPins; pcb=NULL,parts.clear()) {
 			PID pid=pids[np++]; cb=pid; if (pcb==NULL) pcb=&cb;
 			if (isRemote(pid) && fPurge && (rc=ctx->netMgr->remove(pid,cb.addr))!=RC_OK) throw rc!=RC_FALSE?rc:RC_NOTFOUND;
-			byte fwdbuf[sizeof(HeapPageMgr::HeapObjHeader)+PageAddrSize]; bool fDelFwd=false; PageAddr fwd=PageAddr::invAddr,deleted=PageAddr::invAddr;
+			byte fwdbuf[sizeof(HeapPageMgr::HeapObjHeader)+PageAddrSize]; bool fDelFwd=false; PageAddr fwd=PageAddr::noAddr,deleted=PageAddr::noAddr;
 			FTList *ftl=NULL; ChangeInfo fti; unsigned i; Value v; IStoreNotification::NotificationData *ndata=NULL;
 			for (;;) {
 				if (pcb->pb.isNull() && (rc=getBody(*pcb,TVO_UPD,flgs))!=RC_OK) throw rc;
@@ -73,7 +73,7 @@ RC QueryPrc::deletePINs(const EvalCtx& ectx,const PIN *const *pins,const PID *pi
 			}
 			if ((pinDescr&(HOH_HIDDEN|HOH_DELETED))==0 && (pinDescr&HOH_FT)!=0) {
 				if ((ftl=new(sft.malloc(sizeof(FTList))) FTList(sft))==NULL) throw RC_NORESOURCES;
-				fti.id=pid; fti.newV=NULL; fti.oldV=&v; fti.docID=PIN::defPID; fti.propID=STORE_INVALID_URIID; fti.eid=STORE_COLLECTION_ID;
+				fti.id=pid; fti.newV=NULL; fti.oldV=&v; fti.docID=PIN::noPID; fti.propID=STORE_INVALID_URIID; fti.eid=STORE_COLLECTION_ID;
 				if ((hprop=pcb->hpin->findProperty(PROP_SPEC_DOCUMENT))!=NULL && hprop->type.getType()==VT_REFID) {
 					if ((rc=loadVH(v,hprop,*pcb,0,NULL))!=RC_OK) throw rc;
 					fti.docID=v.id; assert(v.type==VT_REFID);
@@ -189,7 +189,7 @@ RC QueryPrc::deletePINs(const EvalCtx& ectx,const PIN *const *pins,const PID *pi
 				if (rc!=RC_OK) throw rc;
 			}
 			if ((pinDescr&HOH_DELETED)==0) {
-				if (cid!=STORE_INVALID_CLASSID) {ClassDrop *cd=new(ses) ClassDrop(cid); if (cd!=NULL) ses->addOnCommit(cd); else throw RC_NORESOURCES;}
+				if (cid!=STORE_INVALID_CLASSID) {ClassDrop *cd=new(ses) ClassDrop(cid); if (cd==NULL || ses->addOnCommit(cd)!=RC_OK) throw RC_NORESOURCES;}
 				if (ftl!=NULL) {
 					if ((rc=ctx->ftMgr->process(*ftl,pid,fti.docID))!=RC_OK) throw rc;
 					sft.release(); ftl=NULL;

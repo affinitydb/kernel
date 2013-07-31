@@ -41,7 +41,7 @@ bool PageMgr::afterIO(PBlock *pb,size_t len,bool fLoad)
 	byte *frame=pb->getPageBuf(); assert(((size_t)frame&0x07)==0 && (len&0x07)==0);		// 64-bit alignment
 
 	TxPageHeader *pH=(TxPageHeader*)frame; const char *what; bool fCorrupted=false;
-	if (ctx->fHMAC) {
+	if ((ctx->theCB->flags&STFLG_PAGEHMAC)!=0) {
 		HMAC hmac(ctx->getHMACKey(),HMAC_KEY_SIZE); hmac.add(frame,len-FOOTERSIZE);
 		fCorrupted=memcmp(frame+len-FOOTERSIZE,hmac.result(),FOOTERSIZE)!=0;
 	}
@@ -83,7 +83,7 @@ bool PageMgr::beforeFlush(byte *frame,size_t len,PageID pid)
 			AES aes(encKey,ENC_KEY_SIZE,false); ctx->cryptoMgr->randomBytes(pH->IV,IVSIZE);
 			aes.encrypt(frame+IVSIZE,len-IVSIZE-FOOTERSIZE,(uint32_t*)pH->IV);
 		}
-		if (ctx->fHMAC) {
+		if ((ctx->theCB->flags&STFLG_PAGEHMAC)!=0) {
 			HMAC hmac(ctx->getHMACKey(),HMAC_KEY_SIZE); hmac.add(frame,len-FOOTERSIZE);
 			memcpy(frame+len-FOOTERSIZE,hmac.result(),FOOTERSIZE);
 		}

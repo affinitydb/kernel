@@ -43,6 +43,13 @@ namespace AfyKernel
 {
 
 /**
+ * store flags
+ */
+#define	STFLG_ENCRYPTED		0x0001
+#define	STFLG_PAGEHMAC		0x0002
+#define	STFLG_NO_PREFIX		0x0004
+
+/**
  * store state enumeration
  */
 enum StoreState 
@@ -120,14 +127,13 @@ struct StoreCB
 	uint32_t		nMaster;					/**< number of master resords */
 	float			pctFree;					/**< free space precentage for heap pages */
 	uint16_t		storeID;					/**< store ID, 0 - 65535, set when store is created */
-	uint8_t			fIsEncrypted;				/**< encryption flag */
-	uint8_t			fHMAC;						/**< page HMAC flag */
-	uint32_t		filler;						/**< 64-bit alignment */
-	uint8_t			encKey[ENC_KEY_SIZE];		/**< encryption key */
+	uint16_t		flags;						/**< encryption, page HMAC and other flags */
+
+	uint8_t			encKey[ENC_KEY_SIZE];		/**< encryption key, must be 64 bit aligned */
 	uint8_t			HMACKey[HMAC_KEY_SIZE];		/**< HMAC calculation key */
 
 	TIMESTAMP		timestamp;					/**< last store access timestamp */
-	TXID			lastTXID;					/**< last transaction ID */
+	uint64_t		lastTXID;					/**< last transaction ID */
 	LSN				checkpoint;					/**< last checkpoint LSN, recovery starts at this address */
 	LSN				logEnd;						/**< current log end */
 	uint64_t		nTotalPINs;					/**< total number of PINs in the store */
@@ -136,6 +142,9 @@ struct StoreCB
 	uint32_t		nDirPages;					/**< number of directory pages */
 	uint32_t		nPartials;					/**< number of recorded partially filled pages */
 	uint32_t		xPropID;					/**< maximum property ID used */
+	uint32_t		xOnCommit;					/**< maximum number of OnCommit actions */
+	uint32_t		xSyncStack;					/**< maximum number of sync actions in stack */
+	uint32_t		xSesObjects;				/**< maximum number of symultaneously accesable objects per session */
 	PageID			mapRoots[MA_ALL];			/**< anchor pages (see MA_XXX above) */
 	PageID			dirPages[MAXDIRPAGES];		/**< directory pages */
 	PartialInfo		partials[MAXPARTIALPAGES];	/**< partially filled pages */

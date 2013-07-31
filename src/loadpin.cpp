@@ -38,11 +38,11 @@ RC QueryPrc::loadPIN(Session *ses,const PID& id,PIN *&pin,unsigned mode,PINx *pc
 	*pin=id; *pin=pcb->addr;
 
 	if ((rc=loadProps(pcb,mode|LOAD_SSV))==RC_OK) {
-		assert((pcb->mode&PIN_SSV)==0);
+		assert(pcb->fSSV==0);
 		if ((PIN*)pcb!=pin) {
 			pin->mode=pcb->mode; pin->meta=pcb->meta;
-			if ((pcb->mode&PIN_NO_FREE)==0) {pin->properties=pcb->properties; pin->nProperties=pcb->nProperties; pcb->properties=NULL; pcb->nProperties=0; pcb->mode|=PIN_PARTIAL;}
-			else if ((rc=copyV(pcb->properties,pcb->nProperties,pin->properties,ses))==RC_OK) {pin->nProperties=pcb->nProperties; pin->mode&=~PIN_NO_FREE;}
+			if (pcb->fNoFree==0) {pin->properties=pcb->properties; pin->nProperties=pcb->nProperties; pcb->properties=NULL; pcb->nProperties=0; pcb->fPartial=1;}
+			else if ((rc=copyV(pcb->properties,pcb->nProperties,pin->properties,ses))==RC_OK) {pin->nProperties=pcb->nProperties; pin->fNoFree=0;}
 		}
 	}
 	return rc;
@@ -51,12 +51,12 @@ RC QueryPrc::loadPIN(Session *ses,const PID& id,PIN *&pin,unsigned mode,PINx *pc
 RC QueryPrc::loadProps(PINx *pcb,unsigned mode,const PropertyID *pids,unsigned nPids)
 {
 	assert(!pcb->pb.isNull() && pcb->hpin!=NULL);
-	RC rc=RC_OK; unsigned nProps=pcb->hpin->nProps; const DataSS *dss=NULL; pcb->mode&=~PIN_PARTIAL;
+	RC rc=RC_OK; unsigned nProps=pcb->hpin->nProps; const DataSS *dss=NULL; pcb->fPartial=0;
 //	if (!pcb->ses->inWriteTx() && pcb->tv!=NULL && (!pcb->tv->fCommited || (dss=pcb->tv->stack)!=NULL && dss->fNew)) return RC_DELETED;
 	if ((pcb->nProperties=nProps)!=0) {
-		if (pids!=NULL) {if (nPids==0 || pids[0]==PROP_SPEC_ANY) pids=NULL; else if (nPids!=0 && nPids<pcb->nProperties) {pcb->nProperties=nPids; pcb->mode|=PIN_PARTIAL;}}
+		if (pids!=NULL) {if (nPids==0 || pids[0]==PROP_SPEC_ANY) pids=NULL; else if (nPids!=0 && nPids<pcb->nProperties) {pcb->nProperties=nPids; pcb->fPartial=1;}}
 		if ((pcb->properties=(Value*)pcb->ses->realloc(pcb->properties,pcb->nProperties*sizeof(Value)))==NULL) return RC_NORESOURCES;
-		const HeapPageMgr::HeapV *hprop=pcb->hpin->getPropTab(),*const hend=hprop+pcb->hpin->nProps,*hpr; pcb->mode&=~PIN_SSV; 
+		const HeapPageMgr::HeapV *hprop=pcb->hpin->getPropTab(),*const hend=hprop+pcb->hpin->nProps,*hpr; pcb->fSSV=0;
 		for (unsigned i=0; i<pcb->nProperties; ++i,++hprop) {
 			const PropertyID pid=pids!=NULL?pids[i]&STORE_MAX_URIID:hprop->getPropID();
 			if (dss) {
@@ -80,12 +80,12 @@ RC QueryPrc::loadProps(PINx *pcb,unsigned mode,const PropertyID *pids,unsigned n
 				if (hprop>=hend || (hpr=hprop)->getPropID()!=pid && (hpr=pcb->hpin->findProperty(pid))==NULL) {
 					//skip
 				}
-				if (hpr!=hprop) {hprop=hpr; pcb->mode|=PIN_PARTIAL;}
+				if (hpr!=hprop) {hprop=hpr; pcb->fPartial=1;}
 			}
 			if ((rc=loadVH(pcb->properties[i],hprop,*pcb,mode&~LOAD_CARDINALITY,pcb->ses))!=RC_OK) break;
-			if ((pcb->properties[i].flags&VF_SSV)!=0) pcb->mode|=PIN_SSV;
+			if ((pcb->properties[i].flags&VF_SSV)!=0) pcb->fSSV=1;
 		}
-		if (rc==RC_OK && (mode&LOAD_SSV)!=0 && (pcb->mode&PIN_SSV)!=0 && (rc=loadSSVs(pcb->properties,pcb->nProperties,mode,pcb->ses,pcb->ses))==RC_OK) pcb->mode&=~PIN_SSV;
+		if (rc==RC_OK && (mode&LOAD_SSV)!=0 && pcb->fSSV!=0 && (rc=loadSSVs(pcb->properties,pcb->nProperties,mode,pcb->ses,pcb->ses))==RC_OK) pcb->fSSV=0;
 	}
 	return rc;
 }
@@ -255,7 +255,7 @@ RC QueryPrc::loadV(Value& v,unsigned propID,const PINx& cb,unsigned mode,MemAllo
 	if (cb.properties!=NULL) {
 		//?????
 		const Value *pv=VBIN::find(propID,cb.properties,cb.nProperties);
-		if (pv!=NULL || (cb.mode&PIN_PARTIAL)==0) {
+		if (pv!=NULL || cb.fPartial==0) {
 			if ((mode&LOAD_CARDINALITY)!=0) {
 				v.set(unsigned(pv==NULL?0u:pv->type==VT_ARRAY?pv->length:pv->type==VT_COLLECTION?pv->nav->count():1u));
 				v.property=propID; return RC_OK;

@@ -33,18 +33,53 @@ using namespace Afy;
 namespace AfyKernel
 {
 
+class Identity;
+	
+#define AFY_PROTOCOL	"affinity://"
+	
+struct SpecPINProps
+{
+	uint64_t	mask[4];
+	unsigned	meta;
+};
+	
+struct BuiltinURI
+{
+	size_t		lname;
+	const char	*name;
+	URIID		uid;
+};
+
 class NamedMgr : public TreeGlobalRoot
 {
 	friend	class Classifier;
-	StoreCtx	*const	ctx;
-	const char	*storePrefix;
+	StoreCtx		*const	ctx;
+	const char		*storePrefix;
+	size_t			lStorePrefix;
+	volatile long	xPropID;
+	Mutex			lock;
+	bool			fInit;
 public:
 	NamedMgr(StoreCtx *ct);
-	RC				initStorePrefix();
-	const	char	*getStorePrefix() const {return storePrefix;}
-	bool			exists(URIID);
-	RC				getNamed(URIID id,PINx& ,bool fUpdate=false);
-	RC				update(URIID id,PINRef& pr,uint16_t meta,bool fInsert);
+	RC					createBuiltinObjects(Session *ses);
+	RC					loadObjects(Session *ses);
+	RC					initStorePrefix(Identity *ident=NULL);
+	RC					restoreXPropID(Session *ses);
+	bool				isInit() const {return fInit;}
+	const	char		*getStorePrefix(size_t& l) const {l=lStorePrefix; return storePrefix;}
+	PropertyID			getXPropID() const {return (PropertyID)xPropID;}
+	void				setMaxPropID(PropertyID id);
+	bool				exists(URIID);
+	RC					getNamedPID(URIID uid,PID& id);
+	RC					getNamed(URIID id,PINx&,bool fUpdate=false);
+	RC					update(URIID id,PINRef& pr,uint16_t meta,bool fInsert);
+	static	const char	*getBuiltinName(URIID uid,size_t& lname);
+	static	URIID		getBuiltinURIID(const char *name,size_t lname,bool fSrv);
+	static	uint16_t	getMeta(ClassID cid);
+	static	const		SpecPINProps specPINProps[9];
+private:
+	static	const		BuiltinURI	builtinURIs[];
+	static	const		unsigned	classMeta[MAX_BUILTIN_CLASSID+1];
 };
 
 }

@@ -86,7 +86,7 @@ size_t StreamX::read(void *buf,size_t maxLength)
 			lData+=l; maxLength-=l; pos+=l; 
 			if ((shift+=l)<lbuf) break;
 		}
-		if (hty==HO_BLOB) memcpy(&current,((const HeapPageMgr::HeapLOB*)hdr)->next,PageAddrSize); else current=PageAddr::invAddr;
+		if (hty==HO_BLOB) memcpy(&current,((const HeapPageMgr::HeapLOB*)hdr)->next,PageAddrSize); else current=PageAddr::noAddr;
 		shift=0; if (current.pageID==INVALID_PAGEID||current.idx==INVALID_INDEX) {pos=len; break;}
 	} while (maxLength>0);
 	if (pb!=NULL) pb->release();
@@ -100,7 +100,7 @@ size_t StreamX::readChunk(uint64_t offset,void *buf,size_t maxLength)
 		if ((pb=ctx->bufMgr->getPage(addr.pageID,ctx->ssvMgr,0,pb))==NULL) break;
 		const HeapPageMgr::HeapPage *hp=(const HeapPageMgr::HeapPage*)pb->getPageBuf(); 
 		const HeapPageMgr::HeapObjHeader *hdr=hp->getObject(hp->getOffset(addr.idx));
-		size_t lbuf=0; const byte *p=NULL; addr=PageAddr::invAddr;
+		size_t lbuf=0; const byte *p=NULL; addr=PageAddr::noAddr;
 		if (hdr!=NULL) switch (hdr->getType()) {
 		default: break;
 		case HO_SSVALUE:
@@ -1043,7 +1043,7 @@ public:
 		if (rc==RC_OK) {
 			if (tctx.pb.isNull()) {
 				assert(coll.leftmost=INVALID_PAGEID && tctx.depth==0);
-				tctx.pb=ctx->fsMgr->getNewPage(ctx->trpgMgr); if (tctx.pb.isNull()) return RC_FULL;
+				tctx.pb=ctx->fsMgr->getNewPage(ctx->trpgMgr); if (tctx.pb.isNull()) return RC_FULL; tctx.pb.set(QMGR_UFORCE);
 				if ((rc=ctx->trpgMgr->initPage(tctx.pb,Collection::collFormat,0,NULL,INVALID_PAGEID,INVALID_PAGEID))!=RC_OK)
 					{tctx.pb.release(ses); return rc;}
 				coll.anchor=coll.leftmost=tctx.pb->getPageID();
@@ -1089,7 +1089,7 @@ RC Collection::persistElement(Session *ses,const Value& v,ushort& lval,byte *&bu
 			memcpy(buf+lval,&hl,sizeof(HLOB)); hdr->type.setType(VT_STREAM,HDF_LONG);
 		}
 		lval+=l;
-	} else if ((rc=ctx->queryMgr->persistValue(v,lval,hdr->type,sht,buf+lval,NULL,PageAddr::invAddr))==RC_OK)
+	} else if ((rc=ctx->queryMgr->persistValue(v,lval,hdr->type,sht,buf+lval,NULL,PageAddr::noAddr))==RC_OK)
 		{if (hdr->type.isCompact()) {__una_set(*(ushort*)(buf+lval),sht); lval+=sizeof(ushort);} else lval=(ushort)ceil(lval,HP_ALIGN);}
 	return rc;
 }

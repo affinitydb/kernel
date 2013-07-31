@@ -41,6 +41,7 @@ public:
 	StartFSM(const Value& ct);
 	RC		process(Session *ses);
 	void	destroy(Session *ses);
+	static	RC	loadFSM(PINx&cb);
 };
 
 class FSMMgr
@@ -50,7 +51,7 @@ public:
 	FSMMgr(StoreCtx *ct) : ctx(ct) {}
 	RC	process(Session *ses,PIN *fsm,const Value *event=NULL,ElementID tid=STORE_COLLECTION_ID);
 private:
-	RC	addTransition(const Value *trans,void *table);
+	RC	addTransition(const Value *trans,DynArray<Value> *table);
 };
 
 }

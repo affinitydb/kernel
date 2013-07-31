@@ -49,6 +49,7 @@ using namespace Afy;
 #endif
 #include <windows.h>
 #define _LX_FM				"%016I64X"
+#define _LS_FM				"%I64X"
 #define	_LD_FM				"%I64d"
 #define	_LU_FM				"%I64u"
 typedef unsigned char		byte;
@@ -121,10 +122,12 @@ inline	void		getTimestamp(TIMESTAMP& ts) {FILETIME ft; GetSystemTimeAsFileTime(&
 #define	__cdecl
 #if defined(__x86_64__) && !defined(__APPLE__) // or 64-bit ARM (what is its #define?)
 #define _LX_FM		"%016lX"
+#define _LS_FM		"%lX"
 #define _LD_FM		"%ld"
 #define _LU_FM		"%lu"
 #else
 #define _LX_FM		"%016llX"
+#define _LS_FM		"%llX"
 #define _LD_FM		"%lld"
 #define _LU_FM		"%llu"
 #endif
@@ -221,10 +224,6 @@ namespace AfyKernel
 /**
  * platform independent type definitions
  */
-typedef	uint32_t		CRC;
-typedef uint64_t		TXID;
-typedef	uint64_t		OID;
-
 #define	INVALID_INDEX	0xFFFF
 #define	INVALID_PAGEID	0xFFFFFFFFul
 #define	INVALID_FILEID	0xFF
@@ -255,9 +254,9 @@ struct PageAddr
 	bool		operator==(const PageAddr& rhs) const {return pageID==rhs.pageID && idx==rhs.idx;}
 	bool		operator!=(const PageAddr& rhs) const {return pageID!=rhs.pageID || idx!=rhs.idx;}
 	operator	uint32_t() const {return pageID^idx;}
-	operator	OID() const;
-	bool		convert(OID oid);
-	static	const	PageAddr invAddr;
+	operator	uint64_t() const;
+	bool		convert(uint64_t oid);
+	static	const	PageAddr noAddr;
 };
 
 #define	PageAddrSize	(sizeof(PageID)+sizeof(PageIdx))

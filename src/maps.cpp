@@ -34,19 +34,19 @@ CachedObject *URIMgr::create()
 	return new(ctx) URI(STORE_INVALID_URIID,*this);
 }
 
-URI *URIMgr::insert(const char *uri)
+URI *URIMgr::insert(const char *uri,size_t ln)
 {
-	URIInfo info; if (uri==NULL || *uri=='\0') return NULL;
-	SInCtx::getURIFlags(uri,strlen(uri),info);
-	return (URI*)NamedObjMgr::insert(uri,&info,sizeof(URIInfo));
+	if (uri==NULL || *uri=='\0') return NULL;
+	URIInfo info; SInCtx::getURIFlags(uri,ln,info);
+	return (URI*)NamedObjMgr::insert(uri,ln,&info,sizeof(URIInfo));
 }
 
 char *URIMgr::getURI(URIID uid,Session *ses)
 {
 	if (uid>STORE_MAX_URIID) return NULL;
 	URI *uri=(URI*)ObjMgr::find(uid); if (uri==NULL) return NULL;
-	const char *name=uri->getName(); char *p=NULL;
-	if (name!=NULL) p=strdup(name,ses);
+	const StrLen *name=uri->getName(); char *p=NULL;
+	if (name!=NULL && (p=(char*)ses->malloc(name->len+1))!=NULL) {memcpy(p,name->str,name->len); p[name->len]=0;}
 	uri->release(); return p;
 }
 
@@ -75,7 +75,7 @@ CachedObject *IdentityMgr::create()
 	PageAddr addr={INVALID_PAGEID,INVALID_INDEX}; return new(ctx) Identity(STORE_INVALID_IDENTITY,NULL,addr,0,*this);
 }
 
-Identity *IdentityMgr::insert(const char *ident,const byte *pwd,const byte *cert,size_t lcert,bool fMayInsert)
+Identity *IdentityMgr::insert(const char *ident,size_t l,const byte *pwd,const byte *cert,size_t lcert,bool fMayInsert)
 {
 	Identity::IdentityInfo ii={(uint32_t)lcert,INVALID_PAGEID,INVALID_INDEX,fMayInsert,pwd!=NULL,{0}};
 	if (pwd!=NULL) memcpy(&ii.pwd,pwd,PWD_ENC_SIZE); MiniTx tx(Session::getSession());
@@ -84,7 +84,7 @@ Identity *IdentityMgr::insert(const char *ident,const byte *pwd,const byte *cert
 		if ((rc=ctx->queryMgr->persistData(NULL,cert,lcert,addr,ll))!=RC_OK && rc!=RC_TRUE) return NULL;
 		ii.pid=addr.pageID; ii.idx=addr.idx;
 	}
-	Identity *id=(Identity*)NamedObjMgr::insert(ident,&ii,sizeof(ii));
+	Identity *id=(Identity*)NamedObjMgr::insert(ident,l,&ii,sizeof(ii));
 	if (id!=NULL) tx.ok(); return id;
 }
 

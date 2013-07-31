@@ -1,6 +1,6 @@
 /**************************************************************************************
 
-Copyright © 2004-2013 GoPivotal, Inc. All rights reserved.
+Copyright ï¿½ 2004-2013 GoPivotal, Inc. All rights reserved.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -80,6 +80,7 @@ class TimerQ : public PQueue<TimeRQ,TIMESTAMP>
 public:
 	TimerQ(StoreCtx *ct,unsigned sz=100);
 	~TimerQ();
+	RC	loadTimer(PINx& cb);
 	RC	add(TimeRQ *rq,TIMESTAMP start=0ULL);
 	RC	remove(uint32_t id);
 	RC	reset(uint32_t id);

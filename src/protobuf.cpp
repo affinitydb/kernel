@@ -212,18 +212,17 @@ uint32_t EncodePB::length(uint32_t id,bool fProp)
 
 void EncodePB::setID(uint32_t id,bool fProp)
 {
+	const static StrLen unk("???",3);
 	if (fProp) {
 		assert(id>MAX_BUILTIN_URIID);
-		URI *uri=(URI*)ses->getStore()->uriMgr->ObjMgr::find(id);
-		const char *p=uri!=NULL?uri->getName():"???"; const size_t l=strlen(p);
-		if (l>xCopied && (copied=(byte*)cache.realloc(copied,l,xCopied))!=NULL) xCopied=l;
-		if (copied!=NULL) memcpy(copied,p,lCopied=l); else lCopied=0; if (uri!=NULL) uri->release();
+		URI *uri=(URI*)ses->getStore()->uriMgr->ObjMgr::find(id); const StrLen *p=uri!=NULL?uri->getName():&unk;
+		if (p->len>xCopied && (copied=(byte*)cache.realloc(copied,p->len,xCopied))!=NULL) xCopied=p->len;
+		if (copied!=NULL) memcpy(copied,p->str,lCopied=p->len); else lCopied=0; if (uri!=NULL) uri->release();
 	} else {
 		assert(id!=STORE_OWNER);
-		Identity *ident=(Identity*)ses->getStore()->identMgr->ObjMgr::find(id);
-		const char *p=ident!=NULL?ident->getName():"???"; const size_t l=strlen(p);
-		if (l>xCopied && (copied=(byte*)cache.realloc(copied,l,xCopied))!=NULL) xCopied=l;
-		if (copied!=NULL) memcpy(copied,p,lCopied=l); else lCopied=0; if (ident!=NULL) ident->release();
+		Identity *ident=(Identity*)ses->getStore()->identMgr->ObjMgr::find(id); const StrLen *p=ident!=NULL?ident->getName():&unk;
+		if (p->len>xCopied && (copied=(byte*)cache.realloc(copied,p->len,xCopied))!=NULL) xCopied=p->len;
+		if (copied!=NULL) memcpy(copied,p->str,lCopied=p->len); else lCopied=0; if (ident!=NULL) ident->release();
 	}
 	IDCache& ca=fProp?propCache:identCache; RC rc;
 	if ((rc=BIN<uint32_t>::insert(ca.ids,ca.nids,id,id,&cache,&ca.xids))!=RC_OK) {/* ??? */}
@@ -269,7 +268,7 @@ RC EncodePB::encode(unsigned char *buf,size_t& lbuf)
 				memcpy(po,pRes2,lRes2); po+=lRes2; lRes2=0;
 			}
 		}
-		Identity *ident; uint16_t sid,tg; uint64_t sz64; uint32_t sz,i; byte *p; const Value *cv; byte ty; const char *pc;
+		Identity *ident; uint16_t sid,tg; uint64_t sz64; uint32_t sz,i; byte *p; const Value *cv; byte ty; const StrLen *sl;
 		for (;;) {
 		again:
 			switch (os.type) {
@@ -279,9 +278,9 @@ RC EncodePB::encode(unsigned char *buf,size_t& lbuf)
 				default: goto error;
 				case 0:
 					ident=(Identity*)ses->getStore()->identMgr->ObjMgr::find(STORE_OWNER); assert(ident!=NULL);
-					pc=ident->getName(); lCopied=(uint32_t)strlen(pc);
+					sl=ident->getName(); lCopied=(uint32_t)sl->len;
 					if (lCopied>xCopied && (copied=(byte*)cache.realloc(copied,lCopied,xCopied))!=NULL) xCopied=lCopied;
-					if (copied!=NULL) memcpy(copied,pc,lCopied); else lCopied=0;
+					if (copied!=NULL) memcpy(copied,sl->str,lCopied); else lCopied=0;
 					os.state++; code=STORE_OWNER; push_state(ST_STRMAP,NULL,OWNER_TAG); continue;
 				case 1:
 					os.state++; if ((sid=ses->getStore()->storeID)!=0) VAR_OUT(STOREID_TAG,afy_enc16,sid);
@@ -654,14 +653,14 @@ RC DecodePB::addToMap(bool fProp)
 		URIIDMap::Find find(*uriMap,is.idx);
 		if (find.find()==NULL) {
 			URIIDMapElt *u=new(&mapAlloc) URIIDMapElt; if (u==NULL) return RC_NORESOURCES;
-			URI *uri=ses->getStore()->uriMgr->insert((char*)mapBuf); if (uri==NULL) return RC_NORESOURCES;
+			URI *uri=ses->getStore()->uriMgr->insert((char*)mapBuf,(size_t)lSave); if (uri==NULL) return RC_NORESOURCES;
 			u->id=is.idx; u->mapped=uri->getID(); uri->release(); uriMap->insert(u,find.getIdx());
 		}
 	} else if (!fProp && is.idx!=STORE_OWNER) {
 		IdentityIDMap::Find find(*identMap,is.idx);
 		if (find.find()==NULL) {
 			IdentityIDMapElt *ii=new(&mapAlloc) IdentityIDMapElt; if (ii==NULL) return RC_NORESOURCES;
-			Identity *ident=(Identity*)ses->getStore()->identMgr->find((char*)mapBuf);
+			Identity *ident=(Identity*)ses->getStore()->identMgr->find((char*)mapBuf,(size_t)lSave);
 			if (ident==NULL) {
 				//???
 			} else {
@@ -739,7 +738,7 @@ RC DecodePB::decode(const unsigned char *in,size_t lbuf)
 			case STOREID_TAG:
 				storeID=(uint16_t)val; advance(); continue;
 			case PIN_TAG:
-				if ((pin=new(&dataAlloc) PIN(ses,PIN_NO_FREE))==NULL) return RC_NORESOURCES;		// Service ?????????????????????
+				if ((pin=new(&dataAlloc) PIN(ses,0,NULL,0,true))==NULL) return RC_NORESOURCES;		// Service ?????????????????????
 				push_state(ST_PIN,pin,in-buf0); continue;
 			case STMT_TAG:
 				if ((qin=new(&dataAlloc) StmtIn())==NULL) return RC_NORESOURCES;
@@ -761,7 +760,7 @@ RC DecodePB::decode(const unsigned char *in,size_t lbuf)
 			case MAP_STR_TAG:
 				if (lField==0) return RC_CORRUPTED;
 				if (lMapBuf<(size_t)lField+1) {if ((mapBuf=(byte*)mapAlloc.realloc(mapBuf,(size_t)lField+1,lMapBuf))!=NULL) lMapBuf=(size_t)lField+1; else return RC_NORESOURCES;}
-				sbuf=mapBuf; mapBuf[(size_t)lField]=0; left=lSave=lField; continue;
+				sbuf=mapBuf; left=lSave=lField; continue;
 			case MAP_ID_TAG:
 				is.idx=(uint32_t)val; break;
 			}
@@ -771,9 +770,7 @@ RC DecodePB::decode(const unsigned char *in,size_t lbuf)
 			switch (is.tag) {
 			default: set_skip(); continue;
 			case OP_TAG: is.op=(uint8_t)val; break;
-			case ID_TAG:
-				const_cast<PID&>(is.pin->id).pid=STORE_INVALID_PID; const_cast<PID&>(is.pin->id).ident=STORE_OWNER;
-				push_state(ST_PID,const_cast<PID*>(&is.pin->id),in-buf0); continue;
+			case ID_TAG: const_cast<PID&>(is.pin->id)=PIN::noPID; push_state(ST_PID,const_cast<PID*>(&is.pin->id),in-buf0); continue;
 			case MODE_TAG: is.pin->mode=(uint32_t)val&(PIN_NO_REPLICATION|PIN_NOTIFY|PIN_REPLICATED|PIN_HIDDEN); break;
 			case NVALUES_TAG:
 				if (is.idx>(uint32_t)val) return RC_CORRUPTED;
@@ -821,11 +818,11 @@ RC DecodePB::decode(const unsigned char *in,size_t lbuf)
 			case _D(10): is.pv->d=buf.d; is.pv->length=sizeof(double); defType=VT_DOUBLE; break;	// byte order???
 			case _D(11): is.pv->ui64=buf.u64; is.pv->length=sizeof(uint64_t); defType=VT_DATETIME; break;	// byte order???
 			case _D(12): is.pv->i64=buf.i64; is.pv->length=sizeof(int64_t); defType=VT_INTERVAL; break;	// byte order??? sfixed???
-			case _L(13): is.pv->length=1; is.pv->id=PIN::defPID; is.pv->id.ident=STORE_OWNER; push_state(ST_PID,&is.pv->id,in-buf0); defType=VT_REFID; continue;
+			case _L(13): is.pv->length=1; is.pv->id=PIN::noPID; is.pv->id.ident=STORE_OWNER; push_state(ST_PID,&is.pv->id,in-buf0); defType=VT_REFID; continue;
 			case _L(14): push_state(ST_VARRAY,is.pv,in-buf0); defType=VT_ARRAY; break;
 			case _L(15):
 				if ((is.pv->refId=rv=new(&dataAlloc) RefVID)==NULL) return RC_NORESOURCES;
-				rv->id=PIN::defPID; rv->id.ident=STORE_OWNER; rv->pid=STORE_INVALID_URIID; rv->eid=STORE_COLLECTION_ID; rv->vid=STORE_CURRENT_VERSION;
+				rv->id=PIN::noPID; rv->id.ident=STORE_OWNER; rv->pid=STORE_INVALID_URIID; rv->eid=STORE_COLLECTION_ID; rv->vid=STORE_CURRENT_VERSION;
 				is.pv->length=1; push_state(ST_REF,is.pv,in-buf0); defType=VT_REFIDPROP; continue;		// VT_REFIDELT?
 			case _V(16): is.pv->b=val!=0; is.pv->length=1; defType=VT_BOOL; break;
 			case STREDIT_TAG:
@@ -948,10 +945,9 @@ check_end:
 				if (is.idx!=is.pin->nProperties) return RC_CORRUPTED;
 				if (is.pin->properties!=NULL) {
 					const Value *pv=is.pin->properties; uint32_t nv=(uint32_t)is.pin->nProperties;
-					if ((rc=ses->normalize(pv,nv,PIN_NO_FREE,ses->getStore()->getPrefix(),&dataAlloc))!=RC_OK) return rc;
+					if ((rc=ses->normalize(pv,nv,0,ses->getStore()->getPrefix(),&dataAlloc,true))!=RC_OK) return rc;
 					is.pin->properties=(Value*)pv; is.pin->nProperties=nv;
 				}
-				if (is.op==MODOP_INSERT && stype==SITY_NORMAL) is.pin->id=PIN::defPID;
 				if (sidx==1) {save_state(in,buf0,end-in); return RC_OK;}
 				break;
 			case ST_PID:
@@ -1032,7 +1028,7 @@ RC ProcessStream::next(const unsigned char *in,size_t lbuf)
 					if (is.op==MODOP_INSERT) {
 						if (pins==NULL && ((pins=(PIN**)ses->malloc((xPins=1024)*sizeof(PIN*)))==NULL
 									   || (pinoi=(OInfo*)ses->malloc(xPins*sizeof(OInfo)))==NULL)) return RC_NORESOURCES;
-						assert(nPins<xPins); pins[nPins]=is.pin; pinoi[nPins]=is.oi; nPins++;
+						assert(nPins<xPins); if (stype==SITY_NORMAL) is.pin->id=PIN::noPID; pins[nPins]=is.pin; pinoi[nPins]=is.oi; nPins++;
 					} else {
 						if (is.pin->id.pid==STORE_INVALID_PID || is.pin->id.ident==STORE_INVALID_IDENTITY) rc=RC_INVPARAM;
 						else {PINx pex(ses,is.pin->id); rc=ses->getStore()->queryMgr->apply(EvalCtx(ses),stmtOp[is.op],pex,is.pin->properties,is.pin->nProperties,MODE_CLASS);}
@@ -1051,24 +1047,25 @@ RC ProcessStream::next(const unsigned char *in,size_t lbuf)
 				case ST_STMT:
 					{ICursor *ic=NULL; Result res={RC_OK,0,modOp[is.stmt->stmt->getOp()]};
 					if ((rc=is.stmt->stmt->execute(out!=NULL&&is.oi.rtt!=RTT_COUNT?&ic:(ICursor**)0,is.stmt->params,is.stmt->nParams,is.stmt->limit,is.stmt->offset,is.stmt->mode,&res.cnt))==RC_OK && ic!=NULL) {
-						assert(obuf!=NULL); RTTYPE rtt=is.oi.rtt; const PINx *ret=NULL,*sib; Value w;
+						assert(obuf!=NULL); RTTYPE rtt=is.oi.rtt; const PINx *ret=NULL; Value w;
 						if (rtt==RTT_DEFAULT) {SelectType st=((Cursor*)ic)->selectType(); rtt=st==SEL_COUNT?RTT_COUNT:st==SEL_PINSET||st==SEL_AUGMENTED||st==SEL_COMPOUND?RTT_PINS:RTT_VALUES;}
 						while (rc==RC_OK && (rc=((Cursor*)ic)->next(ret))==RC_OK) {
 							switch (rtt) {
 							case RTT_DEFAULT:
 							case RTT_COUNT: break;
 							case RTT_PINS: case RTT_SRCPINS: case RTT_PIDS:
-								if ((sib=(PINx*)ret->getSibling())==NULL) rc=pinOut((PIN*)ret,is.oi);
-								else {
+//								if ((sib=(PINx*)ret->getSibling())==NULL) 
+									rc=pinOut((PIN*)ret,is.oi);
+//								else {
 									// compound
-								}
+//								}
 								break;
 							case RTT_VALUES:
-								if ((sib=(PINx*)ret->getSibling())==NULL) {
+//								if ((sib=(PINx*)ret->getSibling())==NULL) {
 									w.setStruct((Value*)ret->getValueByIndex(0),ret->getNumberOfProperties()); rc=valueOut(&w,is.oi);
-								} else {
+//								} else {
 									//????
-								}
+//								}
 								break;
 							}
 						}
@@ -1122,7 +1119,7 @@ RC ProcessStream::pinOut(PIN *pin,const OInfo& oi)
 {
 	RC rc=RC_OK;
 	if (oi.rtt!=RTT_COUNT) {
-		if (oi.rtt==RTT_SRCPINS && (pin->meta&PMT_CLASS)!=0) pin->getSes()->getStore()->queryMgr->getClassInfo(pin->getSes(),pin);
+		if (oi.rtt==RTT_SRCPINS && (pin->meta&PMT_CLASS)!=0) ses->getStore()->queryMgr->getClassInfo(ses,pin);
 		enc.set(pin,oi.cid,oi.fCid,oi.rtt);
 		do if ((rc=enc.encode(obuf+lobuf-obleft,obleft))==RC_OK && obleft==0) {
 			RC rc2=out->next(obuf,lobuf); obleft=lobuf; if (rc2!=RC_EOF && rc2!=RC_OK) rc=rc2;

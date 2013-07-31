@@ -37,8 +37,6 @@ namespace AfyKernel
 #define SRV_DEFAULT_BUFSIZE	0x4000
 #define	SRV_DEFAULT_BATCH	0x400
 
-class	PINx;
-
 enum CommStackType
 {
 	CST_READ, CST_WRITE, CST_SERVER, CST_REQUEST
@@ -146,6 +144,7 @@ public:
 	StartListener(const Value *p,unsigned n,MemAlloc *ma);
 	RC		process(Session *ses);
 	void	destroy(Session *ses);
+	static	RC	loadListener(PINx& cb);
 };
 
 /**
@@ -159,6 +158,7 @@ public:
 	LoadService(const Value *p,unsigned n,MemAlloc *ma);
 	RC		process(Session *ses);
 	void	destroy(Session *ses);
+	static	RC	loadLoader(PINx& cb);
 };
 
 /**

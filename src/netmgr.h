@@ -34,7 +34,7 @@ using namespace Afy;
 
 namespace AfyKernel
 {
-#define	RPIN_NOFETCH			0x8000						/**< don't re-fetch PIN flag; prevents recursion in commitPINs() */
+#define	RPIN_NOFETCH			0x8000						/**< don't re-fetch PIN flag; prevents recursion in persistPINs() */
 
 #define	DEFAULT_RPINHASH_SIZE	0x200						/**< default remote and replicated PIN hash size */
 #define	DEFAULT_CACHED_RPINS	0x1000						/**< default number of cached remote and repliacted PIN page addresses */

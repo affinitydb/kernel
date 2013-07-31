@@ -149,12 +149,11 @@ RC TxMgr::commit(Session *ses,bool fAll,bool fFlush)
 	if (fAll) {
 		assert(ses->tx.next==NULL);
 		if ((ses->txState&TX_READONLY)==0 && ses->getTxState()!=TX_ABORTING) {
-			while (ses->tx.onCommit!=NULL) {
-				OnCommit *oc=ses->tx.onCommit; ses->tx.onCommit=oc->next;
-				rc=oc->process(ses); oc->destroy(ses);
-				if (rc!=RC_OK) {abort(ses); return rc;}
+			while (ses->tx.onCommit.head!=NULL) {
+				OnCommit *oc=ses->tx.onCommit.head; ses->tx.onCommit.head=oc->next; ses->tx.onCommit.count--;
+				rc=oc->process(ses); oc->destroy(ses); if (rc!=RC_OK) {abort(ses); return rc;}		// message???
 			}
-			ses->txState=ses->txState&~0xFFFFul|TX_COMMITTING;
+			ses->txState=ses->txState&~0xFFFFul|TX_COMMITTING; ses->tx.onCommit.count=0;
 			uint32_t nPurge=0; TxPurge *tpa=ses->tx.txPurge.get(nPurge); rc=RC_OK;
 			if (tpa!=NULL) {
 				for (unsigned i=0; i<nPurge; i++) {if (rc==RC_OK) rc=tpa[i].purge(ses); ses->free(tpa[i].bmp); tpa[i].bmp=NULL;}
@@ -232,6 +231,9 @@ void TxMgr::cleanup(Session *ses,bool fAbort)
 	}
 	assert(!ses->list.isInList());
 	ses->txid=INVALID_TXID; ses->txState=TX_NOTRAN; ses->txcid=NO_TXCID; ses->subTxCnt=ses->nLogRecs=0;
+	ses->nSyncStack=ses->tx.onCommit.count=0;
+	ses->xSyncStack=ses->ctx!=NULL?ses->ctx->theCB->xSyncStack:DEFAULT_MAX_SYNC_ACTION;
+	ses->xOnCommit=ses->ctx!=NULL?ses->ctx->theCB->xOnCommit:DEFAULT_MAX_ON_COMMIT;
 }
 
 LogActiveTransactions *TxMgr::getActiveTx(LSN& start)
@@ -369,11 +371,7 @@ RC Session::popTx(bool fCommit,bool fAll)
 		if (fCommit) {
 			st->defHeap+=tx.defHeap; st->defClass+=tx.defClass; st->defFree+=tx.defFree; st->nInserted+=tx.nInserted;
 			if (tx.txPurge!=0) {RC rc=st->txPurge.merge(tx.txPurge); if (rc!=RC_OK) return rc;}
-			if (tx.onCommit!=NULL) {
-				if (st->onCommit==NULL) st->onCommit=tx.onCommit;
-				else for (OnCommit *oc=st->onCommit;;oc=oc->next) if (oc->next==NULL) {oc->next=tx.onCommit; break;}
-				tx.onCommit=NULL;
-			}
+			if (tx.onCommit.head!=NULL) {st->onCommit+=tx.onCommit; tx.onCommit.reset();}
 			if (tx.txIndex!=NULL) {
 				// txIndex!!! merge to st
 				tx.txIndex=NULL;
@@ -389,23 +387,23 @@ RC Session::popTx(bool fCommit,bool fAll)
 	return RC_OK;
 }
 
-SubTx::SubTx(Session *s) : next(NULL),ses(s),subTxID(0),lastLSN(0),onCommit(NULL),txIndex(NULL),txPurge((MemAlloc*)s),defHeap(s),defClass(s),defFree(s),nInserted(0)
+SubTx::SubTx(Session *s) : next(NULL),ses(s),subTxID(0),lastLSN(0),txIndex(NULL),txPurge((MemAlloc*)s),defHeap(s),defClass(s),defFree(s),nInserted(0)
 {
 }
 
 SubTx::~SubTx()
 {
 	for (unsigned i=0,j=(unsigned)txPurge; i<j; i++) if (txPurge[i].bmp!=NULL) ses->free(txPurge[i].bmp);
-	while (onCommit!=NULL) {OnCommit *oc=onCommit; onCommit=oc->next; oc->destroy(ses);}
+	for (OnCommit *oc=onCommit.head,*oc2; oc!=NULL; oc=oc2) {oc2=oc->next; oc->destroy(ses);}
 	//delete txIndex;
 }
 
 void SubTx::cleanup()
 {
 	if (next!=NULL) {next->cleanup(); next->~SubTx(); ses->free(next); next=NULL;}
-	while (onCommit!=NULL) {OnCommit *oc=onCommit; onCommit=oc->next; oc->destroy(ses);}
+	for (OnCommit *oc=onCommit.head,*oc2; oc!=NULL; oc=oc2) {oc2=oc->next; oc->destroy(ses);}
 	for (unsigned i=0,j=(unsigned)txPurge; i<j; i++) if (txPurge[i].bmp!=NULL) ses->free(txPurge[i].bmp);
-	txPurge.clear();
+	txPurge.clear(); onCommit.reset();
 	if (txIndex!=NULL) {
 		//...
 	}

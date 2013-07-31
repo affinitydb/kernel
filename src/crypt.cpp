@@ -343,7 +343,7 @@ AES::AES(const byte *key,unsigned lkey,bool fDec)
 		} else
 #endif
 		{
-			memcpy(dec_key_sch,enc_key_sch,4*sizeof(uint32_t));
+			memcpy(dec_key_sch,penc,4*sizeof(uint32_t));
 			for(i=1,penc+=4; i<Nr; i++) {
 				penc-=8; pdec+=4;
 				pdec[0]=keyTab[0][*penc>>24&0xFF]^keyTab[1][*penc>>16&0xFF]^keyTab[2][*penc>>8&0xFF]^keyTab[3][*penc&0xFF]; penc++;
@@ -424,10 +424,13 @@ void AES::encrypt(byte *buf,size_t lbuf,const uint32_t IV[4],AESMode mode)
 			} else
 #endif
 			{p[0]^=p2[0]; p[1]^=p2[1]; p[2]^=p2[2]; p[3]^=p2[3]; encryptBlock(p);}
-			p2=p; p+=4;
+			p2=p; p+=AES_BLOCK_SIZE/sizeof(uint32_t);
 		} while ((lbuf-=AES_BLOCK_SIZE)!=0);
 		break;
-	case AES_CFB:
+	case AES_CTR:
+		//
+		break;
+	case AES_GCM:
 		//
 		break;
 	}
@@ -442,7 +445,7 @@ void AES::decrypt(byte *buf,size_t lbuf,const uint32_t IV[4],AESMode mode)
 		assert(ceil(buf,sizeof(uint32_t))==buf && lbuf%AES_BLOCK_SIZE==0);
 		p=(uint32_t*)(buf+lbuf-AES_BLOCK_SIZE);
 		do {
-			p2=(byte*)p==buf?IV:p-4;
+			p2=(byte*)p==buf?IV:p-(AES_BLOCK_SIZE/sizeof(uint32_t));
 #ifdef MM_AES_NI
 			if ((ProcFlags::pf.flg&PRCF_AESNI)!=0) {
 				__m128i b=_mm_loadu_si128((const __m128i*)p); b=_mm_xor_si128(b,((__m128i*)dec_key_sch)[0]);
@@ -452,9 +455,12 @@ void AES::decrypt(byte *buf,size_t lbuf,const uint32_t IV[4],AESMode mode)
 			} else 
 #endif
 			{decryptBlock(p); p[0]^=p2[0]; p[1]^=p2[1]; p[2]^=p2[2]; p[3]^=p2[3];}
-		} while ((p-=4)>=(uint32_t*)buf);
+		} while ((p-=AES_BLOCK_SIZE/sizeof(uint32_t))>=(uint32_t*)buf);
 		break;
-	case AES_CFB:
+	case AES_CTR:
+		//
+		break;
+	case AES_GCM:
 		//
 		break;
 	}

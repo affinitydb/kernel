@@ -174,10 +174,17 @@ RC QueryPrc::modifyPIN(const EvalCtx& ectx,const PID& id,const Value *v,unsigned
 		else {
 			//check FSM
 			unsigned flags=((mode&MODE_FORCE_EIDS)!=0&&eids!=NULL?MODP_EIDS:0)|((mode&MODE_NO_EID)!=0?MODP_NEID:0);
-			ElementID pref=pin->getPrefix(ctx); TIMESTAMP ts=0ULL; //assert((meta&PMT_CLASS)==0);	???
+			TIMESTAMP ts=0ULL; //assert((meta&PMT_CLASS)==0);	???
 			for (unsigned i=0; i<nv; i++) {
 				Value w=v[i]; setHT(w);
-				if (w.property<=MAX_BUILTIN_URIID && (rc=ses->checkBuiltinProp(w,ts,true))!=RC_OK ||
+				if (w.property!=PROP_SPEC_PROTOTYPE) switch (w.type) {
+				default: break;
+				case VT_EXPR: case VT_STMT: case VT_ARRAY: case VT_COLLECTION: case VT_STRUCT: case VT_REF: case VT_REFIDPROP: case VT_REFIDELT:
+					if (w.fcalc==0) break;
+				case VT_VARREF: case VT_EXPRTREE: case VT_CURRENT:
+					rc=eval(&w,ectx,&w,MODE_INMEM); break;
+				}
+				if (rc!=RC_OK || w.property<=MAX_BUILTIN_URIID && (rc=ses->checkBuiltinProp(w,ts,true))!=RC_OK ||
 					(rc=pin->modify(&w,w.eid,(flags&MODP_EIDS)!=0?eids[i]:prefix,flags,ses))!=RC_OK) {if (pNFailed!=NULL) *pNFailed=i; break;}
 			}
 		}
@@ -189,8 +196,10 @@ RC QueryPrc::modifyPIN(const EvalCtx& ectx,const PID& id,const Value *v,unsigned
 	PINx cb(ses,id); const Value *pv; Value w,*opv;
 	TxSP tx(ses); if ((rc=tx.start(TXI_DEFAULT,TX_ATOMIC))!=RC_OK) return rc;
 
-	if (pcb!=NULL && !pcb->pb.isNull()) cb=pcb->addr;
-	else {
+	if (pcb!=NULL && !pcb->pb.isNull()) {
+		if (!pcb->pb->isWritable()) pcb->pb.getPage(pcb->pb->getPageID(),ctx->heapMgr,PGCTL_ULOCK,ses);
+		cb=pcb->addr;
+	} else {
 		pcb=&cb; if (pin!=NULL) cb.addr=pin->addr; 
 		if ((rc=getBody(cb,TVO_UPD))!=RC_OK) {
 			if (rc==RC_DELETED && pin!=NULL) pin->mode|=PIN_DELETED;
@@ -217,7 +226,7 @@ RC QueryPrc::modifyPIN(const EvalCtx& ectx,const PID& id,const Value *v,unsigned
 	
 	unsigned k; TIMESTAMP ts=0ULL;
 	if ((mode&MODE_REFRESH)==0 && (pinDescr&HOH_REPLICATED)==0 && isRemote(id)) return RC_NOACCESS;
-	PageAddr oldAddr=pcb->addr,origAddr=PageAddr::invAddr; if (pin!=NULL) pin->addr=pcb->addr;
+	PageAddr oldAddr=pcb->addr,origAddr=PageAddr::noAddr; if (pin!=NULL) pin->addr=pcb->addr;
 	
 	unsigned np=nv; if (np>20) for (unsigned i=np=1; i<nv; i++) if (v[i].property!=v[i-1].property) np++;
 	byte mdb[START_BUF_SIZE]; ModCtx mctx(sizeof(mdb),mdb,np,ses); PBlockP pageSSV;
@@ -226,7 +235,7 @@ RC QueryPrc::modifyPIN(const EvalCtx& ectx,const PID& id,const Value *v,unsigned
 	if (ses->isReplication()) mctx.flags|=MF_REPSES; else if ((mctx.flags&MF_REMOTE)!=0 && (pinDescr&HOH_REPLICATED)!=0) mctx.flags|=MF_LOCEID;
 
 	size_t xSize=HeapPageMgr::contentSize(ctx->bufMgr->getPageSize())-sizeof(PageOff); const EvalCtx *ec; PIN *pp;
-	PID oldDoc=PIN::defPID,newDoc=PIN::defPID; ModInfo *mi; unsigned n; PropertyID xPropID=STORE_INVALID_URIID;
+	PID oldDoc=PIN::noPID,newDoc=PIN::noPID; ModInfo *mi; unsigned n; PropertyID xPropID=STORE_INVALID_URIID;
 	size_t reserve=ceil(size_t(xSize*ctx->theCB->pctFree),HP_ALIGN);
 	ElementID rprefix=(mctx.flags&MF_REMOTE)!=0?HeapPageMgr::getPrefix(id):prefix,lprefix=(mctx.flags&MF_LOCEID)!=0?prefix:rprefix;
 	ClassID cid=STORE_INVALID_CLASSID; ClassResult clro(&mctx,ctx),clrn(&mctx,ctx),clru(&mctx,ctx); PropInfo *pi;
@@ -341,7 +350,7 @@ RC QueryPrc::modifyPIN(const EvalCtx& ectx,const PID& id,const Value *v,unsigned
 			if (op!=OP_SET && !fAdd && op<OP_FIRST_EXPR) return RC_INVPARAM;
 			if (mi==NULL && (mi=mctx.addMod(pv,n,pi,op))==NULL) return RC_NORESOURCES;
 			if (mi->newV!=NULL) {/*???*/freeV(*mi->newV);} else if ((mi->newV=mctx.alloc<Value>())==NULL) return RC_NORESOURCES; 	// ????????????????????????????
-			if ((rc=eval(pv,EvalCtx(ses,ectx.env,ectx.nEnv,(PIN**)&pcb,1,ectx.params,ectx.nParams,ectx.stack,&mctx,ECT_INSERT),mi->newV,EV_PID))!=RC_OK && rc!=RC_NOTFOUND) return rc;
+			if ((rc=eval(pv,EvalCtx(ses,ectx.env,ectx.nEnv,(PIN**)&pcb,1,ectx.params,ectx.nParams,ectx.stack,&mctx,ECT_INSERT),mi->newV,MODE_PID))!=RC_OK && rc!=RC_NOTFOUND) return rc;
 			if (pcb->pb.isNull()) {pcb=&cb; if (cb.pb.getPage(cb.addr.pageID,ctx->heapMgr,PGCTL_XLOCK,ses)==NULL || cb.fill()==NULL) return RC_NOTFOUND;}
 			if (rc==RC_NOTFOUND) {rc=RC_OK; mi->flags|=PM_INVALID; continue;}
 			if (pv->type==VT_STMT && ((Stmt*)pv->stmt)->op==STMT_INSERT && (mi->newV->meta&META_PROP_PART)!=0) newDescr|=HOH_PARTS;
@@ -1036,7 +1045,7 @@ RC QueryPrc::modifyPIN(const EvalCtx& ectx,const PID& id,const Value *v,unsigned
 		if ((buf==NULL||lbuf<lrec) && (buf=(byte*)ses->realloc(buf,lrec))==NULL) {rc=RC_NORESOURCES; goto finish;}
 		HeapPageMgr::HeapPINMod *hpi=(HeapPageMgr::HeapPINMod*)buf; memset(buf,0,lhdr);
 		hpi->nops=(uint16_t)nMod; hpi->descr=newDescr; ushort sht=0; unsigned cnt=0;
-		for (mi=mctx.list; mi!=NULL; mi=mi->next) if ((mi->flags&(PM_PROCESSED|PM_EXPAND))==0) {
+		for (mi=mctx.list; mi!=NULL; mi=mi->next) if ((mi->flags&(PM_PROCESSED|PM_EXPAND|PM_INVALID))==0) {
 			if (((pv=mi->pv)->op==OP_MOVE || pv->op==OP_MOVE_BEFORE) && (mi->pInfo->flags&PM_BIGC)==0) {
 				HeapPageMgr::HeapPropMod *hpm=&hpi->ops[cnt++]; hpm->op=pv->op;
 				hpm->propID=pv->property; hpm->eltId=mi->eid; hpm->eltKey=pv->ui;
@@ -1044,7 +1053,7 @@ RC QueryPrc::modifyPIN(const EvalCtx& ectx,const PID& id,const Value *v,unsigned
 			} else if (pv->op!=OP_RENAME && (rc=putHeapMod(&hpi->ops[cnt++],mi,buf+lhdr,sht,*pcb))!=RC_OK) goto finish;
 			assert(lhdr+sht<=lrec);
 		}
-		for (mi=mctx.list; mi!=NULL; mi=mi->next) if ((mi->flags&PM_PROCESSED)==0) {
+		for (mi=mctx.list; mi!=NULL; mi=mi->next) if ((mi->flags&(PM_PROCESSED|PM_INVALID))==0) {
 			if ((pv=mi->pv)->op==OP_RENAME) {
 				HeapPageMgr::HeapPropMod *hpm=&hpi->ops[cnt++]; hpm->op=OP_RENAME; 
 				hpm->propID=pv->property; hpm->eltKey=pv->ui; hpm->eltId=STORE_COLLECTION_ID; mi->flags|=PM_PROCESSED;
@@ -1056,7 +1065,7 @@ RC QueryPrc::modifyPIN(const EvalCtx& ectx,const PID& id,const Value *v,unsigned
 		if (pcb->fill()==NULL) {rc=RC_CORRUPTED; goto finish;} pcb->resetProps();
 	}
 
-	if (xPropID!=STORE_INVALID_URIID) ctx->classMgr->setMaxPropID(xPropID);
+	if (xPropID!=STORE_INVALID_URIID) ctx->namedMgr->setMaxPropID(xPropID);
 	if (pcb->hpin==NULL) goto finish;
 	if (pcb->hpin->nProps>0) rc=ctx->classMgr->classify(pcb,clrn);
 	
@@ -1106,7 +1115,7 @@ RC QueryPrc::modifyPIN(const EvalCtx& ectx,const PID& id,const Value *v,unsigned
 
 	if (pin!=NULL) rc=reload(pin,pcb);
 	for (ec=&ectx,pp=NULL; rc==RC_OK && ec!=NULL; ec=ec->stack) if (ec->env!=NULL && ec->nEnv!=0 && ec->env[0]!=NULL && ec->env[0]!=pin && ec->env[0]!=pcb 
-		&& ec->env[0]->id==id && ec->env[0]!=pp && ((ec->env[0]->mode&PIN_PARTIAL)==0 || ec->env[0]->properties!=NULL)) {pp=ec->env[0]; rc=reload(pp,pcb);}
+		&& ec->env[0]->id==id && ec->env[0]!=pp && (ec->env[0]->fPartial==0 || ec->env[0]->properties!=NULL)) {pp=ec->env[0]; rc=reload(pp,pcb);}
 
 	if (rc==RC_OK && (clrn.nClasses!=0 || clro.nClasses)) {
 		for (unsigned i=0,j=0; i<clrn.nClasses || j<clro.nClasses;) {
@@ -1366,8 +1375,8 @@ RC QueryPrc::putHeapMod(HeapPageMgr::HeapPropMod *hpm,ModInfo *mi,byte *buf,usho
 RC QueryPrc::reload(PIN *pin,PINx *pcb)
 {
 	size_t size=pcb->hpin->nProps*sizeof(Value);
-	if ((pin->mode&PIN_NO_FREE)!=0) {
-		pin->properties=pcb->hpin->nProps!=0?new(pin->ses) Value[pcb->hpin->nProps]:NULL; pin->mode&=~PIN_NO_FREE;
+	if (pin->fNoFree!=0) {
+		pin->properties=pcb->hpin->nProps!=0?new(pin->ses) Value[pcb->hpin->nProps]:NULL; pin->fNoFree=0;
 	} else if (pcb->hpin->nProps!=0) {
 		if (pin->properties!=NULL) for (unsigned i=0; i<pin->nProperties; i++) freeV(pin->properties[i]);
 		if ((pin->properties=(Value*)pin->ses->realloc(pin->properties,size))==NULL) return RC_NORESOURCES;
@@ -1417,7 +1426,7 @@ RC QueryPrc::setFlag(const EvalCtx & ectx,const PID& id,PageAddr *addr,ushort fl
 		if (fReset && (flag&HOH_DELETED)!=0) {
 			cb.fill(); assert(cb.hpin!=NULL);
 			if ((dscr&HOH_HIDDEN)==0) {
-				ChangeInfo inf={id,PIN::defPID,NULL,NULL,STORE_INVALID_URIID,STORE_COLLECTION_ID};
+				ChangeInfo inf={id,PIN::noPID,NULL,NULL,STORE_INVALID_URIID,STORE_COLLECTION_ID};
 				const HeapPageMgr::HeapV *hprop=cb.hpin->findProperty(PROP_SPEC_DOCUMENT);
 				if (hprop!=NULL) ((HeapPageMgr::HeapPage*)cb.pb->getPageBuf())->getRef(inf.docID,hprop->type.getFormat(),hprop->offset);
 				hprop=cb.hpin->getPropTab(); Value v; SubAlloc sa(ectx.ses); FTList ftl(sa);

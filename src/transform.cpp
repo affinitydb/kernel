@@ -163,20 +163,20 @@ RC TransOp::advance(const PINx *)
 	for (unsigned i=0; i<nOuts; i++) {
 		const ValueV &td=dscr[i]; PINx *re=i<nRes?res[i]:(PINx*)0; Value w,*to=&w;
 		if (re!=NULL && (qflags&QO_AUGMENT)==0) {
-			if (re->properties==NULL || (re->mode&PIN_NO_FREE)!=0) {
-				if ((re->properties=(Value*)qx->ses->malloc(td.nValues*sizeof(Value)))!=NULL) re->mode&=~PIN_NO_FREE; else {rc=RC_NORESOURCES; break;}
+			if (re->properties==NULL || re->fNoFree!=0) {
+				if ((re->properties=(Value*)qx->ses->malloc(td.nValues*sizeof(Value)))!=NULL) re->fNoFree=0; else {rc=RC_NORESOURCES; break;}
 			} else {
 				for (unsigned k=0; k<re->nProperties; k++) freeV(*(Value*)&re->properties[k]);
 				if (re->nProperties<td.nValues && (re->properties=(Value*)qx->ses->realloc((void*)re->properties,td.nValues*sizeof(Value)))==NULL) {rc=RC_NORESOURCES; break;}
 			}
-			re->id=PIN::defPID; re->epr.flags=re->epr.flags&~(PINEX_LOCKED|PINEX_XLOCKED|PINEX_ACL_CHKED|PINEX_ADDRSET)|PINEX_DERIVED; re->mode&=~PIN_PARTIAL; re->nProperties=td.nValues; to=re->properties;
+			re->id=PIN::noPID; re->epr.flags=re->epr.flags&~(PINEX_LOCKED|PINEX_XLOCKED|PINEX_ACL_CHKED|PINEX_ADDRSET)|PINEX_DERIVED; re->fPartial=0; re->nProperties=td.nValues; to=re->properties;
 		}
 		for (unsigned j=0; j<td.nValues; j++) {
 			const Value& v=td.vals[j],*cv; Value w; ValueType ty=VT_ANY; ExprOp op=OP_SET; TIMESTAMP ts; ushort vty;
 			switch (v.type) {
 			case VT_VARREF:
 				vty=v.refV.flags&VAR_TYPE_MASK;
-				if (vty==VAR_SELF && (qflags&QO_AUGMENT)!=0) continue;
+				if (vty==VAR_CTX && (qflags&QO_AUGMENT)!=0) continue;
 				if (vty!=0) {
 					const ValueV *vals=&qx->vals[(vty>>13)-1];
 					if (v.refV.refN<vals->nValues) rc=copyV(vals->vals[v.refV.refN],*to,qx->ses); else rc=RC_NOTFOUND;
@@ -240,8 +240,8 @@ RC TransOp::advance(const PINx *)
 			}
 		}
 		if (re!=NULL && (qflags&QO_AUGMENT)==0) {
-			//if (((re->mode|=md)&PIN_DERIVED)!=0) {re->id=PIN::defPID; re->epr.lref=0;} else if (re->nProperties<ins[i]->getNProperties()) re->mode|=PIN_PARTIAL;
-			if (re->nProperties==0) re->mode&=~PIN_PARTIAL;
+			//if (((re->mode|=md)&PIN_DERIVED)!=0) {re->id=PIN::noPID; re->epr.lref=0;} else if (re->nProperties<ins[i]->getNProperties()) re->mode|=PIN_PARTIAL;
+			if (re->nProperties==0) re->fPartial=0;
 		}
 	}
 	if (newV!=NULL) {

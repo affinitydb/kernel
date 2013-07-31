@@ -27,6 +27,18 @@ Written by Mark Venguerov 2004-2012
 using namespace Afy;
 using namespace AfyKernel;
 
+ObjName::ObjName(const char *nm,size_t ln,uint32_t id,class NamedObjMgr& mg,bool fCopy)
+	: mgr(mg),nameList(this),name(nm,ln,fCopy?mg.ctx:NULL),ID(id),fBad(false)
+{
+}
+
+void ObjName::destroy()
+{
+	mgr.nameHash.lock(this,RW_X_LOCK); nameList.remove(); mgr.nameHash.unlock(this);
+	for (;;) {lock.lock(RW_X_LOCK); if (count==0) break; lock.unlock();}
+	mgr.ctx->free((char*)name.str); mgr.ctx->free(this);	// queue of free???
+}
+
 CachedObject *CachedObject::createNew(unsigned id,void *mg)
 {
 	CachedObject *obj=NULL; ObjMgr *mgr=(ObjMgr*)(ObjHash*)mg;
@@ -56,14 +68,6 @@ void CachedObject::setKey(unsigned id,void*)
 void CachedObject::release()
 {
 	mgr.release(this);
-}
-
-void ObjName::destroy()
-{
-	mgr.nameHash.lock(this,RW_X_LOCK);
-	nameList.remove(); mgr.nameHash.unlock(this);
-	for (;;) {lock.lock(RW_X_LOCK); if (count==0) break; lock.unlock();}
-	delete this;	// queue of free???
 }
 
 void CachedObject::destroy()
@@ -98,14 +102,14 @@ RC CachedObject::load(PageID pid,unsigned flags)
 	if (mgr.isNamed()) {
 		if ((lName=buf[0]<<8|buf[1])+2>size) return RC_CORRUPTED;
 		if ((flags&COBJ_NONAME)==0) {
-			char *str=(char*)malloc(lName+1,STORE_HEAP); 
+			char *str=(char*)mgr.ctx->malloc(lName+1);
 			if (str==NULL) return RC_NORESOURCES;
 			memcpy(str,buf+2,lName); str[lName]=0;
 			NamedObjMgr::NameHash::Find findObj(((NamedObjMgr*)&mgr)->nameHash,str);
 			ObjName *on=findObj.findLock(RW_X_LOCK);
 			if (on==NULL) {
-				if ((on=new(mgr.ctx) ObjName(str,ID,*(NamedObjMgr*)&mgr,false))==NULL) 
-					{free(str,STORE_HEAP); return RC_NORESOURCES;}
+				if ((on=new(mgr.ctx) ObjName(str,lName,ID,*(NamedObjMgr*)&mgr,false))==NULL)
+					{mgr.ctx->free(str); return RC_NORESOURCES;}
 				((NamedObjMgr*)&mgr)->nameHash.insertNoLock(on,findObj.getIdx());
 			} else if (on->ID==~0u) on->ID=ID; else if (on->ID!=ID) return RC_ALREADYEXISTS;	// ???
 			name=on;
@@ -166,21 +170,21 @@ bool NamedObjMgr::isNamed() const
 	return true;
 }
 
-bool NamedObjMgr::exists(const char *name)
+bool NamedObjMgr::exists(const char *name,size_t ln)
 {
-	if (nameHash.find(name)) return true;
+	if (nameHash.find(name,(unsigned)ln)) return true;
 	SearchKey key(name,(ushort)strlen(name)); NamedObjPtr objPtr; size_t size=sizeof(NamedObjPtr);
 	return nameMap.find(key,&objPtr,size)==RC_OK;
 }
 
-CachedObject *NamedObjMgr::find(const char *name) {
-	if (name==NULL) return NULL; CachedObject *obj=NULL;
-	NameHash::Find findObj(nameHash,name);
+CachedObject *NamedObjMgr::find(const char *name,size_t ln) {
+	if (name==NULL||ln==0) return NULL; CachedObject *obj=NULL;
+	NameHash::Find findObj(nameHash,StrLen(name,ln));
 	ObjName *on=findObj.findLock(RW_X_LOCK);
 	if (on!=NULL) {
 		 ++on->count; RWLockP lck(&on->lock,RW_S_LOCK); findObj.unlock();
 		if (!on->fBad) get(obj,on->ID,0); --on->count;
-	} else if ((on=new(ctx) ObjName(name,~0u,*this))!=NULL) {
+	} else if ((on=new(ctx) ObjName(name,ln,~0u,*this))!=NULL) {
 		on->lock.lock(RW_X_LOCK); nameHash.insertNoLock(on,findObj.getIdx()); findObj.unlock();
 		SearchKey key(name,(ushort)strlen(name)); NamedObjPtr objPtr; size_t size=sizeof(NamedObjPtr);
 		if (nameMap.find(key,&objPtr,size)==RC_OK) {
@@ -188,35 +192,31 @@ CachedObject *NamedObjMgr::find(const char *name) {
 			get(obj,objPtr.ID,objPtr.pageID,RW_S_LOCK|COBJ_NONAME);
 			on->ID=obj->ID; obj->name=on; on->lock.unlock();
 		} else {
-			on->fBad=true; on->lock.unlock();
-			nameHash.lock(on,RW_X_LOCK); on->nameList.remove(); nameHash.unlock(on);
-			for (;;) {on->lock.lock(RW_X_LOCK); if (on->count==0) break; on->lock.unlock();}
-			delete on;	// queue of free???
+			on->fBad=true; on->lock.unlock(); on->destroy();
 		}
 	}
 	return obj;
 }
 
-CachedObject *NamedObjMgr::insert(const char *name,const void *data,size_t lData)
+CachedObject *NamedObjMgr::insert(const char *name,size_t ln,const void *data,size_t lData)
 {
-	if (name==NULL) return NULL; CachedObject *obj=NULL;
-	NameHash::Find findObj(nameHash,name);
+	if (name==NULL||ln==0) return NULL; CachedObject *obj=NULL;
+	NameHash::Find findObj(nameHash,StrLen(name,ln));
 	ObjName *on=findObj.findLock(RW_X_LOCK);
 	if (on!=NULL) {
 		++on->count; RWLockP lck(&on->lock,RW_S_LOCK); findObj.unlock();
 		if (!on->fBad) get(obj,on->ID,0); --on->count;
-	} else if ((on=new(ctx) ObjName(name,~0u,*this))!=NULL) {
+	} else if ((on=new(ctx) ObjName(name,ln,~0u,*this))!=NULL) {
 		on->lock.lock(RW_X_LOCK); nameHash.insertNoLock(on,findObj.getIdx()); findObj.unlock();
-		ushort lName=(ushort)strlen(name); SearchKey key(name,lName); 
-		NamedObjPtr objPtr; size_t size=sizeof(NamedObjPtr); byte *buf;
+		SearchKey key(name,(unsigned)ln); NamedObjPtr objPtr; size_t size=sizeof(NamedObjPtr); byte *buf;
 		if (nameMap.find(key,&objPtr,size)==RC_OK) {
 			assert(size==sizeof(NamedObjPtr)); on->ID=objPtr.ID;
 			if (get(obj,objPtr.ID,objPtr.pageID,COBJ_NONAME|RW_S_LOCK)==RC_OK) obj->name=on;
-		} else if ((buf=(byte*)alloca(lName+2+lData))!=NULL) {
-			buf[0]=byte(lName>>8); buf[1]=byte(lName); memcpy(buf+2,name,lName);
-			if (data!=NULL && lData!=0) memcpy(buf+2+lName,data,lData); 
+		} else if ((buf=(byte*)alloca(ln+2+lData))!=NULL) {
+			buf[0]=byte(ln>>8); buf[1]=byte(ln); memcpy(buf+2,name,ln);
+			if (data!=NULL && lData!=0) memcpy(buf+2+ln,data,lData);
 			{MiniTx tx(Session::getSession());
-			if (map.insert(buf,lName+2+(ushort)lData,objPtr.ID,objPtr.pageID)==RC_OK) {		// unsigned -> ushort ???
+			if (map.insert(buf,(unsigned)ln+2+(ushort)lData,objPtr.ID,objPtr.pageID)==RC_OK) {		// unsigned -> ushort ???
 				assert(objPtr.ID!=uint32_t(~0u));
 				if (nameMap.insert(key,&objPtr,sizeof(NamedObjPtr))==RC_OK &&
 						get(obj,objPtr.ID,INVALID_PAGEID,QMGR_NOLOAD|RW_X_LOCK)==RC_OK) {
@@ -236,12 +236,12 @@ RC NamedObjMgr::modify(const CachedObject *obj,const void *data,size_t lData,siz
 	return map.edit(key,data,(ushort)lData,(ushort)lData,(ushort)(2+strlen(obj->name->name)+sht));
 }
 
-RC NamedObjMgr::rename(unsigned id,const char *name)
+RC NamedObjMgr::rename(unsigned id,const char *name,size_t ln)
 {
-	if (name==NULL||id==~0u) return RC_INVPARAM; 
-	CachedObject *obj=NULL; NameHash::Find findObj(nameHash,name);
+	if (name==NULL||ln==0||id==~0u) return RC_INVPARAM;
+	CachedObject *obj=NULL; NameHash::Find findObj(nameHash,StrLen(name,ln));
 	if (findObj.findLock(RW_X_LOCK)!=NULL) return RC_ALREADYEXISTS;
-	ObjName *on=new(ctx) ObjName(name,id,*this); if (on==NULL) return RC_NORESOURCES;
+	ObjName *on=new(ctx) ObjName(name,ln,id,*this); if (on==NULL) return RC_NORESOURCES;
 	RC rc=get(obj,id,INVALID_PAGEID,RW_X_LOCK); if (rc!=RC_OK) return rc;
 	on->lock.lock(RW_X_LOCK); nameHash.insertNoLock(on,findObj.getIdx()); findObj.unlock();
 	ushort lName=(ushort)strlen(name); SearchKey key(name,lName); 

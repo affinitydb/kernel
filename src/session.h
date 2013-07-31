@@ -42,6 +42,7 @@ class	ClassCreate;
 class	ClassPropIndex;
 class	ServiceCtx;
 class	ServiceTab;
+class	PINx;
 class	PIN;
 
 /**
@@ -140,7 +141,6 @@ public:
 	SharedCounter				nSessions;
 	static	SharedCounter		nStores;
 
-
 	ushort						storeID;
 	uint32_t					bufSize;
 	uint32_t					keyPrefix;
@@ -162,24 +162,22 @@ public:
 	byte						encKey[ENC_KEY_SIZE];
 	byte						pubKey[SHA_DIGEST_BYTES];
 	byte						HMACKey[HMAC_KEY_SIZE];
-	bool						fEncrypted;
-	bool						fHMAC;
 	
 	volatile	long			state;
 	MemAlloc					*mem;
 	Mutex						memLock;
 	StoreRef					*ref;
+	unsigned					traceMode;
 	
 	QName						*qNames;
 	unsigned					nQNames;
-
 
 public:
 	StoreCtx(unsigned md) : fLocked(false),bufMgr(NULL),classMgr(NULL),cryptoMgr(NULL),fileMgr(NULL),
 		fsMgr(NULL),ftMgr(NULL),lockMgr(NULL),logMgr(NULL),uriMgr(NULL),identMgr(NULL),namedMgr(NULL),netMgr(NULL),heapMgr(NULL),
 		hdirMgr(NULL),ssvMgr(NULL),trpgMgr(NULL),treeMgr(NULL),queryMgr(NULL),txMgr(NULL),bigMgr(NULL),tqMgr(NULL),fsmMgr(NULL),
 		list(this),mode(md),sesCnt(0),storeID(0),bufSize(0),keyPrefix(0),defaultService(NULL),serviceProviderTab(NULL),lstNotif(NULL),
-		theCB(NULL),theCBEnc(NULL),cbLSN(0),fEncrypted(false),fHMAC(false),state(0),mem(NULL),ref(NULL),qNames(NULL),nQNames(0) {
+		theCB(NULL),theCBEnc(NULL),cbLSN(0),state(0),mem(NULL),ref(NULL),traceMode(0),qNames(NULL),nQNames(0) {
 			memset(pageMgrTab,0,sizeof(pageMgrTab));
 			memset(encKey0,0,sizeof(encKey0)); memset(HMACKey0,0,sizeof(HMACKey0));
 			memset(encKey,0,sizeof(encKey)); memset(HMACKey,0,sizeof(HMACKey));
@@ -191,7 +189,7 @@ public:
 	static	StoreCtx			*get() {return (StoreCtx*)storeTls.get();}
 	void						set() {storeTls.set(this);}
 	bool						isServerLocked() const {return fLocked || theCB->state==SST_NO_SHUTDOWN;}
-	const	byte				*getEncKey() const {return fEncrypted?encKey:NULL;}
+	const	byte				*getEncKey() const {return theCB!=NULL && (theCB->flags&STFLG_ENCRYPTED)!=0?encKey:NULL;}
 	const	byte				*getHMACKey() const {return HMACKey;}
 	uint32_t					getPrefix() const {return keyPrefix;}
 	static	uint32_t			genPrefix(ushort storeID) {return uint32_t(byte(storeID>>8)^byte(storeID))<<24;}
@@ -217,6 +215,7 @@ public:
 	ISession					*startSession(const char *identityName=NULL,const char *password=NULL);
 	unsigned					getState() const;
 	size_t						getPublicKey(uint8_t *buf,size_t lbuf,bool fB64=false);
+	void						changeTraceMode(unsigned mask,bool fReset);
 	RC							registerLangExtension(const char *langID,IStoreLang *ext,URIID *pID=NULL);
 	RC							registerLangExtension(URIID uid,IStoreLang *ext);
 	RC							registerService(const char *sname,IService *handler,URIID *puid=NULL,IListenerNotification *lnot=NULL);
@@ -237,7 +236,7 @@ extern	StoreTable	*volatile storeTable;
 /**
  * transaftion and locking releated structures and constants
  */
-
+typedef uint64_t		TXID;
 typedef	uint64_t		TXCID;			/**< snapshot ID type */
 
 #define INVALID_TXID	TXID(0)			/**< invalid transaction ID */
@@ -323,6 +322,17 @@ struct OnCommit
 };
 
 /**
+ * automatic synchronous call stack depth counter
+ */
+class SyncCall
+{
+	Session *const ses;
+public:
+	SyncCall(Session *s);
+	~SyncCall();
+};
+
+/**
  * data purge type in transaction commit
  */
 enum PurgeType
@@ -371,6 +381,7 @@ struct TxReuse
 };
 
 class	TxIndex;
+typedef	Queue<OnCommit,&OnCommit::next>	OnCommitQ;
 
 /**
  * subtransaction descriptor
@@ -382,7 +393,7 @@ struct SubTx
 	Session		*const ses;
 	unsigned	subTxID;
 	LSN			lastLSN;
-	OnCommit	*onCommit;
+	OnCommitQ	onCommit;
 	TxIndex		*txIndex;
 	TxPurgeArr	txPurge;
 	PageSet		defHeap;
@@ -454,6 +465,10 @@ class Session : public MemAlloc, public ISession
 	SubAlloc		*repl;
 	unsigned		itf;
 
+	unsigned		xOnCommit;
+	unsigned		nSyncStack,xSyncStack;
+	unsigned		nSesObjects,xSesObjects;
+
 	ServiceTab		*serviceTab;
 	ITrace			*iTrace;
 	unsigned		traceMode;
@@ -509,8 +524,8 @@ public:
 	RC				resolve(IServiceCtx *sctx,URIID sid,AddrInfo& ai);
 	void			removeServiceCtx(const PID& id);
 	
-	void			setTrace(ITrace *trc) {iTrace=trc;}
-	void			changeTraceMode(unsigned mask,bool fReset) {if (fReset) traceMode&=~mask; else traceMode|=mask;}
+	void			setTrace(ITrace *trc);
+	void			changeTraceMode(unsigned mask,bool fReset);
 	unsigned		getTraceMode() const {return traceMode;}
 	void			trace(long code,const char *msg,...);
 
@@ -537,7 +552,9 @@ public:
 	void			unlockClass();
 	RC				pushTx();
 	RC				popTx(bool fCommit,bool fAll);
-	void			addOnCommit(OnCommit *oc) {assert(oc!=NULL); oc->next=tx.onCommit; tx.onCommit=oc;}
+	RC				addOnCommit(OnCommit *oc);
+	RC				addOnCommit(OnCommitQ &oq);
+	unsigned		getSyncStack() const {return nSyncStack;}
 
 	RC				addToHeap(PageID pid,bool fC) {return tx.addToHeap(pid,fC);}
 	RC				addToHeap(const PageID *pids,unsigned nPages,bool fC) {return tx.addToHeap(pids,nPages,fC);}
@@ -604,15 +621,13 @@ public:
 	
 	IPIN			*getPIN(const PID& id,unsigned=0);
 	IPIN			*getPIN(const Value& id,unsigned=0);
-	IPIN			*getPINByURI(const char *uri,unsigned mode=0);
 	RC				getValues(Value *vals,unsigned nVals,const PID& id);
 	RC				getValue(Value& res,const PID& id,PropertyID,ElementID=STORE_COLLECTION_ID);
 	RC				getValue(Value& res,const PID& id);
 	RC				getPINClasses(ClassID *&clss,unsigned& nclss,const PID& id);
 	bool			isCached(const PID& id);
 	IBatch			*createBatch();
-	IPIN			*createPIN(Value *values=NULL,unsigned nValues=0,unsigned mode=0,const PID *original=NULL);
-	RC				createPINAndCommit(PID& res,const Value values[],unsigned nValues,unsigned mode=0,const AllocCtrl* =NULL);
+	RC				createPIN(Value *values,unsigned nValues,IPIN **result=NULL,unsigned mode=0,const PID *original=NULL);
 	RC				commitPINs(IPIN * const *newPins,unsigned nNew,unsigned mode=0,const AllocCtrl* =NULL,const Value *params=NULL,unsigned nParams=0,const IntoClass *into=NULL,unsigned nInto=0);
 	RC				modifyPIN(const PID& id,const Value *values,unsigned nValues,unsigned mode=0,const ElementID *eids=NULL,unsigned *pNFailed=NULL,const Value *params=NULL,unsigned nParams=0);
 	RC				deletePINs(IPIN **pins,unsigned nPins,unsigned mode=0);
@@ -622,6 +637,7 @@ public:
 	RC				startTransaction(TX_TYPE=TXT_READWRITE,TXI_LEVEL=TXI_DEFAULT);
 	RC				commit(bool fAll);
 	RC				rollback(bool fAll);
+	void			setLimits(unsigned xSyncStack,unsigned xOnCommit);
 
 	RC				reservePage(uint32_t);
 
@@ -647,7 +663,7 @@ public:
 	static	RC		convInterval(int64_t it,char *buf,size_t& l);
 	static	RC		getDTPart(TIMESTAMP dt,unsigned& res,int part);
 
-	RC				normalize(const Value *&pv,uint32_t& nv,unsigned f,ElementID prefix,MemAlloc *ma=NULL);
+	RC				normalize(const Value *&pv,uint32_t& nv,unsigned f,ElementID prefix,MemAlloc *ma=NULL,bool fNF=false);
 	RC				checkBuiltinProp(Value &v,TIMESTAMP &ts,bool fInsert=false);
 	RC				newPINFlags(unsigned& md,const PID *&orig);
 
@@ -655,6 +671,7 @@ public:
 	friend	class	MiniTx;
 	friend	class	TxSP;
 	friend	class	TxGuard;
+	friend	class	SyncCall;
 	friend	class	LogMgr;
 	friend	class	LockMgr;
 	friend	class	LatchHolder;
@@ -709,7 +726,7 @@ public:
  */
 
 extern	MemAlloc *createMemAlloc(size_t,bool fMulti);																						/**< new heaps for sessions and stores */
-extern	RC		copyV(const Value *from,unsigned nv,Value *&to,MemAlloc *ma);																	/**< copy an array of Value structures */
+extern	RC		copyV(const Value *from,unsigned nv,Value *&to,MemAlloc *ma);																/**< copy an array of Value structures */
 extern	RC		copyV0(Value& to,MemAlloc *ma);																								/**< deep data copy in one Value */
 __forceinline	RC	copyV(const Value& from,Value& to,MemAlloc *ma) {return (to=from).type>=VT_STRING && ma!=NULL?copyV0(to,ma):RC_OK;}		/**< inline: copy Value and check if deep data copy is necessary */
 extern	bool	operator==(const Value& lhs, const Value& rhs);																				/**< check equality of 2 Value sturcts */
@@ -721,13 +738,14 @@ extern	byte	*serialize(const PID &id,byte *buf);																						/**< seria
 extern	RC		deserialize(Value& val,const byte *&buf,const byte *const ebuf,MemAlloc*,bool,bool full=false);								/**< deserialize Value from buf */
 extern	RC		deserialize(PID& id,const byte *&buf,const byte *const ebuf);																/**< deserialize PIN ID from buf */
 extern	RC		streamToValue(IStream *str,Value& val,MemAlloc*);																			/**< load a stream to memory and return as a string in Value */
-extern	int		cmpNoConv(const Value&,const Value&,unsigned u);																				/**< comparison of 2 Value structs of the same type */
+extern	int		cmpNoConv(const Value&,const Value&,unsigned u);																			/**< comparison of 2 Value structs of the same type */
 extern	int		cmpConv(const Value&,const Value&,unsigned u,MemAlloc *ma);																	/**< comparison of 2 Value structs of different types with conversion */
 extern	bool	testStrNum(const char *s,size_t l,Value& res);																				/**< test if a string is a representation of a number */
 extern	RC		convV(const Value& src,Value& dst,ushort type,MemAlloc *ma,unsigned mode=0);												/**< convert Value to another type */
 extern	RC		derefValue(const Value& src,Value& dst,Session *ses);																		/**< deference Value (VT_REFID, VT_REFIDPROP, etc.) */
 extern	RC		convURL(const Value& src,Value& dst,HEAP_TYPE alloc);																		/**< convert URL */
-extern	void	freeV(Value *v,unsigned nv,MemAlloc*);																							/**< free in array of Value structs */
+extern	RC		substitute(Value& v,const Value *pars,unsigned nPars,MemAlloc *ma);											/**< substitute parameters in expr, stmt and compound values */
+extern	void	freeV(Value *v,unsigned nv,MemAlloc*);																						/**< free in array of Value structs */
 extern	void	freeV0(Value& v);																											/**< free data in Value */
 __forceinline	void freeV(Value& v) {if ((v.flags&HEAP_TYPE_MASK)>=SES_HEAP) freeV0(v); v.type=VT_ERROR; v.flags=NO_HEAP; v.fcalc=0;}		/**< inline check if data must be freed */
 __forceinline	int	cmp(const Value& arg,const Value& arg2,unsigned u,MemAlloc *ma) {return arg.type==arg2.type?cmpNoConv(arg,arg2,u):cmpConv(arg,arg2,u,ma);}	/**< inline comparison of 2 Value structs */
@@ -741,6 +759,7 @@ extern	bool	compatibleMulDiv(Value&,uint16_t units,bool fDiv);																		
 extern	Units	getUnits(const char *suffix,size_t l);																						/**< convert unit suffix to Units enumeration constant */
 extern	const char *getUnitName(Units u);																									/**< get measument unit suffix */
 extern	const char *getLongUnitName(Units u);																								/**< get full name of unit */
+extern	const char	*getErrMsg(RC rc);																										/**< convert RC code into error message text */
 
 class ValueC : public Value
 {

@@ -36,8 +36,6 @@ using namespace Afy;
 namespace AfyKernel
 {
 
-class PINx;
-
 #define	MODP_EIDS	0x0001
 #define	MODP_NEID	0x0002
 #define MODP_NCPY	0x0004
@@ -87,15 +85,6 @@ protected:
 };
 
 /**
- * PIN flags (continuation of flags in affinity.h)
- */
-
-#define	PIN_NO_FREE					0x80000000	/**< don't free properties in destructor (as it cannot be used in protobuf definition) */
-#define	PIN_RLOAD					0x00040000	/**< load PIN properties if PINs page is being force-unlatched */
-#define	PIN_PARTIAL					0x00020000	/**< pin is a result of a projection of a stored pin or pin is not completely loaded from page */
-#define	PIN_SSV						0x00010000	/**< pin has SSV properties and they're not loaded yet */
-
-/**
  * Class PIN implements IPIN interface
  * @see method descriptions in affinity.h
  */
@@ -110,24 +99,28 @@ protected:
 	uint32_t			mode;				/**< PIN flags (PIN_XXX) */
 	mutable	PageAddr	addr;				/**< page address of PIN */
 	uint16_t			meta;				/**< PIN metatype flags (PMT_*) */
+	uint16_t			fPINx		:1;		/**< this is PINx class */
+	uint16_t			fNoFree		:1;		/**< don't free properties in destructor (as it cannot be used in protobuf definition) */
+	uint16_t			fReload		:1;		/**< load PIN properties if PINs page is being force-unlatched */
+	uint16_t			fPartial	:1;		/**< pin is a result of a projection of a stored pin or pin is not completely loaded from page */
+	uint16_t			fSSV		:1;		/**< pin has SSV properties and they're not loaded yet */
 	PIN					*sibling;			/**< PIN's sibling (for results of joins) */
-	size_t				length;				/**< PIN length - calculated and used in commitPINs() */
+	size_t				length;				/**< PIN length - calculated and used in persistPINs() */
 
 public:
-	PIN(Session *s,unsigned md=0,Value *vals=NULL,unsigned nvals=0)
-		: ses(s),id(defPID),properties(vals),nProperties(nvals),mode(md),addr(PageAddr::invAddr),meta(0),sibling(NULL) {length=0;}
+	PIN(Session *s,unsigned md=0,Value *vals=NULL,unsigned nvals=0,bool fNF=false)
+		: ses(s),id(noPID),properties(vals),nProperties(nvals),mode(md),addr(PageAddr::noAddr),meta(0),
+		fPINx(0),fNoFree(fNF?1:0),fReload(0),fPartial(0),fSSV(0),sibling(NULL) {length=0;}
 	virtual		~PIN();
 
 	// interface implementation
 	const PID&	getPID() const;
 	bool		isLocal() const;
-	bool		isPersistent() const;
 	unsigned	getFlags() const;
 	unsigned	getMetaType() const;
 	uint32_t	getNumberOfProperties() const;
 	const Value	*getValueByIndex(unsigned idx) const;
 	const Value	*getValue(PropertyID pid) const;
-	IPIN		*getSibling() const;
 	RC			getPINValue(Value& res) const;
 	RC			getPINValue(Value& res,Session *ses) const;
 	bool		testClassMembership(ClassID,const Value *params=NULL,unsigned nParams=0) const;
@@ -144,7 +137,6 @@ public:
 	RC			refresh(bool);
 	void		destroy();
 
-	virtual	PINx	*getPINx() const;
 	virtual	bool	defined(const PropertyID *pids,unsigned nProps) const;
 	virtual	RC		load(unsigned mode=0,const PropertyID *pids=NULL,unsigned nPids=0);
 	virtual	const	Value	*loadProperty(PropertyID);
@@ -153,6 +145,7 @@ public:
 	// helper functions
 	Session		*getSes() const {return ses;}
 	uint32_t	getMode() const {return mode;}
+	bool		isPartial() const {return fPartial!=0;}
 	const		PageAddr& getAddr() const {return addr;}
 	void		operator delete(void *p) {if (((PIN*)p)->ses!=NULL) ((PIN*)p)->ses->free(p);}
 	void		operator=(const PID& pid) const {id=pid;}
@@ -161,9 +154,8 @@ public:
 	RC			getV(PropertyID pid,const Value *&pv);
 	RC			modify(const Value *pv,unsigned epos,unsigned eid,unsigned flags,MemAlloc *ma=NULL);
 	void		setProps(const Value *pv,unsigned nv) {properties=(Value*)pv; nProperties=nv;}
-	RC			checkSet(const Value *&pv,const Value& w) {return (mode&PIN_NO_FREE)!=0?copySet(pv,w):(freeV(*(Value*)pv),*(Value*)pv=w,RC_OK);}
-	RC			copySet(const Value *&pv,const Value &w);
-	__forceinline const Value *findProperty(PropertyID pid) {const Value *pv=VBIN::find(pid,properties,nProperties); return pv!=NULL||(mode&PIN_PARTIAL)==0?pv:loadProperty(pid);}
+	RC			checkSet(const Value *&pv,const Value& w);
+	__forceinline const Value *findProperty(PropertyID pid) {const Value *pv=VBIN::find(pid,properties,nProperties); return pv!=NULL||fPartial==0?pv:loadProperty(pid);}
 	ElementID	getPrefix(StoreCtx *ctx) const {return id.pid==STORE_INVALID_PID||id.ident==STORE_INVALID_IDENTITY?ctx->getPrefix():StoreCtx::genPrefix(ushort(id.pid>>48));}
 	static PIN*	getPIN(const PID& id,VersionID vid,Session *ses,unsigned mode=0);
 	static const Value *findElement(const Value *pv,unsigned eid) {
@@ -177,7 +169,7 @@ public:
 	}
 	static	int		__cdecl cmpLength(const void *v1, const void *v2);
 	static	unsigned	getCardinality(const PID& ref,unsigned propID);
-	static	const	PID defPID;
+	static	const	PID noPID;
 	friend	class	ServiceCtx;
 	friend	class	EncodePB;
 	friend	class	DecodePB;
@@ -192,6 +184,7 @@ public:
 	friend	class	ClassPropIndex;
 	friend	struct	ClassResult;
 	friend	class	FSMMgr;
+	friend	class	NamedMgr;
 	friend	class	NetMgr;
 	friend	class	RPIN;
 	friend	class	PINx;
@@ -199,6 +192,8 @@ public:
 	friend	class	LoadOp;
 	friend	class	CommOp;
 	friend	class	BatchInsert;
+	friend	class	LoadService;
+	friend	class	StartListener;
 };
 
 inline bool isRemote(const PID& id) {return id.ident!=STORE_OWNER&&id.ident!=STORE_INVALID_IDENTITY||id.pid!=STORE_INVALID_PID&&ushort(id.pid>>48)!=StoreCtx::get()->storeID;}
