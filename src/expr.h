@@ -1,6 +1,6 @@
 /**************************************************************************************
 
-Copyright © 2004-2013 GoPivotal, Inc. All rights reserved.
+Copyright © 2004-2014 GoPivotal, Inc. All rights reserved.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -49,13 +49,16 @@ namespace AfyKernel
 #define	EXPR_BOOL			0x4000
 #define	EXPR_DISJUNCTIVE	0x2000
 #define	EXPR_NO_CODE		0x1000
-#define	EXPR_PRELOAD		0x0800
-#define	EXPR_PARAMS			0x0400
-#define	EXPR_SELF			0x0200
+#define	EXPR_PARAMS			0x0800
+#define	EXPR_SELF			0x0400
+#define	EXPR_CONST			0x0200
+#define EXPR_NO_VARS		0x0100
+#define EXPR_MANY_VARS		0x0080
+#define EXPR_SORTED			0x0040
 
-#define	PROP_OPTIONAL	0x80000000
-#define	PROP_NO_LOAD	0x40000000
-#define	PROP_ORD		0x20000000
+#define	PROP_OPTIONAL		0x80000000
+
+#define	STORE_VAR_ELEMENT	(STORE_ALL_ELEMENTS-1)
 
 #define	OP_CON			0x7F
 #define	OP_VAR			0x7E
@@ -72,6 +75,9 @@ namespace AfyKernel
 #define	OP_ENVV_PROP	0x73
 #define	OP_ENVV_ELT		0x72
 #define	OP_RXREF		0x71
+#define	OP_NAMED_PROP	0x70
+#define	OP_NAMED_ELT	0x6F
+#define	OP_EXTCALL		0x6E
 
 #define	CND_EXISTS_R	0x2000
 #define	CND_FORALL_R	0x1000
@@ -107,13 +113,13 @@ struct	ValueV;
 struct ExprHdr
 {
 	uint32_t		lExpr;						/**< expression length */
-	uint16_t		lStack;						/**< stack depth necessary for expression evaluation */
+	uint16_t		nStack;						/**< stack depth necessary for expression evaluation */
+	uint8_t			nSubx;						/**< number of common subexpressions (max 64) */
+	uint8_t			var;						/**< referred variable */
 	uint16_t		flags;						/**< expression flags (see EXPR_XXX above ) */
-	uint16_t		lProps;						/**< length of table of properties refered by this expression */
-	uint8_t			nVars;						/**< number of variables refered by this expression */
-	uint8_t			xVar;						/**< max varible ID refered by the expression */
-	ExprHdr(uint32_t lE,uint16_t lS,uint16_t flg,uint16_t lP,uint8_t nV,uint8_t xV) : lExpr(lE),lStack(lS),flags(flg),lProps(lP),nVars(nV),xVar(xV) {}
-	ExprHdr(const ExprHdr& hdr) : lExpr(hdr.lExpr),lStack(hdr.lStack),flags(hdr.flags),lProps(hdr.lProps),nVars(hdr.nVars),xVar(hdr.xVar) {}
+	uint16_t		nProps;						/**< number of properties referred by this expression */
+	ExprHdr(uint32_t lE,uint16_t nS,uint8_t nSx,uint8_t v,uint16_t flg,uint16_t nP) : lExpr(lE),nStack(nS),nSubx(nSx),var(v),flags(flg),nProps(nP) {}
+	ExprHdr(const ExprHdr& hdr) : lExpr(hdr.lExpr),nStack(hdr.nStack),nSubx(hdr.nSubx),var(hdr.var),flags(hdr.flags),nProps(hdr.nProps) {}
 };
 
 /**
@@ -161,15 +167,6 @@ struct EvalCtx
 		: ma(m!=NULL?m:(MemAlloc*)s),ses(s),env(en),nEnv(ne),vars(v),nVars(nV),params(par),nParams(nP),stack(stk),ect(e),rctx(NULL) {}
 };
 
-/**
- * variable desriptor in property table in expression header
- */
-struct VarHdr
-{
-	uint16_t		var;
-	uint16_t		nProps;
-};
-
 class ExprPropCmp
 {
 public:
@@ -195,13 +192,13 @@ public:
 	static	RC		substitute(Expr *&exp,const Value *pars,unsigned nPars,MemAlloc *ma);
 	RC				decompile(ExprTree*&,MemAlloc *ses) const;
 	static	RC		calc(ExprOp op,Value& arg,const Value *moreArgs,int nargs,unsigned flags,const EvalCtx& ctx);
+	static	RC		linear(ExprOp op,Value& arg,const Value *moreArgs,int nargs,unsigned flags,const EvalCtx& ctx);
 	static	RC		calcAgg(ExprOp op,Value& res,const Value *more,unsigned nargs,unsigned flags,const EvalCtx& ctx);
 	ushort			getFlags() const {return hdr.flags;}
-	ushort			getNVars() const {return hdr.nVars;}
 	size_t			serSize() const {return hdr.lExpr;}
 	byte			*serialize(byte *buf) const {memcpy(buf,&hdr,hdr.lExpr); return buf+hdr.lExpr;}
 	RC				render(int prty,SOutCtx&) const;
-	void			getExtRefs(ushort var,const PropertyID *&pids,unsigned& nPids) const;
+	void			getExtRefs(const PropertyID *&pids,unsigned& nPids) const {pids=hdr.nProps!=0?(const PropertyID*)(&hdr+1):NULL; nPids=hdr.nProps;}
 	RC				mergeProps(PropListP& plp,bool fForce=false,bool fFlags=false) const;
 	RC				getPropDNF(ushort var,struct PropDNF *&dnf,size_t& ldnf,MemAlloc *ma) const;
 	static	RC		addPropRefs(Expr **pex,const PropertyID *props,unsigned nProps,MemAlloc *ma);
@@ -220,14 +217,6 @@ private:
 	static	const	Value *numOpConv(Value&,const Value*,Value&,unsigned flg,const EvalCtx&);
 	static	bool	numOpConv(Value&,unsigned flg,const EvalCtx&);
 	static	const	byte	compareCodeTab[];
-	struct	VarD	{
-		PIN					*pp;
-		const	PropertyID	*props;
-		Value				*vals;
-		unsigned			nVals;
-		bool				fInit;
-		bool				fLoaded;
-	};
 	friend	class	ExprCompileCtx;
 	friend	struct	AggAcc;
 };
@@ -269,8 +258,9 @@ public:
 	void			destroy();
 	static	RC		node(Value&,Session*,ExprOp,unsigned,const Value *,unsigned);
 	static	RC		forceExpr(Value&,MemAlloc *ma,bool fCopy=false);
-	static	RC		normalizeArray(Value *vals,unsigned nvals,Value& res,MemAlloc *ma,StoreCtx *ctx);
-	static	RC		normalizeStruct(Value *vals,unsigned nvals,Value& res,MemAlloc *ma);
+	static	RC		normalizeCollection(Value *vals,unsigned nvals,Value& res,MemAlloc *ma,StoreCtx *ctx);
+	static	RC		normalizeArray(Value *vals,unsigned nvals,Value& res,MemAlloc *ma);
+	static	RC		normalizeStruct(Session *s,Value *vals,unsigned nvals,Value& res,MemAlloc *ma,bool fPIN);
 	static	RC		normalizeMap(Value *vals,unsigned nvals,Value& res,MemAlloc *ma);
 	static	ushort	vRefs(const Value& v) {return v.type==VT_VARREF&&(v.refV.flags==0xFFFF||(v.refV.flags&VAR_TYPE_MASK)==0)?v.refV.refN<<8|v.refV.refN:v.type==VT_EXPRTREE?((ExprTree*)v.exprt)->vrefs:NO_VREFS;}
 	static	void	vRefs(ushort& vr1,ushort vr2) {if (vr1==NO_VREFS||vr2==MANY_VREFS) vr1=vr2; else if (vr1!=vr2&&vr1!=MANY_VREFS&&vr2!=NO_VREFS) mergeVRefs(vr1,vr2);}
@@ -292,6 +282,7 @@ public:
 #define	CV_OPT		0x0004
 #define	CV_PROP		0x0008
 #define	CV_NDATA	0x0010
+#define	CV_CALL		0x0020
 
 /**
  * expression compilation context
@@ -300,29 +291,29 @@ class ExprCompileCtx {
 	MemAlloc	*const	ma;
 	ValueV		*const	aggs;
 	uint32_t	labelCount;
-	uint32_t	lStack;
+	uint32_t	nStack;
+	uint32_t	nCSE;
 	byte		buf[256];
 	Expr		*pHdr;
 	byte		*pCode;
 	uint32_t	lCode;
 	uint32_t	xlCode;
-	bool		fCollectRefs;
 	struct ExprLbl {
 		ExprLbl		*next; 
 		int			label;
 		uint32_t	addr;
 		ExprLbl(ExprLbl *nxt,int l,uint32_t ad) : next(nxt),label(l),addr(ad) {}
-	}		*labels;
+	}			*labels;
 	ExprCompileCtx(MemAlloc *,ValueV *);
 	~ExprCompileCtx();
 	RC		compileNode(const ExprTree *expr,unsigned flg=0);
 	RC		compileValue(const Value& v,unsigned flg=0);
 	RC		compileCondition(const ExprTree *node,unsigned mode,uint32_t lbl,unsigned flg=0);
-	RC		addExtRef(uint32_t id,uint16_t var,uint32_t flags,uint16_t& vidx,uint16_t& idx);
+	RC		addUIDRef(uint32_t id,uint8_t var,uint32_t flags,uint16_t& idx);
 	RC		putCondCode(ExprOp op,unsigned fa,uint32_t lbl,bool flbl=true,int nops=0);
 	void	adjustRef(uint32_t lbl);
-	bool	expandHdr(uint32_t l,VarHdr *&vh);
 	bool	expand(uint32_t l);
+	bool	expandHdr(uint32_t l);
 	RC		result(Expr *&);
 	byte	*alloc(uint32_t l) {return lCode+l>xlCode && !expand(l)?NULL:(lCode+=l,pCode+lCode-l);}
 	friend	RC	Expr::compile(const ExprTree *,Expr *&,MemAlloc*,bool fCond,ValueV*);
@@ -348,12 +339,13 @@ struct AggAcc
 	uint64_t	count;
 	ValueC		sum;
 	double		sum2;
+	ElementID	eid;
 	Histogram	*hist;
 	ExprOp		op;
 	uint16_t	flags;
 	MemAlloc	*ma;
 	const		EvalCtx		*const ctx;
-	AggAcc() : count(0),sum2(0.),hist(NULL),op(OP_COUNT),flags(0),ma(NULL),ctx(NULL) {}
+	AggAcc() : count(0),sum2(0.),eid(0),hist(NULL),op(OP_COUNT),flags(0),ma(NULL),ctx(NULL) {}
 	AggAcc(ExprOp o,uint16_t f,const EvalCtx *ct,Histogram *h,MemAlloc *m=NULL) : count(0),sum2(0.),hist(h),op(o),flags(f),ma(m!=NULL?m:ct->ma),ctx(ct) {}
 	RC			next(const Value& v);
 	RC			process(const Value& v);

@@ -1,6 +1,6 @@
 /**************************************************************************************
 
-Copyright © 2004-2013 GoPivotal, Inc. All rights reserved.
+Copyright © 2004-2014 GoPivotal, Inc. All rights reserved.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -24,11 +24,11 @@ Written by Mark Venguerov 2010 - 2012
 
 using namespace AfyKernel;
 
-PINRef::PINRef(ushort si,const byte *p,size_t l) : stID(si),def(0),count(1)
+PINRef::PINRef(ushort si,const byte *p) : stID(si),def(0),count(1)
 {
-	if (l==0) throw RC_NOTFOUND;
-	const byte *end=p+l; PageAddr ad; id.ident=STORE_OWNER;
-	byte dscr=(end[-1]&0x80)!=0?*--end:0,dscr2=(dscr&0x40)!=0?*--end:0;
+	byte l; if (p==NULL || (l=*p++)==0) throw RC_INVPARAM;
+	const byte *end=p+(l-1&0x7F); PageAddr ad; id.ident=STORE_OWNER;
+	byte dscr=(l&0x80)!=0?*--end:0,dscr2=(dscr&0x40)!=0?*--end:0;
 	if ((dscr&0x03)!=0) {
 		if ((dscr&0x02)!=0) {def|=PR_PREF64; afy_dec64(p,prefix);} else {def|=PR_PREF32; afy_dec32(p,prefix);}
 		if (p>=end) throw RC_CORRUPTED;
@@ -55,7 +55,7 @@ PINRef::PINRef(ushort si,const byte *p,size_t l) : stID(si),def(0),count(1)
 
 byte PINRef::enc(byte *p) const
 {
-	byte *const p0=p; byte dscr=0,dscr2=0; PageAddr ad; ushort si,si2;
+	byte *const p0=p++; byte dscr=0,dscr2=0; PageAddr ad; ushort si,si2;
 	ad.pageID=uint32_t(id.pid>>16); ad.idx=PageIdx(id.pid); si=ushort(id.pid>>48);
 	if (si!=stID) dscr2|=0x40; if (id.ident!=STORE_OWNER) dscr2|=0x80;
 	if ((def&PR_PREF32)!=0) {afy_enc32(p,uint32_t(prefix)); dscr|=0x01;}
@@ -78,16 +78,15 @@ byte PINRef::enc(byte *p) const
 			if ((def&PR_COUNT)!=0 && count!=1) {dscr|=0x10; afy_enc32r(p,count);}
 			if ((def&PR_FCOLL)!=0) dscr|=0x20; if ((def&PR_HIDDEN)!=0) dscr2|=0x04; if ((def&PR_SPECIAL)!=0) dscr2|=0x08;
 		}
-		if (dscr2!=0) {*p++=dscr2; dscr|=0x40;}
-		if (dscr!=0) *p++=dscr|0x80;
+		if (dscr2!=0) {*p++=dscr2; dscr|=0x40;} if (dscr!=0) *p++=dscr;
 	}
-	return byte(p-p0);
+	*p0=byte(p-p0)|(dscr!=0?0x80:0); return byte(p-p0);
 }
 
-RC PINRef::getPID(const byte *p,size_t l,ushort si,PID& id,PageAddr *paddr)
+RC PINRef::getPID(const byte *p,ushort si,PID& id,PageAddr *paddr)
 {
-	const byte *end=p+l; PageAddr ad,ad2; id.ident=STORE_OWNER;
-	byte dscr=(end[-1]&0x80)!=0?*--end:0,dscr2=(dscr&0x40)!=0?*--end:0;
+	const byte l=*p++,*end=p+(l-1&0x7F); PageAddr ad,ad2; id.ident=STORE_OWNER;
+	byte dscr=(l&0x80)!=0?*--end:0,dscr2=(dscr&0x40)!=0?*--end:0;
 	if ((dscr&0x01)!=0) {afy_adv32(p);} else if ((dscr&0x02)!=0) {afy_adv32(p);}
 	if (p>=end) return RC_CORRUPTED;
 	afy_dec32(p,ad.pageID); afy_dec16(p,ad.idx); ad2=ad;
@@ -102,36 +101,34 @@ RC PINRef::getPID(const byte *p,size_t l,ushort si,PID& id,PageAddr *paddr)
 	return RC_OK;
 }
 
-RC PINRef::adjustCount(byte *p,size_t& l,uint32_t cnt,byte *buf,bool fDec)
+RC PINRef::adjustCount(byte *p,uint32_t cnt,byte *buf,bool fDec)
 {
-	byte *const p0=p; assert(l!=0); byte dscr=*(p+=l-1); RC rc=RC_CORRUPTED; uint32_t cnt0=1;
-	if ((dscr&0x80)==0) {
+	byte *const p0=p,l=*p; RC rc=RC_CORRUPTED; uint32_t cnt0=1;
+	if ((l&0x80)==0) {
 		if (fDec) rc=cnt==1?RC_FALSE:RC_NOTFOUND;
-		else {if (p0!=buf) {memcpy(buf,p0,l); p=buf+l;} ++cnt; afy_enc32r(p,cnt); *p=0xB0; l=unsigned(p-buf+1); rc=RC_TRUE;}
+		else {if (p0!=buf) {memcpy(buf,p0,l); p=buf+l;} ++cnt; afy_enc32r(p,cnt); *p=0x30; buf[0]=byte(p-buf+1)|0x80; rc=RC_TRUE;}
 	} else {
-		const byte *const end=(dscr&0x40)!=0?--p:p;
+		const byte dscr=*(p+=l-1&0x7F),*const end=(dscr&0x40)!=0?--p:p;
 		if ((dscr&0x10)!=0) afy_dec32r(p,cnt0);
 		if (fDec && cnt0<=cnt) rc=cnt==cnt0?RC_FALSE:RC_NOTFOUND;
 		else {
 			if (fDec) cnt0-=cnt; else cnt0+=cnt;
 			byte cntbuf[10],*pp=cntbuf; afy_enc32r(pp,cnt0);
-			size_t lnew=pp-cntbuf,lold=end-p;
-			if (lnew==lold) {memcpy(p,cntbuf,lnew); p[lnew-1]|=0x20; rc=RC_OK;}
-			else {
-				if (p0!=buf) {memcpy(buf,p0,p-p0); p=buf+(p-p0);} memcpy(p,cntbuf,lnew); p+=lnew;
-				if ((dscr&0x40)!=0) *p++=*end; *p=dscr|0x30; l=unsigned(p-buf+1); rc=RC_TRUE;
-			}
+			size_t lnew=pp-cntbuf; rc=RC_OK;
+			if (lnew!=end-p) {if (p0!=buf) {memcpy(buf,p0,p-p0); p=buf+(p-p0);} rc=RC_TRUE;}
+			memcpy(p,cntbuf,lnew); p+=lnew; if ((dscr&0x40)!=0) *p++=*end;
+			*p=dscr|0x30; buf[0]=byte(p-buf+1)|0x80;
 		}
 	}
 	if (rc==RC_NOTFOUND) report(MSG_ERROR,"Invalid descrease count, cnt=%u, decreased by %u\n",cnt0,cnt);
 	return rc;
 }
 
-int PINRef::cmpPIDs(const byte *p1,unsigned l1,const byte *p2,unsigned l2)
+int PINRef::cmpPIDs(const byte *p1,const byte *p2)
 {
-	const byte *const e1=p1+l1,*const e2=p2+l2; int c;
-	assert(p1!=NULL && l1!=0 && p2!=NULL && l2!=0);
-	byte d1=(e1[-1]&0x80)!=0?e1[-1]:0,d2=(e2[-1]&0x80)!=0?e2[-1]:0;
+	int c; assert(p1!=NULL && p2!=NULL);
+	const byte l1=*p1++,*const e1=p1+(l1-1&0x7F),l2=*p2++,*const e2=p2+(l2-1&0x7F);
+	byte d1=(l1&0x80)!=0?e1[-1]:0,d2=(l2&0x80)!=0?e2[-1]:0;
 	uint32_t u1,u2; assert((d1&0x03)==(d2&0x03));
 	if ((d1&0x02)!=0) {
 		uint64_t U1,U2; afy_dec64(p1,U1); afy_dec64(p2,U2);

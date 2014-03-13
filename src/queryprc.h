@@ -1,6 +1,6 @@
 /**************************************************************************************
 
-Copyright © 2004-2013 GoPivotal, Inc. All rights reserved.
+Copyright © 2004-2014 GoPivotal, Inc. All rights reserved.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -180,8 +180,8 @@ class Cursor;
 class QueryPrc
 {
 	RC		loadProps(PINx *pcb,unsigned mode,const PropertyID *pids=NULL,unsigned nPids=0);
-	RC		loadV(Value& v,unsigned pid,const PINx& cb,unsigned mode,MemAlloc *ma,unsigned eid=STORE_COLLECTION_ID,const Value *mkey=NULL);
-	RC		loadVH(Value& v,const HeapPageMgr::HeapV *hprop,const PINx& cb,unsigned mode,MemAlloc *ma,unsigned eid=STORE_COLLECTION_ID,const Value *mkey=NULL);
+	RC		loadV(Value& v,unsigned pid,const PINx& cb,unsigned mode,MemAlloc *ma,const Value *mk=NULL,unsigned nk=1);
+	RC		loadVH(Value& v,const HeapPageMgr::HeapV *hprop,const PINx& cb,unsigned mode,MemAlloc *ma,const Value *mk=NULL,unsigned nk=1);
 	RC		loadS(Value& v,HType ty,PageOff offset,const HeapPageMgr::HeapPage *frame,unsigned mode,MemAlloc *ma,unsigned eid=STORE_COLLECTION_ID);
 	RC		loadSSVs(Value *values,unsigned nValues,unsigned mode,Session *ses,MemAlloc *ma);
 	RC		loadSSV(Value& val,ValueType ty,const HeapPageMgr::HeapObjHeader *hobj,unsigned mode,MemAlloc *ma);	// struct PropertyID?
@@ -227,7 +227,6 @@ public:
 	RC		modifyPIN(const EvalCtx& ectx,const PID& id,const Value *v,unsigned nv,PINx *pcb,PIN *pin=NULL,unsigned mode=0,const ElementID *eids=NULL,unsigned* =NULL);
 	RC		deletePINs(const EvalCtx& ectx,const PIN *const *pins,const PID *pids,unsigned nPins,unsigned mode,PINx *pcb=NULL);
 	RC		undeletePINs(const EvalCtx& ectx,const PID *pids,unsigned nPins);
-	RC		setFlag(const EvalCtx& ectx,const PID& id,PageAddr *addr,ushort flag,bool fReset);
 	RC		loadData(const PageAddr& addr,byte *&p,size_t& len,MemAlloc *ma);
 	RC		persistData(IStream *stream,const byte *str,size_t lstr,PageAddr& addr,uint64_t&,const PageAddr* =NULL,PBlockP* =NULL);
 	RC		editData(Session *ses,PageAddr &addr,uint64_t& length,const Value&,PBlockP *pbp=NULL,byte *pOld=NULL);

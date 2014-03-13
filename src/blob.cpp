@@ -1,6 +1,6 @@
 /**************************************************************************************
 
-Copyright © 2004-2013 GoPivotal, Inc. All rights reserved.
+Copyright © 2004-2014 GoPivotal, Inc. All rights reserved.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -282,6 +282,18 @@ RC StreamBuf::reset()
 void StreamBuf::destroy()
 {
 	if (allc!=NULL) {if (fFree) allc->free((byte*)buf); allc->free((void*)this);}
+}
+
+//--------------------------------------------------------------------------------------------------------
+
+void StreamHolder::destroyObj()
+{
+	stream->destroy();
+}
+
+void CollHolder::destroyObj()
+{
+	nav->destroy();
 }
 
 //--------------------------------------------------------------------------------------------------------
@@ -685,7 +697,7 @@ TreeConnect *Navigator::persist(uint32_t& hndl) const
 const IndexFormat Collection::collFormat(KT_UINT,sizeof(uint64_t),KT_VARDATA); 
 
 Collection::Collection(StoreCtx *ct,const HeapPageMgr::HeapExtCollection *c,MemAlloc *ma,unsigned xP)
-: Tree(ct),maxPages(xP),allc(ma),coll(ma!=NULL?HeapPageMgr::copyDescr(c,ma):(HeapPageMgr::HeapExtCollection*)c),stamp(0),fMod(false)
+: Tree(ct,TF_WITHDEL|TF_SPLITINTX),maxPages(xP),allc(ma),coll(ma!=NULL?HeapPageMgr::copyDescr(c,ma):(HeapPageMgr::HeapExtCollection*)c),stamp(0),fMod(false)
 {
 }
 
@@ -702,11 +714,6 @@ TreeFactory *Collection::getFactory() const
 IndexFormat Collection::indexFormat() const 
 {
 	return collFormat;
-}
-
-unsigned Collection::getMode() const
-{
-	return TF_WITHDEL|TF_SPLITINTX;
 }
 
 Collection *Collection::create(const PageAddr& ad,PropertyID propID,StoreCtx *ctx,MemAlloc *ma,PBlock *pb)
@@ -740,8 +747,7 @@ RC Collection::modify(ExprOp op,const Value *pv,ElementID epos,ElementID eid,Ses
 		if (op!=OP_ADD && op!=OP_ADD_BEFORE && op!=OP_SET) return RC_NOTFOUND;
 		if (eid==STORE_COLLECTION_ID || eid==STORE_LAST_ELEMENT || eid==STORE_FIRST_ELEMENT) return RC_INVPARAM;
 		SearchKey key((uint64_t)eid); assert(coll->nElements==0);
-		if ((rc=persistElement(ses,*pv,lval,buf,lbuf,threshold,STORE_COLLECTION_ID,STORE_COLLECTION_ID))==RC_OK
-			&& (rc=insert(key,buf,lval))==RC_OK) first=last=eid;
+		if ((rc=persistElement(ses,*pv,lval,buf,lbuf,threshold,STORE_COLLECTION_ID,STORE_COLLECTION_ID))==RC_OK && (rc=insert(key,buf,lval))==RC_OK) first=last=eid;
 	} else {
 		ECB ecb(ctx,*this,coll);
 		if ((rc=ecb.get(GO_FINDBYID,epos))==RC_NOTFOUND && (op==OP_ADD || op==OP_SET))
@@ -810,7 +816,7 @@ RC Collection::modify(ExprOp op,const Value *pv,ElementID epos,ElementID eid,Ses
 			break;
 		case OP_EDIT:
 			assert(ecb.hdr!=NULL);
-			if (isString(ecb.hdr->type.getType())) {
+			if (isString(ecb.hdr->type.getType()) || ecb.hdr->type.getType()==VT_UINT || ecb.hdr->type.getType()==VT_UINT64) {
 				Value v;
 				if ((rc=ctx->queryMgr->loadS(v,__una_get(ecb.hdr->type),ecb.hdr->type.isCompact()?*(ushort*)((byte*)(ecb.hdr+1)+ecb.hdr->shift):
 					ushort((byte*)(ecb.hdr+1)-(byte*)ecb.tp)+ecb.hdr->shift,(const HeapPageMgr::HeapPage*)ecb.tp,0,ses))!=RC_OK) break;
@@ -1014,7 +1020,7 @@ class InitCollection : public Tree
 	Session			*const ses;
 public:
 	InitCollection(HeapPageMgr::HeapExtCollection& cl,unsigned mP,Session *ss,bool fF,bool fO)
-		: Tree(ss->getStore()),coll(cl),tctx(*this),maxPages(mP),fForce(fF),fOld(fO),buf(NULL),lbuf(0),ses(ss)
+		: Tree(ss->getStore(),TF_SPLITINTX|TF_NOPOST),coll(cl),tctx(*this),maxPages(mP),fForce(fF),fOld(fO),buf(NULL),lbuf(0),ses(ss)
 			{threshold=ctx->trpgMgr->contentSize()/8;}
 	virtual ~InitCollection() {ses->free(buf);}
 	RC addRootPage(const SearchKey& key,PageID& pageID,unsigned level) {
@@ -1048,17 +1054,16 @@ public:
 					{tctx.pb.release(ses); return rc;}
 				coll.anchor=coll.leftmost=tctx.pb->getPageID();
 			}
-			if ((rc=ctx->trpgMgr->insert(tctx,key,buf,lval))==RC_OK) coll.nElements++;
+			if ((rc=ctx->trpgMgr->insert(tctx,key,buf,lval,0,true))==RC_OK) coll.nElements++;
 		}
 		return rc;
 	}
 	TreeFactory *getFactory() const {return NULL;}
 	IndexFormat	indexFormat() const {return Collection::collFormat;}
-	unsigned		getMode() const {return TF_SPLITINTX|TF_NOPOST;}
 	PageID		startPage(const SearchKey*,int& level,bool,bool) {level=-1; return INVALID_PAGEID;}
 	PageID		prevStartPage(PageID) {return INVALID_PAGEID;}
 	RC			removeRootPage(PageID page,PageID leftmost,unsigned level) {return RC_INTERNAL;}
-	unsigned		getStamp(TREE_NODETYPE) const {return 0;}
+	unsigned	getStamp(TREE_NODETYPE) const {return 0;}
 	void		getStamps(unsigned stamps[TREE_NODETYPE_ALL]) const {}
 	void		advanceStamp(TREE_NODETYPE) {}
 	bool		lock(RW_LockType,bool fTry=false) const {return true;}
@@ -1073,7 +1078,7 @@ RC Collection::persistElement(Session *ses,const Value& v,ushort& lval,byte *&bu
 	ushort sht=0,l; lval=sizeof(ElementDataHdr); byte flags=0; StoreCtx *ctx=ses->getStore();
 	if (prev!=STORE_COLLECTION_ID) {lval+=sht=sizeof(uint32_t); flags|=1;}
 	if (next!=STORE_COLLECTION_ID) {lval+=sizeof(uint32_t); sht+=sizeof(uint32_t); flags|=2;}
-	if (v.type==VT_ARRAY || v.type==VT_COLLECTION) return RC_INTERNAL;
+	if (v.type==VT_COLLECTION) return RC_INTERNAL;
 	size_t len; RC rc=RC_OK;
 	if (fOld && v.type==VT_STREAM) l=(v.flags&VF_SSV)!=0?sizeof(HRefSSV):sizeof(HLOB);
 	else if ((rc=ctx->queryMgr->calcLength(v,len,MODE_PREFIX_READ,threshold,ses))!=RC_OK) return rc;
@@ -1096,10 +1101,10 @@ RC Collection::persistElement(Session *ses,const Value& v,ushort& lval,byte *&bu
 
 RC Collection::persist(const Value& v,HeapPageMgr::HeapExtCollection& collection,Session *ses,bool fForce,bool fOld,unsigned maxPages)
 {
-	InitCollection init(collection,maxPages,ses,fForce,fOld); unsigned k; const Value *cv; ElementID prev=0; RC rc=RC_OK;
+	InitCollection init(collection,maxPages,ses,fForce,fOld); ElementID prev=0; RC rc=RC_OK; unsigned k;
 	if (ses==NULL) rc=RC_NOSESSION; else if (!ses->inWriteTx()) rc=RC_READTX;
-	else switch (v.type) {
-	case VT_ARRAY:
+	else if (v.type!=VT_COLLECTION) {if ((rc=init.persist(v,0))==RC_OK) init.release();}
+	else if (!v.isNav()) {
 		for (k=0; k<v.length; k++) {
 			if (fForce) {if (v.varray[k].eid<prev) break; else prev=v.varray[k].eid;}
 			if ((rc=init.persist(v.varray[k],k))!=RC_OK) break;
@@ -1107,17 +1112,13 @@ RC Collection::persist(const Value& v,HeapPageMgr::HeapExtCollection& collection
 		init.release(); 
 		if (rc==RC_OK && k<v.length) for (Collection pcol(ses->getStore(),&collection,0,NO_HEAP); k<v.length; k++)
 			{const Value *cv=&v.varray[k]; if ((rc=pcol.modify(OP_ADD,cv,prev,cv->eid,ses))!=RC_OK) break; prev=cv->eid;}
-		break;
-	case VT_COLLECTION:
+	} else {
+		const Value *cv;
 		for (cv=v.nav->navigate(GO_FIRST),k=0; cv!=NULL; ++k,cv=v.nav->navigate(GO_NEXT))
 			{if (fForce) {if (cv->eid<prev) break; else prev=cv->eid;} if ((rc=init.persist(*cv,k))!=RC_OK) break;}
 		init.release(); 
 		if (rc==RC_OK && cv!=NULL) for (Collection pcol(ses->getStore(),&collection,0,NO_HEAP); cv!=NULL; ++k,cv=v.nav->navigate(GO_NEXT))
 			{if ((rc=pcol.modify(OP_ADD,cv,prev,cv->eid,ses))!=RC_OK) break; prev=cv->eid;}
-		break;
-	default:
-		if ((rc=init.persist(v,0))==RC_OK) init.release(); 
-		break;
 	}
 	return rc;
 }

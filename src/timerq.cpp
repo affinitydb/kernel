@@ -1,6 +1,6 @@
 /**************************************************************************************
 
-Copyright � 2004-2013 GoPivotal, Inc. All rights reserved.
+Copyright � 2004-2014 GoPivotal, Inc. All rights reserved.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -49,9 +49,9 @@ TimerQ::~TimerQ()
 
 RC TimerQ::loadTimer(PINx &cb)
 {
-	RC rc; Value v[2];
+	RC rc; Value v[2]; if ((ctx->mode&STARTUP_RT)!=0) return RC_OK;
 	if ((rc=cb.getV(PROP_SPEC_OBJID,v[0],0,NULL))!=RC_OK) return rc;
-	if (v[0].type!=VT_URIID || v[0].uid==STORE_INVALID_CLASSID) {freeV(v[0]); return RC_CORRUPTED;}
+	if (v[0].type!=VT_URIID || v[0].uid==STORE_INVALID_URIID) {freeV(v[0]); return RC_CORRUPTED;}
 	URIID cid=v[0].uid; assert((cb.getMetaType()&PMT_TIMER)!=0);
 	if ((rc=cb.getV(PROP_SPEC_INTERVAL,v[0],LOAD_SSV,cb.getSes()))==RC_OK) {
 		if (v[0].type!=VT_INTERVAL) {freeV(v[0]); return RC_CORRUPTED;}
@@ -140,20 +140,20 @@ void TimerQElt::processTimeRQ()
 	Session *ses=Session::getSession();
 	if (ses!=NULL) {
 		ses->setIdentity(STORE_OWNER,true);
-		PINx self(ses,pid); PIN autop(ses); PIN *pp[5]={NULL,&self,NULL,NULL,&autop}; TIMESTAMP ts; char buf[100]; size_t l;
-		if ((ses->getTraceMode()&TRACE_TIMERS)!=0) {
-			URI *uri=(URI*)ctx->uriMgr->ObjMgr::find(id);  const StrLen unk("???",3),*nm=uri!=NULL?uri->getName():&unk;
-			getTimestamp(ts); ses->convDateTime(ts,buf,l);
-			ses->trace(0,"Timer \"%.*s\": START at %s\n",nm->len,nm->str,buf); if (uri!=NULL) uri->release();
-		}
+		PINx self(ses,pid); PIN autop(ses); PIN *pp[5]={NULL,&self,NULL,NULL,&autop};
+		if ((ses->getTraceMode()&TRACE_TIMERS)!=0) trace(ses,0);
 		RC rc=ses->getStore()->queryMgr->eval(&act,EvalCtx(ses,pp,5,NULL,0,NULL,0,NULL,NULL,ECT_ACTION));
-		if ((ses->getTraceMode()&TRACE_TIMERS)!=0) {
-			URI *uri=(URI*)ctx->uriMgr->ObjMgr::find(id);  const StrLen unk("???",3),*nm=uri!=NULL?uri->getName():&unk;
-			getTimestamp(ts); ses->convDateTime(ts,buf,l);
-			ses->trace(0,"Timer \"%.*s\": END at %s -> %s\n",nm->len,nm->str,buf,getErrMsg(rc)); if (uri!=NULL) uri->release();
-		}
+		if ((ses->getTraceMode()&TRACE_TIMERS)!=0) trace(ses,1,rc);
 		ses->setIdentity(STORE_INVALID_IDENTITY,false);
 	}
+}
+
+void TimerQElt::trace(Session *ses,int code,RC rc)
+{
+	TIMESTAMP ts; char buf[64]; size_t l; getTimestamp(ts); ses->convDateTime(ts,buf,l);
+	URI *uri=(URI*)ctx->uriMgr->ObjMgr::find(id); const char *nm=ses->getStore()->namedMgr->getTraceName(uri,l);
+	ses->trace(0,code==0?"Timer \"%.*s\": START at %s\n":"Timer \"%.*s\": END at %s -> %s\n",l,nm,buf,getErrMsg(rc));
+	if (uri!=NULL) uri->release();
 }
 
 void TimerQElt::destroyTimeRQ()
@@ -168,7 +168,7 @@ StartTimer::StartTimer(uint32_t t,uint64_t intv,PID i,const Value *act,MemAlloc 
 
 RC StartTimer::process(Session *ses)
 {
-	StoreCtx *ctx=ses->getStore(); return ctx->tqMgr->add(new(ctx) TimerQElt(tid,interval,id,action,ctx));
+	StoreCtx *ctx=ses->getStore(); return (ctx->mode&STARTUP_RT)==0?ctx->tqMgr->add(new(ctx) TimerQElt(tid,interval,id,action,ctx)):RC_OK;
 }
 
 void StartTimer::destroy(Session *ses)

@@ -1,6 +1,6 @@
 /**************************************************************************************
 
-Copyright © 2004-2013 GoPivotal, Inc. All rights reserved.
+Copyright © 2004-2014 GoPivotal, Inc. All rights reserved.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -30,6 +30,43 @@ Written by Mark Venguerov 2004-2012
 
 using namespace AfyKernel;
 
+const TypeInfo AfyKernel::typeInfo[VT_ALL] =
+{
+	{0,					0},						//	VT_ERROR
+	{sizeof(int32_t),	sizeof(int32_t)-1},		//	VT_INT
+	{sizeof(uint32_t),	sizeof(uint32_t)-1},	//	VT_UINT
+	{sizeof(int64_t),	sizeof(int64_t)-1},		//	VT_INT64
+	{sizeof(uint64_t),	sizeof(uint64_t)-1},	//	VT_UINT64
+	{sizeof(float),		sizeof(float)-1},		//	VT_FLOAT
+	{sizeof(double),	sizeof(double)-1},		//	VT_DOUBLE
+	{0,					0},						//	VT_BOOL
+	{sizeof(uint64_t),	sizeof(uint64_t)-1},	//	VT_DATETIME
+	{sizeof(int64_t),	sizeof(int64_t)-1},		//	VT_INTERVAL
+	{sizeof(uint32_t),	sizeof(uint32_t)-1},	//	VT_URIID
+	{sizeof(uint32_t),	sizeof(uint32_t)-1},	//	VT_IDENTITY
+	{sizeof(uint32_t)*2,sizeof(uint32_t)-1},	//	VT_ENUM
+	{0,					0},						//	VT_STRING
+	{0,					0},						//	VT_BSTR
+	{0,					0}, 					//	VT_URL
+	{0,					sizeof(uint64_t)-1},	//	VT_REF
+	{0,					sizeof(uint64_t)-1},	//	VT_REFID
+	{0,					sizeof(uint64_t)-1},	//	VT_REFPROP
+	{0,					sizeof(uint64_t)-1},	//	VT_REFIDPROP
+	{0,					sizeof(uint64_t)-1},	//	VT_REFELT
+	{0,					sizeof(uint64_t)-1},	//	VT_REFIDELT
+	{0,					sizeof(uint32_t)-1},	//	VT_EXPR
+	{0,					0},						//	VT_STMT
+	{0,					0},						//	VT_COLLECTION
+	{0,					0},						//	VT_STRUCT
+	{0,					0},						//	VT_MAP
+	{0,					0},						//	VT_ARRAY
+	{0,					0},						//	VT_RANGE
+	{sizeof(HRefSSV),	sizeof(uint32_t)-1},	//	VT_STREAM
+	{0,					0},						//	VT_CURRENT
+	{sizeof(RefV),		0},						//	VT_VARREF
+	{0,					0},						//	VT_EXPRTREE
+};
+
 RC AfyKernel::copyV0(Value &v,MemAlloc *ma)
 {
 	try {
@@ -44,14 +81,38 @@ RC AfyKernel::copyV0(Value &v,MemAlloc *ma)
 			if (v.type==VT_STRING||v.type==VT_URL) const_cast<char*>(w.str)[v.length]=0;
 			v.bstr=w.bstr; break;
 		case VT_COLLECTION:
-			if (v.nav!=NULL && (ma->getAType()!=SES_HEAP || (v.nav=v.nav->clone())==NULL)) {v.type=VT_ERROR; return RC_NORESOURCES;}
-			break;
-		case VT_ARRAY: case VT_STRUCT:
+			if (v.isNav()) {
+				if (v.nav!=NULL) switch (ma->getAType()) {
+				case NO_HEAP: 
+					if ((v.nav=v.nav->clone())!=NULL) {
+						CollHolder *ch=new(ma) CollHolder(v.nav);
+						if (ch!=NULL) {ma->addObj(ch); break;}
+						v.nav->destroy();
+					}
+					v.type=VT_ERROR; return RC_NORESOURCES;
+				case SES_HEAP: if ((v.nav=v.nav->clone())!=NULL) break;
+				default: v.type=VT_ERROR; return RC_NORESOURCES;
+				}
+				break;
+			}
+		case VT_STRUCT:
 			assert(v.varray!=NULL && v.length>0);
 			if ((w.varray=(Value*)ma->malloc(v.length*sizeof(Value)))==NULL) {v.type=VT_ERROR; return RC_NORESOURCES;}
 			for (i=0; i<v.length; i++)
 				if ((rc=copyV(v.varray[i],const_cast<Value&>(w.varray[i]),ma))!=RC_OK) {freeV((Value*)w.varray,i,ma); v.type=VT_ERROR; return rc;}
 			v.varray=w.varray; break;
+		case VT_MAP:
+			if (ma->getAType()!=SES_HEAP) {v.type=VT_ERROR; return RC_INTERNAL;}
+			if ((v.map=v.map->clone())==NULL) {v.type=VT_ERROR; return RC_NORESOURCES;}
+			break;
+		case VT_ARRAY:
+			if (v.fa.data!=NULL) {
+				size_t l; if ((rc=alength(v,l))!=RC_OK) return rc;
+				if (l==0) v.fa.data=NULL;
+				else if ((w.fa.data=ma->malloc(l))==NULL) {v.type=VT_ERROR; return RC_NORESOURCES;}
+				else {memcpy(w.fa.data,v.fa.data,l); v.fa.data=w.fa.data;}
+			}
+			break;
 		case VT_RANGE:
 			assert(v.range!=NULL && v.length==2);
 			w.range=(Value*)ma->malloc(2*sizeof(Value));
@@ -74,7 +135,17 @@ RC AfyKernel::copyV0(Value &v,MemAlloc *ma)
 			break;
 		case VT_STREAM:
 			v.stream.prefix=NULL;
-			if (v.stream.is!=NULL && (ma->getAType()!=SES_HEAP || (v.stream.is=v.stream.is->clone())==NULL)) {v.type=VT_ERROR; return RC_NORESOURCES;}
+			if (v.stream.is!=NULL) switch (ma->getAType()) {
+			case NO_HEAP: 
+				if ((v.stream.is=v.stream.is->clone())!=NULL) {
+					StreamHolder *sh=new(ma) StreamHolder(v.stream.is);
+					if (sh!=NULL) {ma->addObj(sh); break;}
+					v.stream.is->destroy();
+				}
+				v.type=VT_ERROR; return RC_NORESOURCES;
+			case SES_HEAP: if ((v.stream.is=v.stream.is->clone())!=NULL) break;
+			default: v.type=VT_ERROR; return RC_NORESOURCES;
+			}
 			break;
 		}
 		setHT(v,ma->getAType()); return RC_OK;
@@ -89,6 +160,23 @@ RC AfyKernel::copyV(const Value *from,unsigned nv,Value *&to,MemAlloc *ma)
 	else for (unsigned i=0; i<nv; i++) {
 		RC rc=copyV(from[i],to[i],ma);
 		if (rc!=RC_OK) {while (i--!=0) freeV(to[i]); ma->free(to); return rc;}
+	}
+	return RC_OK;
+}
+
+RC AfyKernel::alength(const Value& v,size_t& l)
+{
+	l=0; assert(v.type==VT_ARRAY);
+	if (!isNumeric((ValueType)v.type)&&v.fa.type!=VT_DATETIME&&v.fa.type!=VT_ENUM&&v.fa.type!=VT_REFID&&v.fa.type!=VT_STRUCT) return RC_TYPE;
+	if (v.fa.xdim==0||v.fa.ydim==0||v.length!=0&&v.length!=uint32_t(v.fa.xdim)*uint32_t(v.fa.ydim)&&(v.length>v.fa.xdim||v.fa.ydim!=1)) return RC_INVPARAM;
+	if (v.fa.type==VT_STRUCT) {
+		//calculate length of 1, store to lelt
+		// calculate length of FixedStruct
+		// calculate max alignment
+		return RC_INTERNAL;
+	} else {
+		v.fa.lelt=typeInfo[v.fa.type].length; l=size_t(v.fa.lelt)*size_t(v.fa.xdim)*size_t(v.fa.ydim);
+		ushort align=typeInfo[v.fa.type].align; v.fa.flags=align>2?(align-2)&6:0;
 	}
 	return RC_OK;
 }
@@ -139,7 +227,7 @@ bool AfyKernel::operator==(const Value& lhs, const Value& rhs)
 	case VT_FLOAT: return lhs.f==rhs.f && lhs.qval.units==rhs.qval.units;
 	case VT_DOUBLE: return lhs.d==rhs.d && lhs.qval.units==rhs.qval.units;
 	case VT_BOOL: return lhs.b==rhs.b;
-	case VT_REF: return lhs.pin->getPID()==rhs.pin->getPID();
+	case VT_REF: return lhs.pin==rhs.pin || lhs.pin->getPID()==rhs.pin->getPID();
 	case VT_REFID: return lhs.id==rhs.id;
 	case VT_REFPROP: return lhs.ref.pin->getPID()==rhs.ref.pin->getPID() && lhs.ref.pid==rhs.ref.pid && lhs.ref.vid==rhs.ref.vid;
 	case VT_REFIDPROP: return lhs.refId->id==rhs.refId->id && lhs.refId->pid==rhs.refId->pid && lhs.refId->vid==rhs.refId->vid;
@@ -148,13 +236,15 @@ bool AfyKernel::operator==(const Value& lhs, const Value& rhs)
 	case VT_STREAM: return lhs.stream.is==rhs.stream.is;
 	case VT_EXPR: return false;		// ???
 	case VT_STMT: return false;		// ???
-	case VT_ARRAY: case VT_STRUCT:
+	case VT_COLLECTION:
+		if (lhs.isNav()) {
+			if (lhs.nav->count()!=rhs.nav->count()) return false;
+			// ???
+			return false;
+		}
+	case VT_STRUCT:
 		for (i=0; i<lhs.length; i++) if (lhs.varray[i]!=rhs.varray[i]) return false;
 		break;
-	case VT_COLLECTION:
-		if (lhs.nav->count()!=rhs.nav->count()) return false;
-		// ???
-		return false;
 	case VT_EXPRTREE: return *(ExprTree*)lhs.exprt==*(ExprTree*)rhs.exprt;
 	case VT_VARREF:
 		return lhs.refV.refN==rhs.refV.refN && lhs.refV.type==rhs.refV.type && ((lhs.flags^rhs.flags)&VAR_TYPE_MASK)==0 &&
@@ -188,7 +278,7 @@ size_t AfyKernel::serSize(const Value& v,bool full)
 	case VT_FLOAT: l=2+sizeof(float); break;
 	case VT_DOUBLE: l=2+sizeof(double); break;
 	case VT_BOOL: case VT_CURRENT: l=2; break;
-	case VT_REF: l+=serSize(v.pin->getPID()); break;
+	case VT_REF: l+=((PIN*)v.pin)->serSize(); break;
 	case VT_REFID: l+=serSize(v.id); break;
 	case VT_REFPROP: l+=serSize(v.ref.pin->getPID())+afy_len32(v.ref.pid); break;
 	case VT_REFIDPROP: l+=serSize(v.refId->id)+afy_len32(v.refId->pid); break;
@@ -198,17 +288,18 @@ size_t AfyKernel::serSize(const Value& v,bool full)
 	case VT_VARREF:
 		l=7; if (v.length!=0) {l+=afy_len32(v.refV.id); if (v.eid!=STORE_COLLECTION_ID) l+=afy_len32(v.eid);}
 		break;
-	case VT_ARRAY:
-		l+=afy_len32(v.length);
-		for (i=0; i<v.length; i++) l+=afy_len32(v.varray[i].eid)+serSize(v.varray[i]);
-		break;
 	case VT_COLLECTION:
-		l=v.nav->count(); l=1+afy_len32(l);
-		for (pv=v.nav->navigate(GO_FIRST); pv!=NULL; pv=v.nav->navigate(GO_NEXT)) l+=afy_len32(pv->eid)+serSize(*pv);
+		if (v.isNav()) {
+			l=v.nav->count(); l=1+afy_len32(l);
+			for (pv=v.nav->navigate(GO_FIRST); pv!=NULL; pv=v.nav->navigate(GO_NEXT)) l+=afy_len32(pv->eid)+serSize(*pv);
+		} else {
+			l+=afy_len32(v.length);
+			for (i=0; i<v.length; i++) l+=afy_len32(v.varray[i].eid)+serSize(v.varray[i]);
+		}
 		break;
 	case VT_STRUCT:
 		l+=afy_len32(v.length);
-		for (i=0; i<v.length; i++) l+=afy_len32(v.varray[i].property)+serSize(v.varray[i]);
+		for (i=0; i<v.length; i++) l+=afy_len32(v.varray[i].property)+1+serSize(v.varray[i]);
 		break;
 	case VT_EXPR: l+=((Expr*)v.expr)->serSize(); break;
 	case VT_STMT: l=((Stmt*)v.stmt)->serSize(); l+=1+afy_len32(l); break;
@@ -217,7 +308,14 @@ size_t AfyKernel::serSize(const Value& v,bool full)
 	case VT_MAP:
 		return 0;		// niy
 	}
-	if (full) {i=afy_enc32zz(v.eid); l+=2+afy_len32(i)+afy_len32(v.property);}
+	if (full) {
+		i=afy_enc32zz(v.eid); l+=2+afy_len32(i)+afy_len32(v.property);
+		if (v.op==OP_EDIT) switch(v.type) {
+		case VT_STRING: case VT_BSTR: case VT_URL: l+=afy_len64(v.edit.shift)+afy_len32(v.edit.length); break;
+		case VT_UINT: l+=afy_len32(v.bedt.mask); break;
+		case VT_UINT64: l+=afy_len64(v.bedt64.mask); break;
+		}
+	}
 	return l;
 }
 
@@ -252,7 +350,7 @@ byte *AfyKernel::serialize(const Value& v,byte *buf,bool full)
 	case VT_BOOL: *buf++=v.b; break;
 	case VT_RANGE: buf=serialize(v.range[1],serialize(v.range[0],buf)); break;
 	case VT_CURRENT: *buf++=byte(v.i); break;
-	case VT_REF: buf[-1]=VT_REFID; buf=serialize(v.pin->getPID(),buf); break;
+	case VT_REF: buf=((PIN*)v.pin)->serialize(buf); break;
 	case VT_REFPROP: buf[-1]=VT_REFIDPROP; buf=serialize(v.ref.pin->getPID(),buf); afy_enc32(buf,v.ref.pid); break;
 	case VT_REFELT: buf[-1]=VT_REFIDELT; buf=serialize(v.ref.pin->getPID(),buf); afy_enc32(buf,v.ref.pid); afy_enc32(buf,v.ref.eid); break;
 	case VT_REFID: buf=serialize(v.id,buf); break;
@@ -264,17 +362,18 @@ byte *AfyKernel::serialize(const Value& v,byte *buf,bool full)
 		*buf++=byte(v.refV.flags>>8); *buf++=byte(v.refV.flags);
 		if (v.length!=0) {afy_enc32(buf,v.refV.id); if (v.eid!=STORE_COLLECTION_ID) afy_enc32(buf,v.eid);}
 		break;
-	case VT_ARRAY:
-		afy_enc32(buf,v.length);
-		for (i=0; i<v.length; i++) {afy_enc32(buf,v.varray[i].eid); buf=serialize(v.varray[i],buf);}
-		break;
 	case VT_COLLECTION:
-		l=v.nav->count(); afy_enc32(buf,l);
-		for (pv=v.nav->navigate(GO_FIRST); pv!=NULL; pv=v.nav->navigate(GO_NEXT)) {afy_enc32(buf,pv->eid); buf=serialize(*pv,buf);}
+		if (v.isNav()) {
+			l=v.nav->count(); afy_enc32(buf,l);
+			for (pv=v.nav->navigate(GO_FIRST); pv!=NULL; pv=v.nav->navigate(GO_NEXT)) {afy_enc32(buf,pv->eid); buf=serialize(*pv,buf);}
+		} else {
+			afy_enc32(buf,v.length);
+			for (i=0; i<v.length; i++) {afy_enc32(buf,v.varray[i].eid); buf=serialize(v.varray[i],buf);}
+		}
 		break;
 	case VT_STRUCT:
 		afy_enc32(buf,v.length);
-		for (i=0; i<v.length; i++) {afy_enc32(buf,v.varray[i].property); buf=serialize(v.varray[i],buf);}
+		for (i=0; i<v.length; i++) {afy_enc32(buf,v.varray[i].property); *buf++=v.varray[i].meta; buf=serialize(v.varray[i],buf);}
 		break;
 	case VT_EXPR:
 		if (v.expr!=NULL) buf=((Expr*)v.expr)->serialize(buf);
@@ -287,7 +386,14 @@ byte *AfyKernel::serialize(const Value& v,byte *buf,bool full)
 		//???
 		break;		// niy
 	}
-	if (full) {buf[0]=v.op; buf[1]=v.meta; buf+=2; l=afy_enc32zz(v.eid); afy_enc32(buf,l); afy_enc32(buf,v.property);}
+	if (full) {
+		buf[0]=v.op; buf[1]=v.meta; buf+=2; l=afy_enc32zz(v.eid); afy_enc32(buf,l); afy_enc32(buf,v.property);
+		if (v.op==OP_EDIT) switch (v.type) {
+		case VT_STRING: case VT_BSTR: case VT_URL: afy_enc64(buf,v.edit.shift); afy_enc32(buf,v.edit.length); break;
+		case VT_UINT: afy_enc32(buf,v.bedt.mask); break;
+		case VT_UINT64: afy_enc64(buf,v.bedt64.mask); break;
+		}
+	}
 	return buf;
 }
 
@@ -301,7 +407,7 @@ RC AfyKernel::deserialize(PID& id,const byte *&buf,const byte *const ebuf)
 RC AfyKernel::deserialize(Value& val,const byte *&buf,const byte *const ebuf,MemAlloc *ma,bool fInPlace,bool full)
 {
 	if (buf==ebuf) return RC_CORRUPTED; assert(ma!=NULL);
-	uint32_t l,i; uint64_t u64; RefVID *rv; Expr *exp; Stmt *qry; RC rc;
+	uint32_t l,i; uint64_t u64; RefVID *rv; Expr *exp; Stmt *qry; PIN *pin; RC rc;
 	val.type=(ValueType)*buf++; setHT(val); val.meta=0; val.op=OP_SET;
 	val.property=STORE_INVALID_URIID; val.eid=STORE_COLLECTION_ID; val.fcalc=(val.type&0x80)>>7;
 	switch (val.type&=0x7F) {
@@ -366,7 +472,7 @@ RC AfyKernel::deserialize(Value& val,const byte *&buf,const byte *const ebuf,Mem
 		if ((rc=deserialize(*(Value*)&val.range[0],buf,ebuf,ma,fInPlace))!=RC_OK ||
 			(rc=deserialize(*(Value*)&val.range[1],buf,ebuf,ma,fInPlace))!=RC_OK) return rc;
 		break;
-	case VT_ARRAY:
+	case VT_COLLECTION:
 		CHECK_dec32(buf,val.length,ebuf); if (val.length==0) return RC_CORRUPTED;
 		if ((val.varray=(Value*)ma->malloc(sizeof(Value)*val.length))==NULL) return RC_NORESOURCES;
 		else for (i=0; i<val.length; i++) {
@@ -380,10 +486,14 @@ RC AfyKernel::deserialize(Value& val,const byte *&buf,const byte *const ebuf,Mem
 		if ((val.varray=(Value*)ma->malloc(sizeof(Value)*val.length))==NULL) return RC_NORESOURCES;
 		else for (i=0; i<val.length; i++) {
 			uint32_t propID; CHECK_dec32(buf,propID,ebuf);
+			if (buf>=ebuf) return RC_CORRUPTED; uint8_t meta=*buf++;
 			if ((rc=deserialize(*(Value*)&val.varray[i],buf,ebuf,ma,fInPlace))!=RC_OK) return rc;
-			((Value*)&val.varray[i])->property=propID;
+			((Value*)&val.varray[i])->property=propID; ((Value*)&val.varray[i])->meta=meta;
 		}
 		val.flags=ma->getAType(); break;
+	case VT_REF:
+		if ((rc=PIN::deserialize(pin,buf,ebuf,ma,fInPlace))!=RC_OK) return rc;
+		val.set(pin); val.flags=ma->getAType(); break;
 	case VT_EXPR:
 		if ((rc=Expr::deserialize(exp,buf,ebuf,ma))!=RC_OK) return rc;
 		val.expr=exp; val.flags=ma->getAType(); val.length=1; break;
@@ -397,6 +507,12 @@ RC AfyKernel::deserialize(Value& val,const byte *&buf,const byte *const ebuf,Mem
 	if (full) {
 		if (buf+4>ebuf) return RC_CORRUPTED; val.op=buf[0]; val.meta=buf[1]; buf+=2;
 		CHECK_dec32(buf,i,ebuf); val.eid=afy_dec32zz(i); CHECK_dec32(buf,val.property,ebuf);
+		if (val.op==OP_EDIT) switch (val.type) {
+		case VT_STRING: case VT_BSTR: case VT_URL: CHECK_dec64(buf,val.edit.shift,ebuf); CHECK_dec32(buf,val.edit.length,ebuf); break;
+		case VT_UINT: CHECK_dec32(buf,val.bedt.mask,ebuf); break;
+		case VT_UINT64: CHECK_dec64(buf,val.bedt64.mask,ebuf); break;
+		default: return RC_CORRUPTED;
+		}
 	}
 	return RC_OK;
 }
@@ -534,6 +650,11 @@ noconv:
 	} else if ((mode&CV_NODEREF)==0 && isRef((ValueType)ps->type) && type!=VT_URL && !isRef((ValueType)type)) {
 		if ((rc=derefValue(*ps,dst,Session::getSession()))!=RC_OK) return rc;
 		ps=&dst; mode|=CV_NODEREF; continue;
+	} else if (ps->type==VT_COLLECTION && ps->length==1) {
+		if (ps==&dst) decoll(dst);
+		else if ((rc=copyV(ps->varray[0],dst,ma))!=RC_OK) {dst.setError(ps->property); return rc;}
+		else {dst.op=ps->op; dst.meta=ps->meta; dst.property=ps->property; setHT(dst,ma!=NULL?ma->getAType():NO_HEAP); ps=&dst;}
+		continue;
 	} else {
 		if (ps!=&dst) {dst.eid=ps->eid; setHT(dst);}
 		if ((mode&CV_NOTRUNC)!=0 && isInteger((ValueType)type)) switch (ps->type) {
@@ -816,20 +937,6 @@ noconv:
 			if (&dst==ps) freeV(dst);
 			dst.setIdentity(ident!=NULL?ident->getID():STORE_INVALID_IDENTITY);
 			if (ident!=NULL) ident->release(); break;
-		case VT_ARRAY:
-			switch (ps->type) {
-			default: return RC_TYPE;
-			case VT_STRING:
-				// ...
-			//	if (&dst==ps) freeV(dst);
-				// ...
-			//	break;
-				return RC_TYPE;
-			//case VT_COLLECTION:
-				// ???
-			//	break;
-			}
-			break;
 		case VT_COLLECTION:
 			switch (ps->type) {
 			default: return RC_TYPE;
@@ -913,6 +1020,14 @@ RC AfyKernel::derefValue(const Value &src,Value &dst,Session *ses)
 	return rc;
 }
 
+void AfyKernel::decoll(Value& v)
+{
+	assert(v.type==VT_COLLECTION && v.length==1);
+	Value w=v.varray[0]; w.op=v.op; w.meta=v.meta; w.property=v.property;
+	if ((v.flags&HEAP_TYPE_MASK)>=SES_HEAP) free((void*)v.varray,(HEAP_TYPE)(v.flags&HEAP_TYPE_MASK));
+	v=w;
+}
+
 RC AfyKernel::convURL(const Value& src,Value& dst,HEAP_TYPE alloc)
 {
 	switch (src.type) {
@@ -968,12 +1083,13 @@ RC AfyKernel::substitute(Value &v,const Value *pars,unsigned nPars,MemAlloc *ma)
 	case VT_STMT:
 		if (((Stmt*)v.stmt)->hasParams()) rc=((Stmt*)v.stmt)->substitute(pars,nPars,ma);
 		break;
-	case VT_ARRAY:
+	case VT_COLLECTION:
+		if (v.isNav()) {
+			// copy
+			break;
+		}
 	case VT_STRUCT:
 		for (i=0; i<v.length; i++) if ((rc=substitute(*(Value*)&v.varray[i],pars,nPars,ma))!=RC_OK) break;
-		break;
-	case VT_COLLECTION:
-		// copy
 		break;
 	//case VT_MAP:
 	}
@@ -996,13 +1112,18 @@ void AfyKernel::freeV0(Value& v)
 		default: break;
 		case VT_STRING: case VT_BSTR: case VT_URL:
 			if (v.length!=0 || (void*)v.str!=(void*)&v.length) free((char*)v.str,allc); break;
+		case VT_REF: if (v.pin!=NULL) v.pin->destroy(); break;
 		case VT_REFIDPROP: case VT_REFIDELT: free((RefVID*)v.refId,allc); break;
-		case VT_ARRAY: case VT_STRUCT:
+		case VT_COLLECTION:
+			if (v.isNav()) {if (v.nav!=NULL) v.nav->destroy(); break;}
+		case VT_STRUCT:
 			if (v.varray!=NULL) {
 				for (unsigned i=0; i<v.length; i++) freeV(const_cast<Value&>(v.varray[i]));
 				free(const_cast<Value*>(v.varray),allc);
 			}
 			break;
+		case VT_MAP: if (v.map!=NULL) v.map->destroy(); break;
+		case VT_ARRAY: if (v.fa.data!=NULL) free(v.fa.data,allc); break;
 		case VT_RANGE:
 			if (v.range!=NULL) {
 				assert(v.length==2);
@@ -1012,7 +1133,6 @@ void AfyKernel::freeV0(Value& v)
 		case VT_EXPRTREE: delete (ExprTree*)v.exprt; break;	// allc?
 		case VT_STREAM: if (v.stream.is!=NULL) v.stream.is->destroy(); break;
 		case VT_STMT: if (v.stmt!=NULL) v.stmt->destroy(); break;
-		case VT_COLLECTION: if (v.nav!=NULL) v.nav->destroy(); break;
 		case VT_EXPR: free(v.expr,allc); break;
 		}
 	}  catch (RC) {} catch (...) {report(MSG_ERROR,"Exception in freeV(...)\n");}

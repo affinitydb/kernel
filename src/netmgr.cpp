@@ -1,6 +1,6 @@
 /**************************************************************************************
 
-Copyright © 2004-2013 GoPivotal, Inc. All rights reserved.
+Copyright © 2004-2014 GoPivotal, Inc. All rights reserved.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -155,9 +155,9 @@ RPIN::RPIN(const PID& id,class NetMgr& mg) : ID(id),qe(NULL),mgr(mg),expiration(
 
 RC RPIN::read(Session *ses,PIN *&pin)
 {
-	Value vv[2],res; vv[0].set(ID); vv[0].setPropID(PROP_SPEC_PINID); vv[1].setURIID(SERVICE_REMOTE); vv[1].setPropID(PROP_SPEC_SERVICE); res.setEmpty();
-	ServiceCtx *srv=NULL; RC rc=ses->prepare(srv,PIN::noPID,vv,2,0); pin=NULL;
-	if (rc==RC_OK && srv!=NULL) {
+	IServiceCtx *srv=NULL; Value vv[2],res; res.setEmpty(); pin=NULL; RC rc;
+	vv[0].set(ID); vv[0].setPropID(PROP_SPEC_PINID); vv[1].setURIID(SERVICE_REMOTE); vv[1].setPropID(PROP_SPEC_SERVICE);
+	if ((rc=ses->createServiceCtx(vv,2,srv))==RC_OK && srv!=NULL) {
 		if ((rc=srv->invoke(vv,2,&res))==RC_OK) {if (res.type==VT_REF) pin=(PIN*)res.pin; else {freeV(res); rc=RC_TYPE;}}
 		srv->destroy();
 	}
@@ -202,7 +202,7 @@ RC RPIN::load(int,unsigned flags)
 
 RC RPIN::refresh(PIN *pin,Session *ses)
 {
-	RC rc=RC_OK; assert(pin==NULL||pin->getSes()==ses);
+	RC rc=RC_OK;
 	try {
 		PIN *rp=NULL;
 		if (read(ses,rp)==RC_OK && rp!=NULL) {

@@ -1,6 +1,6 @@
 /**************************************************************************************
 
-Copyright © 2004-2013 GoPivotal, Inc. All rights reserved.
+Copyright © 2004-2014 GoPivotal, Inc. All rights reserved.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -197,18 +197,30 @@ RC TransOp::advance(const PINx *)
 				case CVT_STORE: to->set((unsigned)qx->ses->getStore()->storeID); break;
 				}
 				break;
+			case VT_REF:
+				if (td.nValues!=1 || v.property!=PROP_SPEC_VALUE) {*to=v; setHT(*to);}
+				else {
+					if (re->fNoFree==0) qx->ses->free((Value*)re->properties); re->properties=((PIN*)v.pin)->properties;
+					re->nProperties=((PIN*)v.pin)->nProperties; re->fNoFree=1; continue;
+				}
+				break;
 			case VT_EXPR:
 				if (v.fcalc!=0) {
 					EvalCtx ectx2(qx->ses,NULL,0,(qflags&QO_AUGMENT)!=0?(PIN**)&re:(PIN**)ins,(qflags&QO_AUGMENT)!=0?1:nIns,qx->vals,QV_ALL);
-					rc=Expr::eval((const Expr**)&v.expr,1,*to,ectx2); break;
+					if ((rc=Expr::eval((const Expr**)&v.expr,1,*to,ectx2))==RC_OK && to->type==VT_REF && td.nValues==1 && v.property==PROP_SPEC_VALUE) {
+						w=*to; if (re->fNoFree==0) qx->ses->free((Value*)re->properties);
+						re->properties=((PIN*)w.pin)->properties; re->nProperties=((PIN*)w.pin)->nProperties; re->fNoFree=((PIN*)w.pin)->fNoFree;
+						((PIN*)w.pin)->fNoFree=1; freeV(w); continue;
+					}
+					break;
 				}
 			default: *to=v; setHT(*to); break;
 			}
-			if (rc==RC_OK && (to->type==VT_ARRAY || to->type==VT_COLLECTION)) switch (v.eid) {
+			if (rc==RC_OK && to->type==VT_COLLECTION) switch (v.eid) {
 			case STORE_COLLECTION_ID: break;
 			case STORE_FIRST_ELEMENT:
 			case STORE_LAST_ELEMENT:
-				cv=to->type==VT_ARRAY?&to->varray[v.eid==STORE_FIRST_ELEMENT?0:to->length-1]:
+				cv=!to->isNav()?&to->varray[v.eid==STORE_FIRST_ELEMENT?0:to->length-1]:
 					to->nav->navigate(v.eid==STORE_FIRST_ELEMENT?GO_FIRST:GO_LAST);
 				if (cv==NULL) rc=RC_NOTFOUND; else if ((rc=copyV(*cv,w,qx->ses))==RC_OK) {freeV(*to); *to=w;}
 				break;
@@ -220,27 +232,25 @@ RC TransOp::advance(const PINx *)
 			case STORE_CONCAT_COLLECTION: op=OP_CONCAT; goto aggregate;
 			}
 			if (rc==RC_OK && ty!=VT_ANY && ty!=to->type) {
-				if (to->type==VT_ARRAY) for (unsigned k=0; k<to->length; k++) {
-					if (to->varray[k].type!=ty) {
-						//if (to!=&w) {
-							//copy
-						//}
-						if ((rc=convV(to->varray[k],*(Value*)&to->varray[k],ty,qx->ses))!=RC_OK) break;
-					}
-				} else if (to->type==VT_COLLECTION) {
-					((Navigator*)to->nav)->setType(ty);
-				} else if ((rc=convV(*to,*to,ty,qx->ses))!=RC_OK) continue;
+				if (to->type!=VT_COLLECTION) {if ((rc=convV(*to,*to,ty,qx->ses))!=RC_OK) continue;}
+				else if (to->isNav()) {((Navigator*)to->nav)->setType(ty);}
+				else for (unsigned k=0; k<to->length; k++) if (to->varray[k].type!=ty) {
+					//if (to!=&w) {
+						//copy
+					//}
+					if ((rc=convV(to->varray[k],*(Value*)&to->varray[k],ty,qx->ses))!=RC_OK) break;
+				}
 			}
 			to->property=v.property;
 			if (rc!=RC_OK) {
 				if (rc==RC_NOTFOUND) rc=RC_OK; else {state|=QST_EOF; return rc;}
 				if ((qflags&QO_AUGMENT)==0 && re!=NULL && --re->nProperties==0 && re->properties!=NULL) {qx->ses->free(re->properties); re->properties=NULL;}
 			} else if (re!=NULL) {
-				if ((qflags&QO_AUGMENT)==0) to++; else {to->op=OP_ADD; rc=re->modify(to,STORE_LAST_ELEMENT,STORE_COLLECTION_ID,0,qx->ses);}
+				if ((qflags&QO_AUGMENT)==0) to++; else {to->op=OP_ADD; rc=re->modify(to,STORE_LAST_ELEMENT,STORE_COLLECTION_ID,0);}
 			}
 		}
 		if (re!=NULL && (qflags&QO_AUGMENT)==0) {
-			//if (((re->mode|=md)&PIN_DERIVED)!=0) {re->id=PIN::noPID; re->epr.lref=0;} else if (re->nProperties<ins[i]->getNProperties()) re->mode|=PIN_PARTIAL;
+			//if (((re->mode|=md)&PIN_DERIVED)!=0) {re->id=PIN::noPID; re->epr.buf[0]=0;} else if (re->nProperties<ins[i]->getNProperties()) re->mode|=PIN_PARTIAL;
 			if (re->nProperties==0) re->fPartial=0;
 		}
 	}

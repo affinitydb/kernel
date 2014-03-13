@@ -1,6 +1,6 @@
 /**************************************************************************************
 
-Copyright © 2004-2013 GoPivotal, Inc. All rights reserved.
+Copyright © 2004-2014 GoPivotal, Inc. All rights reserved.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -35,11 +35,20 @@ namespace AfyKernel
  */
 class ObjDealloc
 {
-	friend	class	SubAlloc;
+	friend	class	StackAlloc;
 	friend	class	Session;
 	ObjDealloc		*next;
 public:
 	virtual	void	destroyObj() = 0;
+};
+
+/**
+ * truncate mode
+ * @see MemAlloc::truncate
+ */
+enum TruncMode
+{
+	TR_REL_ALL, TR_REL_ALLBUTONE, TR_REL_NONE
 };
 
 /**
@@ -53,7 +62,7 @@ public:
 	virtual	void		*memalign(size_t align,size_t s) = 0;
 	virtual	HEAP_TYPE	getAType() const = 0;
 	virtual	void		addObj(ObjDealloc *od);
-	virtual	void		release() = 0;
+	virtual	void		truncate(TruncMode tm=TR_REL_ALLBUTONE,const void *mark=NULL);
 };
 
 class SharedAlloc : public MemAlloc
@@ -64,18 +73,18 @@ public:
 	void *realloc(void *pPtr, size_t pNewSize, size_t pOldSize=0);
 	void free(void *pPtr);
 	HEAP_TYPE getAType() const;
-	void release();
 };
 
 extern SharedAlloc sharedAlloc;
 
 #define	SA_DEFAULT_SIZE	0x200
+#define	SA_MAX_SIZE		0x40000000		//1Gb
 
 /**
  * memory sub-allocator
  * implements MemAlloc interface
  */
-class SubAlloc : public MemAlloc
+class StackAlloc : public MemAlloc
 {
 protected:
 	struct SubExt {
@@ -96,13 +105,13 @@ public:
 		size_t	total;
 	};
 public:
-	SubAlloc(MemAlloc *pr,size_t lbuf=SA_DEFAULT_SIZE,byte *buf=NULL,bool fZ=false) : extents(NULL),ptr(buf),extentLeft(lbuf),total(0),chain(NULL),fZero(fZ),parent(pr) {
+	StackAlloc(MemAlloc *pr,size_t lbuf=SA_DEFAULT_SIZE,byte *buf=NULL,bool fZ=false) : extents(NULL),ptr(buf),extentLeft(lbuf),total(0),chain(NULL),fZero(fZ),parent(pr) {
 		if (ptr==NULL && (extents=(SubExt*)(parent!=NULL?parent->malloc(lbuf+sizeof(SubExt)):AfyKernel::malloc(lbuf+sizeof(SubExt),SES_HEAP)))!=NULL) 
 			{ptr=(byte*)(extents+1); extents->next=NULL; extents->size=lbuf+sizeof(SubExt); total=lbuf+sizeof(SubExt);}
 		if (fZ && ptr!=NULL) memset(ptr,0,extentLeft);
 	}
-	~SubAlloc() {release();}
-	void operator delete(void *p) {if (p!=NULL) ((SubAlloc*)p)->parent->free(p);}
+	~StackAlloc() {truncate(TR_REL_ALL);}
+	void operator delete(void *p) {if (p!=NULL) ((StackAlloc*)p)->parent->free(p);}
 	template<typename T> T *alloc(size_t s=0) {
 		size_t align=ceil(ptr,DEFAULT_ALIGN)-ptr;
 		if ((s+=align+sizeof(T))>extentLeft) {if (expand(s)!=NULL) {s-=align; align=0;} else return NULL;}
@@ -129,23 +138,20 @@ public:
 	void	*realloc(void *p,size_t s,size_t old=0);
 	void	free(void *p);
 	HEAP_TYPE	getAType() const;
-	void	release();
 	char	*strdup(const char *s);
 	void	addObj(ObjDealloc *od);
 	void	compact();
 	void	mark(SubMark& sm) {sm.ext=extents; sm.end=ptr; sm.total=total;}
 	size_t	length(const SubMark& mrk);
-	void	truncate(const SubMark& sm,size_t s=0);
-	void	*getBuffer(size_t& left) {if (extentLeft==0) expand(0); left=extentLeft; return ptr;}
-	void	setLeft(size_t left) {assert(left<=extentLeft); ptr+=extentLeft-left; extentLeft=left;}
-	size_t	getTotal() const {return total;}
+	void	truncate(TruncMode tm=TR_REL_ALLBUTONE,const void *mark=NULL);
+	size_t	getTotal() const {return total-extentLeft;}
 	template<typename T> class it {
 		SubExt			*ext;
 		byte			*end;
 		T*				ptr;
 		bool			fMore;
 	public:
-		it(const SubAlloc& sa) : ext(sa.extents),end(sa.ptr),ptr(NULL),fMore(true) {}
+		it(const StackAlloc& sa) : ext(sa.extents),end(sa.ptr),ptr(NULL),fMore(true) {}
 		it(const SubMark& sm) : ext(sm.ext),end(sm.end),ptr(NULL),fMore(true) {}
 		bool operator++() {
 			if (fMore) {

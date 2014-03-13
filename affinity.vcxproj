@@ -350,6 +350,7 @@
     <ClInclude Include="src\buffer.h" />
     <ClInclude Include="src\classifier.h" />
     <ClInclude Include="src\dlalloc.h" />
+    <ClInclude Include="src\ecc.h" />
     <ClInclude Include="src\fio.h" />
     <ClInclude Include="src\fiolinux.h" />
     <ClInclude Include="src\fioosx.h" />
@@ -402,6 +403,7 @@
     <ClCompile Include="src\classifier.cpp" />
     <ClCompile Include="src\deletepins.cpp" />
     <ClCompile Include="src\dlalloc.cpp" />
+    <ClCompile Include="src\ecc.cpp" />
     <ClCompile Include="src\errors.cpp" />
     <ClCompile Include="src\eval.cpp" />
     <ClCompile Include="src\fio.cpp" />
@@ -414,6 +416,7 @@
     <ClCompile Include="src\ftproceng.cpp" />
     <ClCompile Include="src\idxcache.cpp" />
     <ClCompile Include="src\joinops.cpp" />
+    <ClCompile Include="src\linear.cpp" />
     <ClCompile Include="src\loadpin.cpp" />
     <ClCompile Include="src\lock.cpp" />
     <ClCompile Include="src\logmgr.cpp" />

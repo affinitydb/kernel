@@ -1,6 +1,6 @@
 /**************************************************************************************
 
-Copyright © 2004-2013 GoPivotal, Inc. All rights reserved.
+Copyright © 2004-2014 GoPivotal, Inc. All rights reserved.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -50,27 +50,29 @@ namespace AfyKernel
 
 class PINx : public PIN, public LatchHolder
 {
+	Session							*ses;
 	PBlockP							pb;
 	const	HeapPageMgr::HeapPIN	*hpin;
 	class	TVers					*tv;
 public:
 	mutable	EncPINRef				epr;
 public:
-	PINx(Session *s,const PID& i) : PIN(s),LatchHolder(s),hpin(NULL),tv(NULL) {id=i; fPINx=1; fPartial=1; epr.flags=0; epr.lref=0;}
-	PINx(Session *s,const Value *pv=NULL,unsigned nv=0) : PIN(s,0,(Value*)pv,nv),LatchHolder(s),hpin(NULL),tv(NULL) {fPINx=1; if (pv==NULL) fPartial=1; epr.flags=0; epr.lref=0;}
+	PINx(Session *s,const PID& i) : PIN(s),LatchHolder(s),ses(s),hpin(NULL),tv(NULL) {id=i; fPINx=1; fPartial=1; epr.flags=0; epr.buf[0]=0;}
+	PINx(Session *s,const Value *pv=NULL,unsigned nv=0) : PIN(s,0,(Value*)pv,nv),LatchHolder(s),ses(s),hpin(NULL),tv(NULL) {fPINx=1; if (pv==NULL) fPartial=1; epr.flags=0; epr.buf[0]=0;}
 	~PINx()		{pb.release(ses); free();}
-	void		cleanup() {id=PIN::noPID; addr=PageAddr::noAddr; pb.release(ses); hpin=NULL; free(); tv=NULL; epr.flags=0; epr.lref=0; fPartial=1;}
+	void		cleanup() {id=PIN::noPID; addr=PageAddr::noAddr; pb.release(ses); hpin=NULL; free(); tv=NULL; epr.flags=0; epr.buf[0]=0; fPartial=1;}
 	void		setProps(const Value *props,unsigned nProps,bool f=true) {properties=(Value*)props; nProperties=nProps; fPartial=0; fNoFree=f?1:0;}	// meta?
 	void		resetProps() {if (properties!=NULL) {if (fNoFree==0) freeV((Value*)properties,nProperties,ses); properties=NULL; nProperties=0;} fPartial=1; meta=0;}
 	void		releaseLatches(PageID pid,PageMgr*,bool);
 	void		checkNotHeld(PBlock*);
 	void		copy(const PIN *pin,unsigned flags);
+	void		setPartial() {fPartial=1;}
 	RC			load(unsigned mode=0,const PropertyID *pids=NULL,unsigned nPids=0);
 	const Value	*loadProperty(PropertyID);
 	const void	*getPropTab(unsigned& nProps) const;
 	void		moveTo(PINx &);
-	RC			getID(PID& pid) const {RC rc=RC_OK; if (id.pid==STORE_INVALID_PID) rc=epr.lref==0?RC_NOTFOUND:unpack(); pid=id; return rc;}
-	unsigned	getState() const {return (epr.lref==0&&id.pid==STORE_INVALID_PID?0:hpin!=NULL?PEX_PAGE|PEX_PID:PEX_PID)|(properties==NULL?0:fPartial!=0?PEX_PROPS:PEX_PROPS|PEX_ALLPROPS);}
+	RC			getID(PID& pid) const {RC rc=RC_OK; if (id.isEmpty()) rc=epr.buf[0]==0?RC_NOTFOUND:unpack(); pid=id; return rc;}
+	unsigned	getState() const {return (epr.buf[0]==0&&id.isEmpty()?0:hpin!=NULL?PEX_PAGE|PEX_PID:PEX_PID)|(properties==NULL?0:fPartial!=0?PEX_PROPS:PEX_PROPS|PEX_ALLPROPS);}
 	const		HeapPageMgr::HeapPIN *fill() {if (pb.isNull()) hpin=NULL; else {const HeapPageMgr::HeapPage *hp=(HeapPageMgr::HeapPage*)pb->getPageBuf(); hpin=(HeapPageMgr::HeapPIN*)hp->getObject(hp->getOffset(addr.idx));} return hpin;}
 	bool		defined(const PropertyID *pids,unsigned nProps) const;
 	RC			getVx(PropertyID pid,Value& v,unsigned mode,MemAlloc *ma,ElementID=STORE_COLLECTION_ID);
@@ -79,6 +81,7 @@ public:
 	void		copyFlags();
 	void		operator=(const PID& pid) const {id=pid;}
 	void		operator=(const PageAddr& ad) const {addr=ad;}
+	Session		*getSes() const {return ses;}
 private:
 	RC			unpack() const;
 	void		free();

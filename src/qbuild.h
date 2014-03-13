@@ -1,6 +1,6 @@
 /**************************************************************************************
 
-Copyright © 2004-2013 GoPivotal, Inc. All rights reserved.
+Copyright © 2004-2014 GoPivotal, Inc. All rights reserved.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -66,6 +66,7 @@ namespace AfyKernel
 /**
  * internal Value::flags flags (maximum 0x40)
  */
+#define VF_PART				0x04
 #define	VF_PREFIX			0x08
 #define	VF_REF				0x10
 #define	VF_STRING			0x20

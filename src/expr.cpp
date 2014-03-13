@@ -1,6 +1,6 @@
 /**************************************************************************************
 
-Copyright © 2004-2013 GoPivotal, Inc. All rights reserved.
+Copyright © 2004-2014 GoPivotal, Inc. All rights reserved.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -39,10 +39,7 @@ const static ExprHdr hdrInit(sizeof(ExprHdr),0,0,0,0,0);
 RC Expr::compile(const ExprTree *tr,Expr *&expr,MemAlloc *ma,bool fCond,ValueV *aggs)
 {
 	ExprCompileCtx ctx(ma,aggs); expr=NULL; RC rc=RC_OK; if (fCond) if (isBool(tr->op)) ctx.pHdr->hdr.flags|=EXPR_BOOL; else return RC_INVOP;
-	while ((rc=fCond?ctx.compileCondition(tr,0,0):ctx.compileNode(tr))==RC_OK && ctx.fCollectRefs) {
-		for (ExprCompileCtx::ExprLbl *lb=ctx.labels,*lb2; lb!=NULL; lb=lb2) {lb2=lb->next; ma->free(lb);}
-		ctx.labels=NULL; ctx.labelCount=0; ctx.lStack=ctx.pHdr->hdr.lStack=0; ctx.lCode=0; ctx.fCollectRefs=false;
-	}
+	rc=fCond?ctx.compileCondition(tr,0,0):ctx.compileNode(tr);
 	return rc==RC_OK?ctx.result(expr):rc;
 }
 
@@ -51,18 +48,15 @@ RC Expr::compileConds(const ExprTree *const *tr,unsigned ntr,Expr *&expr,MemAllo
 	ExprCompileCtx ctx(ma,NULL); expr=NULL; ctx.pHdr->hdr.flags|=EXPR_BOOL; RC rc=RC_OK; const ExprTree *et;
 	if (ntr==0 || tr[0]==NULL) expr=NULL;
 	else if (ntr>1 && !isBool(tr[0]->op)) rc=RC_INVOP;
-	else for (;;) {
+	else {
 		rc=isBool(tr[0]->op)?(ctx.pHdr->hdr.flags|=EXPR_BOOL,ctx.compileCondition(tr[0],ntr>1?4:0,0)):ctx.compileNode(tr[0]);
 		for (unsigned i=1; rc==RC_OK && i<ntr; i++) if ((et=tr[i])!=NULL) {
 			if (!isBool(et->op)) rc=RC_INVOP;
 			else {
-				uint32_t lStack=ctx.lStack; ctx.lStack=0; 
-				if ((rc=ctx.compileCondition(et,i+1<ntr?4:0,0))==RC_OK) ctx.lStack=max(ctx.lStack,lStack);
+				uint32_t nStack=ctx.nStack; ctx.nStack=0; 
+				if ((rc=ctx.compileCondition(et,i+1<ntr?4:0,0))==RC_OK) ctx.nStack=max(ctx.nStack,nStack);
 			}
 		}
-		if (rc!=RC_OK || !ctx.fCollectRefs) break;
-		for (ExprCompileCtx::ExprLbl *lb=ctx.labels,*lb2; lb!=NULL; lb=lb2) {lb2=lb->next; ma->free(lb);}
-		ctx.labels=NULL; ctx.labelCount=0; ctx.lStack=ctx.pHdr->hdr.lStack=0; ctx.lCode=0; ctx.fCollectRefs=false;
 	}
 	return rc==RC_OK?ctx.result(expr):rc;
 }
@@ -70,7 +64,7 @@ RC Expr::compileConds(const ExprTree *const *tr,unsigned ntr,Expr *&expr,MemAllo
 RC Expr::create(uint16_t langID,const byte *body,uint32_t lBody,uint16_t flags,Expr *&exp,MemAlloc *ma)
 {
 	if ((exp=(Expr*)ma->malloc(sizeof(Expr)+lBody))==NULL) return RC_NORESOURCES;
-	new((byte*)exp) Expr(ExprHdr(sizeof(ExprHdr)+lBody,langID,flags|EXPR_EXTN,0,0,0));
+	new((byte*)exp) Expr(ExprHdr(sizeof(ExprHdr)+lBody,langID,0,1,flags|EXPR_EXTN,0));
 	memcpy(&exp->hdr+1,body,lBody); return RC_OK;
 }
 
@@ -81,18 +75,18 @@ RC Expr::substitute(Expr *&exp,const Value *pars,unsigned nPars,MemAlloc *ma)
 	return RC_OK;
 }
 
-void Expr::getExtRefs(ushort var,const PropertyID *&pids,unsigned& nPids) const
-{
-	pids=NULL; nPids=0;
-	if (var<=hdr.xVar) for (const VarHdr *vh=(VarHdr*)(&hdr+1),*vend=(VarHdr*)((byte*)(&hdr+1)+hdr.lProps); vh<vend; vh=(VarHdr*)((uint32_t*)(vh+1)+vh->nProps))
-		if (vh->var==var) {pids=(const PropertyID*)(vh+1); nPids=vh->nProps; break;}
-}
-
 RC Expr::mergeProps(PropListP& plp,bool fForce,bool fFlags) const
 {
-	if (hdr.nVars==0) return RC_OK; RC rc=plp.checkVar(hdr.xVar);
-	for (const VarHdr *vh=(VarHdr*)(&hdr+1),*vend=(VarHdr*)((byte*)(&hdr+1)+hdr.lProps); rc==RC_OK && vh<vend && (vh->var&0x8000)==0; vh=(VarHdr*)((uint32_t*)(vh+1)+vh->nProps))
-		rc=plp.merge(vh->var,(const PropertyID *)(vh+1),vh->nProps,fForce,fFlags);
+	RC rc=RC_OK;
+	if ((hdr.flags&EXPR_NO_VARS)==0) {
+		if ((hdr.flags&EXPR_MANY_VARS)!=0) {
+#if 0
+			for (const VarHdr *vh=(VarHdr*)(&hdr+1),*vend=(VarHdr*)((byte*)(&hdr+1)+hdr.nProps); rc==RC_OK && vh<vend && (vh->var&0x8000)==0; vh=(VarHdr*)((uint32_t*)(vh+1)+vh->nProps))
+				rc=plp.merge(vh->var,(const PropertyID *)(vh+1),vh->nProps,fForce,fFlags);
+#endif
+		} else if ((rc=plp.checkVar(hdr.var))==RC_OK)
+			rc=plp.merge(hdr.var,(uint32_t*)(&hdr+1),hdr.nProps,fForce,fFlags);
+	}
 	return rc;
 }
 
@@ -100,28 +94,32 @@ RC Expr::addPropRefs(Expr **pex,const PropertyID *props,unsigned nProps,MemAlloc
 {
 	Expr *pe=*pex;
 	if (pe==NULL) {
-		byte *p=(byte*)ma->malloc(sizeof(Expr)+sizeof(VarHdr)+nProps*sizeof(uint32_t)); if (p==NULL) return RC_NORESOURCES;
-		pe=*pex=new(p) Expr(hdrInit); pe->hdr.lExpr=sizeof(ExprHdr)+(pe->hdr.lProps=uint16_t(sizeof(VarHdr)+nProps*sizeof(uint32_t)));
-		pe->hdr.flags=EXPR_NO_CODE; pe->hdr.nVars=1; VarHdr *vh=(VarHdr*)(&pe->hdr+1); vh->var=0; vh->nProps=nProps; memcpy(vh+1,props,nProps*sizeof(uint32_t));
+		byte *p=(byte*)ma->malloc(sizeof(Expr)+nProps*sizeof(uint32_t)); if (p==NULL) return RC_NORESOURCES;
+		pe=*pex=new(p) Expr(hdrInit); pe->hdr.lExpr=sizeof(Expr)+(pe->hdr.nProps=nProps)*sizeof(uint32_t);
+		pe->hdr.flags=EXPR_NO_CODE|EXPR_SORTED; pe->hdr.var=0; memcpy(&pe->hdr+1,props,nProps*sizeof(uint32_t));
 	} else {
 		if ((pe=*pex=(Expr*)ma->realloc(pe,pe->hdr.lExpr+sizeof(Expr)-sizeof(ExprHdr)+nProps*sizeof(uint32_t)))==NULL) return RC_NORESOURCES;
-		VarHdr *vh=(VarHdr*)(&pe->hdr+1); uint32_t *vp=(uint32_t*)(vh+1),*ins; unsigned np=vh->nProps; int c;
-		for (unsigned i=0,n; i<nProps; i++) if (BIN<uint32_t,uint32_t,ExprPropCmp>::find(props[i],vp,np,&ins)==NULL) {
-			if (ins>=(uint32_t*)(vh+1)+vh->nProps) n=nProps-i,c=1;
-			else {
-				for (n=1,c=1; i+n<nProps; n++) if ((c=cmp3((uint32_t)props[i+n]&STORE_MAX_URIID,*ins&STORE_MAX_URIID))>=0) break;
-				vp=ins+n; np=vh->nProps-uint16_t(ins-(uint32_t*)(vh+1)); if (c==0) ++vp,--np; else c=1;
+		uint32_t *vp=(uint32_t*)(&pe->hdr+1); const unsigned np=pe->hdr.nProps; pe->hdr.flags&=~EXPR_NO_VARS;
+		if ((pe->hdr.flags&EXPR_NO_CODE)==0) memmove(vp+np+nProps,vp+np,pe->hdr.lExpr-sizeof(Expr)-np*sizeof(uint32_t));
+		for (unsigned i=0; i<nProps; i++) {
+			bool fFound=false;
+			for (unsigned j=0; j<np; j++) if ((vp[j]&STORE_MAX_URIID)==(props[i]&STORE_MAX_URIID)) {fFound=true; break;}
+			if (!fFound) {
+				if (pe->hdr.nProps!=0 && (vp[pe->hdr.nProps-1]&STORE_MAX_URIID)>(props[i]&STORE_MAX_URIID)) pe->hdr.flags&=~EXPR_SORTED;
+				vp[pe->hdr.nProps++]=props[i];
 			}
-			if ((byte*)ins<(byte*)&pe->hdr+pe->hdr.lExpr) memmove(ins+n,ins,pe->hdr.lExpr-((byte*)ins-(byte*)&pe->hdr));
-			if (n==1) *ins=props[i]; else {memcpy(ins,&props[i],n*sizeof(uint32_t)); i+=n-c;}
-			pe->hdr.lExpr+=n*sizeof(uint32_t); pe->hdr.lProps+=uint16_t(n*sizeof(uint32_t)); vh->nProps+=(uint16_t)n;
 		}
+		if (pe->hdr.nProps!=np+nProps) memmove(vp+pe->hdr.nProps,vp+np+nProps,pe->hdr.lExpr-sizeof(Expr)-np*sizeof(uint32_t));
+		pe->hdr.lExpr+=(pe->hdr.nProps-np)*sizeof(uint32_t);
 	}
 	return RC_OK;
 }
 
 ExprCompileCtx::ExprCompileCtx(MemAlloc *m,ValueV *ag) 
-	: ma(m),aggs(ag),labelCount(0),lStack(0),pHdr(new(buf) Expr(hdrInit)),pCode(buf+sizeof(buf)/4),lCode(0),xlCode(sizeof(buf)*3/4),fCollectRefs(false),labels(NULL) {}
+	: ma(m),aggs(ag),labelCount(0),nStack(0),nCSE(0),pHdr(new(buf) Expr(hdrInit)),pCode(buf+sizeof(buf)/4),lCode(0),xlCode(sizeof(buf)*3/4),labels(NULL)
+{
+	pHdr->hdr.flags|=EXPR_CONST|EXPR_NO_VARS|EXPR_SORTED;
+}
 
 ExprCompileCtx::~ExprCompileCtx()
 {
@@ -129,79 +127,74 @@ ExprCompileCtx::~ExprCompileCtx()
 	if (pHdr!=NULL && (byte*)pHdr!=buf) ma->free(pHdr);
 }
 
-RC ExprCompileCtx::addExtRef(URIID id,uint16_t var,uint32_t flags,uint16_t& vidx,uint16_t& pidx)
+RC ExprCompileCtx::addUIDRef(URIID id,uint8_t var,uint32_t flags,uint16_t& pidx)
 {
-	VarHdr *vh=(VarHdr*)(&pHdr->hdr+1),*vh0=vh; vidx=0;
-	if (pHdr->hdr.lProps!=0) {
-		for (const VarHdr *vend=(VarHdr*)((byte*)vh+pHdr->hdr.lProps); vh<vend; vh=(VarHdr*)((uint32_t*)(vh+1)+vh->nProps),++vidx) if (vh->var==var) {
-			uint32_t *ins,*p=(uint32_t*)BIN<uint32_t,uint32_t,ExprPropCmp>::find(id,(const uint32_t*)(vh+1),vh->nProps,&ins);
-			if (p!=NULL) {*p&=id|flags; pidx=uint16_t(p-(uint32_t*)(vh+1));}
-			else {
-				pidx=uint16_t(ins-(uint32_t*)(vh+1)); if (pidx!=vh->nProps) fCollectRefs=true;
-				if ((byte*)vh0+pHdr->hdr.lProps+sizeof(uint32_t)>pCode) {
-					if (!expandHdr(sizeof(uint32_t),vh)) return RC_NORESOURCES;
-					ins=&((uint32_t*)(vh+1))[pidx]; vh0=(VarHdr*)(&pHdr->hdr+1);
-				}
-				if ((byte*)ins<(byte*)vh0+pHdr->hdr.lProps) memmove(ins+1,ins,pHdr->hdr.lProps-((byte*)ins-(byte*)vh0));
-				*ins=id|flags; vh->nProps++; pHdr->hdr.lProps+=sizeof(uint32_t);
-			}
-			return RC_OK;
-		}
+	if ((pHdr->hdr.flags&EXPR_NO_VARS)!=0) pHdr->hdr.flags&=~EXPR_NO_VARS;
+	else if (pHdr->hdr.var!=var) pHdr->hdr.flags|=EXPR_MANY_VARS;
+	pHdr->hdr.var=var;
+	uint32_t *vp=(uint32_t*)(&pHdr->hdr+1); unsigned np=pHdr->hdr.nProps; pidx=uint16_t(~0u);
+	for (unsigned j=0; j<np; j++) if ((vp[j]&STORE_MAX_URIID)==id) {pidx=uint16_t(j); break;}
+	if (pidx==uint16_t(~0u)) {
+		if ((byte*)(vp+pHdr->hdr.nProps+1)>pCode && !expandHdr(sizeof(uint32_t))) return RC_NORESOURCES;
+		if (pHdr->hdr.nProps!=0 && (((uint32_t*)(&pHdr->hdr+1))[pHdr->hdr.nProps-1]&STORE_MAX_URIID)>id) pHdr->hdr.flags&=~EXPR_SORTED;
+		((uint32_t*)(&pHdr->hdr+1))[pHdr->hdr.nProps]=id|flags; pidx=pHdr->hdr.nProps++;
 	}
-	if ((byte*)vh0+pHdr->hdr.lProps+sizeof(VarHdr)+sizeof(uint32_t)>pCode && !expandHdr(sizeof(VarHdr)+sizeof(uint32_t),vh)) return RC_NORESOURCES;
-	vh->var=var; vh->nProps=1; *(uint32_t*)(vh+1)=id|flags; if (var<0x100 && var>pHdr->hdr.xVar) pHdr->hdr.xVar=uint8_t(var);
-	pHdr->hdr.lProps+=sizeof(VarHdr)+sizeof(uint32_t); vidx=pHdr->hdr.nVars++; pidx=0;
 	return RC_OK;
 }
 
-bool ExprCompileCtx::expandHdr(uint32_t l,VarHdr *&vh)
+bool ExprCompileCtx::expandHdr(uint32_t l)
 {
-	const uint32_t lHdr=sizeof(Expr)+pHdr->hdr.lProps; const ptrdiff_t sht=(byte*)vh-(byte*)pHdr;
+	const uint32_t lHdr=sizeof(Expr)+pHdr->hdr.nProps*sizeof(uint32_t);
 	if ((byte*)pHdr==buf) {
 		xlCode=lCode+128;
-		byte *p=(byte*)ma->malloc(lHdr+l+xlCode); if (p==NULL) return false; memcpy(p,pHdr,sizeof(Expr)+pHdr->hdr.lProps);
-		if (lCode!=0) memcpy((byte*)(&((Expr*)p)->hdr+1)+pHdr->hdr.lProps+l,pCode,lCode); pHdr=(Expr*)p;
+		byte *p=(byte*)ma->malloc(lHdr+l+xlCode); if (p==NULL) return false;
+		memcpy(p,(byte*)pHdr,lHdr); if (lCode!=0) memcpy((byte*)(&((Expr*)p)->hdr+1)+pHdr->hdr.nProps*sizeof(uint32_t)+l,pCode,lCode);
+		pHdr=(Expr*)p; pCode=(byte*)(&pHdr->hdr+1)+pHdr->hdr.nProps*sizeof(uint32_t)+l;
 	} else {
 		if (l>=xlCode-lCode && (pHdr=(Expr*)ma->realloc(pHdr,lHdr+(xlCode+=l+128)))==NULL) return false;
-		memmove((byte*)(&pHdr->hdr+1)+pHdr->hdr.lProps+l,(byte*)(&pHdr->hdr+1)+pHdr->hdr.lProps,lCode); xlCode-=l;
+		pCode=(byte*)(&pHdr->hdr+1)+pHdr->hdr.nProps*sizeof(uint32_t)+l; memmove(pCode,pCode-l,lCode); xlCode-=l;
 	}
-	pCode=(byte*)(&pHdr->hdr+1)+pHdr->hdr.lProps+l; vh=(VarHdr*)((byte*)pHdr+sht); return true;
+	return true;
 }
 
 bool ExprCompileCtx::expand(uint32_t l)
 {
-	const uint32_t lHdr=sizeof(Expr)+pHdr->hdr.lProps;
+	const uint32_t lHdr=sizeof(Expr)+pHdr->hdr.nProps*sizeof(uint32_t);
 	if ((byte*)pHdr==buf) {
 		xlCode=lCode+(lCode==0?max(l,(uint32_t)128):lCode<l?l:lCode);
-		byte *p=(byte*)ma->malloc(lHdr+xlCode); if (p==NULL) return false; memcpy(p,pHdr,sizeof(Expr)+pHdr->hdr.lProps);
-		memcpy((byte*)(&((Expr*)p)->hdr+1)+pHdr->hdr.lProps,pCode,lCode); pHdr=(Expr*)p;
+		byte *p=(byte*)ma->malloc(lHdr+xlCode); if (p==NULL) return false;
+		memcpy(p,(byte*)pHdr,sizeof(Expr)+pHdr->hdr.nProps*sizeof(uint32_t));
+		memcpy((byte*)(&((Expr*)p)->hdr+1)+pHdr->hdr.nProps*sizeof(uint32_t),pCode,lCode); pHdr=(Expr*)p;
 	} else {
 		xlCode+=l>xlCode?l:xlCode; if ((pHdr=(Expr*)ma->realloc(pHdr,lHdr+xlCode))==NULL) return false;
 	}
-	pCode=(byte*)(&pHdr->hdr+1)+pHdr->hdr.lProps; return true;
+	pCode=(byte*)(&pHdr->hdr+1)+pHdr->hdr.nProps*sizeof(uint32_t); return true;
+}
+
+static int __cdecl cmpProps(const void *v1, const void *v2)
+{
+	return cmp3(*(const PropertyID*)v1,*(const PropertyID*)v2);
 }
 
 RC ExprCompileCtx::result(Expr *&res)
 {
 	if ((byte*)pHdr!=buf) {res=(Expr*)pHdr; pHdr=NULL;}
 	else {
-		res=(Expr*)ma->malloc(sizeof(Expr)+pHdr->hdr.lProps+lCode); if (res==NULL) return RC_NORESOURCES;
-		memcpy(res,pHdr,sizeof(Expr)+pHdr->hdr.lProps); if (lCode!=0) memcpy((byte*)(&res->hdr+1)+pHdr->hdr.lProps,pCode,lCode);
+		if ((res=(Expr*)ma->malloc(sizeof(Expr)+pHdr->hdr.nProps*sizeof(uint32_t)+lCode))==NULL) return RC_NORESOURCES;
+		memcpy((byte*)res,(byte*)pHdr,sizeof(Expr)+pHdr->hdr.nProps*sizeof(uint32_t));
+		if (lCode!=0) memcpy((uint32_t*)(&res->hdr+1)+pHdr->hdr.nProps,pCode,lCode);
 	}
-	if (lCode==0) res->hdr.flags|=EXPR_NO_CODE;
-	else if (res->hdr.lProps!=0 && (res->hdr.flags&EXPR_PRELOAD)!=0) res->hdr.lStack+=(res->hdr.lProps-res->hdr.nVars*sizeof(VarHdr))/sizeof(uint32_t);
-	res->hdr.lExpr=sizeof(ExprHdr)+res->hdr.lProps+lCode; return RC_OK;
+	if (lCode==0) {
+		res->hdr.flags|=EXPR_NO_CODE;
+		if ((res->hdr.flags&EXPR_SORTED)==0) {qsort(&res->hdr+1,res->hdr.nProps,sizeof(uint32_t),cmpProps); res->hdr.flags|=EXPR_SORTED;}
+	}
+	res->hdr.lExpr=sizeof(ExprHdr)+res->hdr.nProps*sizeof(uint32_t)+lCode; return RC_OK;
 }
 
 RC ExprCompileCtx::compileNode(const ExprTree *node,unsigned flg)
 {
 	unsigned i; RC rc; byte *p; uint32_t lbl; const Value *pv; Value w;
 	if (isBool(node->op)) return compileCondition(node,CND_VBOOL|4,0,flg);
-	if (fCollectRefs) {
-		if (node->op==OP_COUNT && node->operands[0].type==VT_VARREF) flg|=CV_CARD;
-		for (i=0; i<node->nops; i++) if ((rc=compileValue(node->operands[i],flg))!=RC_OK) return rc;
-		return RC_OK;
-	}
 	byte op=(byte)node->op,f=0; unsigned l=node->nops!=SInCtx::opDscr[op].nOps[0]?3:1; const ExprTree *nd; bool fvp;
 	if ((node->flags&CASE_INSENSITIVE_OP)!=0) {f=CND_NCASE; if (l==1) l=2;}	// also COMP_PATTERN_OP -> CND_CMPLRX for OP_SIMILAR
 	switch (op) {
@@ -214,7 +207,7 @@ RC ExprCompileCtx::compileNode(const ExprTree *node,unsigned flg)
 			if ((rc=compileValue(node->operands[i],flg))!=RC_OK) return rc;
 			if ((p=alloc(2))==NULL) return RC_NORESOURCES;
 			if ((labels=new(ma) ExprLbl(labels,lbl,uint32_t(lCode-1)))==NULL) return RC_NORESOURCES;
-			p[0]=OP_COALESCE; lStack--;
+			p[0]=OP_COALESCE; nStack--;
 		}
 		if ((p=alloc(1))==NULL) return RC_NORESOURCES; p[0]=OP_CATCH;
 		if ((rc=compileValue(node->operands[node->nops-1],flg))!=RC_OK) return rc;
@@ -226,7 +219,7 @@ RC ExprCompileCtx::compileNode(const ExprTree *node,unsigned flg)
 			if ((rc=compileValue(node->operands[0],flg))!=RC_OK) return rc;
 			if ((p=alloc(2))==NULL) return RC_NORESOURCES;
 			p[0]=(byte)node->op|0x80; p[1]=(byte)node->operands[1].ui;
-			assert(fCollectRefs || lStack>=1); return RC_OK;
+			assert(nStack>=1); return RC_OK;
 		}
 		break;
 	case OP_TRIM:
@@ -235,7 +228,7 @@ RC ExprCompileCtx::compileNode(const ExprTree *node,unsigned flg)
 			if ((rc=compileValue(node->operands[0],flg))!=RC_OK || (rc=compileValue(node->operands[1],flg))!=RC_OK) return rc;
 			if ((p=alloc(2))==NULL) return RC_NORESOURCES;
 			p[0]=OP_TRIM|0x80; p[1]=(byte)node->operands[2].ui;
-			assert(fCollectRefs || lStack>=2); --lStack; return RC_OK;
+			assert(nStack>=2); --nStack; return RC_OK;
 		}
 		break;
 	case OP_RSHIFT:
@@ -243,28 +236,38 @@ RC ExprCompileCtx::compileNode(const ExprTree *node,unsigned flg)
 		break;
 	case OP_STRUCT: case OP_PIN: 
 		flg|=CV_PROP; break;
+	case OP_CALL:
+		for (i=1; i<node->nops; i++) if ((rc=compileValue(node->operands[i],flg))!=RC_OK) return rc;
+		if ((rc=compileValue(node->operands[0],flg|CV_CALL))!=RC_OK) return rc;
+		if ((p=alloc(1))==NULL) return RC_NORESOURCES;
+		p[0]=byte(node->nops-1); assert(nStack>=node->nops && node->nops>0);
+		nStack-=node->nops-1; return RC_OK;
+	case OP_ELEMENT:
+		if (node->operands[0].type!=VT_VARREF || node->operands[0].eid!=STORE_VAR_ELEMENT) break;
+		if ((rc=compileValue(node->operands[1],flg))!=RC_OK || (rc=compileValue(node->operands[0],flg))!=RC_OK) return rc;
+		assert(nStack!=0); nStack--; return RC_OK;
 	case OP_PATH:
 		// fill f: path, rpath, DFS (exists,=, etc.)
 		for (i=0,nd=node,fvp=false; nd->op==OP_PATH; nd=(const ExprTree*)pv->exprt) {
 			if (++i>=256) return RC_TOOBIG;
-			if (nd->operands[1].type!=VT_URIID && nd->operands[1].type!=VT_ARRAY && nd->operands[1].type!=VT_ANY || 
+			if (nd->operands[1].type!=VT_URIID && (nd->operands[1].type!=VT_COLLECTION||nd->operands[1].isNav()) && nd->operands[1].type!=VT_ANY || 
 				nd->nops>=3 && nd->operands[2].type==VT_EXPRTREE && !isBool(((ExprTree*)nd->operands[2].exprt)->op) ||
 				nd->nops>=4 && nd->operands[3].type!=VT_UINT) fvp=true;
 			if ((pv=&nd->operands[0])->type!=VT_EXPRTREE) break;
 		}
 		if ((rc=compileValue(*pv,flg))!=RC_OK) return rc;
-		l=lStack;
+		l=nStack;
 		if (fvp) for (nd=node; nd->op==OP_PATH; nd=(const ExprTree*)pv->exprt) {
 			if (nd->nops>=4 && nd->operands[3].type!=VT_UINT && (rc=compileValue(nd->operands[3],0))!=RC_OK) return rc;
 			if (nd->nops>=3 && nd->operands[2].type==VT_EXPRTREE && !isBool(((ExprTree*)nd->operands[2].exprt)->op) && (rc=compileValue(nd->operands[2],0))!=RC_OK) return rc;
-			if (nd->operands[1].type!=VT_URIID && nd->operands[1].type!=VT_ARRAY && nd->operands[1].type!=VT_ANY && (rc=compileValue(nd->operands[1],0))!=RC_OK) return rc;
+			if (nd->operands[1].type!=VT_URIID && (nd->operands[1].type!=VT_COLLECTION||nd->operands[1].isNav()) && nd->operands[1].type!=VT_ANY && (rc=compileValue(nd->operands[1],0))!=RC_OK) return rc;
 			if ((pv=&nd->operands[0])->type!=VT_EXPRTREE) break;
 		}
 		if ((p=alloc(f!=0?3:2))==NULL) return RC_NORESOURCES;
 		p[0]=f!=0?OP_PATH|0x80:OP_PATH; p[1]=(byte)i; p+=2; if (f!=0) *p++=f;
 		for (; node->op==OP_PATH; node=(const ExprTree*)pv->exprt) {
 			f=(node->flags&FILTER_LAST_OP)!=0?0x01:0; uint32_t ll=1;
-			if (node->operands[1].type!=VT_URIID && node->operands[1].type!=VT_ARRAY && node->operands[1].type!=VT_ANY) f|=0x02; else ll+=(uint32_t)serSize(node->operands[1]);
+			if (node->operands[1].type!=VT_URIID && (node->operands[1].type!=VT_COLLECTION||node->operands[1].isNav()) && node->operands[1].type!=VT_ANY) f|=0x02; else ll+=(uint32_t)serSize(node->operands[1]);
 			if (node->nops<4) f|=(node->flags&(QUEST_PATH_OP|PLUS_PATH_OP|STAR_PATH_OP))<<5;
 			Expr *filter=NULL;
 			if (node->nops>=3) {
@@ -298,11 +301,10 @@ RC ExprCompileCtx::compileNode(const ExprTree *node,unsigned flg)
 			if ((f&0xE0)==0x80) {assert(node->nops>=4 && node->operands[3].type==VT_UINT); afy_enc16(p,uint16_t(node->operands[3].ui)); afy_enc16(p,uint16_t(node->operands[3].ui>>16));}
 			if ((pv=&node->operands[0])->type!=VT_EXPRTREE) break;
 		}
-		lStack=l; return RC_OK;
+		nStack=l; return RC_OK;
 	case OP_COUNT:
 		if (node->operands[0].type!=VT_EXPRTREE && node->operands[0].type!=VT_ANY && (node->operands[0].type!=VT_VARREF||aggs==NULL)) {
-			if (node->operands[0].type==VT_VARREF) pv=&node->operands[0];
-			else {w.set(unsigned(node->operands[0].type==VT_ARRAY?node->operands[0].length:node->operands[0].type==VT_COLLECTION?node->operands[0].nav->count():1u)); pv=&w;}
+			if (node->operands[0].type==VT_VARREF) pv=&node->operands[0]; else {w.set(unsigned(node->operands[0].count())); pv=&w;}
 			return compileValue(*pv,flg|CV_CARD);
 		}
 	default:
@@ -315,12 +317,14 @@ RC ExprCompileCtx::compileNode(const ExprTree *node,unsigned flg)
 				} else return RC_NORESOURCES;
 				assert(aggs->vals==NULL||aggs->fFree); aggs->fFree=true;
 				if ((aggs->vals=(Value*)ma->realloc((Value*)aggs->vals,(aggs->nValues+1)*sizeof(Value),aggs->nValues*sizeof(Value)))==NULL) return RC_NORESOURCES;
-				Value &to=((Value*)aggs->vals)[aggs->nValues++];
+				Value &to=((Value*)aggs->vals)[aggs->nValues++]; unsigned vty;
 				if (node->operands[0].type==VT_EXPRTREE) {
-					Expr *ag; if ((rc=Expr::compile((ExprTree*)node->operands[0].exprt,ag,ma,false))!=RC_OK) return rc; to.set(ag,1);
+					Expr *ag; if ((rc=Expr::compile((ExprTree*)node->operands[0].exprt,ag,ma,false))!=RC_OK) return rc;
+					to.set(ag,1); if ((ag->getFlags()&EXPR_CONST)==0) pHdr->hdr.flags&=~EXPR_CONST;
 				} else if ((rc=copyV(node->operands[0],to,ma))!=RC_OK) return rc;
+				else if (to.type==VT_VARREF && (vty=to.refV.flags&VAR_TYPE_MASK)!=VAR_PARAM && vty!=VAR_NAMED) pHdr->hdr.flags&=~EXPR_CONST;
 				to.op=node->op; //if ((node->flags&DISTINCT_OP)!=0) ->META_PROP_DISTINCT
-				if (++lStack>pHdr->hdr.lStack) pHdr->hdr.lStack=lStack;
+				if (++nStack>pHdr->hdr.nStack) pHdr->hdr.nStack=nStack;
 				return RC_OK;
 			}
 			if ((node->flags&DISTINCT_OP)!=0) {f|=CND_DISTINCT; if (l==1) l=2;}
@@ -330,70 +334,59 @@ RC ExprCompileCtx::compileNode(const ExprTree *node,unsigned flg)
 	for (i=0; i<node->nops; i++) if ((rc=compileValue(node->operands[i],flg))!=RC_OK) return rc;
 	if ((p=alloc(l))==NULL) return RC_NORESOURCES;
 	if (l==1) *p=op; else {p[0]=op|0x80; p[1]=f; if (l>2) p[2]=(byte)node->nops;}
-	assert(fCollectRefs || lStack>=node->nops && node->nops>0);
-	lStack-=node->nops-1;
+	assert(nStack>=node->nops && node->nops>0);
+	nStack-=node->nops-1;
 	return RC_OK;
 }
 
 RC ExprCompileCtx::compileValue(const Value& v,unsigned flg) {
-	RC rc; uint32_t l; byte *p,fc=(flg&CV_CARD)!=0?0x80:0; Value val; uint16_t vdx,pdx;
-	if (fCollectRefs) {
-		switch (v.type) {
-		case VT_EXPRTREE: return compileNode((const ExprTree*)v.exprt);
-		case VT_VARREF: 
-			switch (v.refV.flags&VAR_TYPE_MASK) {
-			default: break;
-			case VAR_CTX: vdx=(0xFFFE)-v.refV.refN; goto addref;
-			case 0: vdx=v.refV.refN;
-			addref: if ((flg&CV_NDATA)==0 && v.length!=0 && (rc=addExtRef(v.refV.id,vdx,((flg&CV_CARD)?PROP_ORD:0)|((flg&CV_OPT)!=0?PROP_OPTIONAL:0),vdx,pdx))!=RC_OK) return rc;
-			}
-			break;
-		case VT_URIID: return addExtRef(v.uid,0xFFFE,PROP_OPTIONAL|PROP_NO_LOAD,vdx,pdx);
-		case VT_IDENTITY: return addExtRef(v.iid,0xFFFF,PROP_OPTIONAL|PROP_NO_LOAD,vdx,pdx);
-		case VT_REFIDPROP: case VT_REFIDELT: return addExtRef(v.refId->pid,0,PROP_OPTIONAL|PROP_NO_LOAD,vdx,pdx);	// Identity in PINID?
-		case VT_REFID:
-			// addExtRef IdentityID if not STORE_OWNER
-			break;
-		case VT_EXPR:
-		case VT_STMT:
-			//...
-			break;
-		case VT_ARRAY: case VT_STRUCT:
-			//...
-			break;
-		case VT_COLLECTION:
-			//...
-			break;
-		}
-		return RC_OK;
-	}
+	RC rc; uint32_t l,add=1; byte *p,fc=(flg&CV_CARD)!=0?0x80:0; Value val; uint16_t pdx;
 	switch (v.type) {
-	case VT_EXPRTREE: return compileNode((const ExprTree*)v.exprt);
+	case VT_EXPRTREE: if ((rc=compileNode((const ExprTree*)v.exprt))!=RC_OK) return rc; add=0; break;
 	case VT_VARREF:
 		if ((pdx=v.refV.flags&VAR_TYPE_MASK)==0 || pdx==VAR_CTX) {
-			const bool fSelf=pdx!=0;
+			const bool fCtx=pdx!=0; pHdr->hdr.flags&=~EXPR_CONST;
 			if (v.length==0 || v.refV.id==PROP_SPEC_SELF) {
-				if ((p=alloc(2))==NULL) return RC_NORESOURCES; p[0]=(fSelf?OP_ENVV:OP_VAR)|fc; p[1]=v.refV.refN; pHdr->hdr.flags|=EXPR_SELF;
+				if ((p=alloc(2))==NULL) return RC_NORESOURCES; p[0]=(fCtx?OP_ENVV:OP_VAR)|fc; p[1]=v.refV.refN; pHdr->hdr.flags|=EXPR_SELF;
 			} else {
 				if ((flg&CV_NDATA)!=0) pdx=0;
-				else if ((rc=addExtRef(v.refV.id,fSelf?(0xFFFE)-v.refV.refN:v.refV.refN,((flg&CV_CARD)?PROP_ORD:0)|((flg&CV_OPT)!=0?PROP_OPTIONAL:0),vdx,pdx))!=RC_OK) return rc;
-				byte op=fSelf?OP_ENVV_PROP:OP_PROP; unsigned eid=0; const bool fExt=vdx>3||pdx>0x3F; l=fExt?5:2;
-				if (v.eid!=STORE_COLLECTION_ID) {op=fSelf?OP_ENVV_ELT:OP_ELT; eid=afy_enc32zz(v.eid); l+=afy_len32(eid);}
+				else if ((rc=addUIDRef(v.refV.id,v.refV.refN,(flg&CV_OPT)!=0?PROP_OPTIONAL:0,pdx))!=RC_OK) return rc;
+				byte op=(flg&CV_CALL)!=0?OP_CALL:fCtx?OP_ENVV_PROP:OP_PROP; unsigned eid=0; const bool fExt=v.refV.refN>3||pdx>0x3F; l=fExt?5:2;
+				if (op==OP_CALL) {pHdr->hdr.flags&=~EXPR_CONST; fc=0;}
+				else if (v.eid!=STORE_COLLECTION_ID) {op=fCtx?OP_ENVV_ELT:OP_ELT; eid=afy_enc32zz(v.eid); l+=afy_len32(eid);}
 				if ((p=alloc(l))==NULL) return RC_NORESOURCES; p[0]=op|fc;
-				if (!fExt) {p[1]=byte(vdx<<6|pdx); p+=2;} else {p[1]=0xFF; p[2]=byte(vdx); p[3]=byte(pdx); p[4]=byte(pdx>>8); p+=5;}
+				if (!fExt) {p[1]=byte(v.refV.refN<<6|pdx); p+=2;} else {p[1]=0xFF; p[2]=v.refV.refN; p[3]=byte(pdx); p[4]=byte(pdx>>8); p+=5;}
 				if (v.eid!=STORE_COLLECTION_ID) afy_enc32(p,eid);
 			}
 		} else switch (pdx) {
 		case VAR_REXP:
+			pHdr->hdr.flags&=~EXPR_CONST;
 			if ((p=alloc(3))!=NULL) {p[0]=OP_RXREF|fc; p[1]=byte(v.refV.id); p[2]=byte(v.refV.id>>8);} else return RC_NORESOURCES;
 			break;
 		case VAR_NAMED:
-			//???
-			//break;
+			{uint16_t ndx; assert(v.property!=STORE_INVALID_URIID);
+			if ((rc=addUIDRef(v.property,v.refV.refN,PROP_OPTIONAL,ndx))!=RC_OK) return rc;
+			const bool fExt1=ndx>0xFE; l=fExt1?4:2;
+			if (v.length==0 || v.refV.id==PROP_SPEC_SELF) {
+				if ((flg&CV_CALL)==0) return RC_INTERNAL;
+				if ((p=alloc(l))==NULL) return RC_NORESOURCES; p[0]=OP_EXTCALL;
+				if (!fExt1) p[1]=byte(ndx); else {p[1]=0xFF; p[2]=byte(pdx); p[3]=byte(pdx>>8);}
+			} else {
+				if ((rc=addUIDRef(v.refV.id,0,PROP_OPTIONAL,pdx))!=RC_OK) return rc;
+				byte op=(flg&CV_CALL)!=0?OP_CALL:OP_NAMED_PROP; unsigned eid=0; const bool fExt2=pdx>0xFE; l+=fExt2?3:1;
+				if (op==OP_CALL) fc=0x80;
+				else if (v.eid!=STORE_COLLECTION_ID) {op=OP_NAMED_ELT; eid=afy_enc32zz(v.eid); l+=afy_len32(eid);}
+				if ((p=alloc(l))==NULL) return RC_NORESOURCES; p[0]=op|fc;
+				if (!fExt1) {p[1]=byte(ndx); p+=2;} else {p[1]=0xFF; p[2]=byte(pdx); p[3]=byte(pdx>>8); p+=4;}
+				if (!fExt2) *p++=byte(pdx); else {p[0]=0xFF; p[1]=byte(pdx); p[2]=byte(pdx>>8); p+=3;}
+				if (v.eid!=STORE_COLLECTION_ID) afy_enc32(p,eid);
+			}
+			}break;
 		case VAR_PARAM:
 			pHdr->hdr.flags|=EXPR_PARAMS;
 		default:
-			assert(v.refV.flags!=0xFFFF);
+			// flg&CV_CALL ??? -> forbidden
+			assert(v.refV.flags!=0xFFFF); if (pdx!=VAR_PARAM) pHdr->hdr.flags&=~EXPR_CONST;
 			if ((pdx=(pdx>>13)-1)<4 && v.refV.refN<0x3F) {
 				if ((p=alloc(2))!=NULL) {p[0]=OP_PARAM|fc; p[1]=byte(v.refV.refN|pdx<<6);} else return RC_NORESOURCES;
 			} else {
@@ -412,26 +405,32 @@ RC ExprCompileCtx::compileValue(const Value& v,unsigned flg) {
 		freeV(val); if (rc!=RC_OK) return rc;
 		break;
 	case VT_URIID: case VT_IDENTITY:
-		if ((rc=addExtRef(v.uid,v.type==VT_URIID?0:0xFFFF,v.type==VT_URIID?PROP_OPTIONAL|PROP_NO_LOAD:0,vdx,pdx))!=RC_OK) return rc;
+		// CV_CALL????
+		if ((rc=addUIDRef(v.uid,v.type==VT_URIID?0:0xFF,v.type==VT_URIID?PROP_OPTIONAL:0,pdx))!=RC_OK) return rc;	//??????????????????????????
 		if ((p=alloc(pdx>=0xFF?4:2))==NULL) return RC_NORESOURCES; p[0]=v.type==VT_URIID?OP_CONID:OP_CONID|0x80;
 		if (pdx<0xFF) p[1]=(byte)pdx; else {p[1]=0xFF; p[2]=byte(pdx); p[3]=byte(pdx>>8);}
 		break;
-	case VT_ARRAY: case VT_STRUCT:
+	case VT_COLLECTION: 
+		if (v.isNav()) {
+			if (v.fcalc==0) goto const_data;
+			//???
+			break;
+		}
+	case VT_STRUCT:
 		if (v.fcalc==0) goto const_data;
 		for (l=0; l<v.length; l++) if ((rc=compileValue(v.varray[l],0))!=RC_OK) return rc;
-		if (lStack+l>pHdr->hdr.lStack) pHdr->hdr.lStack=lStack+l;
+		if (nStack+l>pHdr->hdr.nStack) pHdr->hdr.nStack=nStack+l;
 		if ((p=alloc(1+afy_len32(v.length)))==NULL) return RC_NORESOURCES;
-		*p++=v.type==VT_ARRAY?OP_ARRAY:OP_STRUCT; afy_enc32(p,v.length);
+		*p++=v.type==VT_COLLECTION?OP_COLLECTION:OP_STRUCT; afy_enc32(p,v.length);
 		break;
-	case VT_COLLECTION:
-		if (v.fcalc==0) goto const_data;
+	case VT_ARRAY:
 		//???
 		break;
 //	case VT_REFIDPROP: case VT_REFIDELT:
-		// addExtRef
+		// addUIDRef
 		// spec encoding
 //	case VT_REFID:
-		// addExtRef IdentityID if not STORE_OWNER
+		// addUIDRef IdentityID if not STORE_OWNER
 //		break;
 	default:
 	const_data:
@@ -441,26 +440,24 @@ RC ExprCompileCtx::compileValue(const Value& v,unsigned flg) {
 	}
 	if ((flg&CV_PROP)!=0) {
 		if (v.property==STORE_INVALID_URIID) return RC_INTERNAL;
-		if ((rc=addExtRef(v.property,0,PROP_OPTIONAL|PROP_NO_LOAD,vdx,pdx))!=RC_OK) return rc;
-		fc=v.meta!=0?0x80:0; const bool fExt=vdx>3||pdx>0x3F; l=fExt?5:2;
+		if ((rc=addUIDRef(v.property,0,PROP_OPTIONAL,pdx))!=RC_OK) return rc;
+		fc=v.meta!=0?0x80:0; const bool fExt=pdx>0x3F; l=fExt?5:2;
 		if ((p=alloc(l+(fc!=0?1:0)))==NULL) return RC_NORESOURCES; p[0]=OP_SETPROP|fc;
-		if (!fExt) p[1]=byte(vdx<<6|pdx); else {p[1]=0xFF; p[2]=byte(vdx); p[3]=byte(pdx); p[4]=byte(pdx>>8);}
+		if (!fExt) p[1]=byte(pdx); else {p[1]=0xFF; p[2]=0; p[3]=byte(pdx); p[4]=byte(pdx>>8);}
 		if (fc!=0) p[l]=v.meta;
 	}
-	if (++lStack>pHdr->hdr.lStack) pHdr->hdr.lStack=lStack; return RC_OK;
+	if ((nStack+=add)>pHdr->hdr.nStack) pHdr->hdr.nStack=nStack; return RC_OK;
 }
 
 RC ExprCompileCtx::putCondCode(ExprOp op,unsigned fa,uint32_t lbl,bool flbl,int nops) {
-	if (!fCollectRefs) {
-		const bool fJump=(fa&CND_MASK)>=6; uint32_t l=nops!=0?3:2;
-		if (fa>0x7F) {fa|=CND_EXT; l++;} if (fJump) l+=2;
-		byte *p=alloc(l); if (p==NULL) return RC_NORESOURCES;
-		p[0]=op; if (nops!=0) {p[1]=(byte)nops; p++;}
-		p[1]=byte(fa); p+=2; if ((fa&CND_EXT)!=0) *p++=byte(fa>>8);
-		if (fJump) {
-			if (!flbl) {p[0]=byte(lbl); p[1]=byte(lbl>>8);}
-			else if ((labels=new(ma) ExprLbl(labels,lbl,lCode-2))==NULL) return RC_NORESOURCES;
-		}
+	const bool fJump=(fa&CND_MASK)>=6; uint32_t l=nops!=0?3:2;
+	if (fa>0x7F) {fa|=CND_EXT; l++;} if (fJump) l+=2;
+	byte *p=alloc(l); if (p==NULL) return RC_NORESOURCES;
+	p[0]=op; if (nops!=0) {p[1]=(byte)nops; p++;}
+	p[1]=byte(fa); p+=2; if ((fa&CND_EXT)!=0) *p++=byte(fa>>8);
+	if (fJump) {
+		if (!flbl) {p[0]=byte(lbl); p[1]=byte(lbl>>8);}
+		else if ((labels=new(ma) ExprLbl(labels,lbl,lCode-2))==NULL) return RC_NORESOURCES;
 	}
 	return RC_OK;
 }
@@ -486,16 +483,16 @@ RC ExprCompileCtx::compileCondition(const ExprTree *node,unsigned mode,uint32_t 
 		assert(node->nops==2 && (node->flags&NOT_BOOLEAN_OP)==0);
 		fJump=jumpOp[mode&7][op-OP_LAND]; lbl1=fJump?++labelCount:lbl;
 		if ((rc=compileCondition((const ExprTree*)node->operands[0].exprt,logOp[mode&7][op-OP_LAND]|(mode&CND_VBOOL),lbl1,flg))==RC_OK) {
-			uint32_t slStack=lStack; lStack=0; 
+			uint32_t snStack=nStack; nStack=0; 
 			if ((rc=compileCondition((const ExprTree*)node->operands[1].exprt,mode,lbl,flg))==RC_OK)
-				{if (fJump) adjustRef(lbl1); lStack=max(lStack,slStack);}
+				{if (fJump) adjustRef(lbl1); nStack=max(nStack,snStack);}
 		}
 		break;
 	case OP_IN:
 		pv=&node->operands[1];
 		switch (pv->type) {
-		case VT_ARRAY: if (pv->length<2) break;
 		case VT_COLLECTION:
+			if (pv->length<2) break;
 			if ((rc=compileValue(node->operands[0],flg))!=RC_OK) return rc;
 //			if ((node->flags&FOR_ALL_RIGHT_OP)!=0) mode|=CND_FORALL_R;			-- check!
 //			if ((node->flags&EXISTS_RIGHT_OP)!=0) mode|=CND_EXISTS_R;
@@ -504,17 +501,17 @@ RC ExprCompileCtx::compileCondition(const ExprTree *node,unsigned mode,uint32_t 
 			if ((node->flags&EXISTS_LEFT_OP)!=0) mode|=CND_EXISTS_L;
 			if ((node->flags&NOT_BOOLEAN_OP)!=0) mode^=CND_NOT|1;
 			fJump=jumpOp[mode&7][1]; lbl1=fJump?++labelCount:lbl;
-			for (cv=pv->type==VT_COLLECTION?pv->nav->navigate(GO_FIRST):&pv->varray[i=0]; cv!=NULL;) {
+			for (cv=pv->isNav()?pv->nav->navigate(GO_FIRST):&pv->varray[i=0]; cv!=NULL;) {
 				if ((rc=compileValue(*cv,flg))!=RC_OK) return rc;
-				if (pv->type==VT_COLLECTION) {if ((cv=pv->nav->navigate(GO_NEXT))==NULL) break;}
+				if (pv->isNav()) {if ((cv=pv->nav->navigate(GO_NEXT))==NULL) break;}
 				else if (++i<pv->length) cv=&pv->varray[i]; else break;
 				if ((rc=putCondCode((ExprOp)OP_IN1,logOp[mode&7][1],lbl1))!=RC_OK) return rc;
-				assert(fCollectRefs || lStack>=1); if ((mode&CND_VBOOL)==0) --lStack;
+				assert(nStack>=1); if ((mode&CND_VBOOL)==0) --nStack;
 			}
-			if ((rc=putCondCode(ExprOp(OP_IN|0x80),mode,lbl))==RC_OK) {assert(fCollectRefs || lStack>=2); lStack-=((mode&CND_VBOOL)!=0?1:2);}
+			if ((rc=putCondCode(ExprOp(OP_IN|0x80),mode,lbl))==RC_OK) {assert(nStack>=2); nStack-=((mode&CND_VBOOL)!=0?1:2);}
 			if (fJump) adjustRef(lbl1); return rc;
 		case VT_EXPRTREE:
-			if (((ExprTree*)pv->exprt)->op==OP_ARRAY) {
+			if (((ExprTree*)pv->exprt)->op==OP_COLLECTION) {
 				//???
 				// return rc;
 			}
@@ -527,7 +524,7 @@ RC ExprCompileCtx::compileCondition(const ExprTree *node,unsigned mode,uint32_t 
 		if (node->operands[0].type==VT_STMT) {
 			if ((rc=compileValue(node->operands[0],0))==RC_OK) {
 				if ((node->flags&NOT_BOOLEAN_OP)!=0) mode^=CND_NOT|1;
-				if ((rc=putCondCode(ExprOp(OP_EXISTS|0x80),mode,lbl))==RC_OK) {assert(fCollectRefs || lStack>=1); if ((mode&CND_VBOOL)==0) lStack--;}
+				if ((rc=putCondCode(ExprOp(OP_EXISTS|0x80),mode,lbl))==RC_OK) {assert(nStack>=1); if ((mode&CND_VBOOL)==0) nStack--;}
 			}
 			return rc;
 		}
@@ -536,7 +533,7 @@ RC ExprCompileCtx::compileCondition(const ExprTree *node,unsigned mode,uint32_t 
 		if (node->nops<=2) goto bool_op;
 		for (i=0; i<node->nops; i++) if ((rc=compileValue(node->operands[i],flg))!=RC_OK) return rc;
 		if ((node->flags&NOT_BOOLEAN_OP)!=0) mode^=CND_NOT|1;
-		if ((rc=putCondCode(ExprOp(OP_IS_A|0x80),mode,lbl,true,node->nops))==RC_OK) {assert(fCollectRefs || lStack>=node->nops); lStack-=node->nops-((mode&CND_VBOOL)!=0?1:0);}
+		if ((rc=putCondCode(ExprOp(OP_IS_A|0x80),mode,lbl,true,node->nops))==RC_OK) {assert(nStack>=node->nops); nStack-=node->nops-((mode&CND_VBOOL)!=0?1:0);}
 		break;
 	case OP_ISLOCAL: if (node->operands[0].type==VT_VARREF && node->operands[0].length==0) flg|=CV_NDATA; goto bool_op;
 	case OP_NE: if ((node->flags&NULLS_NOT_INCLUDED_OP)==0) flg|=CV_OPT;
@@ -550,7 +547,7 @@ RC ExprCompileCtx::compileCondition(const ExprTree *node,unsigned mode,uint32_t 
 			if ((node->flags&FOR_ALL_RIGHT_OP)!=0) mode|=CND_FORALL_R;
 			if ((node->flags&EXISTS_RIGHT_OP)!=0) mode|=CND_EXISTS_R;
 			if ((node->flags&NOT_BOOLEAN_OP)!=0) mode^=CND_NOT|1;
-			if ((rc=putCondCode(op,mode,lbl))==RC_OK) {assert(fCollectRefs || lStack>=node->nops); lStack-=node->nops-((mode&CND_VBOOL)!=0?1:0);}
+			if ((rc=putCondCode(op,mode,lbl))==RC_OK) {assert(nStack>=node->nops); nStack-=node->nops-((mode&CND_VBOOL)!=0?1:0);}
 		}
 		break;
 	}
@@ -561,11 +558,21 @@ RC Expr::decompile(ExprTree*&res,MemAlloc *ma) const
 {
 	if ((hdr.flags&EXPR_EXTN)!=0) {res=NULL; return RC_INVPARAM;}
 	if ((hdr.flags&EXPR_NO_CODE)!=0) {
-		//...
-		assert(0);
+		res=NULL;
+		for (unsigned i=0; i<hdr.nProps; i++) {
+			Value v; v.setVarRef(0,((uint32_t*)(&hdr+1))[i]);
+			ExprTree *exp=new(1,ma) ExprTree(OP_EXISTS,1,0,0,&v,ma);
+			if (exp==NULL) {if (res!=NULL) {res->destroy(); res=NULL;} return RC_NORESOURCES;}
+			if (res!=NULL) {
+				Value vv[2]; vv[0].set(res); vv[1].set(exp);
+				if ((exp=new(2,ma) ExprTree(OP_LAND,2,0,0,vv,ma))==NULL) {res->destroy(); res=NULL; return RC_NORESOURCES;}
+			}
+			res=exp;
+		}
+		return RC_OK;
 	}
 	Value stack[256],*top=stack,*end=stack+256; RC rc=RC_OK; const PropertyID *pids; unsigned nPids; ElementID eid;
-	for (const byte *codePtr=(const byte*)(&hdr+1)+hdr.lProps,*codeEnd=(const byte*)&hdr+hdr.lExpr; codePtr<codeEnd; ) {
+	for (const byte *codePtr=(const byte*)(&hdr+1)+hdr.nProps*sizeof(uint32_t),*codeEnd=(const byte*)&hdr+hdr.lExpr; codePtr<codeEnd; ) {
 		byte op=*codePtr++; unsigned idx; ExprTree *exp=NULL,*exp0; uint32_t jsht,l,flg=0; bool ff=(op&0x80)!=0;
 		switch (op&=0x7F) {
 		case OP_CON:
@@ -574,7 +581,7 @@ RC Expr::decompile(ExprTree*&res,MemAlloc *ma) const
 			break;
 		case OP_CONID:
 			l=*codePtr++; if (l==0xFF) {l=codePtr[0]|codePtr[1]<<8; codePtr+=2;}
-			getExtRefs(ff?0xFFFF:0,pids,nPids); if (l<nPids) l=pids[l]; else {rc=RC_CORRUPTED; break;}
+			getExtRefs(pids,nPids); if (l<nPids) l=pids[l]; else {rc=RC_CORRUPTED; break;}	// ff -> identity ???
 			if (ff) top->setIdentity(l); else top->setURIID(l&STORE_MAX_URIID);
 			top++; break;
 		case OP_VAR: case OP_PROP: case OP_ELT: case OP_ENVV: case OP_ENVV_PROP: case OP_ENVV_ELT:
@@ -584,16 +591,52 @@ RC Expr::decompile(ExprTree*&res,MemAlloc *ma) const
 			if (op==OP_VAR||op==OP_ENVV) l=STORE_INVALID_URIID;
 			else {
 				if (idx!=0xFF) {l=idx&0x3F; idx>>=6;} else {idx=codePtr[0]; l=codePtr[1]|codePtr[2]<<8; codePtr+=3;}
-				if (idx>=hdr.nVars) {rc=RC_CORRUPTED; break;} const VarHdr *vh=(VarHdr*)(&hdr+1);
-				for (unsigned i=0; i<idx; i++) vh=(VarHdr*)((byte*)(vh+1)+vh->nProps*sizeof(uint32_t));
-				idx=op<=OP_ENVV_PROP?(0xFFFE)-vh->var:vh->var;
-				if (l<vh->nProps) l=((PropertyID*)(vh+1))[l]&STORE_MAX_URIID; else {rc=RC_CORRUPTED; break;}
+				if (l<hdr.nProps) l=((uint32_t*)(&hdr+1))[l]&STORE_MAX_URIID; else {rc=RC_CORRUPTED; break;}
 				if (op==OP_ELT||op==OP_ENVV_ELT) {afy_dec32(codePtr,eid); eid=afy_dec32zz(eid);}
 				else if (op==OP_SETPROP) {if (top>stack) {top[-1].property=l; if (ff) top[-1].meta=*codePtr++;} else rc=RC_CORRUPTED; break;}
 			}
 			top->setVarRef((byte)idx,l); top->eid=eid; if (op<=OP_ENVV) top->refV.flags=VAR_CTX;
+			if (eid==STORE_VAR_ELEMENT) {
+				Value tmp=*--top; top[0]=top[1]; top[1]=tmp;
+				if ((exp=new(2,ma) ExprTree(OP_ELEMENT,2,0,0,top,ma))!=NULL) top->set(exp); else rc=RC_NORESOURCES;
+			}
 			if (ff) {if ((exp=new(1,ma) ExprTree(OP_COUNT,1,0,0,top,ma))!=NULL) top->set(exp); else rc=RC_NORESOURCES;}
 			top++; break;
+		case OP_NAMED_PROP: case OP_NAMED_ELT:
+			if (top>=end) {rc=RC_NORESOURCES; break;}
+			if ((idx=*codePtr++)==0xFF) {idx=codePtr[0]|codePtr[1]<<8; codePtr+=2;}
+			if (idx<hdr.nProps) flg=((uint32_t*)(&hdr+1))[idx]&STORE_MAX_URIID; else {rc=RC_CORRUPTED; break;}
+			if ((l=*codePtr++)==0xFF) {l=codePtr[0]|codePtr[1]<<8; codePtr+=2;}
+			if (l<hdr.nProps) l=((uint32_t*)(&hdr+1))[l]&STORE_MAX_URIID; else {rc=RC_CORRUPTED; break;}
+			top->setVarRef(0,l); top->setPropID(flg); top->refV.flags=VAR_NAMED;
+			if (op==OP_NAMED_ELT) {
+				afy_dec32(codePtr,eid); eid=afy_dec32zz(eid); top->eid=eid;
+				if (eid==STORE_VAR_ELEMENT) {
+					Value tmp=*--top; top[0]=top[1]; top[1]=tmp;
+					if ((exp=new(2,ma) ExprTree(OP_ELEMENT,2,0,0,top,ma))!=NULL) top->set(exp); else rc=RC_NORESOURCES;
+				}
+			}
+			if (ff) {if ((exp=new(1,ma) ExprTree(OP_COUNT,1,0,0,top,ma))!=NULL) top->set(exp); else rc=RC_NORESOURCES;}
+			top++; break;
+		case OP_CALL:
+			idx=*codePtr++;
+			if (ff) {
+				if (idx==0xFF) {idx=codePtr[0]|codePtr[1]<<8; codePtr+=2;}
+				if (idx<hdr.nProps) flg=((uint32_t*)(&hdr+1))[idx]&STORE_MAX_URIID; else {rc=RC_CORRUPTED; break;}
+				if ((l=*codePtr++)==0xFF) {l=codePtr[0]|codePtr[1]<<8; codePtr+=2;} idx=0;
+			} else if (idx!=0xFF) {l=idx&0x3F; idx>>=6;} else {idx=codePtr[0]; l=codePtr[1]|codePtr[2]<<8; codePtr+=3;}
+			if (l<hdr.nProps) l=((uint32_t*)(&hdr+1))[l]&STORE_MAX_URIID; else {rc=RC_CORRUPTED; break;}
+			if ((jsht=*codePtr++)!=0) {top-=jsht; memmove(top+1,top,jsht*sizeof(Value));}
+			top->setVarRef((byte)idx,l); if (ff) {top->setPropID(flg); top->refV.flags=VAR_NAMED;}
+			if ((exp=new(jsht+1,ma) ExprTree(OP_CALL,jsht+1,0,0,top,ma))==NULL) {rc=RC_NORESOURCES; break;}
+			top->set(exp); ++top; break;
+		case OP_EXTCALL:
+			if ((idx=*codePtr++)==0xFF) {idx=codePtr[0]|codePtr[1]<<8; codePtr+=2;}
+			if (idx<hdr.nProps) flg=((uint32_t*)(&hdr+1))[idx]&STORE_MAX_URIID; else {rc=RC_CORRUPTED; break;}
+			if ((jsht=*codePtr++)!=0) {top-=jsht; memmove(top+1,top,jsht*sizeof(Value));}
+			top->setVarRef((byte)idx); top->setPropID(flg); top->refV.flags=VAR_NAMED;
+			if ((exp=new(jsht+1,ma) ExprTree(OP_CALL,jsht+1,0,0,top,ma))==NULL) {rc=RC_NORESOURCES; break;}
+			top->set(exp); ++top; break;
 		case OP_PARAM: case OP_RXREF:
 			if (top>=end) {rc=RC_NORESOURCES; break;}
 			if (op==OP_RXREF) {top->setParam(0); top->refV.flags=VAR_REXP; top->refV.id=codePtr[0]|codePtr[1]<<8; codePtr+=2; top->length=1;}
@@ -657,7 +700,7 @@ RC Expr::decompile(ExprTree*&res,MemAlloc *ma) const
 				assert(top>=stack+2);
 				if (top[-2].type==VT_EXPRTREE && ((ExprTree*)top[-2].exprt)->op==OP_IN && top[-1].type!=VT_EXPRTREE) {
 					Value &v=((ExprTree*)top[-2].exprt)->operands[1];
-					if (v.type==VT_ARRAY) {
+					if (v.type==VT_COLLECTION && !v.isNav()) {
 						Value *pv=(Value*)ma->realloc((void*)v.varray,(v.length+1)*sizeof(Value));
 						if (pv!=NULL) {pv[v.length++]=*--top; v.varray=pv;} else {rc=RC_NORESOURCES; break;}
 					} else {
@@ -766,14 +809,18 @@ void Expr::destroy()
 RC Expr::getPropDNF(ushort var,PropDNF *&dnf,size_t& ldnf,MemAlloc *ma) const
 {
 	RC rc=RC_OK; ExprTree *et;
-	if ((hdr.flags&EXPR_DISJUNCTIVE)==0) {
-		const PropertyID *pids; unsigned nPids; PropDNF *pd; getExtRefs(var,pids,nPids);
+	if ((hdr.flags&EXPR_DISJUNCTIVE)==0 && var==0 && hdr.var==0) {
+		const PropertyID *pids; unsigned nPids; PropDNF *pd; getExtRefs(pids,nPids);
 		if (pids==NULL||nPids==0) {dnf=NULL; ldnf=0;}
 		else if ((pd=(PropDNF*)ma->malloc(sizeof(PropDNF)+(nPids-1)*sizeof(PropertyID)))==NULL) return RC_NORESOURCES;
 		else {
 			pd->nIncl=pd->nExcl=0;
-			for (unsigned i=0; i<nPids; i++) if ((pids[i]&(PROP_OPTIONAL|PROP_NO_LOAD))==0) pd->pids[pd->nIncl++]=pids[i]&STORE_MAX_URIID;
-			if (pd->nIncl==0) {ma->free(pd); dnf=NULL; ldnf=0;} else {dnf=pd; ldnf=sizeof(PropDNF)+(pd->nIncl-1)*sizeof(PropertyID);}
+			for (unsigned i=0; i<nPids; i++) if ((pids[i]&(PROP_OPTIONAL))==0) pd->pids[pd->nIncl++]=pids[i]&STORE_MAX_URIID;
+			if (pd->nIncl==0) {ma->free(pd); dnf=NULL; ldnf=0;}
+			else {
+				dnf=pd; ldnf=sizeof(PropDNF)+(pd->nIncl-1)*sizeof(PropertyID);
+				if ((hdr.flags&EXPR_SORTED)==0) qsort(pd,pd->nIncl,sizeof(PropertyID),cmpProps);
+			}
 		}
 	} else if ((rc=decompile(et,Session::getSession()))==RC_OK) {
 		rc=et->getPropDNF(var,dnf,ldnf,ma); et->destroy();
@@ -945,7 +992,7 @@ RC ExprTree::node(Value& res,Session *ses,ExprOp op,unsigned nOperands,const Val
 			} else if (isBool(((ExprTree*)cv[i].exprt)->op)&&op!=OP_LOR&&op!=OP_LAND&&op!=OP_LNOT&&(op!=OP_PATH||i!=2)) return RC_INVPARAM;	// also CASE/WHEN
 			else {fFold=false; if ((cv[i].flags&HEAP_TYPE_MASK)<SES_HEAP) setHT(cv[i],SES_HEAP);}
 			break;
-		case VT_EXPR: case VT_STMT: case VT_ARRAY: case VT_STRUCT: case VT_REFIDPROP: case VT_REFIDELT: if (cv[i].fcalc==0) break;
+		case VT_EXPR: case VT_STMT: case VT_COLLECTION: case VT_ARRAY: case VT_STRUCT: case VT_REFIDPROP: case VT_REFIDELT: if (cv[i].fcalc==0) break;
 		case VT_VARREF: case VT_CURRENT: fFold=false; break;
 		}
 		vRefs(vrefs,vRefs(cv[i]));
@@ -989,26 +1036,28 @@ RC ExprTree::node(Value& res,Session *ses,ExprOp op,unsigned nOperands,const Val
 			if ((flags&NOT_BOOLEAN_OP)!=0) flgFold|=CND_NOT;
 		}
 		break;
-	case OP_MIN: case OP_MAX:
+	case OP_MIN: case OP_MAX: case OP_ARGMIN: case OP_ARGMAX:
 		if (fFold && (flags&CASE_INSENSITIVE_OP)!=0) flgFold|=CND_NCASE; break;
 	case OP_RSHIFT:
 		if (fFold && (flags&UNSIGNED_OP)!=0) flgFold|=CND_UNS; break;
 	case OP_CALL:
-		if (cv[0].type!=VT_VARREF && cv[0].type!=VT_STMT && cv[0].type!=VT_EXPR) return RC_TYPE;
+		if (cv[0].type!=VT_URIID && (cv[0].type!=VT_EXPRTREE||((ExprTree*)cv[0].exprt)->op!=OP_PATH) && cv[0].type!=VT_VARREF && cv[0].type!=VT_STMT && cv[0].type!=VT_EXPR) return RC_TYPE;
 		fFold=false; break;
 	case OP_COUNT:
 		if (nOperands==1 && cv[0].type==VT_ANY) {fFold=false; break;}
 	case OP_EXISTS:
 		if (cv[0].type!=VT_EXPRTREE && cv[0].type!=VT_VARREF && (cv[0].type!=VT_STMT||op!=OP_EXISTS)) {
-			if (op==OP_EXISTS) res.set(((flags&NOT_BOOLEAN_OP)!=0)==(cv[0].type==VT_ANY));
-			else res.set(unsigned(cv[0].type==VT_ANY?0u:cv[0].type==VT_ARRAY?cv[0].length:cv[0].type==VT_COLLECTION?cv[0].nav->count():1u));
+			if (op==OP_EXISTS) res.set(((flags&NOT_BOOLEAN_OP)!=0)==(cv[0].type==VT_ANY)); else res.set(unsigned(cv[0].count()));
 			freeV(*(Value*)&cv[0]); return RC_OK;
 		}
 		fFold=false; break;
+	case OP_ELEMENT:
+		if (cv[0].type==VT_VARREF && cv[0].length!=0) cv[0].eid=STORE_VAR_ELEMENT;
+		fFold=false; break;
 	case OP_PATH:
 		fFold=false;
-		if (cv[0].type!=VT_EXPRTREE && cv[0].type!=VT_VARREF && cv[0].type!=VT_REF && cv[0].type!=VT_REFID && cv[0].type!=VT_ARRAY 
-			&& cv[0].type!=VT_COLLECTION || cv[1].type!=VT_EXPRTREE && cv[1].type!=VT_VARREF && cv[1].type!=VT_URIID && cv[1].type!=VT_ANY && cv[1].type!=VT_ARRAY) return RC_TYPE;
+		if (cv[0].type!=VT_EXPRTREE && cv[0].type!=VT_VARREF && cv[0].type!=VT_REF && cv[0].type!=VT_REFID && cv[0].type!=VT_COLLECTION
+			|| cv[1].type!=VT_EXPRTREE && cv[1].type!=VT_VARREF && cv[1].type!=VT_URIID && cv[1].type!=VT_ANY && cv[1].type!=VT_COLLECTION) return RC_TYPE;
 		if (nOperands>2) {
 			if (cv[2].type!=VT_INT && cv[2].type!=VT_UINT && (cv[2].type!=VT_EXPRTREE || !isBool(((ExprTree*)cv[2].exprt)->op))) return RC_TYPE;
 			if (nOperands>3 && cv[3].type!=VT_UINT && cv[3].type!=VT_EXPRTREE) return RC_TYPE;
@@ -1023,7 +1072,7 @@ RC ExprTree::node(Value& res,Session *ses,ExprOp op,unsigned nOperands,const Val
 			(((ExprTree*)cv[0].exprt)->op==OP_EQ || ((ExprTree*)cv[0].exprt)->op==OP_IN) &&
 			((ExprTree*)cv[0].exprt)->operands[0]==((ExprTree*)cv[1].exprt)->operands[0]) switch (((ExprTree*)cv[0].exprt)->op) {
 		case OP_IN:
-			if (((ExprTree*)cv[0].exprt)->operands[1].type==VT_ARRAY) {
+			if (((ExprTree*)cv[0].exprt)->operands[1].type==VT_COLLECTION && !((ExprTree*)cv[0].exprt)->operands[1].isNav()) {
 				Value &v=((ExprTree*)cv[0].exprt)->operands[1]; pv=(Value*)v.varray;
 				if ((v.varray=pv=(Value*)ses->realloc(pv,(v.length+1)*sizeof(Value)))==NULL) return RC_NORESOURCES;
 				pv[v.length++]=((ExprTree*)cv[1].exprt)->operands[1]; setHT(((ExprTree*)cv[1].exprt)->operands[1]);
@@ -1035,7 +1084,7 @@ RC ExprTree::node(Value& res,Session *ses,ExprOp op,unsigned nOperands,const Val
 				Value &v=((ExprTree*)cv[0].exprt)->operands[1];
 				if ((pv=(Value*)ses->malloc(2*sizeof(Value)))!=NULL) {
 					pv[0]=v; pv[1]=((ExprTree*)cv[1].exprt)->operands[1]; setHT(((ExprTree*)cv[1].exprt)->operands[1]);
-					v.type=VT_ARRAY; v.varray=pv; v.length=2; setHT(v,SES_HEAP);
+					v.type=VT_COLLECTION; v.varray=pv; v.length=2; setHT(v,SES_HEAP);
 					freeV((Value&)cv[1]); ((ExprTree*)cv[0].exprt)->op=OP_IN; res.set(cv[0].exprt); return RC_OK;
 				}
 			}
@@ -1112,7 +1161,7 @@ RC ExprTree::forceExpr(Value& v,MemAlloc *ma,bool fCopyV)
 	return RC_OK;
 }
 
-RC ExprTree::normalizeArray(Value *vals,unsigned nvals,Value& res,MemAlloc *ma,StoreCtx *ctx)
+RC ExprTree::normalizeCollection(Value *vals,unsigned nvals,Value& res,MemAlloc *ma,StoreCtx *ctx)
 {
 	unsigned nExpr=0; unsigned cnt=nvals; RC rc;
 	Value *pv=new(ma) Value[cnt]; if (pv==NULL) return RC_NORESOURCES;
@@ -1122,29 +1171,36 @@ RC ExprTree::normalizeArray(Value *vals,unsigned nvals,Value& res,MemAlloc *ma,S
 		unsigned extra=0,s0=~0u;
 		for (unsigned i=start; i<cnt; i++) {
 			switch (pv[i].type) {
-			case VT_ARRAY: extra+=pv[i].length-1; if (s0==~0u) s0=i; if (pv[i].fcalc!=0) nExpr++; continue;
-			case VT_COLLECTION: extra+=pv[i].nav->count()-1; if (s0==~0u) s0=i; continue;
+			case VT_COLLECTION: extra+=pv[i].count()-1; if (s0==~0u) s0=i; if (pv[i].fcalc!=0) nExpr++; continue;
 			case VT_EXPRTREE: case VT_VARREF: case VT_CURRENT: nExpr++; break;
-			case VT_STMT: case VT_EXPR: case VT_STRUCT: if (pv[i].fcalc!=0) nExpr++;
+			case VT_STMT: case VT_EXPR: case VT_ARRAY: case VT_STRUCT: case VT_MAP: if (pv[i].fcalc!=0) nExpr++;
 			default: pv[i].eid=prefix+i; break;
 			}
 			if (ma!=NULL && (pv[i].flags&HEAP_TYPE_MASK)!=ht && (rc=copyV(pv[i],pv[i],ma))!=RC_OK) return rc;	// cleanup
 		}
 		if (s0==~0u) break;
 		if ((pv=(Value*)ma->realloc(pv,(cnt+extra)*sizeof(Value)))==NULL) return RC_NORESOURCES;
-		for (unsigned i=start=s0; i<cnt; i++) if (pv[i].type==VT_ARRAY) {
-			const Value *cv=pv[i].varray; unsigned l=pv[i].length;
-			if (i+1!=cnt && l!=1) memmove(&pv[i+l],&pv[i+1],(cnt-i-1)*sizeof(Value));
-			memcpy(&pv[i],cv,l*sizeof(Value)); cnt+=l-1; i+=l-1; if (ma!=NULL) ma->free((void*)cv);
-		} else if (pv[i].type==VT_COLLECTION) {
-			INav *nav=pv[i].nav; unsigned l=nav->count(),j=0;
-			if (i+1!=cnt && l!=1) memmove(&pv[i+l],&pv[i+1],(cnt-i-1)*sizeof(Value));
-			for (const Value *cv=nav->navigate(GO_FIRST); cv!=NULL; cv=nav->navigate(GO_NEXT),++j)
-				if ((rc=copyV(*cv,pv[i+j],ma))!=RC_OK) return rc;	// cleanup
-			cnt+=l-1; i+=l-1; nav->destroy();
+		for (unsigned i=start=s0; i<cnt; i++) if (pv[i].type==VT_COLLECTION) {
+			if (!pv[i].isNav()) {
+				const Value *cv=pv[i].varray; unsigned l=pv[i].length;
+				if (i+1!=cnt && l!=1) memmove(&pv[i+l],&pv[i+1],(cnt-i-1)*sizeof(Value));
+				memcpy(&pv[i],cv,l*sizeof(Value)); cnt+=l-1; i+=l-1; if (ma!=NULL) ma->free((void*)cv);
+			} else {
+				INav *nav=pv[i].nav; unsigned l=nav->count(),j=0;
+				if (i+1!=cnt && l!=1) memmove(&pv[i+l],&pv[i+1],(cnt-i-1)*sizeof(Value));
+				for (const Value *cv=nav->navigate(GO_FIRST); cv!=NULL; cv=nav->navigate(GO_NEXT),++j)
+					if ((rc=copyV(*cv,pv[i+j],ma))!=RC_OK) return rc;	// cleanup
+				cnt+=l-1; i+=l-1; nav->destroy();
+			}
 		}
 	}
 	res.set(pv,cnt,nExpr!=0?1:0); res.flags=ma->getAType();
+	return RC_OK;
+}
+
+RC ExprTree::normalizeArray(Value *vals,unsigned nvals,Value &res,MemAlloc *ma)
+{
+	//????
 	return RC_OK;
 }
 
@@ -1153,22 +1209,24 @@ static int __cdecl cmpValues(const void *v1, const void *v2)
 	return cmp3(((const Value*)v1)->property,((const Value*)v2)->property);
 }
 
-RC ExprTree::normalizeStruct(Value *vals,unsigned nvals,Value &res,MemAlloc *ma)
+RC ExprTree::normalizeStruct(Session *ses,Value *vals,unsigned nvals,Value &res,MemAlloc *ma,bool fPIN)
 {
-	unsigned nExpr=0; RC rc; const HEAP_TYPE ht=ma!=NULL?ma->getAType():NO_HEAP;
+	unsigned nExpr=0; RC rc; const HEAP_TYPE ht=ma!=NULL?ma->getAType():NO_HEAP; PIN *pin;
 	Value *pv=new(ma) Value[nvals]; if (pv==NULL) return RC_NORESOURCES;
 	memcpy(pv,vals,nvals*sizeof(Value)); if (nvals>1) qsort(pv,nvals,sizeof(Value),cmpValues);
 	for (unsigned i=0; i<nvals; i++) {
 		if (i!=0 && pv[i-1].property==pv[i].property) {freeV(pv,nvals,ma); return RC_ALREADYEXISTS;}
 		switch (pv[i].type) {
 		default: break;
-		case VT_STMT: case VT_EXPR: case VT_STRUCT: case VT_ARRAY: if (pv->fcalc==0) break;
+		case VT_STMT: case VT_EXPR: case VT_STRUCT: case VT_COLLECTION: case VT_ARRAY: case VT_MAP: if (pv->fcalc==0) break;
 		case VT_EXPRTREE: case VT_VARREF: case VT_CURRENT: nExpr++; break;
 		}
 		if (ma!=NULL && (pv[i].flags&HEAP_TYPE_MASK)!=ht && (rc=copyV(pv[i],pv[i],ma))!=RC_OK) return rc;	// cleanup
 	}
-	res.setStruct(pv,nvals,nExpr!=0?1:0); res.flags=ma->getAType();
-	return RC_OK;
+	if (!fPIN) res.setStruct(pv,nvals,nExpr!=0?1:0);
+	else if (nExpr!=0) {if ((rc=node(res,ses,OP_PIN,nvals,pv,0))==RC_OK) ma->free(pv); else {freeV(pv,nvals,ma); return rc;}}
+	else if ((pin=new(ma) PIN(ma,0,pv,nvals))==NULL) {freeV(pv,nvals,ma); return RC_NORESOURCES;} else res.set(pin);
+	res.flags=ma->getAType(); return RC_OK;
 }
 
 static int __cdecl cmpMapElts(const void *v1, const void *v2)
@@ -1186,7 +1244,7 @@ RC ExprTree::normalizeMap(Value *vals,unsigned nvals,Value &res,MemAlloc *ma)
 //		if (i!=0 && pv[i-2].property==pv[i].property) {freeV(pv,nvals,ma); return RC_ALREADYEXISTS;}
 		switch (pv[i].type) {
 		default: break;
-		case VT_STMT: case VT_EXPR: case VT_STRUCT: case VT_ARRAY: if (pv->fcalc==0) break;
+		case VT_STMT: case VT_EXPR: case VT_STRUCT: case VT_COLLECTION: if (pv->fcalc==0) break;
 		case VT_EXPRTREE: case VT_VARREF: case VT_CURRENT: nExpr++; break;
 		}
 		if (ma!=NULL) {
@@ -1283,16 +1341,11 @@ void ExprTree::mapVRefs(byte from,byte to)
 	}
 }
 
-static int __cdecl cmpProps(const void *v1, const void *v2)
-{
-	return cmp3(*(const PropertyID*)v1,*(const PropertyID*)v2);
-}
-
 RC ExprTree::toPathSeg(PathSeg& ps,MemAlloc *ma) const
 {
-	memset(&ps,0,sizeof(PathSeg)); ps.pid=PROP_SPEC_ANY; ps.eid=STORE_COLLECTION_ID; ps.cid=STORE_INVALID_CLASSID; ps.fLast=(flags&FILTER_LAST_OP)!=0;
+	memset(&ps,0,sizeof(PathSeg)); ps.pid=PROP_SPEC_ANY; ps.eid.eid=STORE_COLLECTION_ID; ps.cid=STORE_INVALID_URIID; ps.fLast=(flags&FILTER_LAST_OP)!=0;
 	if (operands[1].type==VT_URIID && operands[1].uid!=PROP_SPEC_ANY) {ps.pid=operands[1].uid; ps.nPids=1;}
-	else if (operands[1].type==VT_ARRAY) {
+	else if (operands[1].type==VT_COLLECTION && !operands[1].isNav()) {
 		if ((ps.pids=new(ma) PropertyID[operands[1].length])==NULL) return RC_NORESOURCES;
 		for (unsigned i=ps.nPids=0; i<operands[1].length; i++)
 			if (operands[1].varray[i].type==VT_URIID && (ps.pids[ps.nPids]=operands[1].varray[i].uid)!=PROP_SPEC_ANY) ps.nPids++;
@@ -1308,7 +1361,7 @@ RC ExprTree::toPathSeg(PathSeg& ps,MemAlloc *ma) const
 	if (nops>2) {
 		switch (operands[2].type) {
 		case VT_ERROR: break;
-		case VT_INT: case VT_UINT: ps.eid=operands[2].ui; break;
+		case VT_INT: case VT_UINT: ps.eid.eid=operands[2].ui; break;
 		case VT_EXPRTREE:
 			if (isBool(((ExprTree*)operands[2].exprt)->op)) {
 				// classID ?

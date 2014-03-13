@@ -1,6 +1,7 @@
-/**************************************************************************************
+/*************************************************************
+*************************
 
-Copyright © 2004-2013 GoPivotal, Inc. All rights reserved.
+Copyright © 2004-2014 GoPivotal, Inc. All rights reserved.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -72,20 +73,6 @@ using namespace Afy;
 #if defined __arm__ && !defined __llvm__
 extern "C" {
 bool __sync_bool_compare_and_swap_8(volatile void* destination, long long unsigned comperand, long long unsigned exchange);		// on ARM this function doesn't exists and implemented via assembler
-}
-#endif
-
-#ifdef __APPLE__
-extern "C" {
-#if defined __x86_64__
-bool __sync_bool_compare_and_swap_16(volatile __uint128_t * destination, __uint128_t comperand, __uint128_t exchange);			// on ARM this function doesn't exists and implemented via assembler
-
-#else
-/* !!! Warning !!!
-At this point of time, the code for OSX is compiled in 64bit mode only. 
-For 32-bit mode, the  ...swap_8() function may be needed...
-*/
-#endif
 }
 #endif
 

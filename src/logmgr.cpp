@@ -1,6 +1,6 @@
 /**************************************************************************************
 
-Copyright © 2004-2013 GoPivotal, Inc. All rights reserved.
+Copyright © 2004-2014 GoPivotal, Inc. All rights reserved.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -28,7 +28,7 @@ using namespace AfyKernel;
 
 static int nLogOpen = 0;
 
-LogMgr::LogMgr(StoreCtx *c,size_t logBufS,bool fAL,const char *lDir) : ctx(c),sectorSize(getSectorSize()),lPage(c->fileMgr->getPageSize()),
+LogMgr::LogMgr(StoreCtx *c,size_t logBufS,bool fAL,const char *lDir) : ctx(c),sectorSize(getSectorSize()),lPage(c->bufMgr->getPageSize()),
 	logSegSize(max(ceil(c->theCB->logSegSize,sectorSize),(size_t)MINSEGSIZE)),bufLen(max(ceil(logBufS,sectorSize),lPage*4)),
 	LRsize((c->theCB->flags&STFLG_PAGEHMAC)!=0?sizeof(LogRecHM):sizeof(LogRec)),logBufBeg(NULL),logBufEnd(NULL),ptrWrite(NULL),ptrInsert(NULL),ptrRead(NULL),
 	maxLSN(c->theCB->logEnd),minLSN(c->theCB->logEnd),prevLSN(0),writtenLSN(c->theCB->logEnd),wrapLSN(0),fFull(false),fRecovery(false),fAnalizing(false),
@@ -41,7 +41,7 @@ LogMgr::LogMgr(StoreCtx *c,size_t logBufS,bool fAL,const char *lDir) : ctx(c),se
 LogMgr::~LogMgr()
 {
 	if ((ctx->mode&STARTUP_PRINT_STATS)!=0) report(MSG_INFO,"\tLogMgr stats: %ld/%ld\n",(long)nOverflow,(long)nWrites);
-	for (int i=0; i<nReadLogSegs; i++) ctx->fileMgr->close(readLogSegs[i].fid);
+	if (ctx->fileMgr!=NULL) for (int i=0; i<nReadLogSegs; i++) ctx->fileMgr->close(readLogSegs[i].fid);
 	if (logBufBeg!=NULL) freeAligned(logBufBeg); 
 //	free(logDirectory,STORE_HEAP); if (pcb!=NULL) free(pcb,STORE_HEAP);
 //	report(MSG_INFO,"\n\n---- Log files: %d/%d\n\n",nNotPrealloc,nLogOpen);
@@ -69,7 +69,10 @@ RC LogMgr::init()
 				} else {
 					aio.aio_fid=logFile; aio.aio_buf=ptrWrite; aio.aio_lio_opcode=LIO_READ;
 					aio.aio_offset=floor(offset,sectorSize); aio.aio_nbytes=sectorSize;
-					rc=ctx->fileMgr->listIO(LIO_WAIT,1,&pcb);
+					if (ctx->fileMgr!=NULL) rc=ctx->fileMgr->listIO(LIO_WAIT,1,&pcb);
+					else {
+						//???
+					}
 				}
 			}
 			if (save==SST_READ_ONLY||save==SST_SHUTDOWN_COMPLETE) 
@@ -85,7 +88,7 @@ RC LogMgr::close()
 	RC rc=RC_OK;
 	if (fInit && (ctx->mode&STARTUP_NO_RECOVERY)==0) {
 		ctx->theCB->checkpoint=insert(NULL,LR_SHUTDOWN);
-		if ((rc=flushTo(ctx->theCB->checkpoint,&ctx->theCB->logEnd))==RC_OK)
+		if ((rc=flushTo(ctx->theCB->checkpoint,&ctx->theCB->logEnd))==RC_OK && ctx->fileMgr!=NULL)
 			rc=ctx->fileMgr->close(logFile);
 	}
 	currentLogFile=~0u;
@@ -94,7 +97,7 @@ RC LogMgr::close()
 
 void LogMgr::deleteLogs()
 {
-	ctx->fileMgr->deleteLogFiles(~0u,logDirectory,fArchive);
+	if (ctx->fileMgr!=NULL) ctx->fileMgr->deleteLogFiles(~0u,logDirectory,fArchive);
 }
 
 RC LogMgr::createLogFile(LSN lsn,off64_t& fSize)
@@ -104,13 +107,17 @@ RC LogMgr::createLogFile(LSN lsn,off64_t& fSize)
 	unsigned fileN=LSNToFileN(lsn); MutexP lck(&openFile); RC rc=RC_OK; bool fFound=false;
 	for (int i=0; i<nReadLogSegs; i++) if (readLogSegs[i].fid==logFile) {fFound=true; break;}
 	if (!fFound && fReadFromCurrent) {ctx->bufMgr->close(logFile); logFile=INVALID_FILEID; fReadFromCurrent=false;}
-	if ((rc=ctx->fileMgr->open(logFile,getLogFileName(fileN,buf),fFound?(logFile=INVALID_FILEID,FIO_CREATE):FIO_REPLACE|FIO_CREATE))==RC_OK) {
+	if (ctx->fileMgr==NULL) {
+//		fSize=ctx->fileMgr->getFileSize(logFile); size_t offset=LSNToFileOffset(lsn);
+//		if (fSize<(off64_t)offset || fSize>(off64_t)offset && (fSize!=logSegSize || (ctx->mode&STARTUP_LOG_PREALLOC)==0))
+//			rc=ctx->fileMgr->growFile(logFile,ceil(offset,lPage));
+	} else if ((rc=ctx->fileMgr->open(logFile,getLogFileName(fileN,buf),fFound?(logFile=INVALID_FILEID,FIO_CREATE):FIO_REPLACE|FIO_CREATE))==RC_OK) {
 		fSize=ctx->fileMgr->getFileSize(logFile); size_t offset=LSNToFileOffset(lsn);
 		if (fSize<(off64_t)offset || fSize>(off64_t)offset && (fSize!=logSegSize || (ctx->mode&STARTUP_LOG_PREALLOC)==0))
 			rc=ctx->fileMgr->growFile(logFile,ceil(offset,lPage));
 	}
 	if (rc==RC_OK) nLogOpen++;
-	else {ctx->fileMgr->close(logFile); logFile=INVALID_FILEID; if (rc!=RC_NOTFOUND) report(MSG_ERROR,"Cannot create log file %s: %d\n",buf,rc);}
+	else {if (ctx->fileMgr!=NULL) ctx->fileMgr->close(logFile); logFile=INVALID_FILEID; if (rc!=RC_NOTFOUND) report(MSG_ERROR,"Cannot create log file %s: %d\n",buf,rc);}
 	if (rc==RC_OK) {if ((currentLogFile=fileN)>maxAllocated) maxAllocated=fileN; fReadFromCurrent=false;}
 	ctx->free(buf); return rc;
 }
@@ -123,7 +130,9 @@ RC LogMgr::openLogFile(LSN lsn)
 	for (int i=0; i<nReadLogSegs; i++) if (readLogSegs[i].fid==logFile) {fFound=true; break;}
 	if (!fFound && fReadFromCurrent) {ctx->bufMgr->close(logFile); logFile=INVALID_FILEID; fReadFromCurrent=false;}
 	unsigned flags=fFound?(logFile=INVALID_FILEID,0):FIO_REPLACE;
-	if ((rc=ctx->fileMgr->open(logFile,getLogFileName(fileN,buf),flags))==RC_OK) nLogOpen++;
+	if (ctx->fileMgr==NULL) {
+		//???
+	} else if ((rc=ctx->fileMgr->open(logFile,getLogFileName(fileN,buf),flags))==RC_OK) nLogOpen++;
 	else {ctx->fileMgr->close(logFile); logFile=INVALID_FILEID; if (rc!=RC_NOTFOUND) report(MSG_ERROR,"Cannot open log file %s: %d\n",buf,rc);}
 	if (rc==RC_OK) {if ((currentLogFile=fileN)>maxAllocated) maxAllocated=fileN; fReadFromCurrent=false;}
 	ctx->free(buf); return rc;
@@ -139,7 +148,9 @@ RC LogMgr::allocLogFile(unsigned fileN,char *buf)
 	byte *zeroBuf=(byte*)allocAligned(bufSize,sectorSize);
 	memset(zeroBuf,0,bufSize); RC rc=RC_OK;
 	getLogFileName(fileN,buf); FileID fid=INVALID_FILEID;
-	if ((rc=ctx->fileMgr->open(fid,buf,FIO_CREATE))==RC_OK) {
+	if (ctx->fileMgr==NULL) {
+		//????
+	} else if ((rc=ctx->fileMgr->open(fid,buf,FIO_CREATE))==RC_OK) {
 		for (size_t k=0; k<nBufs; k++)
 			if ((rc=ctx->fileMgr->io(FIO_WRITE,PageIDFromPageNum(fid,(unsigned)(bufSize*k/lPage)),zeroBuf,(unsigned)bufSize))!=RC_OK) break;
 		ctx->fileMgr->close(fid);
@@ -299,7 +310,10 @@ RC LogMgr::write()
 		aio.aio_buf		= ptrWrt;
 		aio.aio_nbytes		= lTran;
 		aio.aio_lio_opcode	= LIO_WRITE;
-		rc=ctx->fileMgr->listIO(LIO_WAIT,1,&pcb,true);
+		if (ctx->fileMgr!=NULL) rc=ctx->fileMgr->listIO(LIO_WAIT,1,&pcb,true);
+		else {
+			//???
+		}
 		lock.upgradelock(RW_X_LOCK); 
 		if (rc!=RC_OK) {report(MSG_ERROR,"Error %d writting log file %d\n",rc,currentLogFile); return rc;}
 		ptrWrt+=lTran; assert(ptrWrt!=logBufEnd);
@@ -319,7 +333,10 @@ RC LogMgr::write()
 	aio.aio_nbytes		= lTransfer;
 	aio.aio_lio_opcode	= LIO_WRITE;
 
-	rc = ctx->fileMgr->listIO(LIO_WAIT,1,&pcb,true);
+	if (ctx->fileMgr!=NULL) rc=ctx->fileMgr->listIO(LIO_WAIT,1,&pcb,true);
+	else {
+		//???
+	}
 
 	lock.upgradelock(RW_X_LOCK);
 
@@ -402,7 +419,10 @@ RC LogReadCtx::readChunk(LSN lsn,void *buf,size_t l)
 				size_t offset=logMgr->LSNToFileOffset(logMgr->minLSN);
 				if ((offset+=logMgr->bufLen)<logMgr->recFileSize) logMgr->minLSN+=logMgr->bufLen;
 				else if (logMgr->recFileSize>=logMgr->logSegSize && logMgr->openLogFile(lsn)==RC_OK) {
-					logMgr->recFileSize=(unsigned)logMgr->ctx->fileMgr->getFileSize(logMgr->logFile); 
+					if (logMgr->ctx->fileMgr!=NULL) logMgr->recFileSize=(unsigned)logMgr->ctx->fileMgr->getFileSize(logMgr->logFile); 
+					else {
+						//???
+					}
 					offset=0; logMgr->minLSN=logMgr->LSNFromOffset(logMgr->LSNToFileN(lsn),0);
 				} else {
 					logMgr->lock.unlock(); fLocked=false; fCheck=true; return RC_EOF;
@@ -412,7 +432,12 @@ RC LogReadCtx::readChunk(LSN lsn,void *buf,size_t l)
 				if (lread==0) {logMgr->lock.unlock(); fLocked=false; fCheck=true; return RC_EOF;}
 				logMgr->aio.aio_fid=logMgr->logFile; logMgr->aio.aio_buf=logMgr->logBufBeg; logMgr->aio.aio_lio_opcode=LIO_READ; 
 				logMgr->aio.aio_offset=offset; logMgr->aio.aio_nbytes=ceil(lread,logMgr->sectorSize);
-				RC rc=logMgr->ctx->fileMgr->listIO(LIO_WAIT,1,&logMgr->pcb); if (rc!=RC_OK) {logMgr->lock.unlock(); fLocked=false; fCheck=true; return rc;}
+				RC rc=RC_OK;
+				if (logMgr->ctx->fileMgr!=NULL) rc=logMgr->ctx->fileMgr->listIO(LIO_WAIT,1,&logMgr->pcb);
+				else {
+					//???
+				}
+				if (rc!=RC_OK) {logMgr->lock.unlock(); fLocked=false; fCheck=true; return rc;}
 				logMgr->maxLSN+=lread; logMgr->ptrInsert=logMgr->logBufBeg+lread; fCheck=true; continue;
 			} else {
 				LSN writtenLSN(logMgr->writtenLSN); logMgr->lock.unlock(); fLocked=false;
@@ -435,8 +460,11 @@ RC LogReadCtx::readChunk(LSN lsn,void *buf,size_t l)
 						if (logSeg==logMgr->currentLogFile) {
 							fid=logMgr->logFile; logMgr->fReadFromCurrent=true;
 						} else {
-							char fname[100]; fid=INVALID_FILEID;
-							RC rc=logMgr->ctx->fileMgr->open(fid,logMgr->getLogFileName(logSeg,fname));
+							char fname[100]; fid=INVALID_FILEID; RC rc=RC_OK;
+							if (logMgr->ctx->fileMgr!=NULL) rc=logMgr->ctx->fileMgr->open(fid,logMgr->getLogFileName(logSeg,fname));
+							else {
+								//????
+							}
 							if (rc!=RC_OK) {fCheck=true; return rc;}
 						}
 						PrevLogSeg &ps=logMgr->readLogSegs[logMgr->nReadLogSegs++]; 

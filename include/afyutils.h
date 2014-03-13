@@ -1,6 +1,6 @@
 /**************************************************************************************
 
-Copyright © 2004-2013 GoPivotal, Inc. All rights reserved.
+Copyright © 2004-2014 GoPivotal, Inc. All rights reserved.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -170,6 +170,62 @@ public:
 };
 
 /**
+ * quick sort template
+ */
+#define QS_STKSIZ	(8*sizeof(void*)-2)
+#define QS_CUTOFF	8
+
+template<typename T,typename N=unsigned> class QSort
+{
+public:
+	__forceinline static void sort(T& t,N nElts) {
+		struct {N lwr,upr;} bndstk[QS_STKSIZ]; int stkptr=0;
+		for (N lwr=0,upr=nElts-1;;) {
+			if (upr-lwr+1<=QS_CUTOFF) while (upr>lwr) {
+				N max=lwr;
+				for (N p=lwr+1; p<=upr; ++p) if (t.cmp(p,max)>0) max=p;
+			    t.swap(max,upr); --upr;
+			} else {
+				N mdl=(upr+lwr)/2;
+				if (t.cmp(lwr,mdl)>0) t.swap(lwr,mdl);
+				if (t.cmp(lwr,upr)>0) t.swap(lwr,upr);
+				if (t.cmp(mdl,upr)>0) t.swap(mdl,upr);
+				N lwr2=lwr,upr2=upr;
+				for (;;) {
+					if (mdl>lwr2) do ++lwr2; while (lwr2<mdl && t.cmp(lwr2,mdl)<=0);
+					if (mdl<=lwr2) do ++lwr2; while (lwr2<=upr && t.cmp(lwr2,mdl)<=0);	// ????
+					do --upr2; while (upr2>mdl && t.cmp(upr2,mdl)>0);
+					if (upr2<lwr2) break;
+					t.swap(lwr2,upr2); if (mdl==upr2) mdl=lwr2;
+				}
+				++upr2;
+				if (mdl<upr2) do --upr2; while (upr2>mdl && t.cmp(upr2,mdl)==0);
+				if (mdl>=upr2) do --upr2; while (upr2>lwr && t.cmp(upr2,mdl)==0);
+				if (upr2-lwr>=upr-lwr2) {
+					if (lwr<upr2) {bndstk[stkptr].lwr=lwr; bndstk[stkptr].upr=upr2; ++stkptr;}
+					if (lwr2<upr) {lwr=lwr2; continue;}
+				} else {
+					if (lwr2<upr) {bndstk[stkptr].lwr=lwr2; bndstk[stkptr].upr=upr; ++stkptr;}
+					if (lwr<upr2) {upr=upr2; continue;}
+				}
+			}
+			if (--stkptr<0) return; lwr=bndstk[stkptr].lwr; upr=bndstk[stkptr].upr;
+		}
+	}
+};
+
+template<typename T,class C=DefCmp<T>,typename N=unsigned> class QSortA
+{
+	T	*const	arr;
+	const	N	nElts;
+public:
+	QSortA(T *t,N n) : arr(t),nElts(n) {}
+	void sort() {QSort<QSortA,N>::sort(*this,nElts);}
+	int cmp(N i,N j) const {return C::cmp(arr[i],arr[j]);}
+	void swap(N i,N j) {T tmp=arr[i]; arr[i]=arr[j]; arr[j]=tmp;}
+};
+
+/**
  * dynamic unordered array template
  */
 template<typename T,int initSize=10,unsigned factor=1> class DynArray
@@ -228,6 +284,7 @@ public:
 		if (nTs>=xTs) {ptrdiff_t sht=ins-ts; size_t old=xTs*sizeof(T); if ((ts=(T*)ma->realloc(ts,(xTs+=xTs==0?initX:xTs/factor)*sizeof(T),old))==NULL) return RC_NORESOURCES; ins=ts+sht;}
 		if (ins<&ts[nTs]) memmove(ins+1,ins,(uint8_t*)&ts[nTs]-(uint8_t*)ins); *ins=t; nTs++; if (ret!=NULL) *ret=ins; return RC_OK;
 	}
+	RC remove(unsigned i) {if (i>=nTs) return RC_FALSE; if (i<--nTs) memmove(&ts[i],&ts[i+1],(nTs-i)*sizeof(T)); return RC_OK;}
 	void moveTo(DynOArray<T,Key,C,initX,factor>& to) {if (to.ts!=NULL) to.ma->free(to.ts); to.ts=ts; to.nTs=nTs; to.xTs=xTs; ts=NULL; nTs=xTs=0;}
 	const T* find(Key key) const {return BIN<T,Key,C>::find(key,(const T*)ts,nTs);}
 	T* get(uint32_t& n) {T *pt=NULL; if ((n=nTs)!=0) {pt=ts; ts=NULL; xTs=nTs=0;} return pt;}
@@ -262,10 +319,49 @@ public:
 		if (nTs>=xTs) {ptrdiff_t sht=ins-ts; if (!expand()) return RC_NORESOURCES; ins=ts+sht;}
 		if (ins<&ts[nTs]) memmove(ins+1,ins,(uint8_t*)&ts[nTs]-(uint8_t*)ins); *ins=t; nTs++; if (ret!=NULL) *ret=ins; return RC_OK;
 	}
+	RC remove(unsigned i) {if (i>=nTs) return RC_FALSE; if (i<--nTs) memmove(&ts[i],&ts[i+1],(nTs-i)*sizeof(T)); return RC_OK;}
 	void moveTo(DynOArrayBuf<T,Key,C,initSize,factor>& to) {if (to.ts!=to.tbuf) to.ma->free(to.ts); if (ts==tbuf) memcpy(to.ts=to.tbuf,tbuf,sizeof(tbuf)); else to.ts=ts; to.nTs=nTs; to.xTs=xTs; ts=tbuf; nTs=0; xTs=initSize;}
 	const T* find(Key key) const {return BIN<T,Key,C>::find(key,(const T*)ts,nTs);}
 	T* get(uint32_t& n) {T *pt=NULL; if ((n=nTs)!=0) {if ((pt=ts)!=tbuf) ts=tbuf; else if ((pt=new(ma) T[nTs])!=NULL) memcpy(pt,ts,nTs*sizeof(T));} return pt;}
 	operator const T* () const {return ts;}
+	operator unsigned () const {return nTs;}
+	void clear() {if (ts!=tbuf) {ma->free(ts); ts=tbuf;} nTs=0; xTs=initSize;}
+private:
+	bool expand() {
+		if (ts!=tbuf) {size_t old=xTs*sizeof(T); ts=(T*)ma->realloc(ts,(xTs+=xTs/factor)*sizeof(T),old);}
+		else if ((ts=(T*)ma->malloc((xTs+=xTs/factor)*sizeof(T)))!=NULL) memcpy(ts,tbuf,sizeof(tbuf));
+		return ts!=NULL;
+	}
+};
+
+/**
+ * volatile dynamic ordered array template; supports binary search
+ * contains pre-allocated buffer; for use in multithreaded environment
+ */
+template<typename T,typename Key=T,class C=DefCmp<Key>,int initSize=16,unsigned factor=1> class DynOArrayBufV
+{
+protected:
+	IMemAlloc	*const ma;
+	T			tbuf[initSize];
+	T*			volatile	ts;
+	volatile	unsigned	nTs;
+	volatile	unsigned	xTs;
+public:
+	DynOArrayBufV(IMemAlloc *m) : ma(m),ts(tbuf),nTs(0),xTs(initSize) {}
+	~DynOArrayBufV() {if (ts!=tbuf) ma->free(ts);}
+	RC add(T t,unsigned *idx=NULL) {
+		T *p,*ins=NULL;
+		if ((p=(T*)BIN<T,Key,C>::find((Key)t,(const T*)ts,nTs,&ins))!=NULL) {if (idx!=NULL) *idx=unsigned(p-(T*)ts); return RC_FALSE;}
+		if (nTs>=xTs) {ptrdiff_t sht=ins-(T*)ts; if (!expand()) return RC_NORESOURCES; ins=(T*)ts+sht;}
+		if (ins<(T*)&ts[nTs]) memmove(ins+1,ins,(uint8_t*)&ts[nTs]-(uint8_t*)ins); *ins=t; nTs++; if (idx!=NULL) *idx=unsigned(ins-(T*)ts); return RC_OK;
+	}
+	RC remove(T t,unsigned *idx=NULL) {
+		T *del=NULL; if (BIN<T,Key,C>::find((Key)t,(const T*)ts,nTs,&del)==NULL) return RC_FALSE; if (idx!=NULL) *idx=unsigned(del-(T*)ts);
+		assert(del!=NULL); if (del<(T*)&ts[--nTs]) memmove(del,del+1,(uint8_t*)&ts[nTs]-(uint8_t*)del); return RC_OK;
+	}
+	RC remove(unsigned i) {if (i>=nTs) return RC_FALSE; if (i<--nTs) memmove((T*)&ts[i],(T*)&ts[i+1],(nTs-i)*sizeof(T)); return RC_OK;}
+	const T* find(Key key) const {return BIN<T,Key,C>::find(key,(const T*)ts,nTs);}
+	operator const T*() const {return (const T*)ts;}
 	operator unsigned () const {return nTs;}
 	void clear() {if (ts!=tbuf) {ma->free(ts); ts=tbuf;} nTs=0; xTs=initSize;}
 private:
@@ -388,7 +484,7 @@ template<class T,typename Key,HChain<T> T::*pList> class HashTab
 	const	unsigned	hashSize;
 	const	unsigned	keyMask;
 	const	unsigned	keyShift;
-	IMemAlloc			*const	ma;
+	IMemAlloc *const	ma;
 	const	bool		fClear;
 	HashTabElt			*hashTab;
 	unsigned			highwatermark;
@@ -424,10 +520,12 @@ public:
 			{T *p = it.get(); assert(p!=NULL); if (p->getKey()==key) return p;}
 		return NULL;
 	}
-	void clear() {
-		T *t;
-		for (unsigned i=0; i<hashSize; i++)
-			while ((t = hashTab[i].list.removeFirst())!=NULL) delete t;
+	void clear(bool fDealloc=true) {
+		T *t; highwatermark=0;
+		for (unsigned i=0; i<hashSize; i++) {
+			if (fDealloc) while ((t = hashTab[i].list.removeFirst())!=NULL) delete t; else hashTab[i].list.reset();
+			hashTab[i].counter=0;
+		}
 	}
 	friend class it;
 	/**
@@ -546,12 +644,13 @@ public:
 	void lock(T* t,RW_LockType lt) {assert((t->*pList).getIndex()<hashSize); hashTab[(t->*pList).getIndex()].lock.lock(lt);}
 	void unlock(Key key) {hashTab[index(uint32_t(key))].lock.unlock();}
 	void unlock(T* t) {assert((t->*pList).getIndex()<hashSize); hashTab[(t->*pList).getIndex()].lock.unlock();}
-	void clear() {
+	void clear(bool fDealloc=true) {
 		for (unsigned i=0; i<hashSize; i++) {
 			HashTabElt *ht=&hashTab[i]; ht->lock.lock(RW_X_LOCK); T *t;
-			while ((t=ht->list.removeFirst())!=NULL) delete t;
-			ht->lock.unlock();
+			if (fDealloc) while ((t=ht->list.removeFirst())!=NULL) delete t; else ht->list.reset();
+			hashTab[i].counter=0; ht->lock.unlock();
 		}
+		highwatermark=0;
 	}
 	friend class it;
 	HChain<T>	*start(unsigned idx) const {assert(idx<hashSize); return &hashTab[idx].list;}

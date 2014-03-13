@@ -1,6 +1,6 @@
 /**************************************************************************************
 
-Copyright © 2004-2013 GoPivotal, Inc. All rights reserved.
+Copyright © 2004-2014 GoPivotal, Inc. All rights reserved.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -65,6 +65,7 @@ struct AFY_EXP AddrInfo
 	bool				fUDP;
 	AddrInfo() : family(0),protocol(0),socktype(SOCK_STREAM),laddr(0),fUDP(false) {memset(&saddr,0,sizeof(saddr));}
 	RC					resolve(const Value *addr,bool fListener);
+	static	RC			getAddr(const sockaddr_storage *ss,socklen_t ls,Value& addr,IMemAlloc *ma,bool fPort=false);
 };
 
 class AFY_EXP IAfySocket

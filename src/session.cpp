@@ -1,6 +1,6 @@
 /**************************************************************************************
 
-Copyright © 2004-2013 GoPivotal, Inc. All rights reserved.
+Copyright © 2004-2014 GoPivotal, Inc. All rights reserved.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -45,6 +45,11 @@ bool StoreCtx::isInit() const
 unsigned StoreCtx::getState() const
 {
 	return (unsigned)state;
+}
+
+uint64_t StoreCtx::getOccupiedMemory() const
+{
+	return theCB->totalMemUsed;
 }
 
 bool StoreCtx::inShutdown() const
@@ -105,9 +110,9 @@ HEAP_TYPE StoreCtx::getAType() const
 	return STORE_HEAP;
 }
 
-void StoreCtx::release()
+void StoreCtx::truncate(TruncMode tm,const void *mrk)
 {
-	if (mem!=NULL) {mem->release(); mem=NULL;}
+	if (mem!=NULL) mem->truncate(tm,mrk);
 }
 
 size_t StoreCtx::getPublicKey(uint8_t *buf,size_t lbuf,bool fB64)
@@ -124,34 +129,38 @@ void StoreCtx::changeTraceMode(unsigned mask,bool fReset)
 
 //-------------------------------------------------------------------------------------
 
-ISession *StoreCtx::startSession(const char *ident,const char *pwd)
+ISession *StoreCtx::startSession(const char *ident,const char *pwd,size_t initMem)
 {
 	try {
 		if (inShutdown()||theCB->state==SST_RESTORE) return NULL;
-		Session *s=Session::createSession(this); if (s==NULL) return NULL;
-		if (!namedMgr->isInit()) {s->setIdentity(STORE_OWNER,true); namedMgr->loadObjects(s); s->setIdentity(STORE_INVALID_IDENTITY,false);}
+		Session *s=Session::createSession(this,initMem); if (s==NULL) return NULL;
+		if (!namedMgr->isInit()) {s->setIdentity(STORE_OWNER,true); namedMgr->loadObjects(s,false); s->setIdentity(STORE_INVALID_IDENTITY,false);}
 		if (!s->login(ident,pwd)) {s->terminate(); s=NULL;}
 		return s;
 	} catch (RC) {} catch (...) {report(MSG_ERROR,"Exception in IAffinity::startSession()\n");}
 	return NULL;
 }
 
-Session	*Session::createSession(StoreCtx *ctx)
+Session	*Session::createSession(StoreCtx *ctx,size_t initMem)
 {
-	Session *ses=NULL; MemAlloc *ma;
 	if (ctx!=NULL) for (long sc=ctx->sesCnt; ;sc=ctx->sesCnt)
-		if (sc!=0 && (ctx->mode&STARTUP_SINGLE_SESSION)!=0) return NULL;
+		if (sc!=0 && (ctx->mode&STARTUP_RT)!=0) return NULL;
 		else if (cas(&ctx->sesCnt,sc,sc+1)) break;
-	if ((ma=createMemAlloc(SESSION_START_MEM,false))!=NULL) {
+	Session *ses=NULL; MemAlloc *ma=initMem==0?createMemAlloc(SESSION_START_MEM,false):new(ctx) StackAlloc(ctx,initMem);
+	if (ma!=NULL) {
 		if (ctx!=NULL) ctx->set(); 
-		if ((ses=new(ma) Session(ctx,ma))!=NULL) {
-			sessionTls.set(ses); if (ctx!=NULL) ses->traceMode=ctx->traceMode;
-//			byte buf[sizeof(TIMESTAMP)+sizeof(unsigned)]; getTimestamp(*(TIMESTAMP*)buf);
-//			memcpy(buf+sizeof(TIMESTAMP),&ses->identity,sizeof(unsigned));
-//			ses->sesLSN = ctx->logMgr->insert(ses,LR_SESSION,0,INVALID_PAGEID,buf,sizeof(buf));
-		}
+		if ((ses=new(ma) Session(ctx,ma))!=NULL)
+			{sessionTls.set(ses); if (ctx!=NULL) ses->traceMode=ctx->traceMode; if (initMem!=0) ((StackAlloc*)ma)->mark(ses->sm);}
 	}
 	return ses;
+}
+
+void Session::freeMemory()
+{
+	if (latched!=NULL) while (nLatched!=0) {--nLatched; ctx->bufMgr->release(latched[nLatched].pb,latched[nLatched].cntX!=0);}
+	latched=NULL; nLatched=0; xLatched=0; latchHolderList.reset();
+	tx.next=NULL; serviceTab=NULL; mini=NULL; srvCtx.reset();
+	if (mem!=NULL) mem->truncate(TR_REL_ALLBUTONE,&sm);
 }
 
 void Session::terminateSession()
@@ -170,17 +179,16 @@ void Session::terminateSession()
 		ses->cleanup();
 //		ses->ctx->logMgr->insert(ses,LR_SESSION,1,INVALID_PAGEID);
 		MemAlloc *ma=ses->mem; StoreCtx *ctx=ses->ctx;
-		ses->~Session(); sessionTls.set(NULL); if (ma!=NULL) ma->release();
+		ses->~Session(); sessionTls.set(NULL); if (ma!=NULL) ma->truncate(TR_REL_ALL);
 		if (ctx!=NULL) InterlockedDecrement(&ctx->sesCnt);
 	}
 }
 
 Session::Session(StoreCtx *ct,MemAlloc *ma)
-	: ctx(ct),mem(ma),txid(INVALID_TXID),txcid(NO_TXCID),txState(TX_NOTRAN),sFlags(0),identity(STORE_INVALID_IDENTITY),
-	list(this),lockReq(this),heldLocks(NULL),latched(new(ma) LatchedPage[INITLATCHED]),nLatched(0),xLatched(INITLATCHED),
+	: ctx(ct),mem(ma),txid(INVALID_TXID),txcid(NO_TXCID),txState(TX_NOTRAN),sFlags(0),identity(STORE_INVALID_IDENTITY),list(this),lockReq(this),heldLocks(NULL),latched(NULL),nLatched(0),xLatched(0),
 	firstLSN(0),undoNextLSN(0),flushLSN(0),sesLSN(0),nLogRecs(0),tx(this),subTxCnt(0),mini(NULL),nTotalIns(0),xHeapPage(INVALID_PAGEID),forcedPage(INVALID_PAGEID),
 	classLocked(RW_NO_LOCK),fAbort(false),repl(NULL),itf(0),xOnCommit(DEFAULT_MAX_ON_COMMIT),nSyncStack(0),xSyncStack(DEFAULT_MAX_SYNC_ACTION),
-	nSesObjects(0),xSesObjects(DEFAULT_MAX_OBJ_SESSION),serviceTab(NULL),iTrace(NULL),traceMode(0),nSrvCtx(0),xSrvCtx(MAX_SERV_CTX),active(NULL),defExpiration(0),tzShift(0)
+	nSesObjects(0),xSesObjects(DEFAULT_MAX_OBJ_SESSION),serviceTab(NULL),iTrace(NULL),traceMode(0),codeTrace(0),nSrvCtx(0),xSrvCtx(MAX_SERV_CTX),active(NULL),defExpiration(0),tzShift(0)
 {
 	extAddr.pageID=INVALID_PAGEID; extAddr.idx=INVALID_INDEX;
 #ifdef WIN32
@@ -207,7 +215,7 @@ void Session::cleanup()
 	if (ctx!=NULL) {
 		ctx->lockMgr->releaseSession(this);
 		if (classLocked!=RW_NO_LOCK) {ctx->classMgr->getLock()->unlock(); classLocked=RW_NO_LOCK;}
-		while (nLatched!=0) {--nLatched; ctx->bufMgr->release(latched[nLatched].pb,latched[nLatched].cntX!=0);}
+		if (latched!=NULL) while (nLatched!=0) {--nLatched; ctx->bufMgr->release(latched[nLatched].pb,latched[nLatched].cntX!=0);}
 		tx.cleanup(); delete repl; repl=NULL;
 		if (reuse.pinPages!=NULL) for (unsigned i=0; i<reuse.nPINPages; i++)
 			ctx->heapMgr->HeapPageMgr::reuse(reuse.pinPages[i].pid,reuse.pinPages[i].space,ctx);
@@ -238,7 +246,7 @@ int LatchedPage::Cmp::cmp(const LatchedPage& lp,PageID pid)
 
 RC Session::latch(PBlock *pb,unsigned mode)
 {
-	if (nLatched>=xLatched && (latched=(LatchedPage*)mem->realloc(latched,(xLatched*=2)*sizeof(LatchedPage)))==NULL) return RC_NORESOURCES;
+	if (nLatched>=xLatched && (latched=(LatchedPage*)mem->realloc(latched,(xLatched+=xLatched==0?INITLATCHED:xLatched)*sizeof(LatchedPage)))==NULL) return RC_NORESOURCES;
 	LatchedPage *ins=latched;
 	if (BIN<LatchedPage,PageID,LatchedPage::Cmp>::find(pb->getPageID(),latched,nLatched,&ins)!=NULL) return RC_INTERNAL;
 	if (ins<&latched[nLatched]) memmove(ins+1,ins,(byte*)&latched[nLatched]-(byte*)ins);
@@ -273,23 +281,27 @@ bool Session::unlatch(PBlock *pb,unsigned mode)
 
 void Session::releaseLatches(PageID pid,PageMgr *mgr,bool fX)
 {
-	for (DLList *lh=latchHolderList.next; lh!=&latchHolderList; lh=lh->next) ((LatchHolder*)lh)->releaseLatches(pid,mgr,fX);
+	if (ctx!=NULL && (ctx->mode&STARTUP_RT)==0)
+		for (DLList *lh=latchHolderList.next; lh!=&latchHolderList; lh=lh->next) ((LatchHolder*)lh)->releaseLatches(pid,mgr,fX);
 }
 
 RC Session::releaseAllLatches()
 {
+	if (ctx==NULL || (ctx->mode&STARTUP_RT)!=0) return RC_OK;
 	for (DLList *lh=latchHolderList.next; lh!=&latchHolderList; lh=lh->next) ((LatchHolder*)lh)->releaseLatches(INVALID_PAGEID,NULL,true);
 	return nLatched==0?RC_OK:RC_DEADLOCK;
 }
 
 void Session::lockClass(RW_LockType lt)
 {
-	if (lt!=classLocked && classLocked!=RW_X_LOCK) {ctx->classMgr->getLock()->lock(lt); classLocked=lt;}
+	if (lt!=classLocked && classLocked!=RW_X_LOCK)
+		{if (ctx!=NULL && (ctx->mode&STARTUP_RT)==0) ctx->classMgr->getLock()->lock(lt); classLocked=lt;}
 }
 
 void Session::unlockClass()
 {
-	if (classLocked!=RW_NO_LOCK) {ctx->classMgr->getLock()->unlock(); classLocked=RW_NO_LOCK;}
+	if (classLocked!=RW_NO_LOCK) 
+		{if (ctx!=NULL && (ctx->mode&STARTUP_RT)==0) ctx->classMgr->getLock()->unlock(); classLocked=RW_NO_LOCK;}
 }
 
 void Session::trace(long code,const char *msg,...) 
@@ -349,9 +361,9 @@ HEAP_TYPE Session::getAType() const
 	return SES_HEAP;
 }
 
-void Session::release()
+void Session::truncate(TruncMode tm,const void *mrk)
 {
-	if (this!=NULL && mem!=NULL) mem->release();
+	if (this!=NULL && mem!=NULL) mem->truncate(tm,mrk);
 }
 
 bool Session::hasPrefix(const char *name,size_t lName)
@@ -359,20 +371,28 @@ bool Session::hasPrefix(const char *name,size_t lName)
 	return name==NULL || memchr(name,'/',lName)!=NULL || memchr(name,'#',lName)!=NULL;
 }
 
-RC Session::mapURIs(unsigned nURIs,URIMap URIs[],const char *base)
+RC Session::mapURIs(unsigned nURIs,URIMap URIs[],const char *base,bool fObj)
 {
 	try {
 		if (ctx->inShutdown()) return RC_SHUTDOWN;
-		char *URIBase=NULL; size_t lURIBase=base!=NULL?strlen(base):0,lURIBaseBuf=0; 
+		char *URIBase=NULL; size_t lURIBase=base!=NULL?strlen(base):0,lURIBaseBuf=0,lPref; const char *pref;
 		for (unsigned i=0; i<nURIs; i++) {
 			const char *URIName=URIs[i].URI; if (URIName==NULL || *URIName=='\0') return RC_INVPARAM;
 			size_t lName = strlen(URIName);
-			if (lURIBase!=0 && !Session::hasPrefix(URIName,lName)) {
-				if (lURIBase+lName+1>lURIBaseBuf) {
-					if ((URIBase=(char*)realloc(URIBase,lURIBase+lName+1,lURIBaseBuf))==NULL) return RC_NORESOURCES;
-					if (lURIBaseBuf==0) memcpy(URIBase,base,lURIBase); lURIBaseBuf=lURIBase+lName+1;
+			if (!Session::hasPrefix(URIName,lName)) {
+				if (lURIBase!=0) {
+					if (lURIBase+lName>lURIBaseBuf) {
+						if ((URIBase=(char*)realloc(URIBase,lURIBase+lName,lURIBaseBuf))==NULL) return RC_NORESOURCES;
+						if (lURIBaseBuf==0) memcpy(URIBase,base,lURIBase); lURIBaseBuf=lURIBase+lName;
+					}
+					memcpy(URIBase+lURIBase,URIName,lName); URIName=URIBase; lName+=lURIBase;
+				} else if (fObj && (pref=ctx->namedMgr->getStorePrefix(lPref))!=NULL) {
+					if (lPref+lName>lURIBaseBuf) {
+						if ((URIBase=(char*)realloc(URIBase,lPref+lName,lURIBaseBuf))==NULL) return RC_NORESOURCES;
+						if (lURIBaseBuf==0) memcpy(URIBase,pref,lPref); lURIBaseBuf=lPref+lName;
+					}
+					memcpy(URIBase+lPref,URIName,lName); URIName=URIBase; lName+=lPref;
 				}
-				memcpy(URIBase+lURIBase,URIName,lName+1); URIName=URIBase; lName+=lURIBase;
 			}
 			URI *uri=ctx->isServerLocked()?(URI*)ctx->uriMgr->find(URIName,lName):(URI*)ctx->uriMgr->insert(URIName,lName);
 			URIs[i].uid=uri!=NULL?uri->getID():STORE_INVALID_URIID; if (uri!=NULL) uri->release();
@@ -520,15 +540,6 @@ RC Session::changeStoreIdentity(const char *newIdentity)
 	} catch (RC rc) {return rc;} catch (...) {report(MSG_ERROR,"Exception in ISession::changeStoreIdentity(...)\n"); return RC_INTERNAL;}
 }
 
-RC Session::commitPINs(IPIN *const *pins,unsigned nPins,unsigned md,const AllocCtrl *actrl,const Value *params,unsigned nParams,const IntoClass *into,unsigned nInto)
-{
-	try {
-		if (ctx->inShutdown()) return RC_SHUTDOWN; if (ctx->isServerLocked()) return RC_READONLY;
-		ValueV vv(params,nParams); EvalCtx ectx(this,NULL,0,NULL,0,&vv,1,NULL,NULL,ECT_INSERT); TxGuard txg(this); 
-		return ctx->queryMgr->persistPINs(ectx,(PIN*const*)pins,nPins,md,actrl,NULL,into,nInto);	// MODE_ENAV???
-	} catch (RC rc) {return rc;} catch (...) {report(MSG_ERROR,"Exception in ISession::commitPINs(...)\n"); return RC_INTERNAL;}
-}
-
 RC Session::modifyPIN(const PID& id,const Value *values,unsigned nValues,unsigned md,const ElementID *eids,unsigned *pNFailed,const Value *params,unsigned nParams)
 {
 	try {
@@ -632,7 +643,7 @@ RC Session::getURI(URIID id,char *buf,size_t& lbuf,bool fFull)
 IPIN *Session::getPIN(const PID& id,unsigned md) 
 {
 	try {return !ctx->inShutdown()?PIN::getPIN(id,STORE_CURRENT_VERSION,this,md|LOAD_EXT_ADDR|LOAD_ENAV):NULL;}
-	catch (RC) {} catch (...) {report(MSG_ERROR,"Exception in ISession::getPIN(PID="_LX_FM",IdentityID=%08X)\n",id.pid,id.ident);}
+	catch (RC) {} catch (...) {report(MSG_ERROR,"Exception in ISession::getPIN(PID=" _LX_FM ",IdentityID=%08X)\n",id.pid,id.ident);}
 	return NULL;
 }
 
@@ -646,50 +657,50 @@ IPIN *Session::getPIN(const Value& v,unsigned md)
 RC Session::getValues(Value *pv,unsigned nv,const PID& id)
 {
 	try {
-		if (id.pid==STORE_INVALID_PID) return RC_INVPARAM; if (ctx->inShutdown()) return RC_SHUTDOWN;
+		if (!id.isPID()) return RC_INVPARAM; if (ctx->inShutdown()) return RC_SHUTDOWN;
 		TxGuard txg(this); PageAddr addr; if (addr.convert(uint64_t(id.pid))) setExtAddr(addr);
 		RC rc=ctx->queryMgr->loadValues(pv,nv,id,this,LOAD_EXT_ADDR|LOAD_ENAV);
 		setExtAddr(PageAddr::noAddr); return rc;
 	} catch (RC rc) {return rc;} 
-	catch (...) {report(MSG_ERROR,"Exception in ISession::getValues(PID="_LX_FM",IdentityID=%08X)\n",id.pid,id.ident); return RC_INTERNAL;}
+	catch (...) {report(MSG_ERROR,"Exception in ISession::getValues(PID=" _LX_FM ",IdentityID=%08X)\n",id.pid,id.ident); return RC_INTERNAL;}
 }
 
 RC Session::getValue(Value& res,const PID& id,PropertyID pid,ElementID eid)
 {
 	try {
-		if (id.pid==STORE_INVALID_PID) return RC_INVPARAM; if (ctx->inShutdown()) return RC_SHUTDOWN;
+		if (!id.isPID()) return RC_INVPARAM; if (ctx->inShutdown()) return RC_SHUTDOWN;
 		TxGuard txg(this); PageAddr addr; if (addr.convert(uint64_t(id.pid))) setExtAddr(addr);
 		RC rc=ctx->queryMgr->loadValue(this,id,pid,eid,res,LOAD_EXT_ADDR|LOAD_ENAV);
 		setExtAddr(PageAddr::noAddr); return rc;
 	} catch (RC rc) {return rc;}
-	catch (...) {report(MSG_ERROR,"Exception in ISession::getValue(PID="_LX_FM",IdentityID=%08X,PropID=%08X)\n",id.pid,id.ident,pid); return RC_INTERNAL;}
+	catch (...) {report(MSG_ERROR,"Exception in ISession::getValue(PID=" _LX_FM ",IdentityID=%08X,PropID=%08X)\n",id.pid,id.ident,pid); return RC_INTERNAL;}
 }
 
 RC Session::getValue(Value& res,const PID& id)
 {
 	try {
-		if (id.pid==STORE_INVALID_PID) return RC_INVPARAM; if (ctx->inShutdown()) return RC_SHUTDOWN;
+		if (!id.isPID()) return RC_INVPARAM; if (ctx->inShutdown()) return RC_SHUTDOWN;
 		TxGuard txg(this); PageAddr addr; if (addr.convert(uint64_t(id.pid))) setExtAddr(addr);
 		RC rc=ctx->queryMgr->getPINValue(id,res,LOAD_EXT_ADDR|LOAD_ENAV,this);
 		setExtAddr(PageAddr::noAddr); return rc;
 	} catch (RC rc) {return rc;}
-	catch (...) {report(MSG_ERROR,"Exception in ISession::getValue(PID="_LX_FM",IdentityID=%08X)\n",id.pid,id.ident); return RC_INTERNAL;}
+	catch (...) {report(MSG_ERROR,"Exception in ISession::getValue(PID=" _LX_FM ",IdentityID=%08X)\n",id.pid,id.ident); return RC_INTERNAL;}
 }
 
 RC Session::getPINClasses(ClassID *&clss,unsigned& nclss,const PID& id)
 {
 	try {
 		clss=NULL; nclss=0;
-		if (id.pid==STORE_INVALID_PID) return RC_INVPARAM; if (ctx->inShutdown()) return RC_SHUTDOWN;
+		if (!id.isPID()) return RC_INVPARAM; if (ctx->inShutdown()) return RC_SHUTDOWN;
 		TxGuard txg(this); ClassResult clr(this,ctx); PINx pex(this,id); pex.epr.flags|=PINEX_EXTPID; RC rc;
 		if ((rc=ctx->queryMgr->getBody(pex))==RC_OK && (pex.mode&PIN_HIDDEN)==0)
-			if ((rc=ctx->classMgr->classify(&pex,clr))==RC_OK && clr.nClasses!=0) {
+			if ((rc=ctx->classMgr->classify(&pex,clr,this))==RC_OK && clr.nClasses!=0) {
 				if ((clss=new(this) ClassID[clr.nClasses])==NULL) rc=RC_NORESOURCES;
 				else {nclss=clr.nClasses; for (unsigned i=0; i<clr.nClasses; i++) clss[i]=clr.classes[i]->cid;}
 			}
 		return rc;
 	} catch (RC rc) {return rc;}
-	catch (...) {report(MSG_ERROR,"Exception in ISession::getPINClasses(PID="_LX_FM",IdentityID=%08X)\n",id.pid,id.ident); return RC_INTERNAL;}
+	catch (...) {report(MSG_ERROR,"Exception in ISession::getPINClasses(PID=" _LX_FM ",IdentityID=%08X)\n",id.pid,id.ident); return RC_INTERNAL;}
 }
 
 bool Session::isCached(const PID& id)
@@ -697,7 +708,7 @@ bool Session::isCached(const PID& id)
 	try {
 		if (ctx->inShutdown()) return false;
 		return isRemote(id)?ctx->netMgr->isCached(id):true;	// check correct local addr
-	} catch (RC) {} catch (...) {report(MSG_ERROR,"Exception in ISession::isCached(PID="_LX_FM",IdentityID=%08X)\n",id.pid,id.ident);}
+	} catch (RC) {} catch (...) {report(MSG_ERROR,"Exception in ISession::isCached(PID=" _LX_FM ",IdentityID=%08X)\n",id.pid,id.ident);}
 	return false;
 }
 
@@ -942,6 +953,11 @@ RC Session::addOnCommit(OnCommitQ& oq) {
 	tx.onCommit+=oq; oq.reset(); return RC_OK;
 }
 
+uint64_t Session::getCodeTrace()
+{
+	uint64_t ct=codeTrace; codeTrace=0; return ct;
+}
+
 SyncCall::SyncCall(Session *s) : ses(s)
 {
 	if (s!=NULL && ++s->nSyncStack>s->xSyncStack) {--s->nSyncStack; throw RC_NORESOURCES;}
@@ -954,10 +970,10 @@ SyncCall::~SyncCall()
 
 const PageAddr PageAddr::noAddr={INVALID_PAGEID,INVALID_INDEX};
 
-bool PageAddr::convert(uint64_t oid) {
-	if (oid==STORE_INVALID_PID) return false;
-	pageID=PageID(oid>>16); idx=PageIdx(oid&0xFFFF);
-	if (pageID==INVALID_PAGEID||(idx&0x8000)!=0||ushort(oid>>48)!=StoreCtx::get()->storeID) return false;
+bool PageAddr::convert(uint64_t pid) {
+	if (pid==STORE_INVALID_PID) return false;
+	pageID=PageID(pid>>16); idx=PageIdx(pid&0xFFFF);
+	if (pageID==INVALID_PAGEID||(idx&0x8000)!=0||ushort(pid>>48)!=StoreCtx::get()->storeID) return false;
 	// compare pageID with approx. store size (sum of length of open data files)
 	return true;
 }

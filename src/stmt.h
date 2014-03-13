@@ -1,6 +1,6 @@
 /**************************************************************************************
 
-Copyright © 2004-2013 GoPivotal, Inc. All rights reserved.
+Copyright © 2004-2014 GoPivotal, Inc. All rights reserved.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -102,11 +102,14 @@ enum SelectType
 	SEL_CONST,			/**< select returns constant expressions */
 	SEL_COUNT,			/**< SELECT COUNT(*) ... */
 	SEL_PID,			/**< SELECT afy:pinID ... */
+	SEL_FIRSTPID,		/**< SELECT FIRST afy:pinID ... */
 	SEL_VALUE,			/**< SELECT expr, aggregation is used, one result is returned */
 	SEL_VALUESET,		/**< SELECT expr, no aggregation */
 	SEL_DERIVED,		/**< SELECT list of expressions, aggregation is used, one result is returned */
 	SEL_DERIVEDSET,		/**< SELECT list of expressions, no aggregation */
+	SEL_DERIVEDPINSET,	/**< SELECT @{...} */
 	SEL_AUGMENTED,		/**< SELECT @,... */
+	SEL_PIN,			/**< SELECT FIRST * ... */
 	SEL_PINSET,			/**< SELECT * for non-join query */
 	SEL_COMPOUND,		/**< SELECT * for join query */
 	SEL_COMP_DERIVED	/**< SELECT list of expressions for join query */
@@ -126,6 +129,7 @@ enum RenderPart
 #define	QVF_ALL			0x01
 #define	QVF_DISTINCT	0x02
 #define	QVF_RAW			0x04
+#define	QVF_FIRST		0x08
 
 /**
  * abstract class describing query variable

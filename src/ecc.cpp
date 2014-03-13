@@ -1,6 +1,6 @@
 /**************************************************************************************
 
-Copyright Â© 2004-2014 GoPivotal, Inc. All rights reserved.
+Copyright © 2004-2014 GoPivotal, Inc. All rights reserved.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -18,42 +18,31 @@ Written by Mark Venguerov 2013
 
 **************************************************************************************/
 
-/**
- * Finite State Machines definitions
- */
-#ifndef _FSM_H_
-#define _FSM_H_
+#include "ecc.h"
 
-#include "session.h"
+using namespace AfyKernel;
 
-using namespace Afy;
-
-namespace AfyKernel
+RC	MPNCtx::addsub(const MPN& lhs,const MPN& rhs,MPN *&res,uint16_t fSub)
 {
-
-/**
- * start an FSM on tx commit
- */
-class StartFSM : public OnCommit
-{
-	Value	ctx;
-public:
-	StartFSM(const Value& ct);
-	RC		process(Session *ses);
-	void	destroy(Session *ses);
-	static	RC	loadFSM(PINx&cb);
-};
-
-class FSMMgr
-{
-	StoreCtx	*const ctx;
-public:
-	FSMMgr(StoreCtx *ct) : ctx(ct) {}
-	RC	process(Session *ses,PIN *fsm,const Value *event=NULL,ElementID tid=STORE_COLLECTION_ID);
-private:
-	RC	addTransition(const Value *trans,DynArray<Value> *table);
-};
-
+	assert(fSub<=1);
+	if ((lhs.fNeg^rhs.fNeg^fSub)!=0) {
+		//...
+	} else if (lhs.nBits>=rhs.nBits) {
+		//...
+	} else {
+		//...
+	}
+	return RC_OK;
 }
 
-#endif
+RC	MPNCtx::_addsub(MPN& lhs,const MPN& rhs,bool fSub)
+{
+	assert(lhs.nBits>=rhs.nBits);
+	if (fSub) {
+		//...
+	} else {
+		//...
+	}
+	return RC_OK;
+}
+

@@ -1,6 +1,6 @@
 /**************************************************************************************
 
-Copyright © 2004-2013 GoPivotal, Inc. All rights reserved.
+Copyright © 2004-2014 GoPivotal, Inc. All rights reserved.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -40,7 +40,8 @@ FreeQ asyncWriteReqs;
 };
 
 BufMgr::BufMgr(StoreCtx *ct,int initNumberOfBlocks,size_t lpage) 
-: BufQMgr(bufCtrl,PAGE_HASH_SIZE,ct),ctx(ct),lPage(nextP2((unsigned)lpage)),nStoreBuffers(initNumberOfBlocks),pageList(NULL),flushList(NULL),depList(NULL)
+	: BufQMgr(bufCtrl,PAGE_HASH_SIZE,ct),ctx(ct),lPage(nextP2((unsigned)lpage)),nStoreBuffers(initNumberOfBlocks),
+	fInMem(ctx->memory!=NULL),fRT((ctx->mode&STARTUP_RT)!=0),pageList(NULL),flushList(NULL),depList(NULL)
 {	
 	InterlockedIncrement(&nStores); assert((lPage&getPageSize()-1)==0);
 }
@@ -68,7 +69,12 @@ RC BufMgr::init()
 	unsigned nBufNew=xBuffers;		//...*log10(nStores)
 	if (nBufNew>nBuffers) {
 		nBufNew-=nBuffers; unsigned nBufOld=nBuffers;
-		for (unsigned n=nBufNew; nBufNew!=0; nBufNew-=n) {
+		if (fInMem) {
+			PBlock *pb=(PBlock*)::malloc(nBufNew*sizeof(PBlock));
+			if (pb!=NULL) for (unsigned i=0; i<nBufNew; ++pb,++i)
+				InterlockedPushEntrySList(&freeBuffers,(SLIST_ENTRY*)new(pb) PBlock(this,NULL,NULL));
+			nBuffers+=nBufNew;
+		} else for (unsigned n=nBufNew; nBufNew!=0; nBufNew-=n) {
 			byte *pg=NULL; if (n>nBufNew) n=nBufNew;
 			while (n!=0 && (pg=(byte*)allocAligned(n*lPage,lPage))==NULL) n>>=1;
 			if (pg==NULL) break;
@@ -96,8 +102,7 @@ void BufMgr::checkState()
 	for (HChain<PBlock>::it it(&pageList); ++it;) {
 		PBlock *pb=it.get();
 		if ((pb->pageID&0xFF000000)==0 && pb->QE!=NULL && (pb->QE->isFixed() || pb->QE->isLocked()))
-			report(MSG_DEBUG,"BufMgr::checkState: block is locked for %s\n",
-				pb->QE->isXLocked()?"write":pb->QE->isULocked()?"update":"read");
+			report(MSG_DEBUG,"BufMgr::checkState: block is locked for %s\n",pb->QE->isXLocked()?"write":pb->QE->isULocked()?"update":"read");
 	}
 }
 #endif
@@ -161,10 +166,11 @@ PBlock *BufMgr::newPage(PageID pid,PageMgr *pageMgr,PBlock *old,unsigned flags,S
 		if (old!=NULL && !ses->unlatch(old,flags)) old=NULL;
 	}
 	switch (get(pb,pid,pageMgr,QMGR_NEW|RW_X_LOCK|(flags&QMGR_UFORCE),old)) {
+	default: assert(pb==NULL); break;
 	case RC_ALREADYEXISTS: 
 		report(MSG_ERROR,"BufMgr::newPage: page %X already exists\n",pid);
-	default: assert(pb==NULL); break;
 	case RC_OK:
+		if (fInMem) {const_cast<byte*&>(pb->frame)=(byte*)ctx->memory+pid*lPage; assert(ctx->memory!=NULL);}
 		pb->state=BLOCK_NEW_PAGE; assert(pb->QE->getKey()==pb->pageID && pb->QE->isFixed());
 		if ((pb->pageMgr=pageMgr)!=NULL) pageMgr->initPage(pb->frame,lPage,pid);
 		if (ses!=NULL && ses->latch(pb,flags|PGCTL_XLOCK)!=RC_OK) {release(pb,(flags&PGCTL_ULOCK)!=0); pb=NULL;}
@@ -181,7 +187,7 @@ static int __cdecl sortPages(const void *pv1,const void *pv2)
 
 RC BufMgr::flushAll(uint64_t timeout)
 {
-	if (ctx->theCB->state==SST_NO_SHUTDOWN) return RC_OK; flushLock.lock(RW_X_LOCK);
+	if (fInMem||ctx->theCB->state==SST_NO_SHUTDOWN) return RC_OK; flushLock.lock(RW_X_LOCK);
 	myaio **pcbs; RC rc=RC_OK; int cnt,ncbs; TIMESTAMP start,current; getTimestamp(start);
 	if (dirtyCount!=0) {
 		if ((pcbs=(myaio**)ctx->malloc((ncbs=dirtyCount)*sizeof(myaio*)))==NULL) {flushLock.unlock(); return RC_NORESOURCES;}
@@ -221,7 +227,7 @@ RC BufMgr::flushAll(uint64_t timeout)
 
 RC BufMgr::close(FileID fid,bool fAll)
 {
-	pageQLock.lock(RW_X_LOCK);
+	{RWLockP lck(fRT?NULL:&pageQLock,RW_X_LOCK);
 	for (HChain<PBlock>::it_r it(&pageList); ++it;) {
 		PBlock *pb=it.get();
 		if (fAll || FileIDFromPageID(pb->pageID)==fid) {
@@ -232,12 +238,13 @@ RC BufMgr::close(FileID fid,bool fAll)
 		}
 	}
 	assert(!fAll || !pageList.isInList());
-	pageQLock.unlock(); return fAll?RC_OK:ctx->fileMgr->close(fid);
+	}
+	return fAll||fInMem?RC_OK:ctx->fileMgr->close(fid);
 }
 
 void BufMgr::prefetch(const PageID *pages,int nPages,PageMgr *pageMgr,PageMgr *const *mgrs)
 {
-	if (pages==NULL || nPages==0) return;
+	if (pages==NULL || nPages==0 || fInMem) return;
 	myaio **pcbs=(myaio**)malloc(nPages*sizeof(myaio*),SES_HEAP); if (pcbs==NULL) return;
 	
 	int cnt=0; PBlock *pb=NULL;
@@ -301,6 +308,7 @@ LogDirtyPages *BufMgr::getDirtyPageInfo(LSN old,LSN& redo,PageID *asyncPages,uns
 
 void BufMgr::writeAsyncPages(const PageID *asyncPages,unsigned nAsyncPages)
 {
+	if (fInMem) return;
 	unsigned cnt=0; LSN flushLSN(0); RC rc; assert(asyncPages!=NULL && nAsyncPages>0);
 	myaio **pcbs=(myaio**)alloca(nAsyncPages*sizeof(myaio*));
 	if (pcbs==NULL||!flushLock.trylock(RW_S_LOCK)) return; RWLockP flck(&flushLock);
@@ -337,7 +345,7 @@ PBlock::~PBlock()
 }
 
 void PBlock::setRedo(LSN lsn) {
-	assert(isXLocked()); 
+	assert(isXLocked()); if (mgr->fInMem) return;
 	if ((state&(BLOCK_REDO_SET|BLOCK_DISCARDED))==0) {
 		RWLockP flck(&mgr->flushQLock,RW_X_LOCK); 
 		if ((state&(BLOCK_REDO_SET|BLOCK_DISCARDED|BLOCK_DIRTY))==0) {
@@ -349,6 +357,17 @@ void PBlock::setRedo(LSN lsn) {
 #ifdef _DEBUG
 	else assert((state&BLOCK_DIRTY)!=0);
 #endif
+}
+
+void PBlock::setDependency(PBlock *dp)
+{
+	assert(dp!=NULL && dp->isXLocked() && dp->dependent==NULL && isXLocked()); 
+	if (!mgr->fInMem) {dp->dependent=this; ++dependCnt;}
+}
+
+void PBlock::removeDependency(PBlock *dp) {
+	assert(dp!=NULL && dp->isXLocked() && isXLocked()); 
+	if (!mgr->fInMem && dp->dependent!=NULL) {assert(dp->dependent==this); --dependCnt; dp->dependent=NULL;}
 }
 
 void PBlock::fillaio(int op,void (*callback)(void*,RC,bool)) const
@@ -365,7 +384,10 @@ RW_LockType PBlock::lockType(RW_LockType lt)
 
 RC PBlock::load(PageMgr *pm,unsigned flags)
 {
-	pageMgr=pm; setStateBits(BLOCK_IO_READ); return readResult(mgr->ctx->fileMgr->io(FIO_READ,pageID,frame,mgr->lPage));
+	pageMgr=pm; RC rc=RC_OK;
+	if (!mgr->fInMem) {setStateBits(BLOCK_IO_READ); rc=readResult(mgr->ctx->fileMgr->io(FIO_READ,pageID,frame,mgr->lPage));}
+	else {const_cast<byte*&>(frame)=(byte*)mgr->ctx->memory+mgr->lPage*pageID; assert(mgr->ctx->memory!=NULL);}
+	return rc;
 }
 
 namespace AfyKernel
@@ -382,7 +404,8 @@ namespace AfyKernel
 
 void PBlock::saveAsync()
 {
-	if (!mgr->flushLock.trylock(RW_S_LOCK)) return; RWLockP flck(&mgr->flushLock);
+	if (mgr->fInMem || !mgr->flushLock.trylock(RW_S_LOCK)) return;
+	RWLockP flck(&mgr->flushLock);
 	if (!mgr->prepareForSave(this)) {mgr->endSave(this); return;}
 	if (pageMgr!=NULL) {
 		LSN lsn(pageMgr->getLSN(frame,mgr->lPage));
@@ -396,7 +419,7 @@ void PBlock::saveAsync()
 
 bool PBlock::save()
 {
-	if ((state&BLOCK_DIRTY)==0) return false; assert(QE->getKey()==pageID && QE->isFixed());
+	if ((state&BLOCK_DIRTY)==0) return false; assert(!mgr->fInMem && QE->getKey()==pageID && QE->isFixed());
 	if (isDependent()) {
 		if (!depList.isInList()) {RWLockP lck(&mgr->depQLock,RW_X_LOCK); mgr->depList.insertLast(&depList);}
 		return false;
@@ -423,7 +446,8 @@ void PBlock::release(unsigned flags,Session *ses)
 
 RC PBlock::flushBlock()
 {
-	RC rc=RC_OK; setStateBits(BLOCK_IO_WRITE); assert(!isDependent());
+	RC rc=RC_OK; if (mgr->fInMem) return RC_OK;
+	setStateBits(BLOCK_IO_WRITE); assert(!isDependent());
 	const bool fChain=(state&BLOCK_FLUSH_CHAIN)!=0;
 	if (pageMgr!=NULL) {
 		LSN lsn(pageMgr->getLSN(frame,mgr->lPage)); 
@@ -472,7 +496,7 @@ void PBlock::destroy()
 	if (vb!=NULL) {vb->release(); vb=NULL;}
 	if (flushList.isInList()) {RWLockP lck(&mgr->flushQLock,RW_X_LOCK); flushList.remove(); --mgr->dirtyCount;}
 	if (dependent!=NULL) {assert(dependent->dependCnt>0); --dependent->dependCnt;}
-	if (pageList.isInList()) {RWLockP lck(&mgr->pageQLock,RW_X_LOCK); pageList.remove();}
+	if (pageList.isInList()) {RWLockP lck(mgr->fRT?NULL:&mgr->pageQLock,RW_X_LOCK); pageList.remove();}
 	pageID=INVALID_PAGEID; mgr=NULL; InterlockedPushEntrySList(&BufMgr::freeBuffers,(SLIST_ENTRY*)this);
 }
 
@@ -559,15 +583,15 @@ void PBlock::signal(void*)
 
 void PBlock::initNew()
 {
-	RWLockP lck(&mgr->pageQLock,RW_X_LOCK); mgr->pageList.insertFirst(&pageList);
+	RWLockP lck(mgr->fRT?NULL:&mgr->pageQLock,RW_X_LOCK); mgr->pageList.insertFirst(&pageList);
 }
 
 void PBlock::setKey(PageID pid,void *mg)
 {
 	if (vb!=NULL) {vb->release(); vb=NULL;}
-	if (mgr!=NULL && pageList.isInList()) {RWLockP lck(&mgr->pageQLock,RW_X_LOCK); pageList.remove();}
+	if (mgr!=NULL && pageList.isInList()) {RWLockP lck(mgr->fRT?NULL:&mgr->pageQLock,RW_X_LOCK); pageList.remove();}
 	pageID=pid; mgr=(BufMgr*)(BufQMgr*)mg;
-	RWLockP lck(&mgr->pageQLock,RW_X_LOCK); mgr->pageList.insertFirst(&pageList);
+	RWLockP lck(mgr->fRT?NULL:&mgr->pageQLock,RW_X_LOCK); mgr->pageList.insertFirst(&pageList);
 }
 
 PBlock*	PBlockP::getPage(PageID pid,PageMgr *mgr,unsigned f,Session *ses)

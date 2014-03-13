@@ -1,6 +1,6 @@
 /**************************************************************************************
 
-Copyright © 2004-2013 GoPivotal, Inc. All rights reserved.
+Copyright © 2004-2014 GoPivotal, Inc. All rights reserved.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -92,7 +92,7 @@ protected:
 class PIN : public IPIN
 {
 protected:
-	Session				*ses;				/**< Session this PIN was created in or NULL for Class PINs*/
+	MemAlloc			*ma;				/**< Memory allocator for this PIN */
 	mutable	PID			id;					/**< PIN ID */
 	Value				*properties;		/**< array of PIN properties */
 	uint32_t			nProperties;		/**< number of properties */
@@ -104,13 +104,12 @@ protected:
 	uint16_t			fReload		:1;		/**< load PIN properties if PINs page is being force-unlatched */
 	uint16_t			fPartial	:1;		/**< pin is a result of a projection of a stored pin or pin is not completely loaded from page */
 	uint16_t			fSSV		:1;		/**< pin has SSV properties and they're not loaded yet */
-	PIN					*sibling;			/**< PIN's sibling (for results of joins) */
 	size_t				length;				/**< PIN length - calculated and used in persistPINs() */
 
 public:
-	PIN(Session *s,unsigned md=0,Value *vals=NULL,unsigned nvals=0,bool fNF=false)
-		: ses(s),id(noPID),properties(vals),nProperties(nvals),mode(md),addr(PageAddr::noAddr),meta(0),
-		fPINx(0),fNoFree(fNF?1:0),fReload(0),fPartial(0),fSSV(0),sibling(NULL) {length=0;}
+	PIN(MemAlloc *m,unsigned md=0,Value *vals=NULL,unsigned nvals=0,bool fNF=false)
+		: ma(m),id(noPID),properties(vals),nProperties(nvals),mode(md),addr(PageAddr::noAddr),meta(0),
+		fPINx(0),fNoFree(fNF?1:0),fReload(0),fPartial(0),fSSV(0) {length=0;}
 	virtual		~PIN();
 
 	// interface implementation
@@ -143,23 +142,27 @@ public:
 	virtual	const	void	*getPropTab(unsigned& nProps) const;
 
 	// helper functions
-	Session		*getSes() const {return ses;}
 	uint32_t	getMode() const {return mode;}
 	bool		isPartial() const {return fPartial!=0;}
 	const		PageAddr& getAddr() const {return addr;}
-	void		operator delete(void *p) {if (((PIN*)p)->ses!=NULL) ((PIN*)p)->ses->free(p);}
+	void		operator delete(void *p) {if (((PIN*)p)->ma!=NULL) ((PIN*)p)->ma->free(p);}
 	void		operator=(const PID& pid) const {id=pid;}
 	void		operator=(const PageAddr& ad) const {addr=ad;}
 	RC			getV(PropertyID pid,Value& v,unsigned mode,MemAlloc *ma,ElementID=STORE_COLLECTION_ID);
 	RC			getV(PropertyID pid,const Value *&pv);
-	RC			modify(const Value *pv,unsigned epos,unsigned eid,unsigned flags,MemAlloc *ma=NULL);
+	RC			modify(const Value *pv,unsigned epos,unsigned eid,unsigned flags);
 	void		setProps(const Value *pv,unsigned nv) {properties=(Value*)pv; nProperties=nv;}
+	void		setMode(uint32_t md) {mode=md;}
 	RC			checkSet(const Value *&pv,const Value& w);
+	RC			render(class SOutCtx&,bool fInsert=false) const;
+	size_t		serSize() const;
+	byte		*serialize(byte *buf) const;
+	static	RC	deserialize(PIN*&,const byte *&,const byte *const ebuf,MemAlloc*,bool);
 	__forceinline const Value *findProperty(PropertyID pid) {const Value *pv=VBIN::find(pid,properties,nProperties); return pv!=NULL||fPartial==0?pv:loadProperty(pid);}
-	ElementID	getPrefix(StoreCtx *ctx) const {return id.pid==STORE_INVALID_PID||id.ident==STORE_INVALID_IDENTITY?ctx->getPrefix():StoreCtx::genPrefix(ushort(id.pid>>48));}
+	ElementID	getPrefix(StoreCtx *ctx) const {return !id.isPID()?ctx->getPrefix():StoreCtx::genPrefix(ushort(id.pid>>48));}
 	static PIN*	getPIN(const PID& id,VersionID vid,Session *ses,unsigned mode=0);
 	static const Value *findElement(const Value *pv,unsigned eid) {
-		assert(pv!=NULL && pv->type==VT_ARRAY);
+		assert(pv!=NULL && pv->type==VT_COLLECTION && !pv->isNav());
 		if (pv->length!=0) {
 			if (eid==STORE_FIRST_ELEMENT) return &pv->varray[0];
 			if (eid==STORE_LAST_ELEMENT) return &pv->varray[pv->length-1];
@@ -194,26 +197,31 @@ public:
 	friend	class	BatchInsert;
 	friend	class	LoadService;
 	friend	class	StartListener;
+	friend	class	SOutCtx;
 };
 
-inline bool isRemote(const PID& id) {return id.ident!=STORE_OWNER&&id.ident!=STORE_INVALID_IDENTITY||id.pid!=STORE_INVALID_PID&&ushort(id.pid>>48)!=StoreCtx::get()->storeID;}
+inline bool isRemote(const PID& id) {return id.ident!=STORE_OWNER&&id.ident!=STORE_INVALID_IDENTITY&&id.ident!=STORE_INMEM_IDENTITY||!id.isEmpty()&&ushort(id.pid>>48)!=StoreCtx::get()->storeID;}
 
-class BatchInsert : public IBatch, public SubAlloc, public DynArray<PIN*>
+class BatchInsert : public IBatch, public StackAlloc, public DynArray<PIN*>
 {
 	Session *const ses;
 public:
-	BatchInsert(Session *s) : SubAlloc(s),DynArray<PIN*>((SubAlloc*)this),ses(s) {}
+	BatchInsert(Session *s) : StackAlloc(s),DynArray<PIN*>((StackAlloc*)this),ses(s) {}
 	unsigned	getNumberOfPINs() const;
 	size_t		getSize() const;
 	Value		*createValues(uint32_t nValues);
 	RC			createPIN(Value *values,unsigned nValues,unsigned mode=0,const PID *original=NULL);
 	RC			addRef(unsigned from,const Value &to,bool fAdd=true);
+	RC			clone(IPIN *pin,const Value *values=NULL,unsigned nValues=0,unsigned mode=0);
 	RC			process(bool fDestroy=true,unsigned mode=0,const AllocCtrl* =NULL,const IntoClass *into=NULL,unsigned nInto=0);
-	RC			getPIDs(PID *pids,unsigned& nPIDs,unsigned start=0);
+	RC			getPIDs(PID *pids,unsigned& nPIDs,unsigned start=0) const;
+	RC			getPID(unsigned idx,PID& pid) const;
+	const Value *getProperty(unsigned idx,URIID pid) const;
 	ElementID	getEIDBase() const;
 	void*		malloc(size_t s);
 	void*		realloc(void *p,size_t s,size_t old=0);
 	void		free(void *p);
+	void		clear();
 	void		destroy();
 };
 

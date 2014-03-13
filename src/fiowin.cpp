@@ -1,6 +1,6 @@
 /**************************************************************************************
 
-Copyright © 2004-2013 GoPivotal, Inc. All rights reserved.
+Copyright © 2004-2014 GoPivotal, Inc. All rights reserved.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -213,7 +213,7 @@ void FileMgr::asyncIOCompletion()
 				aio->aio_rc=convCode(err=GetLastError());
 				if (err!=ERROR_OPERATION_ABORTED) report(MSG_ERROR,"Error in asyncIOCompletion: %ld\n",err);
 			} else if (l!=aio->aio_nbytes) {
-				report(MSG_ERROR,"Incorrect length in asyncIOCompletion: 0x%x instead of 0x%x. File %d, offset "_LX_FM"\n",l,aio->aio_nbytes,aio->aio_fid,aio->aio_offset);
+				report(MSG_ERROR,"Incorrect length in asyncIOCompletion: 0x%x instead of 0x%x. File %d, offset " _LX_FM "\n",l,aio->aio_nbytes,aio->aio_fid,aio->aio_offset);
 				//??? see 10939
 			}
 

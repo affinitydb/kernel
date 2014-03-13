@@ -1,6 +1,6 @@
 /**************************************************************************************
 
-Copyright © 2004-2013 GoPivotal, Inc. All rights reserved.
+Copyright © 2004-2014 GoPivotal, Inc. All rights reserved.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -55,7 +55,7 @@ RC HeapPageMgr::update(PBlock *pb,size_t len,unsigned info,const byte *rec,size_
 		report(MSG_ERROR,"Invalid HPOP %d in HeapPageMgr::update, page %08X\n",op0,hp->hdr.pageID);
 		return RC_CORRUPTED;
 	}
-	const static HPOP undoOP[HPOP_ALL]={HPOP_PURGE,HPOP_EDIT,HPOP_DELETE,HPOP_INSERT,HPOP_PINOP,HPOP_MIGRATE,HPOP_SETFLAG};
+	const static HPOP undoOP[HPOP_ALL]={HPOP_PURGE,HPOP_EDIT,HPOP_DELETE,HPOP_INSERT,HPOP_PINOP,HPOP_MIGRATE};
 	ushort op=(flags&TXMGR_UNDO)!=0?(ushort)undoOP[op0]:op0; const PageIdx *idxs=NULL; unsigned nObjs=1;
 	size_t lr=ceil(lrec,HP_ALIGN); PageOff off; HeapObjHeader *hdr;
 	switch (op) {
@@ -109,7 +109,10 @@ RC HeapPageMgr::update(PBlock *pb,size_t len,unsigned info,const byte *rec,size_
 							if (hprop->type==HType::compactRef) hpin->hdr.descr|=HOH_COMPACTREF;
 						} else {
 							hprop->offset+=hp->freeSpace;
-							if (hprop->type.isCompound()) hpin->hdr.descr|=adjustCompound(frame,hprop,hprop->offset,ctx);
+							if (hprop->type.getFormat()!=HDF_LONG) {
+								if (hprop->type.isArray()) alignArray(frame,hprop);
+								else if (hprop->type.isCompound()) hpin->hdr.descr|=adjustCompound(frame,hprop,hprop->offset,ctx);
+							}
 						}
 					}
 #ifdef _DEBUG
@@ -161,9 +164,6 @@ RC HeapPageMgr::update(PBlock *pb,size_t len,unsigned info,const byte *rec,size_
 		}
 		(*hp)[idx]=hp->freeSpace; hdr=(HeapObjHeader*)(frame+hp->freeSpace); hdr->descr=HO_FORWARD; hdr->length=sizeof(HeapObjHeader)+PageAddrSize;
 		hp->freeSpace+=sizeof(HeapObjHeader)+PageAddrSize; memcpy(hdr+1,rec+lrec-PageAddrSize,PageAddrSize); return RC_OK;
-	case HPOP_SETFLAG:
-		op=((HeapSetFlag*)rec)->value; if ((flags&TXMGR_UNDO)!=0) op^=((HeapSetFlag*)rec)->mask;
-		hdr->descr=hdr->descr&~((HeapSetFlag*)rec)->mask|op; return RC_OK;
 	case HPOP_EDIT:
 		assert(lrec>=sizeof(HeapModEdit));
 		if (ht!=HO_SSVALUE && ht!=HO_BLOB && ht!=HO_FORWARD) {
@@ -219,7 +219,7 @@ RC HeapPageMgr::update(PBlock *pb,size_t len,unsigned info,const byte *rec,size_
 		report(MSG_ERROR,"Invalid operation %d, slot: %d, page: %08X\n",op0,idx,hp->hdr.pageID);
 		return RC_CORRUPTED;
 	case HPOP_PINOP:
-		if (lrec<sizeof(HeapPINMod)) {
+		if (lrec<sizeof(HeapPINMod)-sizeof(HeapPropMod)) {
 			report(MSG_ERROR,"Invalid lrec %d for HPOP_PINOP, slot: %d, page: %08X\n",lrec,idx,hp->hdr.pageID);
 			return RC_CORRUPTED;
 		}
@@ -230,12 +230,10 @@ RC HeapPageMgr::update(PBlock *pb,size_t len,unsigned info,const byte *rec,size_
 		report(MSG_ERROR,"PIN operation %d for a non-PIN object %d, slot: %d, page: %08X\n",op,ht,idx,hp->hdr.pageID);
 		return RC_CORRUPTED;
 	}
-	if ((hdr->descr&HOH_DELETED)!=0) 
-		{report(MSG_ERROR,"PIN deleted, slot: %d, page: %08X\n",idx,hp->hdr.pageID); return RC_NOTFOUND;}
 	
 	HeapPIN *hpin=(HeapPIN*)hdr; const HeapPINMod *hpi=(const HeapPINMod*)rec;
 	rec+=sizeof(HeapPINMod)+int(hpi->nops-1)*sizeof(HeapPropMod); RC rc=RC_OK;
-	if ((flags&TXMGR_UNDO)==0) hpin->hdr.descr|=hpi->descr;
+	hpin->hdr.descr=(hpin->hdr.descr&HOH_MULTIPART)|(((flags&TXMGR_UNDO)==0?hpi->descr:hpi->odscr)&~HOH_MULTIPART);
 	for (uint16_t nop=0; nop<hpi->nops; nop++) {
 		const HeapPropMod *hpm=&hpi->ops[(flags&TXMGR_UNDO)!=0?hpi->nops-1-nop:nop]; op=hpm->op; ValueType ty;
 		PageIdx hidx; HeapV *hins=NULL,*hins2=NULL; uint32_t key; HType *pType; ushort sht,x; HeapDataFmt fmt,newf; bool fNewProp=false;
@@ -262,7 +260,7 @@ RC HeapPageMgr::update(PBlock *pb,size_t len,unsigned info,const byte *rec,size_
 			PINOP_ERROR(RC_NOTFOUND);
 		} else if (op!=OP_RENAME && op!=OP_MOVE && op!=OP_MOVE_BEFORE && op!=OP_EDIT && eid==STORE_COLLECTION_ID 
 																	&& hprop->type.getType()!=oldPtr->type.getType()) {
-			if (hprop->type.isCollection() && hprop->type.getFormat()!=HDF_LONG && ((HeapVV*)(frame+hprop->offset))->cnt==1) {
+			if (hprop->type.getType()==VT_COLLECTION && ((HeapVV*)(frame+hprop->offset))->cnt==1) {
 				if (hprop->type.getFormat()!=HDF_SHORT) eid=((HeapVV*)(frame+hprop->offset))->start->getID();
 			} else {
 				report(MSG_ERROR,"Property %08X value type mismatch, expected: %04X, actual: %04X, slot: %d, page: %08X\n",
@@ -317,7 +315,7 @@ RC HeapPageMgr::update(PBlock *pb,size_t len,unsigned info,const byte *rec,size_
 				} else {
 					assert(eid==STORE_COLLECTION_ID && oldPtr->type==hprop->type);
 					if (oldPtr->type.isCompact()) assert(hprop->offset==oldPtr->ptr.offset);
-					else if (!hprop->type.isCompound()||hprop->type.getFormat()==HDF_LONG) 
+					else if (!hprop->type.isCompound()||hprop->type.getFormat()==HDF_LONG)
 						assert(memcmp(frame+hprop->offset,rec+oldPtr->ptr.offset,oldPtr->ptr.len)==0);
 					else {
 						// check compound
@@ -349,7 +347,7 @@ RC HeapPageMgr::update(PBlock *pb,size_t len,unsigned info,const byte *rec,size_
 						assert(coll->start->getID()!=STORE_COLLECTION_ID);
 						if (newPtr->type.isCompact()) coll->start->offset=newPtr->ptr.offset;
 						else {memcpy(hk+1,data,newPtr->ptr.len); coll->start->offset=hprop->offset+sizeof(HeapVV)+sizeof(HeapKey);}
-						hprop->type.setType(VT_ARRAY,HDF_SHORT);
+						hprop->type.setType(VT_COLLECTION,HDF_SHORT);
 					} else {
 						elt->type=newPtr->type;
 						if (newPtr->type.isCompact()) elt->offset=newPtr->ptr.offset;
@@ -403,7 +401,7 @@ RC HeapPageMgr::update(PBlock *pb,size_t len,unsigned info,const byte *rec,size_
 					coll->start->type=newPtr->type; coll->start->setID(eid);
 					if (newPtr->type.isCompact()) coll->start->offset=newPtr->ptr.offset;
 					else {memcpy(hk+1,data,newPtr->ptr.len); coll->start->offset=hprop->offset+sizeof(HeapVV)+sizeof(HeapKey);}
-					hprop->type.setType(VT_ARRAY,HDF_SHORT); hprop->type.flags=newPtr->type.flags;
+					hprop->type.setType(VT_COLLECTION,HDF_SHORT); hprop->type.flags=newPtr->type.flags;
 				} else if (newPtr->type.isCompact()) {
 					hprop->offset=newPtr->ptr.offset;
 				} else {
@@ -446,7 +444,7 @@ RC HeapPageMgr::update(PBlock *pb,size_t len,unsigned info,const byte *rec,size_
 					elt->setID(eid2); elt->type=newPtr->type; assert(eid2!=STORE_COLLECTION_ID);
 					if (key<=eid2 && ((key^eid2)&CPREFIX_MASK)==0) hk->setKey(eid2+1);
 				}
-				hprop->type.setType(VT_ARRAY,HDF_NORMAL); hp->freeSpace+=extra; if (op==OP_ADD_BEFORE) coll->fUnord=1;
+				hprop->type.setType(VT_COLLECTION,HDF_NORMAL); hp->freeSpace+=extra; if (op==OP_ADD_BEFORE) coll->fUnord=1;
 			}
 			hpin->hdr.descr|=HOH_MULTIPART; hp->freeSpace+=nl; hpin->hdr.length+=nl+extra;
 			break;
@@ -476,7 +474,7 @@ RC HeapPageMgr::update(PBlock *pb,size_t len,unsigned info,const byte *rec,size_
 					if (!fColl) ol+=sizeof(HeapV); else ol-=sizeof(HeapVV)-sizeof(HeapV)+sizeof(HeapKey);
 					hpin->hdr.length-=ol; hpin->hdr.descr|=HOH_MULTIPART; hp->scatteredFreeSpace+=ol;
 					if (coll->cnt==1) {
-						if (newPtr->ptr.offset==ushort(~0u)) hprop->type.setType(VT_ARRAY,HDF_SHORT);
+						if (newPtr->ptr.offset==ushort(~0u)) hprop->type.setType(VT_COLLECTION,HDF_SHORT);
 						else if (newPtr->ptr.offset==ushort(~1u)) {
 							hprop->type.type=coll->start->type.type; hprop->offset=coll->start->offset;
 							hp->scatteredFreeSpace+=sizeof(HeapVV)+sizeof(HeapKey); hpin->hdr.length-=sizeof(HeapVV)+sizeof(HeapKey);
@@ -595,46 +593,8 @@ RC HeapPageMgr::update(PBlock *pb,size_t len,unsigned info,const byte *rec,size_
 
 unsigned HeapPageMgr::getPrefix(const PID& id)
 {
-	assert(id.pid!=STORE_INVALID_PID&&id.ident!=STORE_INVALID_IDENTITY);
-	return StoreCtx::genPrefix(ushort(id.pid>>48));
+	assert(id.isPID()); return StoreCtx::genPrefix(ushort(id.pid>>48));
 }
-
-const HeapPageMgr::HeapTypeInfo HeapPageMgr::typeInfo[VT_ALL] =
-{
-	{0,					0},						//	VT_ERROR
-	{sizeof(int32_t),	sizeof(int32_t)-1},		//	VT_INT
-	{sizeof(uint32_t),	sizeof(uint32_t)-1},	//	VT_UINT
-	{sizeof(int64_t),	sizeof(int64_t)-1},		//	VT_INT64
-	{sizeof(uint64_t),	sizeof(uint64_t)-1},	//	VT_UINT64
-	{sizeof(float),		sizeof(float)-1},		//	VT_FLOAT
-	{sizeof(double),	sizeof(double)-1},		//	VT_DOUBLE
-	{0,					0},						//	VT_BOOL
-	{sizeof(uint64_t),	sizeof(uint64_t)-1},	//	VT_DATETIME
-	{sizeof(int64_t),	sizeof(int64_t)-1},		//	VT_INTERVAL
-	{sizeof(uint32_t),	sizeof(uint32_t)-1},	//	VT_URIID
-	{sizeof(uint32_t),	sizeof(uint32_t)-1},	//	VT_IDENTITY
-	{sizeof(uint32_t)*2,sizeof(uint32_t)*2},	//	VT_ENUM
-	{0,					0},						//	VT_STRING
-	{0,					0},						//	VT_BSTR
-	{0,					0}, 					//	VT_URL
-	{0,					sizeof(uint64_t)-1},	//	VT_REF
-	{0,					sizeof(uint64_t)-1},	//	VT_REFID
-	{0,					sizeof(uint64_t)-1},	//	VT_REFPROP
-	{0,					sizeof(uint64_t)-1},	//	VT_REFIDPROP
-	{0,					sizeof(uint64_t)-1},	//	VT_REFELT
-	{0,					sizeof(uint64_t)-1},	//	VT_REFIDELT
-	{0,					0},						//	VT_EXPR
-	{0,					0},						//	VT_STMT
-	{0,					0},						//	VT_ARRAY
-	{0,					0},						//	VT_COLLECTION
-	{0,					0},						//	VT_STRUCT
-	{0,					0},						//	VT_MAP
-	{0,					0},						//	VT_RANGE
-	{sizeof(HRefSSV),	sizeof(uint32_t)-1},	//	VT_STREAM
-	{0,					0},						//	VT_CURRENT
-	{sizeof(RefV),		sizeof(RefV)},			//	VT_VARREF
-	{0,					0},						//	VT_EXPRTREE
-};
 
 const ushort HeapPageMgr::refLength[4] = {0,PageAddrSize,sizeof(uint64_t),sizeof(uint64_t)+sizeof(IdentityID)};
 
@@ -670,31 +630,52 @@ ushort HeapPageMgr::dataLength(HType vt,const byte *pData,const byte *frame,unsi
 		}
 		if (idxMask!=NULL && ((HRefSSV*)pData)->type.isString()) *idxMask|=IX_OFT;
 		return sizeof(HRefSSV);
-	case VT_ARRAY:
+	case VT_COLLECTION:
 	case VT_STRUCT:
 	case VT_MAP:
 		if (fmt==HDF_LONG) {
-			len=ty==VT_MAP?0:ty==VT_STRUCT?sizeof(HRefSSV):collDescrSize((HeapExtCollection*)pData); if (idxMask!=NULL) *idxMask|=IX_OFT;	// VT_MAP?
+			if (idxMask!=NULL) *idxMask|=IX_OFT;
+			len=ty==VT_MAP?0:ty==VT_STRUCT?sizeof(HRefSSV):collDescrSize((HeapExtCollection*)pData); // VT_MAP?		???
 		} else {
 			const HeapVV *comp=(const HeapVV*)pData; len=0; assert(frame!=NULL);
 			for (l=comp->cnt; l!=0; ) {
 				const HeapV *elt=&comp->start[--l];
 				if (!elt->type.isCompact()) len+=ushort(ceil(dataLength(elt->type,frame+elt->offset,frame,idxMask),HP_ALIGN)); 
 			}
-			len+=comp->length(ty==VT_ARRAY);
+			len+=comp->length(ty==VT_COLLECTION);
 		}
 		return len;
+	case VT_ARRAY:
+		return fmt==HDF_LONG?sizeof(HRefSSV):((HeapArray*)pData)->length();
 	}
 	return ty<VT_ALL?typeInfo[ty].length:0;
 }
 
+ushort HeapPageMgr::moveArray(HType vt,byte *dest,PageOff doff,const byte *src,PageOff soff,bool fAlign)
+{
+	ushort ldata; assert(vt.isCompound());
+	if (vt.getFormat()==HDF_LONG) memcpy(dest+doff,src+soff,ldata=sizeof(HRefSSV));
+	else {
+		const HeapArray *ha=(const HeapArray*)(src+soff); ldata=ha->length();
+		if (!fAlign || (ha->flags&6)==0) memcpy(dest+doff,src+soff,ldata);
+		else {
+			memcpy(dest+doff,src+soff,sizeof(HeapArray));
+			uint8_t align=(ha->flags&6)+2;
+			//??? calc align shift
+			((HeapArray*)(dest+doff))->setAlign(align);
+			memcpy(((HeapArray*)(dest+doff))->data(),ha->data(),ha->xdim*ha->ydim*ha->lelt);
+		}
+	}
+	return ldata;
+}
+
 ushort HeapPageMgr::moveCompound(HType vt,byte *dest,PageOff doff,const byte *src,PageOff soff)
 {
-	ushort ldata; const bool fA=vt.isCollection(); assert(vt.isCompound());
-	if (vt.getFormat()==HDF_LONG)
-		memcpy(dest+doff,src+soff,ldata=fA?collDescrSize((const HeapExtCollection*)(src+soff)):sizeof(HRefSSV));	// VT_MAP?
-	else {
-		const HeapVV *coll=(const HeapVV*)(src+soff); memcpy(dest+doff,src+soff,ldata=coll->length(fA));
+	ushort ldata; assert(vt.isCompound());
+	if (vt.getFormat()==HDF_LONG) {
+		memcpy(dest+doff,src+soff,ldata=vt.isCollection()?collDescrSize((const HeapExtCollection*)(src+soff)):sizeof(HRefSSV));		// VT_MAP?
+	} else {
+		const HeapVV *coll=(const HeapVV*)(src+soff); memcpy(dest+doff,src+soff,ldata=coll->length(vt.isCollection()));
 		for (unsigned i=0,j=coll->cnt; i<j; i++) {
 			const HeapV &se=coll->start[i];
 			if (!se.type.isCompact()) {
@@ -724,6 +705,14 @@ ushort HeapPageMgr::adjustCompound(byte *frame,HeapV *hprop,ushort sht,StoreCtx 
 		if (hk!=NULL) hk->setKey(key);
 	}
 	return flag;
+}
+
+void HeapPageMgr::alignArray(byte *frame,HeapV *hprop)
+{
+	if (hprop->type.getFormat()!=HDF_LONG) {
+		HeapArray *ha=(HeapArray*)(frame+hprop->offset);
+		//???
+	}
 }
 
 void HeapPageMgr::initPage(byte *frame,size_t len,PageID pid)
@@ -825,8 +814,9 @@ void HeapPageMgr::HeapPage::moveObject(const HeapPageMgr::HeapObjHeader *hobj,by
 		HeapV *hprop=hpin->getPropTab(); ushort size;
 		for (ushort i=0; i<hpin->nProps; ++i,++hprop) if (i!=propIdx && !hprop->type.isCompact()) {
 			assert(hprop->offset<((HeapPage*)frame)->freeSpace);
-			size=hprop->type.isCompound() ?
-				moveCompound(hprop->type,(byte*)this,freeSpace,frame,hprop->offset) :
+			size=
+				hprop->type.isArray()?moveArray(hprop->type,(byte*)this,freeSpace,frame,hprop->offset,true) :
+				hprop->type.isCompound()?moveCompound(hprop->type,(byte*)this,freeSpace,frame,hprop->offset) :
 				(ushort)ceil(moveData((byte*)this+freeSpace,frame+hprop->offset,hprop->type),HP_ALIGN);
 			assert(size<=contFree()); hprop->offset=freeSpace; ldata+=size; freeSpace+=size;
 		}
@@ -868,7 +858,9 @@ RC HeapPageMgr::HeapPIN::serialize(byte *&buf,size_t& lbuf,const HeapPageMgr::He
 		for (int i=nProps; --i>=0; hprop++) if (!hprop->type.isCompact()) {
 			if (fMultipart) {
 				off=hprop->offset; hprop->offset=ldata;
-				if (!hprop->type.isCompound()) 
+				if (hprop->type.isArray()) {
+					ldata+=moveArray(hprop->type,buf+ldata,0,(const byte*)hp,off,false);
+				} else if (!hprop->type.isCompound())
 					ldata+=(ushort)ceil(moveData(buf+ldata,(const byte*)hp+off,hprop->type),HP_ALIGN);
 				else if (!fExpand || hprop->type.getFormat()==HDF_LONG)
 					ldata+=moveCompound(hprop->type,buf+ldata,0,(const byte*)hp,off);
@@ -923,7 +915,7 @@ size_t HeapPageMgr::HeapPIN::expLength(const byte *frame) const
 	for (unsigned i=nProps; i!=0; --i,++hprop) switch (hprop->type.getType()) {
 	default: break;
 	case VT_REFID: if (hprop->type.isCompact()) len+=PageAddrSize; break;
-	case VT_ARRAY: case VT_STRUCT: case VT_MAP:
+	case VT_COLLECTION: case VT_STRUCT: case VT_MAP:
 		if (hprop->type.getFormat()!=HDF_LONG) {
 			const HeapVV *coll=(const HeapVV*)(frame+hprop->offset); const HeapV *elt=coll->start;
 			for (int i=coll->cnt; --i>=0; ++elt)
@@ -955,7 +947,7 @@ void HeapPageMgr::HeapPage::getRef(PID& id,HeapDataFmt fmt,PageOff offs) const
 {
 	PageAddr addr;
 	switch (fmt) {
-	default: id.pid=STORE_INVALID_PID; id.ident=STORE_INVALID_IDENTITY; break;
+	default: id=PIN::noPID; break;
 	case HDF_LONG: memcpy(&id.pid,(byte*)this+offs,sizeof(uint64_t)); memcpy(&id.ident,(byte*)this+offs+sizeof(uint64_t),sizeof(IdentityID)); break;
 	case HDF_NORMAL: memcpy(&id.pid,(byte*)this+offs,sizeof(uint64_t)); id.ident=STORE_OWNER; break; 
 	case HDF_SHORT: memcpy(&addr,(byte*)this+offs,PageAddrSize); id.pid=addr; id.ident=STORE_OWNER; break;

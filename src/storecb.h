@@ -1,6 +1,6 @@
 /**************************************************************************************
 
-Copyright © 2004-2013 GoPivotal, Inc. All rights reserved.
+Copyright © 2004-2014 GoPivotal, Inc. All rights reserved.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -137,6 +137,7 @@ struct StoreCB
 	LSN				checkpoint;					/**< last checkpoint LSN, recovery starts at this address */
 	LSN				logEnd;						/**< current log end */
 	uint64_t		nTotalPINs;					/**< total number of PINs in the store */
+	uint64_t		totalMemUsed;				/**< total memory usage for inmem store */
 	uint32_t		nDataFiles;					/**< number of data files */
 	uint32_t		state;						/**< current store state (see SST_XXX above) */
 	uint32_t		nDirPages;					/**< number of directory pages */
@@ -153,7 +154,7 @@ struct StoreCB
 	RC				update(class StoreCtx *ctx,unsigned info,const byte *rec,size_t lrec,bool fUndo=false);
 	void			preload(class StoreCtx *ctx) const;
 
-	static	RC		open(class StoreCtx *ctx,const char *fname,const char *pwd,bool fForce=false);
+	static	RC		open(class StoreCtx *ctx,const char *fname,const char *pwd,unsigned mode);
 	static	RC		create(class StoreCtx *ctx,const char *fname,const StoreCreationParameters& cpar);
 	static	RC		update(class StoreCtx *ctx,bool fSetLogEnd=true);
 	static	RC		changePassword(class StoreCtx *ctx,const char *newPwd);

@@ -1,6 +1,6 @@
 /**************************************************************************************
 
-Copyright © 2004-2013 GoPivotal, Inc. All rights reserved.
+Copyright © 2004-2014 GoPivotal, Inc. All rights reserved.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -32,15 +32,15 @@ namespace AfyKernel
 #define	SC_INIT		0x80000000
 #define	SC_EOF		0x40000000
 #define	SC_BOF		0x20000000
-#define	SC_UNIQUE	0x10000000
-#define	SC_SAVEPS	0x08000000
-#define	SC_KEYSET	0x04000000
-#define	SC_LASTKEY	0x02000000
-#define	SC_FIRSTSP	0x01000000
-#define	SC_LASTSP	0x00800000
-#define	SC_FIXED	0x00400000
-#define	SC_ADV		0x00200000
-#define	SC_PINREF	0x00100000
+#define	SC_SAVEPS	0x10000000
+#define	SC_KEYSET	0x08000000
+#define	SC_LASTKEY	0x04000000
+#define	SC_FIRSTSP	0x02000000
+#define	SC_LASTSP	0x01000000
+#define	SC_FIXED	0x00800000
+#define	SC_ADV		0x00400000
+#define	SC_PINREF	0x00200000
+#define	SC_SINGLE	0x00100000
 
 #define	LBUF_EXTRA	24
 
@@ -48,33 +48,31 @@ class TreeScanImpl : public TreeScan, public TreeCtx, public LatchHolder
 {
 	Session			*const	ses;
 	StoreCtx		*const	ctx;
-	unsigned					state;
+	unsigned				state;
 	const SearchKey	*const	start;
 	const SearchKey	*const	finish;
 	const IndexSeg	*const	segs;
 	const unsigned			nSegs;
 	IKeyCallback	*const	keycb;
 	bool					fHyper;
+	const IndexFormat		ifmt;
 
 	PageID					kPage;
 	PageID					nPage;
 	LSN						lsn;
-	unsigned					stamp;
+	unsigned				stamp;
 	SearchKey				*savedKey;
 	size_t					lKeyBuf;
 
 	PBlock					*subpg;
 	PageID					sPage;
 	PageID					anchor;
-	unsigned					stamp2;
+	unsigned				stamp2;
 
-	const byte				*ps,*pe,*ptr;
+	const byte				*ps,*pe,*ptr,*frame;
 	size_t					lElt;
 	byte					*buf;
 	size_t					lbuf;
-	size_t					ldata;
-	size_t					lpref;
-	size_t					bufsht;
 
 private:
 	bool checkBounds(const TreePageMgr::TreePage* tp,bool fNext,bool fSibling=false) {
@@ -88,43 +86,38 @@ private:
 		else if (lKeyBuf<sizeof(SearchKey)+lk) savedKey=(SearchKey*)ses->realloc(savedKey,lKeyBuf=sizeof(SearchKey)+lk);
 		if (savedKey!=NULL) if (tp!=NULL) tp->getKey(ushort(index),*savedKey); else new(savedKey) SearchKey;
 	}
-	void findSubPage(const byte *k,size_t lk,bool fF=true) {
-		if (subpg!=NULL) {subpg->release(0,ses); subpg=NULL;}
-		if ((state&SC_KEYSET)==0 || pb.isNull() && !restore()) return;
-		RC rc=RC_OK; PBlockP spb(pb); pb.moveTo(parent); stack[leaf=depth++]=spb->getPageID();
-		TreePageMgr::SubTreePage tpe; memcpy(&tpe,spb->getPageBuf()+vp.offset,sizeof(tpe)); lvl2=tpe.level;
-		if ((state&SCAN_EXACT)!=0) mainKey=start; else {if (!savedKey->isSet()) saveKey(); mainKey=savedKey;}
-		if (k!=NULL && lk!=0) {SearchKey key(k,(ushort)lk,(state&SC_PINREF)!=0); if ((rc=findPage(&key))==RC_OK) {subpg=pb; pb=NULL;}}
-		else {assert(!fF); if ((rc=findPrevPage(NULL))==RC_OK) {subpg=pb; pb=NULL;} parent.release(ses);}
-		assert(parent.isNull()); spb.moveTo(pb); depth=leaf; leaf=~0u; mainKey=NULL;
-		while (subpg!=NULL) {
-			const TreePageMgr::TreePage *tp=(const TreePageMgr::TreePage*)subpg->getPageBuf();
-			if (tp->info.nSearchKeys>0) break;
-			if (fF) {
-				if (!tp->hasSibling()) {subpg->release(0,ses); subpg=NULL;}
-				else subpg=ctx->bufMgr->getPage(tp->info.sibling,ctx->trpgMgr,PGCTL_COUPLE|QMGR_SCAN,subpg,ses);
-			} else {
-				// getPreviousPage
-				subpg->release(0,ses); subpg=NULL;	//tmp
+	void findSubPage(const byte *k,size_t lk,bool fF) {
+		if (fF && (k==NULL || lk==0)) subpg=ctx->bufMgr->getPage(anchor,ctx->trpgMgr,QMGR_SCAN,subpg,ses);
+		else {
+			if (subpg!=NULL) {subpg->release(0,ses); subpg=NULL;}
+			if ((state&SC_KEYSET)!=0 && (!pb.isNull() || restore())) {
+				RC rc=RC_OK; PBlockP spb(pb); pb.moveTo(parent); stack[leaf=depth++]=spb->getPageID();
+				TreePageMgr::SubTreePage tpe; memcpy(&tpe,spb->getPageBuf()+vp.offset,sizeof(tpe)); lvl2=tpe.level;
+				if ((state&SCAN_EXACT)!=0) mainKey=start; else {if (!savedKey->isSet()) saveKey(); mainKey=savedKey;}
+				if (k!=NULL && lk!=0) {SearchKey key(k,(ushort)lk,(state&SC_PINREF)!=0); if ((rc=findPage(&key))==RC_OK) {subpg=pb; pb=NULL;}}
+				else {assert(!fF); if ((rc=findPrevPage(NULL))==RC_OK) {subpg=pb; pb=NULL;} parent.release(ses);}
+				assert(parent.isNull()); spb.moveTo(pb); depth=leaf; leaf=~0u; mainKey=NULL;
+				while (subpg!=NULL) {
+					const TreePageMgr::TreePage *tp=(const TreePageMgr::TreePage*)subpg->getPageBuf();
+					if (tp->info.nSearchKeys>0) break;
+					if (fF) {
+						if (!tp->hasSibling()) {subpg->release(0,ses); subpg=NULL;}
+						else subpg=ctx->bufMgr->getPage(tp->info.sibling,ctx->trpgMgr,PGCTL_COUPLE|QMGR_SCAN,subpg,ses);
+					} else {
+						// getPreviousPage
+						subpg->release(0,ses); subpg=NULL;	//tmp
+					}
+				}
 			}
 		}
+		if (subpg!=NULL) {frame=(byte*)((TreePageMgr::TreePage*)subpg->getPageBuf()+1);}
 	}
 	void getPrevSubPage() {
 		if (subpg==NULL) {
 			//??? restore subpg
 		}
-		assert(0&&"nextValue 8");
+		assert(0&&"getPrevSubPage");
 		if (subpg!=NULL) {subpg->release(0,ses); subpg=NULL;}
-	}
-	bool findValue(const byte *buf,const byte *ebuf,const byte *v,size_t lv,const byte *&res) {
-		assert(ebuf>buf && (ebuf-buf)%lElt==0);
-		for (unsigned n=(unsigned)((ebuf-buf)/lElt); n>0; ) {
-			unsigned k=n>>1; const byte *p=buf+k*lElt,*q; size_t l; int cmp;
-			if ((state&SC_FIXED)!=0) q=p,l=lElt; else if (lElt==1) q=ps+p[0],l=p[1]-p[0]; else q=ps+_u16(p),l=_u16(p+2)-_u16(p);
-			if ((state&SC_PINREF)!=0) cmp=PINRef::cmpPIDs(q,(unsigned)l,v,(unsigned)lv); else if ((cmp=memcmp(q,v,min(l,lv)))==0) cmp=cmp3(l,lv);
-			if (cmp==0) {res=p; return true;} if (cmp<0) {buf=p+lElt; n-=k+1;} else n=k;
-		}
-		res=buf; return false;
 	}
 	bool restore() {
 		PageID pid=kPage; kPage=nPage=INVALID_PAGEID; state&=~SC_LASTKEY;
@@ -140,12 +133,10 @@ private:
 public:
 	TreeScanImpl(Session *se,Tree& tr,const SearchKey *st,const SearchKey *fi,unsigned flgs,const IndexSeg *sg,unsigned nS,IKeyCallback *kcb)
 		: TreeCtx(tr),LatchHolder(se),ses(se),ctx(ses->getStore()),state(flgs|SC_INIT),start(st),finish(fi),segs(sg),nSegs(nS),keycb(kcb),fHyper(false),
-		kPage(INVALID_PAGEID),lsn(0),stamp(0),savedKey(NULL),lKeyBuf(0),subpg(NULL),sPage(INVALID_PAGEID),stamp2(0),ps(NULL),pe(NULL),ptr(NULL),
-		lElt(0),buf(NULL),lbuf(0),ldata(0),lpref(0),bufsht(0)
+		ifmt(tr.indexFormat()),kPage(INVALID_PAGEID),lsn(0),stamp(0),savedKey(NULL),lKeyBuf(0),subpg(NULL),sPage(INVALID_PAGEID),stamp2(0),
+		ps(NULL),pe(NULL),ptr(NULL),frame(NULL),lElt(L_SHT),buf(NULL),lbuf(0)
 	{
-			IndexFormat ifmt=tr.indexFormat(); if (ifmt.isUnique()) state|=SC_UNIQUE;
-			if (ifmt.isPinRef()) state|=SC_PINREF;
-			else if (ifmt.isFixedLenData()||(state&SC_UNIQUE)==0&&!ifmt.isVarMultiData()) {state|=SC_FIXED; lElt=ifmt.dataLength();}
+			if (ifmt.isFixedLenData()) {state|=SC_FIXED; lElt=ifmt.dataLength();} else if (ifmt.isPinRef()) state|=SC_PINREF;
 			assert(start==NULL || start->type==ifmt.keyType()); assert(start!=NULL || (state&SCAN_EXACT)==0);
 			if ((state&SCAN_EXACT)==0 && sg!=NULL && nS>1 && (st!=NULL || fi!=NULL)) 
 				fHyper=st==NULL || fi==NULL || st->type==KT_VAR && isHyperRect(st->getPtr2(),st->v.ptr.l,fi->getPtr2(),fi->v.ptr.l);
@@ -168,7 +159,7 @@ public:
 		}
 		for (;;) {
 			if ((state&SC_INIT)==0) {
-				ps=pe=ptr=NULL; lpref=ldata=bufsht=0; state&=~SC_SAVEPS; if (subpg!=NULL) {subpg->release(0,ses); subpg=NULL;}
+				ps=pe=ptr=NULL; state&=~SC_SAVEPS; if (subpg!=NULL) {subpg->release(0,ses); subpg=NULL;}
 				PageID npid=nPage; nPage=sPage=INVALID_PAGEID; bool fLast=(state&SC_LASTKEY)!=0; state&=~SC_LASTKEY;
 				if (fF) {if ((state&(SC_BOF|SC_KEYSET))==SC_BOF && op==GO_NEXT) op=GO_FIRST;}
 				else if ((state&(SC_EOF|SC_KEYSET))==SC_EOF && op==GO_PREVIOUS) op=GO_LAST;
@@ -303,70 +294,61 @@ retkey:
 	}
 	const void *nextValue(size_t& lD,GO_DIR op,const byte *sk,size_t lsk) {
 		for (bool fF=op==GO_NEXT||op==GO_FIRST;;sk=NULL) {
-			const byte *q; size_t l; int cmp;
+			const byte *q; size_t l; int cmp; ushort ld,off;
 			if (ps==NULL) {
 				if ((state&SC_KEYSET)==0 || (state&SC_ADV)!=0) {
 					state&=~SC_ADV; if (nextKey(op)!=RC_OK) {lD=0; return NULL;}
 				} else if (pb.isNull() && !restore() && (pb.isNull() || !checkBounds((const TreePageMgr::TreePage*)pb->getPageBuf(),fF))) {
 					pb.release(ses); state=state&~SC_KEYSET|(fF?SC_EOF:SC_BOF); lD=0; return NULL;
 				}
-				ushort ld; lpref=0; const PagePtr *pvp; assert(!pb.isNull());
+				const PagePtr *pvp; assert(!pb.isNull());
 				const TreePageMgr::TreePage *tp=(const TreePageMgr::TreePage*)pb->getPageBuf();
 				if ((ps=(const byte*)tp->findData(index,ld,&pvp))==NULL) {state|=SC_ADV; continue;}
-				state|=SC_SAVEPS|SC_FIRSTSP|SC_LASTSP; ldata=ld; pe=ps+ldata; memcpy(&vp,pvp,sizeof(PagePtr));
-				if ((state&SC_UNIQUE)!=0) {lD=ld; ptr=pe; return ps;}
-				if (!TreePageMgr::TreePage::isSubTree(vp)) {
-					if ((state&SC_FIXED)==0) pe=ps+(vp.len<256?*ps-(lElt=1):_u16(ps)-(lElt=2));
+				state|=SC_SAVEPS|SC_FIRSTSP|SC_LASTSP; pe=ps+ld; vp=*pvp; frame=(byte*)tp;
+				if ((state&SC_FIXED)!=0 || (vp.len&TRO_MANY)==0) {lD=ld; ptr=fF?pe:ps; return ps;}
+				if (!tp->isSubTree(vp)) {
 					if (sk==NULL || lsk==0) ptr=fF?ps:pe;
-					else if (findValue(ps,pe,sk,lsk,ptr)) {if (!fF) ptr+=lElt;}
-					else if (fF && ptr>=pe || !fF && ptr<=ps) {ps=NULL; state|=SC_ADV;}
+					else if ((ptr=TreePageMgr::findValue(sk,(ushort)lsk,frame,ps,vp.len,(state&SC_PINREF)!=0,&off))!=NULL) {if (!fF) ptr+=L_SHT;}
+					else {ptr=ps+off; if (fF && ptr>=pe || !fF && ptr<=ps) {ps=NULL; state|=SC_ADV;}}
 					continue;
 				}
 				TreePageMgr::SubTreePage ext; memcpy(&ext,(byte*)tp+vp.offset,sizeof(ext));
-				ps=pe=ptr=NULL; anchor=ext.anchor; if ((state&SC_FIXED)==0) lElt=2;
-				if (sk!=NULL && lsk>0) findSubPage(sk,lsk,fF);
-				else if (fF) subpg=ctx->bufMgr->getPage(anchor,ctx->trpgMgr,QMGR_SCAN,NULL,ses);
-				else findSubPage(NULL,0,false);
+				ps=pe=ptr=frame=NULL; anchor=ext.anchor; findSubPage(sk,lsk,fF);
 			} else switch (op) {
 			default: assert(0);
-			case GO_FIRST:
-				if ((state&SC_BOF)==0) {ps=NULL; state|=SC_ADV; continue;}
-				if ((state&SC_FIRSTSP)==0) {
-					if (sk!=NULL&&lsk!=0) findSubPage(sk,lsk);
-					else subpg=ctx->bufMgr->getPage(anchor,ctx->trpgMgr,PGCTL_COUPLE|QMGR_SCAN,subpg,ses);
-					break;
-				}
-				ptr=ps; op=GO_NEXT;
-			case GO_NEXT: 
-				if (ptr<pe) {
-					if (sk!=NULL && lsk!=0) {
-						findValue(ptr,pe,sk,lsk,ptr);
-						if (ptr>=pe) {
-							if ((state&SC_LASTSP)!=0) {ps=NULL; state|=SC_ADV; continue;}
-							findSubPage(sk,(ushort)lsk); break;
+			case GO_FIRST: case GO_LAST:
+				if ((state&(fF?SC_BOF:SC_EOF))==0) {ps=NULL; state|=SC_ADV; continue;}
+				if ((state&(fF?SC_FIRSTSP:SC_LASTSP))==0) {findSubPage(sk,lsk,fF); break;}
+				if (fF) {ptr=ps; op=GO_NEXT;} else {ptr=pe; op=GO_PREVIOUS;}
+			case GO_NEXT: case GO_PREVIOUS:
+				if (fF && ptr<pe || !fF && ptr>ps) {
+					if ((vp.len&TRO_MANY)==0) {
+						if (!fF) q=ptr=ps; else {q=ptr; ptr=pe;} ld=uint16_t(pe-ps);
+					} else {
+						if (sk!=NULL && lsk!=0) {
+							const byte *p=TreePageMgr::findValue(sk,(ushort)lsk,frame,fF?ptr:ps,uint16_t(fF?pe-ptr:ptr-ps)|TRO_MANY,(state&SC_PINREF)!=0,&off);
+							if (p==NULL) {if (fF) ptr+=off;} else if (!fF) ptr=p+L_SHT; else ptr=p;
+							if (fF && ptr>=pe || !fF && off==0) {
+								if ((state&(fF?SC_LASTSP:SC_FIRSTSP))!=0) {ps=NULL; state|=SC_ADV; continue;}
+								findSubPage(sk,(ushort)lsk,fF); break;
+							}
 						}
+						if (!fF) ptr-=L_SHT; q=TreePageMgr::getK(frame,ptr,ld); if (fF) ptr+=L_SHT;
 					}
-					if ((state&SC_FIXED)!=0) {q=ptr; lD=lElt-lpref; ptr+=lD;}
-					else if (lElt==1) {q=ps+ptr[0]; lD=ptr[1]-ptr[0]; ++ptr;}
-					else {q=ps+_u16(ptr); lD=_u16(ptr+2)-_u16(ptr); ptr+=2;}
-					if (lpref==0) return q;
-			add_pref:
-					assert(buf!=NULL);
-					if ((l=lD+lpref)+bufsht>lbuf) {
-						bool fAdj=ps==buf;
-						if ((buf=(byte*)ses->realloc(buf,lbuf=bufsht+l))==NULL) 
-							{lD=ldata=bufsht=lpref=0; if (fAdj) ps=pe=ptr=NULL; return NULL;}
-						if (fAdj) {pe=buf+(pe-ps); ptr=buf+(ptr-ps); ps=buf;}
-					}
-					memcpy(buf+bufsht+lpref,q,lD); lD=l; return buf+bufsht;
+					lD=ld; return q;
 				}
-				if ((state&SC_LASTSP)!=0) {ps=NULL; state|=SC_ADV; continue;}
+				if ((state&(fF?SC_LASTSP:SC_FIRSTSP))!=0) {ps=NULL; state|=SC_ADV; continue;}
 				if (sk!=NULL && lsk>0) {
-					q=pe-(l=lElt); if ((state&SC_FIXED)==0) {assert(lElt==2); l=_u16(q+2)-_u16(q); q=ps+_u16(q);}
-					if ((state&SC_PINREF)!=0) cmp=PINRef::cmpPIDs(q,(unsigned)l,sk,(unsigned)lsk); else if ((cmp=memcmp(q,sk,min(l,lsk)))==0) cmp=cmp3(l,lsk);
-					if (cmp<0) {findSubPage(sk,lsk); break;}
+					q=fF?pe-lElt:ps; if ((state&SC_FIXED)==0) {q=TreePageMgr::getK(frame,q,ld); l=ld;} else l=lElt;
+					if ((state&SC_PINREF)!=0) cmp=PINRef::cmpPIDs(q,sk); else if ((cmp=memcmp(q,sk,min(l,lsk)))==0) cmp=cmp3(l,lsk);
+					if (fF && cmp<0) {findSubPage(sk,lsk,fF); break;}
+					else if (!fF && cmp>0) {
+		assert(0&&"nextValue 7");
+						// search
+					}
 				}
-				if (subpg!=NULL) {
+				if (!fF) getPrevSubPage();
+				else if (subpg!=NULL) {
 					const TreePageMgr::TreePage *tp2=(const TreePageMgr::TreePage*)subpg->getPageBuf();
 					assert(tp2->info.sibling!=INVALID_PAGEID);
 					subpg=ctx->bufMgr->getPage(tp2->info.sibling,ctx->trpgMgr,PGCTL_COUPLE|QMGR_SCAN,subpg,ses);
@@ -375,77 +357,42 @@ retkey:
 					if ((subpg=tree->getPage(pid,stamp,PITREE_LEAF2))==NULL) {
 		assert(0&&"nextValue 4");
 						//sk=ps+_u16(pe) lk=_u16(pe+2)-_u16(pe)
-						// if (lpref!=0) -> concatenate
 						// findSubPage
 					}
 				}
 				break;
-			case GO_LAST:
-				if ((state&SC_EOF)==0) {ps=NULL; state|=SC_ADV; continue;}
-				if ((state&SC_LASTSP)==0) {findSubPage(sk,lsk,false); break;}
-				ptr=pe; op=GO_PREVIOUS;
-			case GO_PREVIOUS:
-				if (ptr>ps) {
-					if (sk!=NULL && lsk!=0) {
-						if (findValue(ps,ptr,sk,lsk,ptr)) ptr+=lElt; 
-						else if (ptr==ps) {
-							if ((state&SC_FIRSTSP)!=0) {ps=NULL; state|=SC_ADV; continue;}
-							findSubPage(sk,lsk,false); break;
-						}
-					}
-					if ((state&SC_FIXED)!=0) {lD=lElt-lpref; q=ptr-=lD;}
-					else if (lElt==1) {--ptr; q=ps+ptr[0]; lD=ptr[1]-ptr[0];}
-					else {ptr-=2; q=ps+_u16(ptr); lD=_u16(ptr+2)-_u16(ptr);}
-					if (lpref==0) return q; goto add_pref;
-				}
-				if ((state&SC_FIRSTSP)!=0) {ps=NULL; state|=SC_ADV; continue;}
-				if (sk!=NULL && lsk>0) {
-					if ((state&SC_FIXED)!=0) q=ps,l=lElt; else if (lElt==1) q=ps+ps[0],l=ps[1]-ps[0]; else q=ps+_u16(ps),l=_u16(ps+2)-_u16(ps);
-					if ((state&SC_PINREF)!=0) cmp=PINRef::cmpPIDs(q,(unsigned)l,sk,(unsigned)lsk); else if ((cmp=memcmp(q,sk,min(l,lsk)))==0) cmp=cmp3(l,lsk);
-					if (cmp>0) {
-		assert(0&&"nextValue 7");
-						// search
-					}
-				}
-				getPrevSubPage(); break;
 			}
 			for (;;) {
 				if (subpg==NULL) {state|=SC_ADV; ps=NULL; break;}
 				const TreePageMgr::TreePage *tp2=(TreePageMgr::TreePage*)subpg->getPageBuf();
 				if (tp2->hdr.pageID!=anchor) state&=~SC_FIRSTSP; else state|=SC_FIRSTSP;
 				if (tp2->hasSibling()) state&=~SC_LASTSP; else state|=SC_LASTSP; state|=SC_SAVEPS;
-				ps=(const byte*)(tp2+1); pe=ps+tp2->info.nSearchKeys*lElt; bufsht=0; sPage=INVALID_PAGEID;
-				ldata=(state&SC_FIXED)==0?((ushort*)(tp2+1))[tp2->info.nEntries]:(lElt-tp2->info.lPrefix)*tp2->info.nEntries;
-				if ((lpref=tp2->info.lPrefix)!=0) {
-					const byte *pref=(state&SC_FIXED)==0?(byte*)tp2+((PagePtr*)&tp2->info.prefix)->offset:(byte*)&tp2->info.prefix;
-					size_t l=lpref+LBUF_EXTRA;
-					if (l>lbuf) buf=(byte*)ses->realloc(buf,lbuf=l);
-					if (buf==NULL) {ldata=lpref=lbuf=0; ps=pe=ptr=NULL; return NULL;}
-					memcpy(buf,pref,lpref);
-				}
+				frame=ps=(const byte*)(tp2+1); pe=ps+tp2->info.nSearchKeys*L_SHT; sPage=INVALID_PAGEID;
 				if (sk==NULL || lsk==0) ptr=fF?ps:pe;
-				else if (findValue(ps,pe,sk,lsk,ptr)) {if (!fF) ptr+=lElt;}
-				else if (fF && ptr>=pe) {
-					do {if (!tp2->hasSibling()) {subpg->release(0,ses); subpg=NULL; break;}}
-					while ((subpg=ctx->bufMgr->getPage(tp2->info.sibling,ctx->trpgMgr,PGCTL_COUPLE|QMGR_SCAN,subpg,ses))!=NULL
-									&& (tp2=(TreePageMgr::TreePage*)subpg->getPageBuf())->info.nSearchKeys==0);
-					continue;
-				} else if (!fF && ptr<=ps) {
-					getPrevSubPage(); if (subpg==NULL) break; else continue;
-				}
-				// release 'page' ???
-				if (fF && (state&(SC_FIRSTSP|SC_LASTSP))==SC_FIRSTSP) {
-					//prefetch from parent
+				else if ((ptr=TreePageMgr::findValue(sk,(ushort)lsk,frame,ps,ushort(pe-ps)|TRO_MANY,(state&SC_PINREF)!=0,&off))!=NULL) {if (!fF) ptr+=L_SHT;}
+				else {
+					ptr=ps+off;
+					if (fF && ptr>=pe) {
+						do {if (!tp2->hasSibling()) {subpg->release(0,ses); subpg=NULL; break;}}
+						while ((subpg=ctx->bufMgr->getPage(tp2->info.sibling,ctx->trpgMgr,PGCTL_COUPLE|QMGR_SCAN,subpg,ses))!=NULL
+										&& (tp2=(TreePageMgr::TreePage*)subpg->getPageBuf())->info.nSearchKeys==0);
+						continue;
+					}
+					if (!fF && ptr<=ps) {getPrevSubPage(); if (subpg==NULL) break; else continue;}
+					// release 'page' ???
+					if (fF && (state&(SC_FIRSTSP|SC_LASTSP))==SC_FIRSTSP) {
+						//prefetch from parent
+					}
 				}
 				break;
 			}
 		}
 	}
 	RC skip(unsigned& nSkip,bool fBack) {
-		if ((state&SC_INIT)==0) return RC_OTHER; if ((state&SC_UNIQUE)!=0) {--nSkip; return RC_EOF;} size_t lD;
+		if ((state&SC_INIT)==0) return RC_OTHER; if ((state&SC_FIXED)!=0) {--nSkip; return RC_EOF;} size_t lD;
 		for (GO_DIR op=fBack?GO_LAST:GO_FIRST,op2=fBack?GO_PREVIOUS:GO_NEXT; nextValue(lD,op,NULL,0)!=NULL; op=op2) {
-			unsigned n=(unsigned)((pe-ps)/lElt);
-			if (n>=nSkip) {ptr=fBack?pe-nSkip*lElt:ps+nSkip*lElt; nSkip=0; return RC_OK;}
+			unsigned n=(unsigned)((vp.len&TRO_MANY)!=0?(pe-ps)/L_SHT:1);
+			if (n>=nSkip) {if ((vp.len&TRO_MANY)!=0) ptr=fBack?pe-nSkip*lElt:ps+nSkip*lElt; nSkip=0; return RC_OK;}
 			ptr=fBack?ps:pe; nSkip-=n;
 		}
 		return RC_EOF;
@@ -460,16 +407,33 @@ retkey:
 	}
 	void release() {
 		if ((state&SC_SAVEPS)!=0) {
-			const byte *pref=NULL; lpref=0; state&=~SC_SAVEPS; assert(ps!=NULL);
+			const TreePageMgr::TreePage* tp=NULL; state&=~SC_SAVEPS; assert(ps!=NULL);
+			size_t l=ses->getStore()->trpgMgr->contentSize();
 			if (subpg!=NULL) {
-				const TreePageMgr::TreePage* tp=(const TreePageMgr::TreePage*)subpg->getPageBuf();
-				pref=(state&SC_FIXED)==0?(byte*)tp+((PagePtr*)&tp->info.prefix)->offset:(byte*)&tp->info.prefix;
-				lpref=tp->info.lPrefix; sPage=tp->info.sibling; stamp2=tree->getStamp(PITREE_LEAF2);
-			}
-			size_t l=bufsht=ldata; if (lpref!=0) l+=lpref+LBUF_EXTRA;
+				tp=(const TreePageMgr::TreePage*)subpg->getPageBuf();
+				sPage=tp->info.sibling; stamp2=tree->getStamp(PITREE_LEAF2);
+				l-=tp->info.freeSpaceLength;
+			} else if ((state&SC_FIXED)==0 && (vp.len&TRO_MANY)!=0) {
+				//l???
+			} else l=pe-ps;
 			if (l>lbuf) buf=(byte*)ses->realloc(buf,lbuf=l);
-			if (buf==NULL) {ldata=bufsht=lpref=lbuf=0; ps=pe=ptr=NULL;}
-			else {memcpy(buf,ps,ldata); if (lpref!=0) memcpy(buf+ldata,pref,lpref); ptr=buf+(ptr-ps); pe=buf+(pe-ps); ps=buf;}
+			if (buf==NULL) {lbuf=0; ps=pe=ptr=NULL;}
+			else if (tp!=NULL) {
+				memcpy(buf,ps,pe-ps); memcpy(buf+(pe-ps),(byte*)tp+tp->info.freeSpace,l-(pe-ps));
+				frame=buf-(tp->info.freeSpace-sizeof(TreePageMgr::TreePage))+(pe-ps); ptr=buf+(ptr-ps); pe=buf+(pe-ps); ps=buf;
+			} else if ((state&SC_FIXED)==0 && (vp.len&TRO_MANY)!=0) {
+				ushort *p=(ushort*)buf; size_t left=lbuf,bsht=lbuf;
+				for (const byte *pp=ps; pp<pe; pp+=L_SHT) {
+					uint16_t ll; const byte *q=TreePageMgr::getK(frame,pp,ll);
+					if (L_SHT+ll>left) {
+						// realloc
+					}
+					*p++=ushort(bsht-=ll); memcpy(buf+bsht,q,ll); left-=L_SHT+ll;
+				}
+				frame=buf; ptr=buf+(ptr-ps); pe=buf+(pe-ps); ps=buf;
+			} else {
+				memcpy(buf,ps,l); frame=buf; ptr=buf+(ptr-ps); pe=buf+l;  ps=buf;
+			}
 		}
 		if (subpg!=NULL) {subpg->release(0,ses); subpg=NULL;}
 		if (!pb.isNull()) {
@@ -497,7 +461,7 @@ retkey:
 		if ((state&SC_KEYSET)!=0 && (!pb.isNull() || restore())) {
 			const TreePageMgr::TreePage* tp=(const TreePageMgr::TreePage*)pb->getPageBuf(); const PagePtr *pvp; ushort ld;
 			if (tp->findData(index,ld,&pvp)!=NULL) {
-				if ((state&SC_UNIQUE)!=0 || !TreePageMgr::TreePage::isSubTree(*pvp)) return true;
+				if ((state&SC_FIXED)!=0 || !tp->isSubTree(*pvp)) return true;
 				TreePageMgr::SubTreePage ext; memcpy(&ext,(byte*)tp+pvp->offset,sizeof(ext));
 				for (PageID pid=ext.anchor; pid!=INVALID_PAGEID && (subpg=ctx->bufMgr->getPage(pid,ctx->trpgMgr,PGCTL_COUPLE|QMGR_SCAN,subpg,ses))!=NULL;) {
 					tp=(const TreePageMgr::TreePage*)subpg->getPageBuf();
@@ -516,7 +480,7 @@ retkey:
 		return false;
 	}
 	RC rewind() {
-		ps=pe=ptr=NULL; if (subpg!=NULL) {subpg->release(0,ses); subpg=NULL;}
+		ps=pe=ptr=frame=NULL; if (subpg!=NULL) {subpg->release(0,ses); subpg=NULL;}
 		pb.release(ses); state=state&~(SC_KEYSET|SC_ADV|SC_SAVEPS)|SC_BOF|SC_INIT;
 		return RC_OK;
 	}

@@ -1,6 +1,6 @@
 /**************************************************************************************
 
-Copyright � 2004-2013 GoPivotal, Inc. All rights reserved.
+Copyright � 2004-2014 GoPivotal, Inc. All rights reserved.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -96,6 +96,7 @@ struct TimerQElt : public TimeRQ
 	Value			act;
 	TimerQElt(uint32_t i,uint64_t itv,const PID& pi,const Value &ac,StoreCtx *ct) : TimeRQ(i,itv,ct),pid(pi) {copyV(ac,act,ct);}
 	void			processTimeRQ();
+	void			trace(Session *ses,int code,RC rc=RC_OK);
 	void			destroyTimeRQ();
 };
 

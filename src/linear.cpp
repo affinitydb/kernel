@@ -1,6 +1,6 @@
 /**************************************************************************************
 
-Copyright © 2004-2014 GoPivotal, Inc. All rights reserved.
+Copyright � 2004-2014 GoPivotal, Inc. All rights reserved.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -18,38 +18,27 @@ Written by Mark Venguerov 2004-2012
 
 **************************************************************************************/
 
-/**
- * log file checkpoint structure descriptor
- * information communicated between transaction manager, page buffer and log manager
- */
-#ifndef _LOGCHKP_H_
-#define _LOGCHKP_H_
+#include "expr.h"
+#include <math.h>
 
-#include "types.h"
-#include "lsn.h"
+using namespace AfyKernel;
 
-namespace AfyKernel
+RC Expr::linear(ExprOp op,Value& arg,const Value *moreArgs,int nargs,unsigned flags,const EvalCtx& ctx)
 {
-
-struct LogDirtyPages
-{
-	uint64_t		nPages;
-	struct LogDirtyPage {
-		uint64_t	pageID;
-		LSN			redo;
-	}				pages[1];	
-};
-
-struct LogActiveTransactions
-{
-	uint64_t		nTransactions;
-	struct LogActiveTx {
-		TXID		txid;
-		LSN			lastLSN;
-		LSN			firstLSN;
-	}				transactions[1];
-};
-
-};
-
-#endif
+	assert(arg.type==VT_ARRAY || nargs==2 && moreArgs->type==VT_ARRAY);
+	switch (op) {
+	case OP_PLUS:
+	case OP_MINUS:
+	case OP_MUL:
+	case OP_DIV:
+	case OP_NORM:
+	case OP_TRACE:
+	case OP_INV:
+	case OP_DET:
+	case OP_RANK:
+		//???
+		return RC_INTERNAL;
+	default: return RC_INVOP;
+	}
+	return RC_OK;
+}

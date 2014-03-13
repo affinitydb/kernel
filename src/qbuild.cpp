@@ -1,6 +1,6 @@
 /**************************************************************************************
 
-Copyright © 2004-2013 GoPivotal, Inc. All rights reserved.
+Copyright © 2004-2014 GoPivotal, Inc. All rights reserved.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -54,7 +54,7 @@ RC QBuildCtx::process(QueryOp *&qop)
 {
 	qop=NULL; if (stmt==NULL||stmt->top==NULL) return RC_EOF;
 
-	QVar *qv=stmt->top; sortReq=stmt->orderBy; nSortReq=stmt->nOrderBy;
+	QVar *qv=stmt->top; sortReq=stmt->orderBy; nSortReq=stmt->nOrderBy; assert(qv->stype!=SEL_CONST);
 
 	RC rc=qv->build(*this,qop); if (rc!=RC_OK) return rc; assert(qop!=NULL);
 
@@ -82,7 +82,7 @@ RC QBuildCtx::process(QueryOp *&qop)
 	case QVF_ALL:
 		qop->unique(false); break;
 	}
-	if (qv->stype!=SEL_CONST && qv->stype!=SEL_VALUE && qv->stype!=SEL_DERIVED) {
+	if (qv->stype!=SEL_VALUE && qv->stype!=SEL_DERIVED) {
 		if (stmt->orderBy!=NULL)
 			rc=sort(qop,stmt->orderBy,stmt->nOrderBy,NULL,false);
 		/*else if ((qop->qflags&QO_DEGREE)!=0) {
@@ -173,16 +173,15 @@ RC JoinVar::build(class QBuildCtx& qctx,class QueryOp *&q) const
 
 RC SimpleVar::build(class QBuildCtx& qctx,class QueryOp *&q) const
 {
-	q=NULL;	assert(type==QRY_SIMPLE);
+	q=NULL;	assert(type==QRY_SIMPLE && stype!=SEL_CONST);
 	RC rc=RC_OK; QueryOp *qq,*primary=NULL; const unsigned nqs0=qctx.nqs,ncqs0=qctx.ncqs;
 	const bool fTrans=groupBy!=NULL && nGroupBy!=0 || outs!=NULL && nOuts!=0;
-	if (stype==SEL_CONST) {assert(fTrans); return qctx.out(q,this);}
 	
 	if (fTrans) {
 		// merge props
 	}
 
-	unsigned sflg=qctx.flg; if ((qvf&QVF_RAW)!=0) qctx.flg|=QO_RAW;
+	unsigned sflg=qctx.flg; if ((qvf&QVF_RAW)!=0) qctx.flg|=QO_RAW; if ((qvf&QVF_FIRST)!=0) qctx.flg|=QO_FIRST;
 	if (expr.type==VT_STMT) {
 		if (((Stmt*)expr.stmt)->op!=STMT_QUERY || ((Stmt*)expr.stmt)->top==NULL) return RC_INVPARAM;
 		const Stmt *saveQ=qctx.stmt; qctx.stmt=(Stmt*)expr.stmt;
@@ -237,8 +236,7 @@ RC SimpleVar::build(class QBuildCtx& qctx,class QueryOp *&q) const
 							if (param->length!=0 || param->refV.refN>=qctx.qx->vals[QV_PARAMS].nValues) {rc=RC_INVPARAM; break;}
 							param=&qctx.qx->vals[QV_PARAMS].vals[param->refV.refN];
 						}
-						iparams[i].param=param; iparams[i].idx=0;
-						unsigned nVals=param->type==VT_ARRAY?param->length:param->type==VT_COLLECTION?param->nav->count():1;
+						iparams[i].param=param; iparams[i].idx=0; unsigned nVals=param->count();
 						if (nVals>1) {
 							if (pci->ks.op!=OP_EQ && pci->ks.op!=OP_IN && pci->ks.op!=OP_BEGINS) {rc=RC_TYPE; break;}
 							flags&=~SCAN_EXACT;
@@ -250,10 +248,12 @@ RC SimpleVar::build(class QBuildCtx& qctx,class QueryOp *&q) const
 				for (unsigned i=0; rc==RC_OK && i<nRanges; i++) {
 					bool fRange=false; byte op;
 					for (unsigned k=0; k<nSegs; k++) if ((cv=curValues[k]=iparams[k].param)!=NULL) {
-						if (cv->type==VT_ARRAY) {
-							if (iparams[k].idx<cv->length) cv=&cv->varray[iparams[k].idx++]; else cv=iparams[k].param=NULL;
-						} else if (cv->type==VT_COLLECTION) {
-							if ((cv=cv->nav->navigate(i==0?GO_FIRST:GO_NEXT))==NULL) iparams[k].param=NULL;
+						if (cv->type==VT_COLLECTION) {
+							if (!cv->isNav()) {
+								if (iparams[k].idx<cv->length) cv=&cv->varray[iparams[k].idx++]; else cv=iparams[k].param=NULL;
+							} else {
+								if ((cv=cv->nav->navigate(i==0?GO_FIRST:GO_NEXT))==NULL) iparams[k].param=NULL;
+							}
 						}
 						if ((curValues[k]=cv)==NULL) is->flags&=~SCAN_EXACT;
 						else switch (cv->type) {
@@ -317,9 +317,9 @@ RC SimpleVar::build(class QBuildCtx& qctx,class QueryOp *&q) const
 		if (qctx.nqs<sizeof(qctx.src)/sizeof(qctx.src[0])) qctx.src[qctx.nqs++]=qq; else {rc=RC_NORESOURCES; break;}
 	}
 	if (rc==RC_OK) {
-		bool fArrayFilter=expr.type==VT_ARRAY;
+		bool fArrayFilter=expr.type==VT_COLLECTION&&!expr.isNav();
 		if (qctx.nqs>nqs0) {
-			if (!expr.isEmpty() && expr.type!=VT_ARRAY) {
+			if (!expr.isEmpty() && expr.type!=VT_COLLECTION) {
 				if (qctx.ncqs>=sizeof(qctx.condQs)/sizeof(qctx.condQs[0]) ||
 											(qctx.src[qctx.nqs]=new(qctx.ses) ExprScan(qctx.qx,expr,qctx.flg))==NULL) rc=RC_NORESOURCES; else qctx.nqs++;
 			}
@@ -614,7 +614,6 @@ RC QBuildCtx::out(QueryOp *&qop,const QVar *qv)
 		outs=vv;
 	}
 	if (qv->stype==SEL_PID) return RC_OK;
-	if (qv->stype==SEL_CONST) {if (qop!=NULL) {delete qop; qop=NULL;} return (qop=new(ses) TransOp(qx,outs,nOuts,flg|QO_UNIQUE))!=NULL?RC_OK:RC_NORESOURCES;}
 	if (nOuts==1 && outs[0].nValues==1 && qv->groupBy==NULL && qv->aggrs.vals==NULL) {
 		const Value &v=outs[0].vals[0];
 		if (v.type==VT_VARREF && (v.refV.flags&VAR_TYPE_MASK)==0 && (v.length==0 || v.refV.id==PROP_SPEC_SELF)) return RC_OK;

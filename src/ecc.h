@@ -1,6 +1,6 @@
 /**************************************************************************************
 
-Copyright Â© 2004-2014 GoPivotal, Inc. All rights reserved.
+Copyright © 2004-2014 GoPivotal, Inc. All rights reserved.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -19,39 +19,43 @@ Written by Mark Venguerov 2013
 **************************************************************************************/
 
 /**
- * Finite State Machines definitions
+ * Elliptic curve cryptography
  */
-#ifndef _FSM_H_
-#define _FSM_H_
 
-#include "session.h"
+#ifndef _ECC_H_
+#define _ECC_H_
 
-using namespace Afy;
+#include "utils.h"
 
 namespace AfyKernel
 {
 
-/**
- * start an FSM on tx commit
- */
-class StartFSM : public OnCommit
+struct MPN
 {
-	Value	ctx;
-public:
-	StartFSM(const Value& ct);
-	RC		process(Session *ses);
-	void	destroy(Session *ses);
-	static	RC	loadFSM(PINx&cb);
+	union {
+		struct {
+			uint16_t	fNeg	:1;
+			uint16_t	fNegY	:1;
+			uint16_t	nBits	:14;
+			uint16_t	bits;
+		};
+		uint32_t		words[1];
+	};
 };
 
-class FSMMgr
+struct ECParams
 {
-	StoreCtx	*const ctx;
+	MPN		*A;
+	MPN		*B;
+	//...
+};
+
+class MPNCtx : public StackAlloc
+{
 public:
-	FSMMgr(StoreCtx *ct) : ctx(ct) {}
-	RC	process(Session *ses,PIN *fsm,const Value *event=NULL,ElementID tid=STORE_COLLECTION_ID);
-private:
-	RC	addTransition(const Value *trans,DynArray<Value> *table);
+	MPNCtx(MemAlloc *s) : StackAlloc(s) {}
+	RC	addsub(const MPN& lhs,const MPN& rhs,MPN *&res,uint16_t fSub=0);
+	RC	_addsub(MPN& lhs,const MPN& rhs,bool fSub=false);
 };
 
 }

@@ -1,6 +1,6 @@
 /**************************************************************************************
 
-Copyright © 2004-2013 GoPivotal, Inc. All rights reserved.
+Copyright © 2004-2014 GoPivotal, Inc. All rights reserved.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -117,6 +117,22 @@ public:
 	void				destroy();
 };
 
+class StreamHolder : public ObjDealloc
+{
+	IStream		*const	stream;
+public:
+	StreamHolder(IStream *is) : stream(is) {}
+	void destroyObj();
+};
+
+class CollHolder : public ObjDealloc
+{
+	INav		*const	nav;
+public:
+	CollHolder(INav *in) : nav(in) {}
+	void destroyObj();
+};
+
 /**
  * Map implementation as in memory array
  */
@@ -189,12 +205,11 @@ public:
 	virtual				~MMap();
 	TreeFactory			*getFactory() const;
 	IndexFormat			indexFormat() const;
-	unsigned				getMode() const;
 	PageID				startPage(const SearchKey*,int& level,bool,bool=false);
 	PageID				prevStartPage(PageID pid);
 	RC					addRootPage(const SearchKey& key,PageID& pageID,unsigned level);
 	RC					removeRootPage(PageID page,PageID leftmost,unsigned level);
-	unsigned				getStamp(TREE_NODETYPE) const;
+	unsigned			getStamp(TREE_NODETYPE) const;
 	void				getStamps(unsigned stamps[TREE_NODETYPE_ALL]) const;
 	void				advanceStamp(TREE_NODETYPE);
 	bool				lock(RW_LockType,bool fTry=false) const;
@@ -220,7 +235,7 @@ class Map : public IMap, public Tree, public ObjDealloc
 {
 	const	PageAddr	heapAddr;
 	const	PropertyID	propID;
-	const	unsigned		mode;
+	const	unsigned	mode;
 	MemAlloc *const		allc;
 	EMB					emb;
 	Value				curKey;
@@ -242,7 +257,7 @@ public:
 	PageID				prevStartPage(PageID pid);
 	RC					addRootPage(const SearchKey& key,PageID& pageID,unsigned level);
 	RC					removeRootPage(PageID page,PageID leftmost,unsigned level);
-	unsigned				getStamp(TREE_NODETYPE) const;
+	unsigned			getStamp(TREE_NODETYPE) const;
 	void				getStamps(unsigned stamps[TREE_NODETYPE_ALL]) const;
 	void				advanceStamp(TREE_NODETYPE);
 	bool				lock(RW_LockType,bool fTry=false) const;
@@ -286,7 +301,7 @@ struct ECB : public TreeCtx
 	ElementID								eid;
 	PageID									cPage;
 	const	TreePageMgr::TreePage			*tp;
-	unsigned									pos;
+	unsigned								pos;
 	ushort									lData;
 	const	ElementDataHdr					*hdr;
 	ElementID								prevID;
@@ -306,10 +321,10 @@ struct ECB : public TreeCtx
  */
 class Collection : public Tree
 {
-	const	unsigned					maxPages;
+	const	unsigned				maxPages;
 	MemAlloc						*const allc;
 	HeapPageMgr::HeapExtCollection	*coll;
-	unsigned							stamp;
+	unsigned						stamp;
 	bool							fMod;
 	class CollFreeData : public TreeFreeData {public: RC freeData(const byte *data,StoreCtx *ctx);};
 public:
@@ -317,12 +332,11 @@ public:
 	virtual				~Collection();
 	TreeFactory			*getFactory() const;
 	IndexFormat			indexFormat() const;
-	unsigned				getMode() const;
 	PageID				startPage(const SearchKey*,int& level,bool,bool=false);
 	PageID				prevStartPage(PageID pid);
 	RC					addRootPage(const SearchKey& key,PageID& pageID,unsigned level);
 	RC					removeRootPage(PageID page,PageID leftmost,unsigned level);
-	unsigned				getStamp(TREE_NODETYPE) const;
+	unsigned			getStamp(TREE_NODETYPE) const;
 	void				getStamps(unsigned stamps[TREE_NODETYPE_ALL]) const;
 	void				advanceStamp(TREE_NODETYPE);
 	bool				lock(RW_LockType,bool fTry=false) const;
@@ -349,7 +363,7 @@ class Navigator : public INav, public Tree, public ObjDealloc
 {
 	const	PageAddr	heapAddr;
 	const	PropertyID	propID;
-	const	unsigned		mode;
+	const	unsigned	mode;
 	MemAlloc *const		allc;
 	ECB					ecb;
 	Value				curValue;
@@ -372,7 +386,7 @@ public:
 	PageID				prevStartPage(PageID pid);
 	RC					addRootPage(const SearchKey& key,PageID& pageID,unsigned level);
 	RC					removeRootPage(PageID page,PageID leftmost,unsigned level);
-	unsigned				getStamp(TREE_NODETYPE) const;
+	unsigned			getStamp(TREE_NODETYPE) const;
 	void				getStamps(unsigned stamps[TREE_NODETYPE_ALL]) const;
 	void				advanceStamp(TREE_NODETYPE);
 	bool				lock(RW_LockType,bool fTry=false) const;

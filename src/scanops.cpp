@@ -1,6 +1,6 @@
 /**************************************************************************************
 
-Copyright © 2004-2013 GoPivotal, Inc. All rights reserved.
+Copyright © 2004-2014 GoPivotal, Inc. All rights reserved.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -181,18 +181,18 @@ RC ClassScan::advance(const PINx *skip)
 {
 	if (res!=NULL) {res->cleanup(); *res=PIN::noPID;} if (scan==NULL) return RC_NORESOURCES;
 	size_t lData; const byte *er; byte *sk=NULL,lsk=0; RC rc;
-	if (skip!=NULL && (skip->epr.lref!=0 || skip->pack()==RC_OK)) {sk=skip->epr.buf; lsk=skip->epr.lref;}
+	if (skip!=NULL && (skip->epr.buf[0]!=0 || skip->pack()==RC_OK)) {sk=skip->epr.buf; lsk=PINRef::len(skip->epr.buf);}
 	while ((er=(const byte*)scan->nextValue(lData,GO_NEXT,sk,lsk))!=NULL) {
 		if ((rc=qx->ses->testAbortQ())==RC_OK) {
-			if ((qflags&QO_HIDDEN)==0 && PINRef::isHidden(er,lData)) continue;
+			if ((qflags&QO_HIDDEN)==0 && PINRef::isHidden(er)) continue;
 			if (meta!=0) {
-				PINRef pr(qx->ses->getStore()->storeID,er,lData);
+				PINRef pr(qx->ses->getStore()->storeID,er);
 				if ((pr.def&PR_U1)==0 || (pr.u1&meta)==0) continue;
 			}
-			if ((qflags&(QO_RAW|QO_FORUPDATE))==0 && PINRef::isSpecial(er,lData)) {
+			if ((qflags&(QO_RAW|QO_FORUPDATE))==0 && PINRef::isSpecial(er)) {
 				if ((rc=createCommOp(NULL,er,lData))==RC_EOF) continue;
 			} else if (res!=NULL) {
-				memcpy(res->epr.buf,er,res->epr.lref=(byte)lData); if ((qflags&QO_CHECKED)!=0) res->epr.flags|=PINEX_ACL_CHKED;
+				memcpy(res->epr.buf,er,lData); if ((qflags&QO_CHECKED)!=0) res->epr.flags|=PINEX_ACL_CHKED;
 			}
 		}
 		return rc;
@@ -364,20 +364,20 @@ RC IndexScan::advance(const PINx *skip)
 	}
 	while (scan!=NULL) {
 		while ((er=(const byte*)scan->nextValue(l,GO_NEXT))!=NULL) {
-			if ((qflags&QO_HIDDEN)==0 && PINRef::isHidden(er,l)) continue;
+			if ((qflags&QO_HIDDEN)==0 && PINRef::isHidden(er)) continue;
 			if ((rc=qx->ses->testAbortQ())!=RC_OK) return rc;
-			if ((qflags&(QO_RAW|QO_FORUPDATE))==0 && PINRef::isSpecial(er,l)) {
+			if ((qflags&(QO_RAW|QO_FORUPDATE))==0 && PINRef::isSpecial(er)) {
 				if ((rc=createCommOp(NULL,er,l))==RC_EOF) continue; else return rc;
 			}
 			// if (PINRef::hasPrefix32() && PINRef::u1!=classID) continue;
-			if ((qflags&QO_UNIQUE)!=0 && PINRef::isColl(er,l)) {
-				PINx pex(qx->ses); memcpy(pex.epr.buf,er,pex.epr.lref=(byte)l);
+			if ((qflags&QO_UNIQUE)!=0 && PINRef::isColl(er)) {
+				PINx pex(qx->ses); memcpy(pex.epr.buf,er,l);
 				if (pids!=NULL) {if ((*pids)[pex]) continue;}
 				else if ((pids=new(qx->ses) PIDStore(qx->ses))==NULL) return RC_NORESOURCES;
 				(*pids)+=pex;
 			}
 			if (res!=NULL) {
-				*res=PIN::noPID; memcpy(res->epr.buf,er,res->epr.lref=(byte)l);
+				*res=PIN::noPID; memcpy(res->epr.buf,er,l);
 				if ((qflags&QO_CHECKED)!=0) res->epr.flags|=PINEX_ACL_CHKED;
 			}
 			return RC_OK;
@@ -405,8 +405,8 @@ RC IndexScan::count(uint64_t& cnt,unsigned nAbort)
 		while ((er=(const byte*)scan->nextValue(l))!=NULL) {
 			if ((rc=qx->ses->testAbortQ())!=RC_OK) return rc;
 			// if (PINRef::hasU1() && PINRef::u1!=classID) continue;
-			if ((qflags&QO_UNIQUE)!=0 && PINRef::isColl(er,l)) {
-				cb=PIN::noPID; memcpy(cb.epr.buf,er,cb.epr.lref=(byte)l);
+			if ((qflags&QO_UNIQUE)!=0 && PINRef::isColl(er)) {
+				cb=PIN::noPID; memcpy(cb.epr.buf,er,l);
 				if (pids!=NULL) {if ((*pids)[cb]) continue;}
 				else if ((pids=new(qx->ses) PIDStore(qx->ses))==NULL) return RC_NORESOURCES;
 				(*pids)+=cb;
@@ -428,7 +428,7 @@ RC IndexScan::loadData(PINx& qr,Value *pv,unsigned nv,ElementID eid,bool fSort,M
 			if ((pv=vals=new(qx->ses) Value[nv])==NULL) return RC_NORESOURCES;
 			for (unsigned i=0; i<nv; i++) vals[i].setError(is[i].propID);
 		} else for (unsigned i=0; i<nv; i++) {freeV(vals[i]); vals[i].setError(is[i].propID);}
-		res->setProps(pv,nv);
+		res->setProps(pv,nv); res->setPartial();
 	}
 	return scan->getKey().getValues(pv,nv,index.getIndexSegs(),index.getNSegs(),qx->ses,!fSort,ma);
 }
@@ -487,16 +487,16 @@ RC ExprScan::init()
 {
 	idx=0; RC rc; const Value *cv;
 	switch (expr.type) {
-	case VT_ARRAY: 
-		r=expr; setHT(r);
-		if (nSkip>0) {if (nSkip<r.length) idx=nSkip,nSkip=0; else {nSkip-=(idx=r.length); return RC_EOF;}}
-		break;
 	case VT_COLLECTION:
 		r=expr; setHT(r);
 		if (nSkip>0) {
-			for (cv=r.nav->navigate(GO_FIRST); cv!=NULL && idx<nSkip; cv=r.nav->navigate(GO_NEXT))
-				if (cv->type==VT_REF || cv->type==VT_REFID) idx++;
-			if (cv==NULL) {nSkip-=idx; return RC_EOF;}
+			if (expr.isNav()) {
+				for (cv=r.nav->navigate(GO_FIRST); cv!=NULL && idx<nSkip; cv=r.nav->navigate(GO_NEXT))
+					if (cv->type==VT_REF || cv->type==VT_REFID) idx++;
+				if (cv==NULL) {nSkip-=idx; return RC_EOF;}
+			} else {
+				if (nSkip<r.length) idx=nSkip,nSkip=0; else {nSkip-=(idx=r.length); return RC_EOF;}
+			}
 		}
 		break;
 	case VT_STRUCT:
@@ -515,14 +515,15 @@ RC ExprScan::init()
 			}
 		}
 		return RC_OK;
+	case VT_RANGE: r=expr; setHT(r); goto range;
 	case VT_EXPR: case VT_STMT: case VT_REFIDPROP: case VT_REFIDELT: if (expr.fcalc==0) return RC_EOF;
 	case VT_VARREF:
 		if ((rc=qx->ses->getStore()->queryMgr->eval(&expr,EvalCtx(qx->ses,qx->ectx!=NULL?qx->ectx->env:NULL,qx->ectx!=NULL?qx->ectx->nEnv:0,NULL,0,qx->vals,QV_ALL,qx->ectx),&r))!=RC_OK) return rc;
-		break;
-	case VT_RANGE:
-		if (expr.varray[0].type!=VT_INT && expr.varray[0].type!=VT_UINT || expr.varray[0].type!=expr.varray[1].type) return RC_EOF;
-		if (expr.varray[0].type==VT_INT) {if (expr.varray[0].i>expr.varray[1].i) return RC_EOF;} else if (expr.varray[0].ui>expr.varray[1].ui) return RC_EOF;
-		r=expr; setHT(r); idx=expr.varray[0].ui; break;
+		if (r.type!=VT_RANGE) break;
+	range:
+		if (r.varray[0].type!=VT_INT && r.varray[0].type!=VT_UINT || r.varray[0].type!=r.varray[1].type) return RC_EOF;
+		if (r.varray[0].type==VT_INT) {if (r.varray[0].i>r.varray[1].i) return RC_EOF;} else if (r.varray[0].ui>r.varray[1].ui) return RC_EOF;
+		idx=r.varray[0].ui; break;
 	}
 	return RC_OK;
 }
@@ -533,19 +534,18 @@ RC ExprScan::advance(const PINx *skip)
 	if ((state&QST_BOF)!=0) {state&=~QST_BOF; if ((state&QST_EOF)!=0) return RC_OK;}
 	if (res!=NULL) {res->cleanup(); res->epr.flags=PINEX_EXTPID;}
 	switch (r.type) {
-	case VT_ARRAY:
-		while (idx<r.length) {
+	case VT_COLLECTION:
+		if (r.isNav()) {
+			while ((cv=r.nav->navigate(idx++==0?GO_FIRST:GO_NEXT))!=NULL)
+				if (cv->type==VT_REFID) {if (res!=NULL) *res=cv->id; return RC_OK;}
+				else if (cv->type==VT_REF) {if (res!=NULL) res->copy((PIN*)cv->pin,(qflags&QO_FORUPDATE)!=0?PGCTL_ULOCK:0); return RC_OK;}
+				// comm
+		} else while (idx<r.length) {
 			cv=&r.varray[idx++];
 			if (cv->type==VT_REFID) {if (res!=NULL) *res=cv->id; return RC_OK;}
 			else if (cv->type==VT_REF) {if (res!=NULL) res->copy((PIN*)cv->pin,(qflags&QO_FORUPDATE)!=0?PGCTL_ULOCK:0); return RC_OK;}
 			// comm
 		}
-		break;
-	case VT_COLLECTION:
-		while ((cv=r.nav->navigate(idx++==0?GO_FIRST:GO_NEXT))!=NULL)
-			if (cv->type==VT_REFID) {if (res!=NULL) *res=cv->id; return RC_OK;}
-			else if (cv->type==VT_REF) {if (res!=NULL) res->copy((PIN*)cv->pin,(qflags&QO_FORUPDATE)!=0?PGCTL_ULOCK:0); return RC_OK;}
-			// comm
 		break;
 	case VT_STRUCT:
 		state|=QST_EOF;
@@ -578,8 +578,7 @@ RC ExprScan::count(uint64_t& cnt,unsigned)
 	case VT_STRUCT: if (expr.length!=0 && ((cv=&expr.varray[0])->property==PROP_SPEC_REF || (cv=VBIN::find(PROP_SPEC_REF,expr.varray,expr.length))!=NULL) && cv->type==VT_REFID) {cnt=1; break;}
 	default: cnt=0; break;
 	case VT_REFID: case VT_REF: cnt=1; break;
-	case VT_ARRAY: cnt=expr.length; break;
-	case VT_COLLECTION: cnt=expr.nav->count(); break;
+	case VT_COLLECTION: cnt=expr.count(); break;
 	case VT_VARREF:
 		if ((expr.refV.flags&VAR_TYPE_MASK)==VAR_CTX) {cnt=1; break;}
 	case VT_STMT: case VT_EXPR:
@@ -617,7 +616,7 @@ RC FTScan::init()
 
 RC FTScan::advance(const PINx *skip)
 {
-	if (res!=NULL) {res->cleanup(); res->epr.lref=0; *res=PIN::noPID;}
+	if (res!=NULL) {res->cleanup(); res->epr.buf[0]=0; *res=PIN::noPID;}
 	RC rc=RC_OK; size_t lData; const byte *er=NULL; byte *sk0=NULL; byte lsk0=0;
 //	if (skip!=NULL && skip->type==VT_REFID)
 //		{PINRef pr(qx->ses->getStore()->storeID,skip->id); pr.def|=PR_PID2; pr.id2=skip->id; lsk0=pr.enc(skbuf); sk0=skbuf;}
@@ -632,18 +631,18 @@ RC FTScan::advance(const PINx *skip)
 				while ((er=(const byte*)qs.scan->nextValue(lData,GO_NEXT,sk,lsk))!=NULL) {
 					if ((rc=qx->ses->testAbortQ())!=RC_OK) return rc;
 #if 0
-					memcpy(res->ref,er,res->lref=(byte)lData);
+					memcpy(res->ref,er,lData);
 #else
 					try {
-						PINRef pr(qx->ses->getStore()->storeID,er,lData);
+						PINRef pr(qx->ses->getStore()->storeID,er);
 						if (nPids>0) {
 							bool fFound=false;
 							if ((pr.def&PR_U1)!=0) for (unsigned i=0; i<nPids; i++) if (pids[i]==pr.u1) {fFound=true; break;}
 							if (!fFound) {sk=NULL; lsk=0; continue;}
 						}
-						if ((flags&QFT_RET_NO_PARTS)!=0 && (pr.def&PR_PID2)!=0 && pr.id2.pid!=STORE_INVALID_PID) {sk=NULL; lsk=0; continue;}
+						if ((flags&QFT_RET_NO_PARTS)!=0 && (pr.def&PR_PID2)!=0 && pr.id2.isPID()) {sk=NULL; lsk=0; continue;}
 						if (res!=NULL) {
-							if ((pr.def&PR_PID2)==0 || pr.id2.pid==STORE_INVALID_PID || pr.id2.ident==STORE_INVALID_IDENTITY || (flags&QFT_RET_NO_DOC)!=0)
+							if ((pr.def&PR_PID2)==0 || !pr.id2.isPID() || (flags&QFT_RET_NO_DOC)!=0)
 								*res=pr.id;
 							else {
 								*res=pr.id2; //if ((flags&QFT_RET_PARTS)!=0) ret=pr.id;	// out of order!!!

@@ -1,6 +1,6 @@
 /**************************************************************************************
 
-Copyright © 2004-2013 GoPivotal, Inc. All rights reserved.
+Copyright © 2004-2014 GoPivotal, Inc. All rights reserved.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -156,7 +156,7 @@ RC QueryOp::getBody(PINx& pe)
 RC QueryOp::createCommOp(PINx *pcb,const byte *er,size_t l)
 {
 	assert(extsrc==NULL); PINx cb(qx->ses); RC rc; ServiceCtx *sctx=NULL;
-	if (pcb==NULL) {if (er!=NULL && l!=0) {memcpy(cb.epr.buf,er,cb.epr.lref=(byte)l); pcb=&cb;} else if ((pcb=res)==NULL) return RC_INTERNAL;}
+	if (pcb==NULL) {if (er!=NULL && l!=0) {memcpy(cb.epr.buf,er,l); pcb=&cb;} else if ((pcb=res)==NULL) return RC_INTERNAL;}
 	if (pcb->isPartial() && (pcb->pb.isNull() && (rc=qx->ses->getStore()->queryMgr->getBody(*pcb))!=RC_OK || (rc=pcb->load(LOAD_SSV))!=RC_OK)) return rc;
 	if ((pcb->getMetaType()&PMT_COMM)==0) return RC_EOF;
 	ValueV vv(pcb->properties,pcb->nProperties); if (pcb==res) pcb->setProps(NULL,0);
@@ -218,7 +218,7 @@ RC LoadOp::advance(const PINx *skip)
 			results[i]->resetProps(); results[i]->fReload=1; if ((rc=qx->ses->testAbortQ())!=RC_OK) return rc;
 			if ((rc=getBody(*results[i]))!=RC_OK || (results[i]->mode&PIN_HIDDEN)!=0) 
 				{results[i]->cleanup(); if (rc==RC_OK || rc==RC_NOACCESS || rc==RC_REPEAT || rc==RC_DELETED) {rc=RC_FALSE; break;} else return rc;}	// cleanup all
-			if ((qflags&(QO_RAW|QO_FORUPDATE))==0 && nResults==1 && (results[i]->getMetaType()&PMT_COMM)!=0 && (rc=createCommOp())!=RC_EOF) return rc;
+			if ((qflags&(QO_RAW|QO_FORUPDATE))==0 && nResults==1 && (results[i]->getMetaType()&PMT_COMM)!=0 && (rc=createCommOp(results[i]))!=RC_EOF) return rc;
 			if ((rc=qx->ses->getStore()->queryMgr->checkLockAndACL(*results[i],(qflags&QO_FORUPDATE)!=0?TVO_UPD:TVO_READ,this))!=RC_OK) break;
 		}
 		if (rc==RC_OK) break;
@@ -262,7 +262,7 @@ void LoadOp::print(SOutCtx& buf,int level) const
 PathOp::PathOp(QueryOp *qop,const PathSeg *ps,unsigned nSegs,unsigned qf) 
 	: QueryOp(qop,qf|(qop->getQFlags()&QO_STREAM)),Path(qx->ses,ps,nSegs,(qf&QO_VCOPIED)!=0),pex(qx->ses),ppx(&pex),saveID(PIN::noPID)
 {
-	saveEPR.lref=0; saveEPR.flags=0;
+	saveEPR.buf[0]=0; saveEPR.flags=0;
 }
 
 PathOp::~PathOp()
@@ -296,7 +296,7 @@ RC PathOp::advance(const PINx *)
 				save(); /*printf("->\n");*/ return RC_OK;
 			}
 		case 1:
-			pst->state=2; //res->getID(id); printf("%*s(%d,%d):"_LX_FM"\n",(pst->idx-1+pst->rcnt-1)*2,"",pst->idx,pst->rcnt,id.pid);
+			pst->state=2; //res->getID(id); printf("%*s(%d,%d):" _LX_FM "\n",(pst->idx-1+pst->rcnt-1)*2,"",pst->idx,pst->rcnt,id.pid);
 			if ((rc=getBody(*res))!=RC_OK || (res->getFlags()&PIN_HIDDEN)!=0 || (rc=res->getID(id))!=RC_OK)
 				{res->cleanup(); if (rc==RC_OK || rc==RC_NOACCESS || rc==RC_REPEAT || rc==RC_DELETED) {pop(); continue;} else {state|=QST_EOF; return rc;}}
 			fOK=path[pst->idx-1].filter==NULL || Expr::condSatisfied((const Expr* const*)&path[pst->idx-1].filter,1,EvalCtx(qx->ses,NULL,0,(PIN**)&res,1,qx->vals,QV_ALL));
@@ -305,7 +305,7 @@ RC PathOp::advance(const PINx *)
 				if (path[pst->idx-1].nPids!=1) {
 					//????
 					return RC_INTERNAL;
-				} else if ((rc=qx->ses->getStore()->queryMgr->loadV(pst->v[1],path[pst->idx-1].pid,*res,LOAD_SSV|LOAD_REF,qx->ses,path[pst->idx-1].eid))==RC_OK) {
+				} else if ((rc=qx->ses->getStore()->queryMgr->loadV(pst->v[1],path[pst->idx-1].pid,*res,LOAD_SSV|LOAD_REF,qx->ses,&path[pst->idx-1].eid))==RC_OK) {
 					if (!pst->v[1].isEmpty()) pst->vidx=1;
 				} else if (rc!=RC_NOTFOUND) {res->cleanup(); state|=QST_EOF; return rc;}
 			}
@@ -317,7 +317,7 @@ RC PathOp::advance(const PINx *)
 						if (path[pst->idx].nPids!=1) {
 							//????
 							return RC_INTERNAL;
-						} else if ((rc=qx->ses->getStore()->queryMgr->loadV(pst->v[0],path[pst->idx].pid,*res,LOAD_SSV|LOAD_REF,qx->ses,path[pst->idx].eid))!=RC_OK && rc!=RC_NOTFOUND)
+						} else if ((rc=qx->ses->getStore()->queryMgr->loadV(pst->v[0],path[pst->idx].pid,*res,LOAD_SSV|LOAD_REF,qx->ses,&path[pst->idx].eid))!=RC_OK && rc!=RC_NOTFOUND)
 							{res->cleanup(); state|=QST_EOF; return rc;}
 						if (rc==RC_OK && !pst->v[0].isEmpty()) {pst->vidx=0; break;}
 						if (path[pst->idx].rmin!=0) break; if (pst->idx+1>=nPathSeg) {save(); return RC_OK;}
@@ -335,10 +335,10 @@ RC PathOp::advance(const PINx *)
 			case VT_STRUCT:
 				//????
 				continue;
-			case VT_COLLECTION: case VT_ARRAY: pst->state=3; pst->cidx=0; break;
+			case VT_COLLECTION: pst->state=3; pst->cidx=0; break;
 			}
 		case 3:
-			pv=pst->v[pst->vidx].type==VT_COLLECTION?pst->v[pst->vidx].nav->navigate(pst->cidx==0?GO_FIRST:GO_NEXT):pst->cidx<pst->v[pst->vidx].length?&pst->v[pst->vidx].varray[pst->cidx]:(const Value*)0;
+			pv=pst->v[pst->vidx].isNav()?pst->v[pst->vidx].nav->navigate(pst->cidx==0?GO_FIRST:GO_NEXT):pst->cidx<pst->v[pst->vidx].length?&pst->v[pst->vidx].varray[pst->cidx]:(const Value*)0;
 			if (pv!=NULL) {
 				pst->cidx++;
 				switch (pv->type) {

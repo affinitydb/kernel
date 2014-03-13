@@ -1,6 +1,6 @@
 /**************************************************************************************
 
-Copyright © 2004-2013 GoPivotal, Inc. All rights reserved.
+Copyright © 2004-2014 GoPivotal, Inc. All rights reserved.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -34,7 +34,7 @@ using namespace Afy;
 #define	HOME_ENV					"AFFINITY_HOME"									/**< environment variable for affinity directory */
 
 #define	DEFAULT_MAX_FILES			300												/**< maximum number of simultaneously open files */
-#define	DEFAULT_BLOCK_NUM			~0u							
+#define	DEFAULT_BLOCK_NUM			~0u												/**< 80% of physical memory available */
 #define DEFAULT_PAGE_SIZE			0x8000											/**< default page size in bytes */
 #define DEFAULT_EXTENT_SIZE			0x400											/**< default extent size in pages */
 #define	DEFAULT_ASYNC_TIMEOUT		30000											/**< default timeout for asynchronous operations */
@@ -43,6 +43,7 @@ using namespace Afy;
 #define	DEFAULT_MAX_SYNC_ACTION		16												/**< default maximum depth of synchronous actions evaluation stack */
 #define	DEFAULT_MAX_ON_COMMIT		1024											/**< default maximum number of actions evaluated at transaction commit */
 #define	DEFAULT_MAX_OBJ_SESSION		256												/**< default maximum number of objects per session */
+#define	DEFAULT_INMEM_SIZE			0x20000000										/**< inmem default memory size = 512Mb */
 
 /**
  * startup flags
@@ -53,13 +54,14 @@ using namespace Afy;
 #define	STARTUP_ROLLFORWARD			0x0004											/**< create a new store and roll it forward based on existing log files */
 #define	STARTUP_FORCE_OPEN			0x0008											/**< force store open if even recovery fails (for salvaging information) */
 #define	STARTUP_PRINT_STATS			0x0010											/**< print index statistics on store shutdown */
-#define	STARTUP_SINGLE_SESSION		0x0020											/**< force single session for the store, synchronisation is turned off */
+#define	STARTUP_RT					0x0020											/**< RT mode; one thread/one session only */
 #define	STARTUP_NO_RECOVERY			0x0040											/**< force no-recovery mode: no logs are created */
-#define	STARTUP_IN_MEMORY			0x0080											/**< pure 'in-memory' mode, no disk opeartions */
+#define	STARTUP_WARM				0x0080											/**< warm re-start, use passed IAffinity reference */
 #define	STARTUP_REDUCED_DURABILITY	0x0100											/**< no log flush on transaction commit for improved performance */
 #define	STARTUP_LOG_PREALLOC		0x0200											/**< pre-allocate log files */
 #define	STARTUP_TOUCH_FILE			0x0400											/**< change file access date if even only read access */
 #define STARTUP_NO_LOAD				0x0800											/**< don't load classes/timers/listeners until the first session is created */
+#define STARTUP_SAFE				0x1000											/**< disable classes/timers/listeners actions */
 
 #define	STARTUP_MODE_DESKTOP		0x0000											/**< database is running as a part of a desktop application */
 #define	STARTUP_MODE_SERVER			0x8000											/**< database is opened on a server */
@@ -146,11 +148,13 @@ struct StartupParameters
 	const char			*logDirectory;						/**< optional directory for log files */
 	size_t				logBufSize;							/**< size of log buffer in memory */
 	const char			*serviceDirectory;					/**< optional directory for service libraries */
+	void				*memory;							/**< start of memory for in-memory store */
+	uint64_t			lMemory;							/**< length of memory for in-memory store */
 	StartupParameters(unsigned md=STARTUP_MODE_DESKTOP,const char *dir=NULL,unsigned xFiles=DEFAULT_MAX_FILES,unsigned nBuf=DEFAULT_BLOCK_NUM,
 						unsigned asyncTimeout=DEFAULT_ASYNC_TIMEOUT,IService *srv=NULL,IStoreNotification *notItf=NULL,
-						const char *pwd=NULL,const char *logDir=NULL,size_t lbs=DEFAULT_LOGBUF_SIZE,const char *srvDir=NULL) 
-		: mode(md),directory(dir),maxFiles(xFiles),nBuffers(nBuf),shutdownAsyncTimeout(asyncTimeout),
-		service(srv),notification(notItf),password(pwd),logDirectory(logDir),logBufSize(lbs),serviceDirectory(srvDir) {}
+						const char *pwd=NULL,const char *logDir=NULL,size_t lbs=DEFAULT_LOGBUF_SIZE,const char *srvDir=NULL,void *mem=NULL,uint64_t lMem=0) 
+		: mode(md),directory(dir),maxFiles(xFiles),nBuffers(nBuf),shutdownAsyncTimeout(asyncTimeout),service(srv),notification(notItf),password(pwd),
+		logDirectory(logDir),logBufSize(lbs),serviceDirectory(srvDir),memory(mem),lMemory(lMem) {}
 };
 
 /**
@@ -160,7 +164,7 @@ struct StartupParameters
 struct StoreCreationParameters
 {
 	unsigned		nControlRecords;							/**< number of duplicated control records; must be 0 at the moment */
-	unsigned		pageSize;									/**< page size in bytes, aligned to 2**N, from 0x1000 to 0x10000 */
+	unsigned		pageSize;									/**< page size in bytes, aligned to 2**N, between 0x1000 and 0x10000 */
 	unsigned		fileExtentSize;								/**< file extent size - number of pages to allocate when data file is extended */
 	const	char	*identity;									/**< store owner identity */
 	unsigned short	storeId;									/**< store ID for this identity; 0-65535, must be unique for this identity */
@@ -172,7 +176,6 @@ struct StoreCreationParameters
 	unsigned		xSyncStack;									/**< maximum depth of synchronous action invocations */
 	unsigned		xOnCommit;									/**< maximum number of OnCommit actions */
 	unsigned		xObjSession;								/**< maximum number of objects per session */
-#define	DEAFULT_MAX_OBJ_SESSION		256												
 	StoreCreationParameters(unsigned nCtl=0,unsigned lPage=DEFAULT_PAGE_SIZE,
 		unsigned extSize=DEFAULT_EXTENT_SIZE,const char *ident=NULL,unsigned short stId=0,const char *pwd=NULL,unsigned md=0,uint64_t xSize=0,
 		float pctF=-1.f,size_t lss=DEFAULT_LOGSEG_SIZE,unsigned xSync=DEFAULT_MAX_SYNC_ACTION,unsigned xoc=DEFAULT_MAX_ON_COMMIT,unsigned xoses=DEFAULT_MAX_OBJ_SESSION)
@@ -180,23 +183,12 @@ struct StoreCreationParameters
 		storeId(stId),password(pwd),maxSize(xSize),pctFree(pctF),logSegSize(lss),mode(md),xSyncStack(xSync),xOnCommit(xoc),xObjSession(xoses) {}
 };
 
-/**
- * directory mapping interface
- * @see manageStores()
- */
-class IMapDir
-{
-public:
-	enum StoreOp {SO_CREATE, SO_OPEN, SO_DELETE, SO_MOVE, SO_LOG};
-	virtual	RC	map(StoreOp op,const char *dir,size_t ldir,const char *&mdir,const char **pwd) = 0;
-};
-
-extern "C" AFY_EXP RC			manageStores(const char *cmd,size_t lcmd,IAffinity *&store,IMapDir *id,const StartupParameters *sp=NULL,CompilationError *ce=NULL);	/**< store management using PathSQL strings */
-extern "C" AFY_EXP RC			openStore(const StartupParameters& params,IAffinity *&store);																		/**< opens an existing store, returns store context handle */
-extern "C" AFY_EXP RC			createStore(const StoreCreationParameters& create,const StartupParameters& params,IAffinity *&store,ISession **pLoad=NULL);			/**< creates a new store, returns store context handle */
-extern "C" AFY_EXP RC			getStoreCreationParameters(StoreCreationParameters& params,IAffinity *store=NULL);													/**< retrives parameters used to create this store */
-extern "C" AFY_EXP unsigned		getVersion();																														/**< get Affinity kernel version */
-extern "C" AFY_EXP void			setReport(IReport *);																												/**< set (kernel-wide) error/debug info interface */
+extern "C" AFY_EXP RC			manageStores(const char *cmd,size_t lcmd,IAffinity *&store,const StartupParameters *sp=NULL,CompilationError *ce=NULL);		/**< store management using PathSQL strings */
+extern "C" AFY_EXP RC			openStore(const StartupParameters& params,IAffinity *&store);																/**< opens an existing store, returns store context handle */
+extern "C" AFY_EXP RC			createStore(const StoreCreationParameters& create,const StartupParameters& params,IAffinity *&store,ISession **pLoad=NULL);	/**< creates a new store, returns store context handle */
+extern "C" AFY_EXP RC			getStoreCreationParameters(StoreCreationParameters& params,IAffinity *store=NULL);											/**< retrives parameters used to create this store */
+extern "C" AFY_EXP unsigned		getVersion();																												/**< get Affinity kernel version */
+extern "C" AFY_EXP void			setReport(IReport *);																										/**< set (kernel-wide) error/debug info interface */
 
 #define	INIT_ENTRY_NAME			"initService"
 #ifdef	AFFINITY_STATIC_LINK
@@ -204,9 +196,9 @@ extern "C" AFY_EXP void			setReport(IReport *);																												/**< 
 #else
 #define	SERVICE_INIT(A)			initService
 #endif
-extern "C" AFY_EXP	bool		initService(ISession *ses,const Value *pars,unsigned nPars,bool fNew);																/**< prototype of the service initializatio function; called when the service library is loaded by a store */
+extern "C" AFY_EXP	bool		initService(ISession *ses,const Value *pars,unsigned nPars,bool fNew);														/**< prototype of the service initializatio function; called when the service library is loaded by a store */
 
-extern "C" AFY_EXP void			stopThreads();																														/**< stops all threads started by Affinity kernel */
-extern "C" AFY_EXP RC			shutdownStore();																													/**< shutdown "current" store */ 
+extern "C" AFY_EXP void			stopThreads();																												/**< stops all threads started by Affinity kernel */
+extern "C" AFY_EXP RC			shutdownStore();																											/**< shutdown "current" store */ 
 
 #endif

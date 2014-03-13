@@ -8,6 +8,8 @@
 
 /* Begin PBXBuildFile section */
 		1C0AC139178EF0D20068D36C /* persist.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 1C0AC138178EF0D20068D36C /* persist.cpp */; };
+		1C261E0617AA136900B6C191 /* ecc.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 1C261E0417AA136700B6C191 /* ecc.cpp */; };
+		1C261E0717AA136900B6C191 /* ecc.h in Headers */ = {isa = PBXBuildFile; fileRef = 1C261E0517AA136800B6C191 /* ecc.h */; };
 		1C36E88D17236EC2007FDB31 /* builtin.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 1C36E88C17236EC2007FDB31 /* builtin.cpp */; };
 		1C8BB9A51688E78D0065C0D4 /* service.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 1C8BB9A41688E78D0065C0D4 /* service.cpp */; };
 		1C964A67177BAC29004F03CB /* afyutils.h in Headers */ = {isa = PBXBuildFile; fileRef = 1C964A66177BAC29004F03CB /* afyutils.h */; };
@@ -21,6 +23,7 @@
 		1CDF484D179393E200FA0FBD /* fsm.h in Headers */ = {isa = PBXBuildFile; fileRef = 1CDF484B179393E200FA0FBD /* fsm.h */; };
 		1CDF48501794FFC300FA0FBD /* named.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 1CDF484E1794FFC300FA0FBD /* named.cpp */; };
 		1CDF48511794FFC300FA0FBD /* named.h in Headers */ = {isa = PBXBuildFile; fileRef = 1CDF484F1794FFC300FA0FBD /* named.h */; };
+		1CEFA16018C4416A00AB763F /* linear.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 1CEFA15F18C4416A00AB763F /* linear.cpp */; };
 		4C507BB91671A3BA00C45622 /* blob.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 4C507B511671A3BA00C45622 /* blob.cpp */; };
 		4C507BBA1671A3BA00C45622 /* blob.h in Headers */ = {isa = PBXBuildFile; fileRef = 4C507B521671A3BA00C45622 /* blob.h */; };
 		4C507BBB1671A3BA00C45622 /* buffer.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 4C507B531671A3BA00C45622 /* buffer.cpp */; };
@@ -126,6 +129,8 @@
 
 /* Begin PBXFileReference section */
 		1C0AC138178EF0D20068D36C /* persist.cpp */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.cpp.cpp; path = persist.cpp; sourceTree = "<group>"; };
+		1C261E0417AA136700B6C191 /* ecc.cpp */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.cpp.cpp; path = ecc.cpp; sourceTree = "<group>"; };
+		1C261E0517AA136800B6C191 /* ecc.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = ecc.h; sourceTree = "<group>"; };
 		1C36E88C17236EC2007FDB31 /* builtin.cpp */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.cpp.cpp; path = builtin.cpp; sourceTree = "<group>"; };
 		1C8BB9A41688E78D0065C0D4 /* service.cpp */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.cpp.cpp; path = service.cpp; sourceTree = "<group>"; };
 		1C964A66177BAC29004F03CB /* afyutils.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = afyutils.h; sourceTree = "<group>"; };
@@ -139,6 +144,7 @@
 		1CDF484B179393E200FA0FBD /* fsm.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = fsm.h; sourceTree = "<group>"; };
 		1CDF484E1794FFC300FA0FBD /* named.cpp */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.cpp.cpp; path = named.cpp; sourceTree = "<group>"; };
 		1CDF484F1794FFC300FA0FBD /* named.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = named.h; sourceTree = "<group>"; };
+		1CEFA15F18C4416A00AB763F /* linear.cpp */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.cpp.cpp; path = linear.cpp; sourceTree = "<group>"; };
 		4C507B4E1671A3BA00C45622 /* affinity.proto */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = text; path = affinity.proto; sourceTree = "<group>"; };
 		4C507B511671A3BA00C45622 /* blob.cpp */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.cpp.cpp; path = blob.cpp; sourceTree = "<group>"; };
 		4C507B521671A3BA00C45622 /* blob.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = blob.h; sourceTree = "<group>"; };
@@ -259,6 +265,9 @@
 		4C507B4D1671A3BA00C45622 /* src */ = {
 			isa = PBXGroup;
 			children = (
+				1CEFA15F18C4416A00AB763F /* linear.cpp */,
+				1C261E0417AA136700B6C191 /* ecc.cpp */,
+				1C261E0517AA136800B6C191 /* ecc.h */,
 				1CDF484E1794FFC300FA0FBD /* named.cpp */,
 				1CDF484F1794FFC300FA0FBD /* named.h */,
 				1CDF484A179393E200FA0FBD /* fsm.cpp */,
@@ -467,6 +476,7 @@
 				1C964A6B177CEED7004F03CB /* request.h in Headers */,
 				1CDF484D179393E200FA0FBD /* fsm.h in Headers */,
 				1CDF48511794FFC300FA0FBD /* named.h in Headers */,
+				1C261E0717AA136900B6C191 /* ecc.h in Headers */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -496,7 +506,7 @@
 		4CFFBE6516717F7800E5E8C8 /* Project object */ = {
 			isa = PBXProject;
 			attributes = {
-				LastUpgradeCheck = 0460;
+				LastUpgradeCheck = 0500;
 				ORGANIZATIONNAME = "Michael  Andronov";
 			};
 			buildConfigurationList = 4CFFBE6816717F7800E5E8C8 /* Build configuration list for PBXProject "kernel" */;
@@ -521,6 +531,7 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				1CEFA16018C4416A00AB763F /* linear.cpp in Sources */,
 				4C507BB91671A3BA00C45622 /* blob.cpp in Sources */,
 				4C507BBB1671A3BA00C45622 /* buffer.cpp in Sources */,
 				4C507BBE1671A3BA00C45622 /* classifier.cpp in Sources */,
@@ -580,6 +591,7 @@
 				1C0AC139178EF0D20068D36C /* persist.cpp in Sources */,
 				1CDF484C179393E200FA0FBD /* fsm.cpp in Sources */,
 				1CDF48501794FFC300FA0FBD /* named.cpp in Sources */,
+				1C261E0617AA136900B6C191 /* ecc.cpp in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -590,7 +602,6 @@
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				ALWAYS_SEARCH_USER_PATHS = NO;
-				ARCHS = "$(ARCHS_STANDARD_64_BIT)";
 				CLANG_CXX_LANGUAGE_STANDARD = "gnu++0x";
 				CLANG_CXX_LIBRARY = "libc++";
 				CLANG_ENABLE_OBJC_ARC = YES;
@@ -626,7 +637,6 @@
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				ALWAYS_SEARCH_USER_PATHS = NO;
-				ARCHS = "$(ARCHS_STANDARD_64_BIT)";
 				CLANG_CXX_LANGUAGE_STANDARD = "gnu++0x";
 				CLANG_CXX_LIBRARY = "libc++";
 				CLANG_ENABLE_OBJC_ARC = YES;
@@ -660,7 +670,7 @@
 				DSTROOT = "$(SRCROOT)/lib";
 				EXECUTABLE_PREFIX = lib;
 				GCC_C_LANGUAGE_STANDARD = gnu99;
-				GCC_VERSION = com.apple.compilers.llvmgcc42;
+				GCC_VERSION = "";
 				GCC_WARN_64_TO_32_BIT_CONVERSION = NO;
 				GCC_WARN_ABOUT_DEPRECATED_FUNCTIONS = NO;
 				GCC_WARN_MISSING_PARENTHESES = NO;
@@ -689,7 +699,7 @@
 				DSTROOT = "$(SRCROOT)/lib";
 				EXECUTABLE_PREFIX = lib;
 				GCC_C_LANGUAGE_STANDARD = gnu99;
-				GCC_VERSION = com.apple.compilers.llvmgcc42;
+				GCC_VERSION = "";
 				GCC_WARN_64_TO_32_BIT_CONVERSION = NO;
 				GCC_WARN_ABOUT_DEPRECATED_FUNCTIONS = NO;
 				GCC_WARN_MISSING_PARENTHESES = NO;

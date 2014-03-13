@@ -1,6 +1,6 @@
 /**************************************************************************************
 
-Copyright © 2004-2013 GoPivotal, Inc. All rights reserved.
+Copyright © 2004-2014 GoPivotal, Inc. All rights reserved.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -57,8 +57,6 @@ class ExtentDirPage : public PageMgr
 	static	unsigned	maxDirSlots(size_t lPage) {return unsigned(lPage-sizeof(PageHeader)-FOOTERSIZE)/sizeof(DirSlot);}
 };
 
-#define	EXT_HDR_SIZE			(sizeof(TxPageHeader)+sizeof(uint32_t))
-
 /**
  * extent map page descritptor
  * map page contains a bitmap of free pages in this extent
@@ -67,16 +65,19 @@ class ExtentDirPage : public PageMgr
 class ExtentMapPage : public TxPage
 {
 	friend	class	FSMgr;
-	unsigned		lExtHdr;
+	struct ExtentMapHeader : public TxPageHeader {
+		uint32_t	nFreePages;
+		uint32_t	firstFree;
+		uint32_t	bmp[1];
+	};
 	ExtentMapPage(StoreCtx *ctx);
 	void	initPage(byte *page,size_t lPage,PageID pid);
 	bool	afterIO(class PBlock *,size_t lPage,bool fLoad);
 	bool	beforeFlush(byte *frame,size_t len,PageID pid);
 	RC		update(class PBlock *,size_t len,unsigned info,const byte *rec,size_t lrec,unsigned flags,class PBlock *newp=NULL);
 	PGID	getPGID() const;
-	uint32_t* getBMP(const TxPageHeader *emp) const {return (uint32_t*)((byte*)emp+lExtHdr);}
-	bool	isFree(const TxPageHeader *emp,unsigned bitN) const {return bitN>=emp->nPages?false:(getBMP(emp)[bitN/BITSPERELT]&1<<bitN%BITSPERELT)==0;}
-	static	size_t	contentSize(size_t lPage) {return lPage - sizeof(TxPageHeader) - FOOTERSIZE;}
+	bool	isFree(const ExtentMapHeader *emp,unsigned bitN) const {return bitN>=emp->nPages?false:(emp->bmp[bitN/BITSPERELT]&1<<bitN%BITSPERELT)==0;}
+	static	size_t	contentSize(size_t lPage) {return lPage - sizeof(ExtentMapHeader) - FOOTERSIZE;}
 };
 
 /**

@@ -1,6 +1,6 @@
 /**************************************************************************************
 
-Copyright © 2004-2013 GoPivotal, Inc. All rights reserved.
+Copyright © 2004-2014 GoPivotal, Inc. All rights reserved.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -25,7 +25,7 @@ Written by Mark Venguerov 2004-2012
 
 using namespace AfyKernel;
 
-static const IndexFormat ftIndexFmt(KT_BIN,KT_VARKEY,KT_VARMDPINREFS);
+static const IndexFormat ftIndexFmt(KT_BIN,KT_VARKEY,KT_PINREFS);
 
 FTIndexMgr::FTIndexMgr(StoreCtx *ct) : ctx(ct),indexFT(MA_FTINDEX,ftIndexFmt,ct,TF_WITHDEL),localeTable(LOCALE_TABLE_SIZE,(MemAlloc*)ct)
 {
@@ -53,14 +53,29 @@ RC FTIndexMgr::index(ChangeInfo& inf,FTList *ftl,unsigned flags,unsigned mode,Me
 		switch (oldV->type) {
 		case VT_STREAM:
 			assert((oldV->flags&VF_SSV)==0);
-			if (oldV->stream.is->dataType()==VT_STRING && (newV==NULL||newV->type==VT_ARRAY||newV->type==VT_COLLECTION))
+			if (oldV->stream.is->dataType()==VT_STRING && (newV==NULL||newV->type==VT_COLLECTION))
 				{if ((rc=index(inf,ftl,mode,ma))!=RC_OK) return rc; inf.oldV=NULL;}
 			break;
 		case VT_STRING:
-			if ((flags&IX_NFT)==0||newV==NULL||newV->type==VT_ARRAY||newV->type==VT_COLLECTION) 
+			if ((flags&IX_NFT)==0||newV==NULL||newV->type==VT_COLLECTION)
 				{if ((rc=index(inf,ftl,mode,ma))!=RC_OK) return rc; inf.oldV=NULL;}
 			break;
-		case VT_ARRAY:
+		case VT_COLLECTION:
+			if (oldV->isNav()) {
+				for (v=oldV->nav->navigate(GO_FIRST); rc==RC_OK && v!=NULL; v=oldV->nav->navigate(GO_NEXT)) {
+					inf.oldV=v; inf.eid=v->eid;
+					switch (v->type) {
+					case VT_STRING: rc=index(inf,ftl,mode|FTMODE_SAVE_WORDS,ma); break;
+					case VT_STREAM: 
+						assert((v->flags&VF_SSV)==0);
+						if (v->stream.is->dataType()==VT_STRING) rc=index(inf,ftl,mode,ma);
+						break;
+					case VT_STRUCT: if ((rc=index(inf,ftl,flags,mode,ma))!=RC_OK) return rc; break;
+					}
+				}
+				inf.oldV=NULL; break;
+			}
+		case VT_STRUCT:
 			for (n=0; n<oldV->length; n++) {
 				inf.oldV=v=&oldV->varray[n]; inf.eid=inf.oldV->eid;
 				switch (v->type) {
@@ -69,35 +84,7 @@ RC FTIndexMgr::index(ChangeInfo& inf,FTList *ftl,unsigned flags,unsigned mode,Me
 					if (v->stream.is->dataType()==VT_STRING && (rc=index(inf,ftl,mode,ma))!=RC_OK) return rc;
 					break;
 				case VT_STRING: if ((rc=index(inf,ftl,mode,ma))!=RC_OK) return rc; break;
-				case VT_STRUCT: if ((rc=index(inf,ftl,flags,mode,ma))!=RC_OK) return rc; break;
-				}
-			}
-			inf.oldV=NULL; inf.eid=STORE_COLLECTION_ID; break;
-		case VT_COLLECTION:
-			for (v=oldV->nav->navigate(GO_FIRST); rc==RC_OK && v!=NULL; v=oldV->nav->navigate(GO_NEXT)) {
-				inf.oldV=v; inf.eid=v->eid;
-				switch (v->type) {
-				case VT_STRING: rc=index(inf,ftl,mode|FTMODE_SAVE_WORDS,ma); break;
-				case VT_STREAM: 
-					assert((v->flags&VF_SSV)==0);
-					if (v->stream.is->dataType()==VT_STRING) rc=index(inf,ftl,mode,ma);
-					break;
-				case VT_STRUCT: if ((rc=index(inf,ftl,flags,mode,ma))!=RC_OK) return rc; break;
-				}
-			}
-			oldV->nav->navigate(GO_FINDBYID,STORE_COLLECTION_ID); if (rc!=RC_OK) return rc;
-			inf.oldV=NULL; inf.eid=STORE_COLLECTION_ID; break;
-		case VT_STRUCT:
-			for (n=0; n<oldV->length; n++) {
-				inf.oldV=v=&oldV->varray[n];
-				switch (v->type) {
-				case VT_STREAM:
-					assert((v->flags&VF_SSV)==0);
-					if (v->stream.is->dataType()==VT_STRING && (rc=index(inf,ftl,mode,ma))!=RC_OK) return rc;
-					break;
-				case VT_STRING: if ((rc=index(inf,ftl,mode,ma))!=RC_OK) return rc; break;
-				case VT_STRUCT: case VT_ARRAY: case VT_COLLECTION:
-					if ((rc=index(inf,ftl,flags,mode,ma))!=RC_OK) return rc; break;
+				case VT_STRUCT: case VT_COLLECTION: if ((rc=index(inf,ftl,flags,mode,ma))!=RC_OK) return rc; break;
 				}
 			}
 			inf.oldV=NULL; break;
@@ -109,34 +96,26 @@ RC FTIndexMgr::index(ChangeInfo& inf,FTList *ftl,unsigned flags,unsigned mode,Me
 		switch (newV->type) {
 		case VT_STREAM: if (newV->stream.is->dataType()==VT_STRING && (rc=index(inf,ftl,mode,ma))!=RC_OK) return rc; break;
 		case VT_STRING: if ((rc=index(inf,ftl,mode,ma))!=RC_OK) return rc; break;
-		case VT_ARRAY:
-			for (n=0; n<newV->length; n++) {
-				inf.newV=v=&newV->varray[n]; inf.eid=inf.newV->eid;
-				switch (v->type) {
-				case VT_STRING: if ((rc=index(inf,ftl,mode,ma))!=RC_OK) return rc; break;
-				case VT_STREAM: if (v->stream.is->dataType()==VT_STRING && (rc=index(inf,ftl,mode,ma))!=RC_OK) return rc; break;
-				case VT_STRUCT: if ((rc=index(inf,ftl,flags,mode,ma))!=RC_OK) return rc; break;
-				}
-			}
-			break;
 		case VT_COLLECTION:
-			for (v=newV->nav->navigate(GO_FIRST); rc==RC_OK && v!=NULL; v=newV->nav->navigate(GO_NEXT)) {
-				inf.newV=v; inf.eid=v->eid;
-				switch (v->type) {
-				case VT_STRING: rc=index(inf,ftl,mode|FTMODE_SAVE_WORDS,ma); break;
-				case VT_STREAM: if (v->stream.is->dataType()==VT_STRING) rc=index(inf,ftl,mode,ma); break;
-				case VT_STRUCT: if ((rc=index(inf,ftl,flags,mode,ma))!=RC_OK) return rc; break;
+			if (newV->isNav()) {
+				for (v=newV->nav->navigate(GO_FIRST); rc==RC_OK && v!=NULL; v=newV->nav->navigate(GO_NEXT)) {
+					inf.newV=v; inf.eid=v->eid;
+					switch (v->type) {
+					case VT_STRING: rc=index(inf,ftl,mode|FTMODE_SAVE_WORDS,ma); break;
+					case VT_STREAM: if (v->stream.is->dataType()==VT_STRING) rc=index(inf,ftl,mode,ma); break;
+					case VT_STRUCT: if ((rc=index(inf,ftl,flags,mode,ma))!=RC_OK) return rc; break;
+					}
 				}
+				newV->nav->navigate(GO_FINDBYID,STORE_COLLECTION_ID); 
+				if (rc!=RC_OK) return rc; break;
 			}
-			newV->nav->navigate(GO_FINDBYID,STORE_COLLECTION_ID); 
-			if (rc!=RC_OK) return rc; break;
 		case VT_STRUCT:
 			for (n=0; n<newV->length; n++) {
 				inf.newV=v=&newV->varray[n]; inf.eid=inf.newV->eid;
 				switch (v->type) {
 				case VT_STRING: if ((rc=index(inf,ftl,mode,ma))!=RC_OK) return rc; break;
 				case VT_STREAM: if (v->stream.is->dataType()==VT_STRING && (rc=index(inf,ftl,mode,ma))!=RC_OK) return rc; break;
-				case VT_STRUCT: case VT_ARRAY: case VT_COLLECTION: if ((rc=index(inf,ftl,flags,mode,ma))!=RC_OK) return rc; break;
+				case VT_STRUCT: case VT_COLLECTION: if ((rc=index(inf,ftl,flags,mode,ma))!=RC_OK) return rc; break;
 				}
 			}
 			break;
@@ -185,7 +164,7 @@ RC FTIndexMgr::index(const ChangeInfo& ft,FTList *ftl,unsigned mode,MemAlloc *ma
 	byte ext[XPINREFSIZE]; byte lext=0;
 	if (ftl==NULL) {
 		PINRef pr(ctx->storeID,ft.id); pr.def|=PR_U1; pr.u1=ft.propID;
-		if (ft.docID.pid!=STORE_INVALID_PID) {pr.def|=PR_PID2; pr.id2=ft.docID;}
+		if (ft.docID.isPID()) {pr.def|=PR_PID2; pr.id2=ft.docID;}
 		lext=pr.enc(ext);
 	}
 	const char *pW; size_t lW; FTInfo fti; fti.count=1; RC rc=RC_OK;
@@ -198,7 +177,7 @@ RC FTIndexMgr::index(const ChangeInfo& ft,FTList *ftl,unsigned mode,MemAlloc *ma
 			if (ftl==NULL) {
 				SearchKey key(pW,ushort(lW));
 				if ((rc=indexFT.remove(key,ext,lext))!=RC_OK) {
-					report(MSG_ERROR,"FT del failed, key: %.*s, prop: %d, eid:%08X, id: "_LX_FM", rc:%d\n",lW,pW,ft.propID,ft.eid,ft.id.pid,rc);
+					report(MSG_ERROR,"FT del failed, key: %.*s, prop: %d, eid:%08X, id: " _LX_FM ", rc:%d\n",lW,pW,ft.propID,ft.eid,ft.id.pid,rc);
 					if (rc!=RC_NOTFOUND) break;		//????????
 				}
 			} else if (/*(char*)pW!=wbuf && !oT->saveCopy() || */(pW=(const char*)ftl->store(pW,lW))!=NULL) {
@@ -212,7 +191,7 @@ RC FTIndexMgr::index(const ChangeInfo& ft,FTList *ftl,unsigned mode,MemAlloc *ma
 			if (ftl==NULL) {
 				SearchKey key(pW,ushort(lW));
 				if ((rc=indexFT.insert(key,ext,lext))!=RC_OK) {
-					report(MSG_ERROR,"FT ins failed, key: %.*s, prop: %d, eid:%08X, id: "_LX_FM", rc:%d\n",lW,pW,ft.propID,ft.eid,ft.id.pid,rc);
+					report(MSG_ERROR,"FT ins failed, key: %.*s, prop: %d, eid:%08X, id: " _LX_FM ", rc:%d\n",lW,pW,ft.propID,ft.eid,ft.id.pid,rc);
 					break;
 				}
 			} else if (/*(char*)pW!=wbuf && !nT->saveCopy() ||*/ (pW=(const char*)ftl->store(pW,lW))!=NULL) {
@@ -230,7 +209,7 @@ RC FTIndexMgr::process(FTList& ftl,const PID& id,const PID& doc)
 		SearchKey key(fti->word,ushort(min(fti->lw,size_t(MAX_WORD_SIZE))));
 		if (fti->propID!=prev || fti->count!=prevCnt) {
 			PINRef pr(ctx->storeID,id); pr.def|=PR_U1; pr.u1=fti->propID;
-			if (doc.pid!=STORE_INVALID_PID) {pr.def|=PR_PID2; pr.id2=doc;}
+			if (doc.isPID()) {pr.def|=PR_PID2; pr.id2=doc;}
 			if (fti->count!=1) {pr.def|=PR_COUNT; pr.count=fti->count;}
 			prev=fti->propID; prevCnt=fti->count; lext=pr.enc(ext);
 		}
@@ -240,7 +219,7 @@ RC FTIndexMgr::process(FTList& ftl,const PID& id,const PID& doc)
 		case OP_DELETE: rc=indexFT.remove(key,ext,lext); break;
 		}
 		if (rc!=RC_OK) {
-			report(MSG_ERROR,"FT %s failed, key: %.*s, id: "_LX_FM", rc:%d\n",fti->op==OP_ADD?"add":"del",fti->lw,fti->word,id.pid,rc);
+			report(MSG_ERROR,"FT %s failed, key: %.*s, id: " _LX_FM ", rc:%d\n",fti->op==OP_ADD?"add":"del",fti->lw,fti->word,id.pid,rc);
 			if (fti->op!=OP_DELETE || rc!=RC_NOTFOUND) break;
 		}
 	}
@@ -264,7 +243,7 @@ RC FTIndexMgr::rebuildIndex(Session *ses)
 		while ((rc=fs.next())==RC_OK) {
 #if 0
 			assert(!qr.pb.isNull() && qr.hpin!=NULL);
-			SubAlloc sa(ses); FTList ftl(sa); Value v; ctx->queryMgr->loadV(v,PROP_SPEC_DOCUMENT,qr,0,ses);
+			StackAlloc sa(ses); FTList ftl(sa); Value v; ctx->queryMgr->loadV(v,PROP_SPEC_DOCUMENT,qr,0,ses);
 			ChangeInfo inf={qr.id,v.type==VT_REFID?v.id:PIN::noPID,NULL,&v,STORE_INVALID_URIID,STORE_COLLECTION_ID};
 			const HeapPageMgr::HeapV *hprop=qr.hpin->getPropTab();
 			for (unsigned k=0; k<qr.hpin->nProps; ++k,++hprop) if ((hprop->type.flags&META_PROP_FTINDEX)!=0) {

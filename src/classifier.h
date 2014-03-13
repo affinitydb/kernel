@@ -1,6 +1,6 @@
 /**************************************************************************************
 
-Copyright © 2004-2013 GoPivotal, Inc. All rights reserved.
+Copyright © 2004-2014 GoPivotal, Inc. All rights reserved.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -27,6 +27,7 @@ Written by Mark Venguerov 2004-2013
 
 #include "named.h"
 #include "startup.h"
+#include "pgtree.h"
 
 using namespace Afy;
 
@@ -64,11 +65,16 @@ enum ClassIdxOp {CI_INSERT, CI_UPDATE, CI_DELETE, CI_SDELETE, CI_UDELETE, CI_PUR
 /**
  * window descriptor
  */
+enum ClassWindowType
+{
+	CWT_COUNT, CWT_INTERVAL, CWT_REL_INTERVAL
+};
+
 struct ClassWindow
 {
-	int64_t		range;
-	PropertyID	propID;
-	uint32_t	type;
+	uint64_t		range;
+	PropertyID		propID;
+	ClassWindowType	type;
 	ClassWindow(const Value& wnd,const Stmt *qry);
 };
 
@@ -80,6 +86,7 @@ class Class
 	friend	class		Classifier;
 	friend	class		ClassIndex;
 	friend	class		ClassCreate;
+	friend	class		FamilyCreate;
 	friend	class		ClassDrop;
 	typedef	QElt<Class,ClassID,ClassID> QE;
 	ClassID				cid;
@@ -139,7 +146,7 @@ public:
 	virtual			~ClassIndex();
 	void			*operator new(size_t s,unsigned nSegs,MemAlloc *ma) {return ma->malloc(s+int(nSegs-1)*sizeof(IndexSeg));}
 	operator		Class&() const {return cls;}
-	RC				drop() {PageID rt=root; root=INVALID_PAGEID; return rt!=INVALID_PAGEID?Tree::drop(rt,ctx):RC_OK;}
+	RC				drop() {PageID rt=root; mode|=TF_NOPOST; root=INVALID_PAGEID; return rt!=INVALID_PAGEID?Tree::drop(rt,ctx):RC_OK;}
 
 	unsigned		getNSegs() const {return nSegs;}
 	const IndexSeg *getIndexSegs() const {return indexSegs;}
@@ -208,18 +215,24 @@ struct ClassRefT : public ClassRef
 class ClassCreate : public OnCommit, public ClassRef
 {
 	friend	class	Classifier;
-	const Stmt	*query;
-	IndexInit	*cidx;
-	PID			id;
-	PageAddr	addr;
+	friend	struct	FamilyData;
+	friend	struct	IndexData;
+	const Stmt		*query;
+	PageAddr		addr;
+	IndexFormat		fmt;
+	PageID			anchor;
+	PageID			root;
+	unsigned		height;
+	IndexSeg		indexSegs[1];
 public:
-	ClassCreate(ClassID cid,const PID& pd,ushort np,unsigned flags,ClassActs *ac,ClassWindow *w) 
-		: ClassRef(cid,pd,np,0,flags,ac,w),query(NULL),cidx(NULL),id(PIN::noPID),addr(PageAddr::noAddr) {}
-	IndexInit	*getIndex() const {return cidx;}
+	ClassCreate(ClassID cid,const PID& pd,const PageAddr&ad,ushort np,unsigned flags) 
+		: ClassRef(cid,pd,np,0,flags,NULL,NULL),query(NULL),addr(ad),fmt(KT_UINT,sizeof(uint64_t),KT_PINREFS),anchor(INVALID_PAGEID),root(INVALID_PAGEID),height(0) {}
+	void		*operator new(size_t s,unsigned nSegs,MemAlloc *ma) {return ma->malloc(s+int(nSegs-1)*sizeof(IndexSeg));}
 	ClassCreate	*getClass();
 	RC			process(Session *s);
 	void		destroy(Session *s);
-	static RC	loadClass(PINx& cb);
+	static RC	loadClass(PINx& cb,bool fSafe);
+	RC			copy(Class *cls,bool fFull) const;
 };
 
 class ClassDrop : public OnCommit
@@ -249,118 +262,7 @@ struct ClassResult
 	~ClassResult() {if (classes!=NULL) ma->free(classes);}
 	RC					insert(const ClassRef *cr,const ClassRef **cins=NULL);
 	RC					checkConstraints(PIN *pin,const struct IntoClass *into,unsigned nInto);
-	RC					invokeActions(PIN *,ClassIdxOp,const struct EvalCtx *stk);
-};
-
-/**
- * buffer containing PIN references (used in classifications)
- */
-struct RefBuf
-{
-	ushort	*buf;
-	size_t	lx;
-	RefBuf() : buf(NULL),lx(0) {}
-	RefBuf(ushort *p,size_t l) : buf(p),lx(l) {}
-	static	SListOp compare(RefBuf& left,RefBuf& right,RefBuf *next,bool fFirst,MemAlloc& ma);
-	static	void insert(ushort *pb,const byte *ext,unsigned lext);
-	static	RC	insert(ushort *&buf,size_t& lx,const byte *val,unsigned lv,MemAlloc& sa,bool fSingle=false);
-};
-
-/**
- * SList containing (ordered) list of RefBuf blocks
- */
-typedef SList<RefBuf,RefBuf> RefList;
-
-/**
- * PIN reference data element - a union of simple buffer and SList
- */
-struct RefData
-{
-	SubAlloc	*const	sa;
-	size_t				lx;				//maximim buf size or (allocated size for RefList | 1)
-	union {
-		ushort			*buf;
-		RefList			*lst;
-	};
-	RefData(SubAlloc *s) : sa(s),lx(0) {buf=NULL;}
-	RC	add(const byte *val,unsigned lv,bool fSingle=false);
-	RC	flush(Tree& tree,const SearchKey& key);
-	class MultiKey : public IMultiKey {
-		RefData&			rd;
-		const	SearchKey&	key;
-		const	RefBuf		*rb;
-		bool				fAdv;
-	public:
-		MultiKey(RefData& r,const SearchKey& k) : rd(r),key(k),rb(NULL),fAdv(true) {assert((r.lx&1)!=0); r.lst->start();}
-		RC	nextKey(const SearchKey *&nk,const void *&value,ushort& lValue,bool& fMulti,bool fForceNext);
-		void push_back();
-	};
-};
-
-/**
- * family value refernce
- */
-struct IndexValue
-{
-	IndexKeyV	key;
-	RefData		refs;
-	IndexValue(const IndexKeyV& k,SubAlloc *sa) : key(k),refs(sa) {}
-	IndexValue() : refs(NULL) {}		// for SList:node0
-	static SListOp compare(const IndexValue& left,IndexValue& right,unsigned ity,MemAlloc&) {
-		int cmp=left.key.cmp(right.key,(TREE_KT)ity); return cmp<0?SLO_LT:cmp>0?SLO_GT:SLO_NOOP;
-	}
-};
-
-/**
- * ordered SList of index values with reference data
- */
-typedef SList<IndexValue,IndexValue> IndexList;
-
-/**
- * class or family index container - common part
- */
-struct IndexData
-{
-	ClassCreate		*cd;
-	bool			fSkip;
-	IndexData(ClassCreate *c) : cd(c),fSkip(true) {}
-	virtual	RC		insert(const byte *ext,unsigned lext,SearchKey *key=NULL) = 0;
-	virtual	RC		flush(Tree& tr) = 0;
-};
-
-/**
- * class index container
- */
-struct ClassData : public IndexData
-{
-	RefData		x;
-	ClassData(ClassCreate *d,SubAlloc *sa) : IndexData(d),x(sa) {}
-	RC			insert(const byte *ext,unsigned lext,SearchKey *key=NULL);
-	RC			flush(Tree& tr);
-};
-
-/**
- * family index container
- */
-struct FamilyData : public IndexData
-{
-	IndexList	*il;
-	uint32_t	ity;
-	SubAlloc	*sa;
-	FamilyData(ClassCreate *d,uint32_t ty,SubAlloc *s) : IndexData(d),il(NULL),ity(ty),sa(s) {}
-	RC			insert(const byte *ext,unsigned lext,SearchKey *key=NULL);
-	RC			flush(Tree& tr);
-	class MultiKey : public IMultiKey {
-		FamilyData&			ci;
-		SearchKey			key;
-		RefList				*lst;
-		const	IndexValue	*iv;
-		bool				fAdv;
-	public:
-		MultiKey(FamilyData& c) : ci(c),lst(NULL),iv(NULL),fAdv(true) {if (c.il!=NULL) c.il->start();}
-		RC	nextKey(const SearchKey *&nk,const void *&value,ushort& lValue,bool& fMulti,bool fForceNext);
-		void push_back();
-	};
+	RC					invokeActions(Session *ses,PIN *,ClassIdxOp,const struct EvalCtx *stk);
 };
 
 /**
@@ -395,8 +297,8 @@ private:
 	const ClassRefT	*find(ClassID cid,const PropertyID *pids,unsigned npids) const;
 	RC				remove(ClassID cid,const PropertyID *pids,unsigned npids);
 	RC				insert(const ClassRef& inf,const Stmt *qry,ClassRefT *&cr,const ClassRefT **&pc,unsigned& n);
-	RC				classify(PIN *pin,ClassResult& res);
-	RC				classify(const ClassRefT *cp,PIN *pin,ClassResult& res);
+	RC				classify(PIN *pin,ClassResult& res,Session *ses);
+	RC				classify(const ClassRefT *cp,PIN *pin,ClassResult& res,Session *ses);
 	template<typename T> class it {
 		const	ClassPropIndex&	pidx;
 		const	T				*pt;
@@ -472,6 +374,7 @@ class Classifier : public ClassHash, public TreeFactory, public TreeConnect
 	friend	class		ClassPropIndex;
 	friend	class		IndexInit;
 	friend	class		ClassCreate;
+	friend	class		FamilyCreate;
 	friend	class		ClassDrop;
 	friend	class		TimerQueue;
 	StoreCtx			*const ctx;
@@ -483,7 +386,7 @@ class Classifier : public ClassHash, public TreeFactory, public TreeConnect
 	Mutex				lock;
 public:
 	Classifier(StoreCtx *ct,unsigned timeout,unsigned hashSize=DEFAULT_CLASS_HASH_SIZE,unsigned cacheSize=DEFAULT_CLASS_CACHE_SIZE);
-	RC					classify(PIN *pin,ClassResult& res);
+	RC					classify(PIN *pin,ClassResult& res,Session *ses);
 	RC					enable(Session *ses,Class *cls,unsigned notifications);
 	void				disable(Session *ses,Class *cls,unsigned notifications);
 	RWLock				*getLock() {return &rwlock;}
@@ -499,6 +402,8 @@ public:
 	RC					findEnumVal(Session *ses,URIID enumid,const char *name,size_t lname,ElementID& ei);
 	RC					findEnumStr(Session *ses,URIID enumid,ElementID ei,char *buf,size_t& lbuf);
 	RC					initClassPIN(Session *ses,ClassID cid,const PropertyID *props,unsigned nProps,PIN *&pin);
+	RC					indexFormat(unsigned vt,IndexFormat& fmt) const;
+	RC					createActs(PIN *pin,ClassActs *&acts);
 	
 	byte				getID() const;
 	byte				getParamLength() const;
@@ -508,9 +413,7 @@ private:
 	RC					add(Session *ses,const ClassRef& cr,const Stmt *qry);
 	ClassRefT			*findBaseRef(const Class *base,Session *ses);
 	ClassPropIndex		*getClassPropIndex(const SimpleVar *qv,Session *ses,bool fAdd=true);
-	RC					indexFormat(unsigned vt,IndexFormat& fmt) const;
 	Tree				*connect(uint32_t handle);
-	RC					createActs(PIN *pin,ClassActs *&acts);
 	RC					copyActs(const Value *pv,ClassActs *&acts,unsigned idx);
 	void				destroyActs(ClassActs *acts);
 };

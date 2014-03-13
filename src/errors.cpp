@@ -1,6 +1,6 @@
 /**************************************************************************************
 
-Copyright © 2004-2013 GoPivotal, Inc. All rights reserved.
+Copyright © 2004-2014 GoPivotal, Inc. All rights reserved.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -18,7 +18,7 @@ Written by Mark Venguerov 2004-2012
 
 **************************************************************************************/
 
-#include "types.h"
+#include "session.h"
 #include "startup.h"
 #include <stdarg.h>
 
@@ -31,6 +31,64 @@ static const int msgLevel[] = {100,4,3,2,1,0};
 void setReport(IReport *ir)
 {
 	if ((iReport=ir)!=NULL && reportNS==NULL) reportNS=ir->declareNamespace("affinity");
+}
+
+static const char *errorMsgs[] =
+{
+	"OK",
+	"object not found",
+	"object already exists",
+	"internal error",
+	"access is denied",
+	"not possible to allocate resource",
+	"disk is full",
+	"i/o device error",
+	"data check error",
+	"EOF",
+	"timeout",
+	"REPEAT",
+	"data is corrupted",
+	"i/o operation was cancelled",
+	"incompatible version",
+	"TRUE",
+	"FALSE",
+	"invalid type or type conversion is impossible",
+	"division by 0",
+	"invalid parameter value",
+	"attempt to modify data inside of a read-only transaction",
+	"unspecified error",
+	"deadlock",
+	"store allocation quota exceeded",
+	"the store is being shut - operation aborted",
+	"pin was deleted",
+	"result set closed after commit/rollback",
+	"store in read-only state",
+	"no session set for current thread",
+	"invalid operation for this object",
+	"syntax error",
+	"object is too big",
+	"no space on page for an object",
+	"constraint violation"
+};
+
+size_t Afy::errorToString(RC rc,const CompilationError *err,char obuf[],size_t lbuf)
+{
+	try {
+		char buf[256]; size_t l=0;
+		if (rc!=RC_OK || err!=NULL && err->rc!=RC_OK) {
+			if (err!=NULL && err->rc!=RC_OK) rc=err->rc;
+			l=err!=NULL && err->rc==RC_SYNTAX && err->msg!=NULL ?
+				sprintf(buf,"Syntax error: %s at %d, line %d",err->msg,err->pos,err->line) :
+				sprintf(buf,"Error: %s(%d)",(size_t)rc<sizeof(errorMsgs)/sizeof(errorMsgs[0])?errorMsgs[rc]:"???",rc);
+			if (l>lbuf-1) l=lbuf-1; memcpy(obuf,buf,l);
+		}
+		obuf[l]=0; return l;
+	} catch (...) {report(MSG_ERROR,"Exception in ISession::errorToString()\n"); return 0;}
+}
+
+const char *AfyKernel::getErrMsg(RC rc)
+{
+	return (size_t)rc<sizeof(errorMsgs)/sizeof(errorMsgs[0])?errorMsgs[rc]:"???";
 }
 
 #ifdef WIN32
@@ -53,6 +111,8 @@ RC convCode(DWORD dwError)
 	case ERROR_FILE_EXISTS:
 	case ERROR_ALREADY_EXISTS: rc = RC_ALREADYEXISTS; break;
 
+	case WSAENOTSOCK:
+	case WSAEINVAL:
 	case ERROR_INVALID_ADDRESS:
 	case ERROR_INVALID_DATA:
 	case ERROR_BAD_COMMAND:
@@ -66,12 +126,14 @@ RC convCode(DWORD dwError)
 	case ERROR_INVALID_NAME:
 	case ERROR_INVALID_PARAMETER: rc = RC_INVPARAM; break;
 
+	case WSAEISCONN:
 	case ERROR_INVALID_HANDLE:
 	case ERROR_NOT_SUPPORTED:
 	case ERROR_CALL_NOT_IMPLEMENTED: rc = RC_INVOP; break;
 
 	case ERROR_BAD_ENVIRONMENT: rc = RC_CORRUPTED; break;
 
+	case WSAEFAULT:
 	case ERROR_INSUFFICIENT_BUFFER:
 	case ERROR_BUFFER_OVERFLOW:
 	case ERROR_NETWORK_BUSY:
@@ -109,6 +171,7 @@ RC convCode(DWORD dwError)
 	case ERROR_BROKEN_PIPE:
 	case ERROR_INVALID_DRIVE: rc = RC_DEVICEERR; break;
 
+	case WSAECONNREFUSED:
 	case ERROR_OPEN_FAILED:
 	case ERROR_ACCESS_DENIED:
 	case ERROR_NOT_SAME_DEVICE:
@@ -121,6 +184,10 @@ RC convCode(DWORD dwError)
 	case ERROR_LOCK_FAILED:
 	case ERROR_WRITE_PROTECT: rc = RC_NOACCESS; break;
 
+	case WSAECONNABORTED:
+	case WSAECONNRESET:
+	case WSAEINTR:
+	case WSAESHUTDOWN:
 	case ERROR_OPERATION_ABORTED: rc = RC_CANCELED; break;
 
 	case ERROR_BAD_FORMAT:
@@ -131,6 +198,7 @@ RC convCode(DWORD dwError)
 	case ERROR_DISK_FULL:
 	case ERROR_HANDLE_DISK_FULL: rc = RC_FULL; break;
 
+	case WSAETIMEDOUT:
 	case WAIT_TIMEOUT: rc = RC_TIMEOUT; break;
 
 	default: rc = RC_OTHER; break;
@@ -187,11 +255,13 @@ RC convCode(int err)
 	case 0: rc = RC_OK; break;
 	case ENOSPC: rc = RC_FULL; break;
 	case EAGAIN: rc = RC_REPEAT; break;
+	case ENOTSOCK:
 	case EINVAL: rc = RC_INVPARAM; break;
 	case EFAULT: rc = RC_INVPARAM; break;
 	case ERANGE: rc = RC_TOOBIG; break;
 	case EDOM: rc = RC_INVPARAM; break;
 	case ENOSYS: rc = RC_INTERNAL; break;
+	case EISCONN:
 	case EBADF: rc = RC_INVOP; break;
 	case EMFILE:
 	case ENFILE:
@@ -199,6 +269,10 @@ RC convCode(int err)
 	case ENOMEM:
 	case ENOBUFS:
 	case EFBIG: rc = RC_NORESOURCES; break;
+	case ECONNRESET:
+	case ECONNABORTED:
+	case ECANCELED:
+	case ESHUTDOWN:
 	case EINTR: rc = RC_CANCELED; break;
 	case ESPIPE:	//The file descriptor filedes is associated with a pipe or a FIFO and this device does not allow positioning of the file pointer. 
 	case EIO: rc = RC_DEVICEERR; break;
@@ -206,6 +280,7 @@ RC convCode(int err)
 	case EROFS:
 	case EPERM:
 	case EBUSY:
+	case ECONNREFUSED:
 	case EACCES: rc = RC_NOACCESS; break;
 	case EEXIST: rc = RC_ALREADYEXISTS; break;
 	case ENXIO:

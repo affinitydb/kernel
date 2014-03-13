@@ -1,6 +1,6 @@
 /**************************************************************************************
 
-Copyright © 2004-2013 GoPivotal, Inc. All rights reserved.
+Copyright © 2004-2014 GoPivotal, Inc. All rights reserved.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -264,7 +264,7 @@ public:
 	StrKey() {str=NULL;}
 	StrKey(const char *s,bool fCopy=true) {str=fCopy?strdup(s,STORE_HEAP):(char*)s;}
 	~StrKey() {free(str,STORE_HEAP);}
-	operator uint32_t() const {uint32_t hash=0; for (const char *s=str; *s!='\0'; hash=hash<<1^*s++); return hash;}
+	operator uint32_t() const {uint32_t hash=0; if (str!=NULL) for (const char *s=str; *s!='\0'; hash=hash<<1^*s++); return hash;}
 	operator const char*() const {return str;}
 	bool operator==(const char *key2) const {return strcmp(str,key2)==0;}
 	bool operator!=(const char *key2) const {return strcmp(str,key2)!=0;}
@@ -376,7 +376,7 @@ public:
 	void		start() {current=&node0;}
 	const T*	next() {return current->ptrs[0]!=NULL?&(current=current->ptrs[0])->obj:(T*)0;}
 	void		*store(const void *ptr,size_t s) {void *buf=alloc.malloc(s); if (buf!=NULL) memcpy(buf,ptr,s); return buf;}
-	void		clear() {alloc.release(); current=&node0; level=0; count=0; for (int i=0; i<xHeight; i++) node0.ptrs[i]=NULL;}
+	void		clear() {alloc.truncate(); current=&node0; level=0; count=0; for (int i=0; i<xHeight; i++) node0.ptrs[i]=NULL;}
 };
 
 /**

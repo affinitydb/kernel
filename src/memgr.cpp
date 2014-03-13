@@ -1,6 +1,6 @@
 /**************************************************************************************
 
-Copyright © 2004-2013 GoPivotal, Inc. All rights reserved.
+Copyright © 2004-2014 GoPivotal, Inc. All rights reserved.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -37,7 +37,12 @@ namespace AfyKernel
 		void *realloc(void *pPtr, size_t pNewSize, size_t pOldSize=0) {return afy_realloc(&av,pPtr,pNewSize);}
 		void free(void *pPtr) {afy_free(&av,pPtr);}
 		virtual	HEAP_TYPE getAType() const {return SES_HEAP;}
-		void release() {afy_release(&av); delete this;}
+		void truncate(TruncMode tm,const void *) {
+			if (tm==TR_REL_ALL) {afy_release(&av); delete this;}
+			else {
+				//???
+			}
+		}
 	};
 	class StoreMemAlloc : public MemAlloc
 	{
@@ -50,7 +55,12 @@ namespace AfyKernel
 		void *realloc(void *pPtr, size_t pNewSize, size_t pOldSize=0) {MutexP lck(&lock); return afy_realloc(&av,pPtr,pNewSize);}
 		void free(void *pPtr) {MutexP lck(&lock); afy_free(&av,pPtr);}
 		virtual	HEAP_TYPE getAType() const {return STORE_HEAP;}
-		void release() {afy_release(&av); delete this;}
+		void truncate(TruncMode tm,const void *) {
+			if (tm==TR_REL_ALL) {afy_release(&av); delete this;}
+			else {
+				//???
+			}
+		}
 	};
 
 
@@ -58,8 +68,7 @@ namespace AfyKernel
 	void *SharedAlloc::memalign(size_t align,size_t s) {return NULL;} //???
 	void *SharedAlloc::realloc(void *pPtr, size_t pNewSize, size_t pOldSize) {return ::realloc(pPtr,pNewSize);}
 	void SharedAlloc::free(void *pPtr) {::free(pPtr);}
-	HEAP_TYPE SharedAlloc::getAType() const {return SHARED_HEAP;}
-	void SharedAlloc::release() {}
+	HEAP_TYPE SharedAlloc::getAType() const {return NO_HEAP;}
 
 	SharedAlloc sharedAlloc;
 }
@@ -78,7 +87,7 @@ void* AfyKernel::malloc(size_t s,HEAP_TYPE alloc)
 		if ((ses=Session::getSession())!=NULL) return ses->malloc(s);
 	case STORE_HEAP: 
 		if ((ctx=StoreCtx::get())!=NULL && ctx->mem!=NULL) return ctx->mem->malloc(s);
-	case SHARED_HEAP:
+	case NO_HEAP:
 		break;
 	}
 	try {return ::malloc(s);} catch(...) {return NULL;}
@@ -93,7 +102,7 @@ void* AfyKernel::memalign(size_t a,size_t s,HEAP_TYPE alloc)
 		if ((ses=Session::getSession())!=NULL) return ses->memalign(a,s);
 	case STORE_HEAP: 
 		if ((ctx=StoreCtx::get())!=NULL && ctx->mem!=NULL) return ctx->mem->memalign(a,s);
-	case SHARED_HEAP:
+	case NO_HEAP:
 		break;
 	}
 	try {
@@ -117,7 +126,7 @@ void* AfyKernel::realloc(void *p,size_t s,HEAP_TYPE alloc)
 		if ((ses=Session::getSession())!=NULL) return ses->realloc(p,s);
 	case STORE_HEAP: 
 		if ((ctx=StoreCtx::get())!=NULL && ctx->mem!=NULL) return ctx->mem->realloc(p,s);
-	case SHARED_HEAP:
+	case NO_HEAP:
 		break;
 	}
 	try {return ::realloc(p,s);} catch (...) {return NULL;}
@@ -143,7 +152,7 @@ void AfyKernel::free(void *p,HEAP_TYPE alloc)
 {
 	Session *ses; StoreCtx *ctx;
 	if (p!=NULL) switch (alloc) {
-	case NO_HEAP: case PAGE_HEAP: case SUBA_HEAP: assert(0);
+	case NO_HEAP: case PAGE_HEAP: assert(0);
 	case SES_HEAP:
 		if ((ses=Session::getSession())!=NULL) return ses->free(p);
 	case STORE_HEAP: 
@@ -157,14 +166,18 @@ void MemAlloc::addObj(ObjDealloc *od)
 {
 }
 
-void *SubAlloc::malloc(size_t s)
+void MemAlloc::truncate(TruncMode tm,const void *mark)
+{
+}
+
+void *StackAlloc::malloc(size_t s)
 {
 	size_t align=ceil(ptr,DEFAULT_ALIGN)-ptr;
 	if (s+align>extentLeft) {align=0; if (expand(s)==NULL) return NULL;}
 	void *p=ptr+align; ptr+=s+align; extentLeft-=s+align; return p;
 }
 
-void *SubAlloc::memalign(size_t a,size_t s)
+void *StackAlloc::memalign(size_t a,size_t s)
 {
 	do {
 		byte *p=ceil(ptr,a); size_t sht=p-ptr;
@@ -173,7 +186,7 @@ void *SubAlloc::memalign(size_t a,size_t s)
 	return NULL;
 }
 
-void *SubAlloc::realloc(void *p,size_t s,size_t old)
+void *StackAlloc::realloc(void *p,size_t s,size_t old)
 {
 	if (p==NULL) return malloc(s);
 	if ((byte*)p<ptr && size_t(ptr-(byte*)p)==old) {
@@ -183,24 +196,17 @@ void *SubAlloc::realloc(void *p,size_t s,size_t old)
 	void *pp=malloc(s); if (pp!=NULL && old!=0) memcpy(pp,p,old); return pp;
 }
 
-void SubAlloc::free(void *p)
+void StackAlloc::free(void *p)
 {
 		// check end
 }
 
-HEAP_TYPE SubAlloc::getAType() const
+HEAP_TYPE StackAlloc::getAType() const
 {
-	return SUBA_HEAP;
-}
-	
-void SubAlloc::release()
-{
-	for (ObjDealloc *od=chain,*od2; od!=NULL; od=od2) {od2=od->next; od->destroyObj();}
-	for (SubExt *se=extents,*se2; se!=NULL; se=se2) {se2=se->next; parent!=NULL?parent->free(se):AfyKernel::free(se,SES_HEAP);} 
-	chain=NULL; extents=NULL; ptr=NULL; extentLeft=0;
+	return NO_HEAP;
 }
 
-char *SubAlloc::strdup(const char *s)
+char *StackAlloc::strdup(const char *s)
 {
 	if (s==NULL) return NULL;
 	size_t l=strlen(s); char *p=(char*)malloc(l+1);
@@ -208,14 +214,14 @@ char *SubAlloc::strdup(const char *s)
 	return p;
 }
 
-void SubAlloc::addObj(ObjDealloc *od)
+void StackAlloc::addObj(ObjDealloc *od)
 {
 	od->next=chain; chain=od;
 }
 
-byte *SubAlloc::expand(size_t s)
+byte *StackAlloc::expand(size_t s)
 {
-	extentLeft=extents!=NULL?extents->size<<1:0x1000; 
+	extentLeft=extents==NULL?SA_DEFAULT_SIZE:extents->size>=SA_MAX_SIZE?extents->size:extents->size<<1; 
 	if (extentLeft<s+sizeof(SubExt)) extentLeft=s+sizeof(SubExt);
 	SubExt *se=(SubExt*)(parent?parent->malloc(extentLeft):AfyKernel::malloc(extentLeft,SES_HEAP));
 	if (se==NULL) return NULL;
@@ -225,7 +231,7 @@ byte *SubAlloc::expand(size_t s)
 	return ptr;
 }
 
-void SubAlloc::compact()
+void StackAlloc::compact()
 {
 	if (extents!=NULL) {
 		if (ptr==(byte*)(extents+1)) {
@@ -239,7 +245,7 @@ void SubAlloc::compact()
 	}
 }
 
-size_t SubAlloc::length(const SubMark& mrk)
+size_t StackAlloc::length(const SubMark& mrk)
 {
 	if (mrk.ext==extents) return ptr-mrk.end; 
 	size_t l=ptr-(byte*)(extents+1); 
@@ -250,18 +256,19 @@ size_t SubAlloc::length(const SubMark& mrk)
 	return l;
 }
 
-void SubAlloc::truncate(const SubMark& sm,size_t s)
+void StackAlloc::truncate(TruncMode tm,const void *mrk)
 {
-	for (SubExt *next; extents!=NULL && extents!=sm.ext; extents=next) {
-		next=extents->next;
+	const SubMark *sm=(SubMark*)mrk;
+	for (SubExt *next; extents!=NULL && (sm==NULL || extents!=sm->ext); extents=next) {
+		if ((next=extents->next)==NULL && tm==TR_REL_ALLBUTONE) break;
+//	for (ObjDealloc *od=chain,*od2; od!=NULL; od=od2) {od2=od->next; od->destroyObj();}		//????
 		if (parent) parent->free(extents); else AfyKernel::free(extents,SES_HEAP);
 	}
 	if (extents==NULL) {ptr=NULL; extentLeft=total=0;}
-	else {
-		assert(sm.end>=(byte*)(extents+1) && sm.end<=(byte*)extents+extents->size);
-		ptr=sm.end; extentLeft=((byte*)extents+extents->size)-ptr; total=sm.total;
-		if (s!=0) {
-			//...
-		}
+	else if (sm!=NULL) {
+		assert(sm->end>=(byte*)(extents+1) && sm->end<=(byte*)extents+extents->size);
+		ptr=sm->end; extentLeft=((byte*)extents+extents->size)-ptr; total=sm->total;
+	} else {
+		ptr=(byte*)(extents+1); extentLeft=extents->size-sizeof(SubExt); total=extents->size;
 	}
 }

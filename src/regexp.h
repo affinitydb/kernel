@@ -1,6 +1,6 @@
 /**************************************************************************************
 
-Copyright © 2004-2013 GoPivotal, Inc. All rights reserved.
+Copyright © 2004-2014 GoPivotal, Inc. All rights reserved.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -208,7 +208,6 @@ class RegexService : public IService
 		const	unsigned		flags;
 		RegexProcessor(byte *r,Value& rnd,unsigned f) : re(r),render(rnd),flags(f) {}
 		RC invoke(IServiceCtx *ctx,const Value& inp,Value& out,unsigned& mode);
-		void cleanup(IServiceCtx *,bool fDestroy);
 	};
 public:
 	RegexService(StoreCtx *ct) : ctx(ct) {}

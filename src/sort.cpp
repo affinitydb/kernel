@@ -1,6 +1,6 @@
 /**************************************************************************************
 
-Copyright © 2004-2013 GoPivotal, Inc. All rights reserved.
+Copyright © 2004-2014 GoPivotal, Inc. All rights reserved.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -74,16 +74,16 @@ void Sort::connect(PINx **results,unsigned nRes)
 
 __forceinline int cmpStoredIDs(const EncPINRef *ep1,const EncPINRef *ep2)
 {
-	byte l1,l2; const byte *p1,*p2; 
+	byte l1,l2; const byte *p1,*p2;
 #if defined(__x86_64__) || defined(IA64) || defined(_M_X64) || defined(_M_IA64)
 	if ((((ptrdiff_t)ep1)&1)!=0) l1=byte((ptrdiff_t)ep1)>>1,p1=(byte*)&ep1+1; else
 #endif
-	l1=ep1->lref,p1=ep1->buf;
+	l1=PINRef::len(ep1->buf),p1=ep1->buf;
 #if defined(__x86_64__) || defined(IA64) || defined(_M_X64) || defined(_M_IA64)
 	if ((((ptrdiff_t)ep2)&1)!=0) l2=byte((ptrdiff_t)ep2)>>1,p2=(byte*)&ep2+1; else
 #endif
-	l2=ep2->lref,p2=ep2->buf;
-	return l1*l2!=0?PINRef::cmpPIDs(p1,l1,p2,l2):0;
+	l2=PINRef::len(ep2->buf),p2=ep2->buf;
+	return l1*l2!=0?PINRef::cmpPIDs(p1,p2):0;
 }
 
 int Sort::cmp(const EncPINRef *p1,const EncPINRef *p2) const
@@ -127,46 +127,6 @@ int Sort::cmp(const EncPINRef *p1,const EncPINRef *p2) const
 	return ret;
 }
 
-#define QS_STKSIZ			(8*sizeof(void*)-2)
-#define QS_CUTOFF			8
-
-void Sort::quickSort(unsigned nPins)
-{
-	struct {unsigned lwr,upr;} bndstk[QS_STKSIZ]; int stkptr=0;
-	for (unsigned lwr=0,upr=nPins-1;;) {
-		if (upr-lwr+1<=QS_CUTOFF) while (upr>lwr) {
-			unsigned max=lwr;
-			for (unsigned p=lwr+1; p<=upr; ++p) if (cmp(pins[p],pins[max])>0) max=p;
-		    swap(max,upr); --upr;
-		} else {
-			unsigned mdl=(upr+lwr)/2;
-			if (cmp(pins[lwr],pins[mdl])>0) swap(lwr,mdl);
-			if (cmp(pins[lwr],pins[upr])>0) swap(lwr,upr);
-			if (cmp(pins[mdl],pins[upr])>0) swap(mdl,upr);
-			unsigned lwr2=lwr,upr2=upr;
-			for (;;) {
-				if (mdl>lwr2) do ++lwr2; while (lwr2<mdl && cmp(pins[lwr2],pins[mdl])<=0);
-				if (mdl<=lwr2) do ++lwr2; while (lwr2<=upr && cmp(pins[lwr2],pins[mdl])<=0);	// ????
-				do --upr2; while (upr2>mdl && cmp(pins[upr2],pins[mdl])>0);
-				if (upr2<lwr2) break;
-				swap(lwr2,upr2); if (mdl==upr2) mdl=lwr2;
-			}
-			++upr2;
-			if (mdl<upr2) do --upr2; while (upr2>mdl && cmp(pins[upr2],pins[mdl])==0);
-			if (mdl>=upr2) do --upr2; while (upr2>lwr && cmp(pins[upr2],pins[mdl])==0);
-			if (upr2-lwr>=upr-lwr2) {
-				if (lwr<upr2) {bndstk[stkptr].lwr=lwr; bndstk[stkptr].upr=upr2; ++stkptr;}
-				if (lwr2<upr) {lwr=lwr2; continue;}
-			} else {
-				if (lwr2<upr) {bndstk[stkptr].lwr=lwr2; bndstk[stkptr].upr=upr; ++stkptr;}
-				if (lwr<upr2) {upr=upr2; continue;}
-			}
-		}
-		if (--stkptr<0) return;
-		lwr=bndstk[stkptr].lwr; upr=bndstk[stkptr].upr;
-	}
-}
-
 namespace AfyKernel
 {
 	struct ArrayVal {ArrayVal *prev; INav *nav; Value *vals; unsigned length,idx,vidx; ushort lPref;};
@@ -182,18 +142,18 @@ RC Sort::sort(unsigned nAbort)
 	for (; ((rc=queryOp->next())==RC_OK || rc==RC_EOF); qr.cleanup()) {
 		if ((rc2=qx->ses->testAbortQ())!=RC_OK) {rc=rc2; break;}
 		if (rc==RC_OK) {
-			if (qr.epr.lref==0 && qr.getPID().pid!=STORE_INVALID_PID && (rc2=qr.pack())!=RC_OK) {rc=rc2; break;}
+			if (qr.epr.buf[0]==0 && qr.getPID().isPID() && (rc2=qr.pack())!=RC_OK) {rc=rc2; break;}
 			if ((qflags&QO_UNIQUE)!=0 && nRunPins!=0) {
 				// check previous id continue;
 			}
 			if (nAllPins+nRunPins+1>nAbort) {rc=RC_TIMEOUT; break;}				// after repeating are deleted?
 		}
-		if (rc==RC_EOF || memUsed>peakSortMem || (nRunPins+1)*(sizeof(EncPINRef*)+sizeof(EncPINRef)+nValues*sizeof(Value))>maxSortMem) {	//?????
+		if (rc==RC_EOF || qx->ses->getStore()->fileMgr!=NULL && (memUsed>peakSortMem || (nRunPins+1)*(sizeof(EncPINRef*)+sizeof(EncPINRef)+nValues*sizeof(Value))>maxSortMem)) {	//?????
 			if (nRunPins>=2) {
-				fRepeat=false; quickSort(nRunPins);
+				fRepeat=false; QSort<Sort>::sort(*this,nRunPins);
 				if (fRepeat) {
 					for (unsigned i=0,j=1,cnt=nRunPins; j<cnt; j++) {
-						if (cmpStoredIDs(pins[i],pins[j])==0 || (qflags&QO_VUNIQUE)!=0 && (fRepeat=false,cmp(pins[i],pins[j]),fRepeat)) nRunPins--;
+						if (cmpStoredIDs(pins[i],pins[j])==0 || (qflags&QO_VUNIQUE)!=0 && (fRepeat=false,cmp(i,j),fRepeat)) nRunPins--;
 						else if (++i!=j) pins[i]=pins[j];
 					}
 					if (rc!=RC_EOF && memUsed<peakSortMem) continue;
@@ -205,7 +165,7 @@ RC Sort::sort(unsigned nAbort)
 				break;
 			}
 			if ((rc=writeRun(nRunPins,memUsed))!=RC_OK) break;
-			nRunPins=0; pinMem.release();		// better, reset() (without mem deallocation)
+			nRunPins=0; pinMem.truncate(TR_REL_NONE);
 		}
 		if (nRunPins>=lPins) {
 			lPins=lPins==0?256:lPins*2; if (memUsed+(lPins-nRunPins)*sizeof(EncPINRef*)>peakSortMem) lPins=unsigned((peakSortMem-memUsed)/sizeof(EncPINRef*))+nRunPins+1;
@@ -216,7 +176,7 @@ RC Sort::sort(unsigned nAbort)
 		if (nValues==0 && storeEPR(&pins[nRunPins],qr)) {nRunPins++; continue;}
 #endif
 
-		SubAlloc::SubMark mrk; pinMem.mark(mrk);
+		StackAlloc::SubMark mrk; pinMem.mark(mrk);
 		EncPINRef *ep=storeValues(qr,nValues,pinMem); if (ep==NULL) {rc=RC_NORESOURCES; break;}
 		pins[nRunPins++]=ep; if (nValues==0) {memUsed+=pinMem.length(mrk); continue;}
 
@@ -229,13 +189,13 @@ RC Sort::sort(unsigned nAbort)
 				{if (rc==RC_NORESOURCES) break; pv->setError(); rc=RC_OK; continue;}
 			switch (pv->type) {
 			case VT_ERROR: if ((sortSegs[i].flags&(ORD_NULLS_BEFORE|ORD_NULLS_AFTER))==0) continue; break;
-			case VT_ARRAY: case VT_COLLECTION:
+			case VT_COLLECTION:
 				switch (sortSegs[i].aggop) {
 				case OP_ALL: case OP_HISTOGRAM:
 					if ((av=freeAV)!=NULL) freeAV=av->prev;
 					else if ((av=pinMem.alloc<ArrayVal>())==NULL) {rc=RC_NORESOURCES; break;} //???
 					av->idx=0; av->vidx=index[i]; av->lPref=sortSegs[i].lPref; av->prev=avs; avs=av;
-					if (pv->type==VT_ARRAY) {
+					if (!pv->isNav()) {
 						av->vals=(Value*)pv->varray; av->length=pv->length; av->nav=NULL; *pv=pv->varray[0];
 					} else {
 						av->nav=pv->nav; av->vals=NULL; av->length=0; cv=pv->nav->navigate(GO_FIRST);
@@ -243,12 +203,12 @@ RC Sort::sort(unsigned nAbort)
 					}
 					break;
 				case OP_SET: case OP_ADD:
-					nav=NULL; cv=pv->type==VT_ARRAY?&pv->varray[sortSegs[i].aggop==OP_SET?0:pv->length-1]:(nav=pv->nav)->navigate(sortSegs[i].aggop==OP_SET?GO_FIRST:GO_LAST);
+					nav=NULL; cv=!pv->isNav()?&pv->varray[sortSegs[i].aggop==OP_SET?0:pv->length-1]:(nav=pv->nav)->navigate(sortSegs[i].aggop==OP_SET?GO_FIRST:GO_LAST);
 					rc=cv!=NULL?copyV(*cv,*pv,&pinMem):RC_CORRUPTED; if (nav!=NULL) nav->destroy(); 
 					break;
 				default:
 					{EvalCtx ctx(qx->ses,NULL,0,NULL,0,NULL,0,qx->ectx,&pinMem); AggAcc ag((ExprOp)sortSegs[i].aggop,0,&ctx,NULL); unsigned j=0;	// prefix? flags?
-					for (const Value *cv=pv->type==VT_ARRAY?pv->varray:pv->nav->navigate(GO_FIRST); cv!=NULL; cv=pv->type==VT_COLLECTION?pv->nav->navigate(GO_NEXT):++j<pv->length?&pv->varray[j]:(const Value *)0) ag.next(*cv);
+					for (const Value *cv=pv->isNav()?pv->nav->navigate(GO_FIRST):pv->varray; cv!=NULL; cv=pv->isNav()?pv->nav->navigate(GO_NEXT):++j<pv->length?&pv->varray[j]:(const Value *)0) ag.next(*cv);
 					freeV(*pv); if (ag.result(*pv)!=RC_OK) {pv->setError(); continue;}
 					} break;
 				}
@@ -260,12 +220,12 @@ RC Sort::sort(unsigned nAbort)
 			fSkip=false;
 		}
 		if (rc!=RC_OK) break;
-		if (fSkip) {pinMem.truncate(mrk); nRunPins--;}
+		if (fSkip) {pinMem.truncate(TR_REL_NONE,&mrk); nRunPins--;}
 		else if (avs==NULL) memUsed+=pinMem.length(mrk);
 		else {
 			// changeFColl();
 			for (;;) {
-				SubAlloc::SubMark mrk2; pinMem.mark(mrk2);
+				StackAlloc::SubMark mrk2; pinMem.mark(mrk2);
 				if ((ep=storeValues(qr,nValues,pinMem))==NULL) {rc=RC_NORESOURCES; break;}
 				Value *vv=(Value*)getStoredValues(ep); memcpy(vv,vals,nValues*sizeof(Value)); vals=vv; bool fNext=false; 
 				for (ArrayVal *av=avs; !fNext && av!=NULL; av=av->prev) {
@@ -281,16 +241,16 @@ RC Sort::sort(unsigned nAbort)
 					}
 					if (av->lPref!=0 && (pv->type==VT_STRING||pv->type==VT_BSTR||pv->type==VT_URL)) pv->length=min(pv->length,(uint32_t)av->lPref);	// convert to VT_STRING?
 				}
-				if (!fNext) {pinMem.truncate(mrk2); break;}
+				if (!fNext) {pinMem.truncate(TR_REL_ALL,&mrk2); break;}
 				if (nRunPins>=lPins) {
 					lPins=lPins==0?256:lPins*2; if (memUsed+(lPins-nRunPins)*sizeof(EncPINRef*)>peakSortMem) lPins=unsigned((peakSortMem-memUsed)/sizeof(EncPINRef*))+nRunPins+1;
 					if ((pins=(EncPINRef**)qx->ses->realloc(pins,lPins*sizeof(EncPINRef*)))!=NULL) memUsed+=(lPins-nRunPins)*sizeof(byte*); else {rc=RC_NORESOURCES; break;}
 				}
 				pins[nRunPins++]=ep;
 				if (memUsed>peakSortMem || nRunPins*(sizeof(EncPINRef*)+sizeof(EncPINRef)+nValues*sizeof(Value))>maxSortMem) {
-					if (nRunPins>=2) quickSort(nRunPins); assert((qflags&QO_UNIQUE)==0);
+					if (nRunPins>=2) QSort<Sort>::sort(*this,nRunPins); assert((qflags&QO_UNIQUE)==0);
 					nAllPins+=nRunPins; fRepeat=false; if ((rc=writeRun(nRunPins,memUsed))!=RC_OK) break;
-					nRunPins=0; pinMem.release();		// vals ???????????
+					nRunPins=0; pinMem.truncate(TR_REL_NONE);		// vals ???????????
 				}
 			}
 			while (avs!=NULL) {ArrayVal *av=avs->prev; if (avs->nav!=NULL) avs->nav->destroy(); avs->prev=freeAV; freeAV=avs; avs=av;}
@@ -299,7 +259,7 @@ RC Sort::sort(unsigned nAbort)
 	}
 	//delete queryOp; const_cast<QueryOp*&>(this->queryOp)=NULL;
 	for (unsigned i=1; i<nqr; i++) {pqr[i]->~PINx(); qx->ses->free((void*)pqr[i]);}
-	if (rc==RC_EOF && (nAllPins<=nRunPins||(rc=prepMerge())==RC_OK||rc==RC_EOF)) {rc=RC_OK; idx=0;} else {nAllPins=0; pinMem.release();}
+	if (rc==RC_EOF && (nAllPins<=nRunPins||(rc=prepMerge())==RC_OK||rc==RC_EOF)) {rc=RC_OK; idx=0;} else {nAllPins=0; pinMem.truncate(TR_REL_ALL);}
 	return rc;
 }
 
@@ -333,21 +293,21 @@ class ExtSortFile
 		RunInfo() : head(INVALID_PAGEID),pos(INVALID_PAGEID),tail(INVALID_PAGEID) {}
 	};
 	Session		*const	ses;
+	FileMgr		*const	fileMgr;
 	FileID		fid;
 	ExtSortPage	*pages;
-	unsigned		nPages; // Currently allocated in file
+	unsigned	nPages; // Currently allocated in file
 	RunInfo		*runs;
-	unsigned		nRuns;
-	unsigned		xRuns;
+	unsigned	nRuns;
+	unsigned	xRuns;
 	PageID		freeList;
 
 public:
-	ExtSortFile(Session *s) : ses(s),fid(INVALID_FILEID),pages(NULL),nPages(0),
+	ExtSortFile(Session *s) : ses(s),fileMgr(s->getStore()->fileMgr),fid(INVALID_FILEID),pages(NULL),nPages(0),
 						runs(NULL),nRuns(0),xRuns(0),freeList(INVALID_PAGEID) {}
 	~ExtSortFile() {
-		if (pages!=NULL) ses->free(pages);
-		if (runs!=NULL) ses->free(runs);	
-		if (fid!=INVALID_FILEID) ses->getStore()->fileMgr->close(fid);
+		if (pages!=NULL) ses->free(pages); if (runs!=NULL) ses->free(runs);	
+		if (fid!=INVALID_FILEID) {assert(fileMgr!=NULL); fileMgr->close(fid);}
 	}
 
 	RunID beginRun() {
@@ -358,14 +318,15 @@ public:
 	RC writePage(RunID runid,byte *pageBuf) {
 		if (runid>=nRuns) return RC_INVPARAM;
 		if (fid==INVALID_FILEID) {
-			RC rc=ses->getStore()->fileMgr->open(fid,NULL,FIO_TEMP);
+			assert(fileMgr!=NULL); RC rc=fileMgr->open(fid,NULL,FIO_TEMP);
 			if (rc!=RC_OK) {report(MSG_ERROR,"Failure to create external sort file (%d)\n",rc); return rc;}
 		}
 		PageID pos=getFreePage(); if (pos==INVALID_PAGEID) return RC_NORESOURCES;
 		assert(pages[pos].next==INVALID_PAGEID);
 
 		// encrypt page!!!
-		RC rc=ses->getStore()->fileMgr->io(FIO_WRITE,::PageIDFromPageNum(fid,pos),pageBuf,pageLen());  
+		assert(fileMgr!=NULL);
+		RC rc=fileMgr->io(FIO_WRITE,::PageIDFromPageNum(fid,pos),pageBuf,pageLen());  
 		if (rc!=RC_OK) {
 			report(MSG_ERROR,"Failure to write page %x to external sort file (%d)\n",pos,rc); releasePage(pos);
 		} else {
@@ -385,8 +346,8 @@ public:
 	RC readPage(RunID runid, byte* buf, bool bRelease=false) {
 		if(buf==NULL) return RC_INVPARAM;
 		if(runid>=nRuns || runs[runid].pos==INVALID_PAGEID) return RC_NOTFOUND;
-		RC rc; PageID nextInRun=runs[runid].pos;
-		if ((rc=ses->getStore()->fileMgr->io(FIO_READ,::PageIDFromPageNum(fid,nextInRun),buf,pageLen()))==RC_OK) {
+		RC rc; PageID nextInRun=runs[runid].pos; assert(fileMgr!=NULL);
+		if ((rc=fileMgr->io(FIO_READ,::PageIDFromPageNum(fid,nextInRun),buf,pageLen()))==RC_OK) {
 			runs[runid].pos=pages[nextInRun].next;
 			if (bRelease) {runs[runid].head=runs[runid].pos; releasePage(nextInRun);} // when no rewind needed
 			// decrypt page!!!
@@ -405,7 +366,7 @@ public:
 		return RC_OK;
 	}
 
-	size_t pageLen() const {return ses->getStore()->fileMgr->getPageSize();}
+	size_t pageLen() const {assert(fileMgr!=NULL); return fileMgr->getPageSize();}
 	unsigned runCount() const {return nRuns;}
 
 	void check(bool bPrintStats=false) {
@@ -413,7 +374,7 @@ public:
 		if (fid==INVALID_FILEID) {
 			assert(freeList==INVALID_PAGEID);
 		} else {
-			assert(nPages==(unsigned)ses->getStore()->fileMgr->getFileSize(fid)/pageLen());
+			assert(fileMgr!=NULL && nPages==(unsigned)fileMgr->getFileSize(fid)/pageLen());
 			assert(pages!=NULL);
 			unsigned cntFree=0; 
 			for (PageID iter=freeList; iter!=INVALID_PAGEID; iter=pages[iter].next) cntFree++;
@@ -448,8 +409,8 @@ private:
 
 	void growFile() {
 		assert(freeList==INVALID_PAGEID); // Only grow if all full
-		off64_t addr; RC rc;
-		if ((rc=ses->getStore()->fileMgr->allocateExtent(fid,EXTENT_ALLOC,addr))!=RC_OK)
+		off64_t addr; RC rc; assert(fileMgr!=NULL);
+		if ((rc=fileMgr->allocateExtent(fid,EXTENT_ALLOC,addr))!=RC_OK)
 			{report(MSG_ERROR,"Cannot grow file for external sort (%d)\n",rc); return; }
 		unsigned curPageCnt=nPages; nPages+=EXTENT_ALLOC;
 		pages=(ExtSortPage*)ses->realloc(pages,nPages*sizeof(ExtSortPage));
@@ -485,12 +446,11 @@ public:
 
 	RC add(const EncPINRef *ep) {
 		// Get buffer to fill in
-		const size_t lHdr=sizeof(uint16_t)+1+
+		const size_t lHdr=sizeof(uint16_t)+(
 #if defined(__x86_64__) || defined(IA64) || defined(_M_X64) || defined(_M_IA64)
-			((((ptrdiff_t)ep)&1)!=0?byte((ptrdiff_t)ep)>>1:ep->lref);
-#else
-			ep->lref;
+			(((ptrdiff_t)ep)&1)!=0?byte((ptrdiff_t)ep)>>1:
 #endif
+			PINRef::len(ep->buf));
 		size_t pinlen=lHdr,pageLen=esFile->pageLen();
 		if (nValues!=0) {
 			const Value *pv=getStoredValues(ep);
@@ -516,7 +476,7 @@ public:
 		byte *ps=page+pagePos; afy_enc32(ps,pinlen);
 #if defined(__x86_64__) || defined(IA64) || defined(_M_X64) || defined(_M_IA64)
 		if ((((ptrdiff_t)ep)&1)!=0) {
-			*(uint16_t*)ps=0; ps[sizeof(uint16_t)]=byte((ptrdiff_t)ep)>>1; memcpy(ps+sizeof(uint16_t)+1,(byte*)&ep+1,ps[sizeof(uint16_t)]);
+			*(uint16_t*)ps=0; memcpy(ps+sizeof(uint16_t),(byte*)&ep+1,byte((ptrdiff_t)ep)>>1);
 		} else
 #endif
 		memcpy(ps,ep,lHdr); ps+=lHdr;
@@ -627,14 +587,15 @@ public:
 		assert((unsigned)(pos-page)<esFile->pageLen());
 
 		const byte *end=pos; size_t len; afy_dec32(pos,len); end+=len; assert((unsigned)(end-page)<=esFile->pageLen());
-		const EncPINRef *hdr=(const EncPINRef *)pos; pos+=sizeof(uint16_t)+1+hdr->lref; assert((unsigned)(pos-page)<=esFile->pageLen());
+		const EncPINRef *hdr=(const EncPINRef *)pos; pos+=sizeof(uint16_t)+PINRef::len(hdr->buf); assert((unsigned)(pos-page)<=esFile->pageLen());
 
 #if defined(__x86_64__) || defined(IA64) || defined(_M_X64) || defined(_M_IA64)
-		if (sort->nValues==0 && hdr->lref<sizeof(EncPINRef*) && hdr->flags==0)		// flags alignment???
-			{byte *p=(byte*)&ep; p[0]=hdr->lref<<1|1; memcpy(p+1,hdr->buf,hdr->lref);} else
+		byte lref=PINRef::len(hdr->buf);
+		if (sort->nValues==0 && lref<sizeof(EncPINRef*) && hdr->flags==0)		// flags alignment???
+			{byte *p=(byte*)&ep; p[0]=lref<<1|1; memcpy(p+1,hdr->buf,lref);} else
 #endif
 		{
-			ep=(EncPINRef*)buf; memcpy(ep,hdr,sizeof(uint16_t)+1+hdr->lref);
+			ep=(EncPINRef*)buf; memcpy(ep,hdr,sizeof(uint16_t)+1+PINRef::len(hdr->buf));
 			Value *pv=(Value*)getStoredValues(ep);
 			for (unsigned i=0; i<sort->nValues; i++,pv++)
 				if ((rc=AfyKernel::deserialize(*pv,pos,end,sort->qx->ses,false))!=RC_OK) break;
@@ -654,7 +615,7 @@ RC Sort::prepMerge() {
 	assert(esFile!=NULL && esRuns==NULL && esOutRun!=NULL);
 	
 	idx=0; curRun=~0u;
-	qx->ses->free(pins); pins=NULL; pinMem.release(); //Not needed for ext sort
+	qx->ses->free(pins); pins=NULL; pinMem.truncate(TR_REL_ALL); //Not needed for ext sort
 	assert(maxSortMem%esFile->pageLen()==0);
 
 	unsigned maxMerge = (unsigned)(maxSortMem/esFile->pageLen())-1;  assert(maxMerge>1);
@@ -714,7 +675,7 @@ RC Sort::esnext(PINx& qr)
 	if (ep==NULL) return RC_EOF;					//All runs exhausted
 #if defined(__x86_64__) || defined(IA64) || defined(_M_X64) || defined(_M_IA64)
 	if ((((ptrdiff_t)ep)&1)!=0) {
-		qr.epr.flags=0; qr.epr.lref=byte((ptrdiff_t)ep)>>1; memcpy(qr.epr.buf,(byte*)&ep+1,qr.epr.lref);
+		qr.epr.flags=0; memcpy(qr.epr.buf,(byte*)&ep+1,byte((ptrdiff_t)ep)>>1);
 	} else
 #endif
 	memcpy(&qr.epr,ep,ep->trunc<DEFAULT_ALIGN>());
@@ -743,7 +704,7 @@ void Sort::esCleanup()
 RC Sort::init()
 {
 	RC rc; assert(memUsed==0 && nAllPins==0 && pins==NULL && esRuns==NULL);
-//	size_t minMem=qx->ses->getStore()->fileMgr->getPageSize()*4; peakSortMem=max(peak,minMem); maxSortMem=max(avg,minMem);
+//	size_t minMem=qx->ses->getStore()->bufMgr->getPageSize()*4; peakSortMem=max(peak,minMem); maxSortMem=max(avg,minMem);
 	if ((rc=sort())!=RC_OK||(rc=qx->ses->testAbortQ())!=RC_OK) {state|=QST_EOF; return rc;}
 	idx=0; if (nAllPins==0) return RC_EOF;
 	if (nSkip!=0) {
@@ -805,12 +766,13 @@ RC Sort::count(uint64_t& cnt,unsigned nAbort)
 			for (unsigned i=0; i<nSegs && index[i]!=~0u; i++) if ((sortSegs[i].flags&(ORD_NULLS_BEFORE|ORD_NULLS_AFTER))==0) {fCheck=true; break;}
 			if (!fCheck) return queryOp->count(cnt,nAbort);
 
-			PINx qr(qx->ses); RC rc=RC_OK,rc2; nAllPins=0; Value *vals=NULL; SubAlloc::SubMark mrk; pinMem.mark(mrk);
+			PINx qr(qx->ses); RC rc=RC_OK,rc2; nAllPins=0; Value *vals=NULL; StackAlloc::SubMark mrk; pinMem.mark(mrk);
 			unsigned nqr=queryOp->getNOuts(); PINx **pqr=(PINx**)alloca(nqr*sizeof(PINx*)); if (pqr==NULL) return RC_NORESOURCES;
 			for (unsigned i=1; i<nqr; i++) if ((pqr[i]=new(qx->ses) PINx(qx->ses))==NULL) return RC_NORESOURCES;
 			pqr[0]=&qr; queryOp->connect(pqr,nqr);
 			for (; rc==RC_OK && (rc=queryOp->next())==RC_OK; qr.cleanup()) {
 				if ((rc2=qx->ses->testAbortQ())!=RC_OK) {rc=rc2; break;}
+				if (qr.epr.buf[0]==0 && qr.getPID().isPID() && (rc2=qr.pack())!=RC_OK) {rc=rc2; break;}
 				if (nAbort!=~0u && nAllPins+1>nAbort) {rc=RC_TIMEOUT; break;}
 				if (vals==NULL) {
 					EncPINRef *ep=storeValues(qr,nValues,pinMem); if (ep==NULL) {cnt=~0ULL; return RC_NORESOURCES;}
@@ -824,10 +786,10 @@ RC Sort::count(uint64_t& cnt,unsigned nAbort)
 						{if (rc==RC_NORESOURCES) {cnt=~0ULL; return rc;} else continue;}
 					if (!pv->isEmpty()) fSkip=false;
 				}
-				if (!fSkip) nAllPins++; pinMem.truncate(mrk);
+				if (!fSkip) nAllPins++; pinMem.truncate(TR_REL_ALL,&mrk);
 			}
 			for (unsigned i=1; i<nqr; i++) {pqr[i]->~PINx(); qx->ses->free((void*)pqr[i]);}
-			pinMem.release();
+			pinMem.truncate(TR_REL_ALL);
 		}
 	}
 	cnt=nAllPins; return RC_OK;
@@ -848,6 +810,7 @@ RC Sort::loadData(PINx& qr,Value *pv,unsigned nv,ElementID,bool fSort,MemAlloc *
 			if (ma==NULL) {pv[i]=vals[j]; setHT(pv[i]);} else rc=copyV(vals[j],pv[i],ma);
 			break;
 		}
+	qr.setPartial();
 	return rc;
 }
 

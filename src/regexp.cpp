@@ -1,6 +1,6 @@
 /**************************************************************************************
 
-Copyright © 2004-2013 GoPivotal, Inc. All rights reserved.
+Copyright ï¿½ 2004-2014 GoPivotal, Inc. All rights reserved.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -720,20 +720,10 @@ RC RegexService::RegexProcessor::invoke(IServiceCtx *ctx,const Value& inp,Value&
 	return rc;
 }
 
-void RegexService::RegexProcessor::cleanup(IServiceCtx *ctx,bool fDestroy)
-{
-	if (fDestroy) {
-		if (re!=NULL) ctx->free((byte*)re); freeV(render);
-		this->~RegexProcessor(); ctx->free(this);
-	} else {
-		//???
-	}
-}
-
 RC RegexService::create(IServiceCtx *ctx,uint32_t& dscr,Processor *&ret)
 {
 	if ((dscr&ISRV_PROC_MASK)!=ISRV_READ) return RC_INVOP;
-	ISession *ses=ctx->getSession(); if (ses==NULL) return RC_NOSESSION;
+	Session *ses=(Session*)ctx->getSession(); if (ses==NULL) return RC_NOSESSION;
 	const Value *ptrn=ctx->getParameter(PROP_SPEC_PATTERN),*prot=ctx->getParameter(PROP_SPEC_PROTOTYPE); 
 	if (ptrn==NULL || prot==NULL) return RC_INVPARAM;
 	byte *re=NULL; unsigned flg=0;
@@ -751,7 +741,7 @@ RC RegexService::create(IServiceCtx *ctx,uint32_t& dscr,Processor *&ret)
 	switch (prot->type) {
 	case VT_VARREF: if (prot->refV.refN==0 && prot->refV.flags==VAR_REXP) break;
 	default: rc=RC_INVPARAM; break;
-	case VT_STRUCT: case VT_REF: case VT_EXPR: case VT_ARRAY: 
+	case VT_STRUCT: case VT_REF: case VT_EXPR: case VT_COLLECTION: 
 		if (prot->fcalc==0) rc=RC_INVPARAM; break;
 	}
 	if (rc==RC_OK && (rc=copyV(*prot,rnd,(ServiceCtx*)ctx))==RC_OK && (ret=new(ctx) RegexProcessor(re,rnd,flg))==NULL) rc=RC_NORESOURCES;

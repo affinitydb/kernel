@@ -1,6 +1,6 @@
 /**************************************************************************************
 
-Copyright © 2004-2013 GoPivotal, Inc. All rights reserved.
+Copyright © 2004-2014 GoPivotal, Inc. All rights reserved.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -98,14 +98,15 @@ RC Expr::eval(const Expr *const *exprs,unsigned nExp,Value& result,const EvalCtx
 {
 	if (nExp==1 && (exprs[0]->hdr.flags&EXPR_EXTN)!=0) {
 		const void *itf=NULL;
-		if (exprs[0]->hdr.lStack>=nExtns || (itf=extnTab[exprs[0]->hdr.lStack])==NULL) return RC_INVOP;
+		if (exprs[0]->hdr.nStack>=nExtns || (itf=extnTab[exprs[0]->hdr.nStack])==NULL) return RC_INVOP;
 		// call external
 		return RC_INTERNAL;
 	}
-	unsigned idx=0,pgcnt=0; const Expr *exp; RExpCtx rctx(ctx.ma); assert(exprs!=NULL && nExp>0 && exprs[0]!=NULL);
-	const byte *codePtr=NULL,*codeEnd=NULL; unsigned cntCatch=0,xStack=0; VarD vds[4],*evds=NULL;
-	for (unsigned i=0; i<nExp; i++) if (exprs[i]->hdr.lStack>xStack) xStack=exprs[i]->hdr.lStack;
-	Value *stack=(Value*)alloca(xStack*sizeof(Value)),*top=stack; if (stack==NULL) return RC_NORESOURCES;
+	assert(exprs!=NULL && nExp>0 && exprs[0]!=NULL);
+	unsigned idx=0; const Expr *exp; RExpCtx rctx(ctx.ma); uint64_t subXmask=0;
+	const byte *codePtr=NULL,*codeEnd=NULL; unsigned cntCatch=0,xStack=0,nCSE=0; PINx px(ctx.ses);
+	for (unsigned i=0; i<nExp; i++) {if (exprs[i]->hdr.nStack>xStack) xStack=exprs[i]->hdr.nStack;}		// nCSE ???
+	Value *stack=(Value*)alloca((xStack+nCSE)*sizeof(Value)),*top=stack+nCSE; if (stack==NULL) return RC_NORESOURCES;
 	for (OnRelease onr(ctx,stack,&top);;) {
 		if (codePtr>=codeEnd) {
 			assert(codePtr<=codeEnd && (top==stack || top==stack+1));
@@ -113,27 +114,23 @@ RC Expr::eval(const Expr *const *exprs,unsigned nExp,Value& result,const EvalCtx
 			if ((exp=exprs[idx++])==NULL || (ctx.params==NULL||ctx.nParams==0||ctx.params[0].nValues==0) && 
 				ctx.ect==ECT_CLASS && (exp->hdr.flags&EXPR_PARAMS)!=0) continue;
 			if ((exp->hdr.flags&EXPR_NO_CODE)!=0) {
-				const VarHdr *vh=(VarHdr*)(&exp->hdr+1); assert(exp->hdr.nVars==1);
-				if (vh->var>=ctx.nVars || !ctx.vars[vh->var]->defined((PropertyID*)(vh+1),vh->nProps)) return RC_FALSE;
+				if (ctx.nVars==0 || !ctx.vars[0]->defined((PropertyID*)(&exp->hdr+1),exp->hdr.nProps)) return RC_FALSE;
 				continue;
 			}
-			codePtr=(const byte*)(&exp->hdr+1)+exp->hdr.lProps; codeEnd=(const byte*)&exp->hdr+exp->hdr.lExpr; 
-			cntCatch=(exp->hdr.flags&EXPR_BOOL)!=0?1:0; if (top==stack+1) freeV(*--top);
-			vds[0].fInit=vds[1].fInit=vds[2].fInit=vds[3].fInit=false; pgcnt=0;
-			if (evds!=NULL) {
-				//...
-			}
+			codePtr=(const byte*)(&exp->hdr+1)+exp->hdr.nProps*sizeof(uint32_t); codeEnd=(const byte*)&exp->hdr+exp->hdr.lExpr;
+			cntCatch=(exp->hdr.flags&EXPR_BOOL)!=0?1:0; if (top==stack+1) freeV(*--top); subXmask=0ULL;
 		}
-		assert(top>=stack && top<=stack+exp->hdr.lStack);
-		TIMESTAMP ts; const Value *v; RC rc=RC_OK; VarD *vd; ElementID eid; const PIN *pin; Value w;
+		assert(top>=stack && top<=stack+exp->hdr.nStack);
+		TIMESTAMP ts; const Value *v; RC rc=RC_OK; ElementID eid; const PIN *pin; Value w;
 		byte op=*codePtr++; const bool ff=(op&0x80)!=0; int nops; unsigned fop; uint32_t u,vdx; PathSeg *path;
 		switch (op&=0x7F) {
 		case OP_CON:
-			assert(top<stack+exp->hdr.lStack); top->flags=0;
+			assert(top<stack+exp->hdr.nStack); top->flags=0;
 			if ((rc=AfyKernel::deserialize(*top,codePtr,codeEnd,ctx.ma,true))!=RC_OK) break;
 			assert(top->type!=VT_VARREF && top->type!=VT_CURRENT);
 			if (top->fcalc!=0) switch (top->type) {
 			default: break;
+			case VT_STMT: case VT_EXPR: case VT_CURRENT: rc=ctx.ses->getStore()->queryMgr->eval(top,ctx,top); break;
 			case VT_REFIDPROP: case VT_REFIDELT:
 				if ((rc=derefValue(*top,*top,ctx.ses))==RC_NOTFOUND && cntCatch!=0) {freeV(*top); rc=RC_OK;}
 				break;
@@ -148,7 +145,7 @@ RC Expr::eval(const Expr *const *exprs,unsigned nExp,Value& result,const EvalCtx
 					//u=v->refV.refN; if (v->length==0) goto var; propID=v->refV.id; eid=v->eid; goto prop;
 				}
 			}
-			if (ff) top->set(unsigned(rc!=RC_OK?(rc=RC_OK,0u):v->type==VT_ARRAY?v->length:v->type==VT_COLLECTION?v->nav->count():1u)); 
+			if (ff) top->set(unsigned(rc!=RC_OK?(rc=RC_OK,0u):v->count())); 
 			else if (rc==RC_OK) {*top=*v; setHT(*top);} else {top->setError(); if (cntCatch!=0) rc=RC_OK;}
 			top++; break;
 		case OP_VAR: case OP_ENVV:
@@ -157,62 +154,68 @@ RC Expr::eval(const Expr *const *exprs,unsigned nExp,Value& result,const EvalCtx
 			if (pin!=NULL) {if (ff) top->set(1u); else top->set((IPIN *)pin);} else if (ff) top->set(0u); else {top->setError(); if (cntCatch==0) rc=RC_NOTFOUND;}
 			top++; break;
 		case OP_PROP: case OP_ELT: case OP_SETPROP: case OP_ENVV_PROP: case OP_ENVV_ELT:
-			if ((u=*codePtr++)!=0xff) vd=&vds[vdx=u>>6],u&=0x3f;
+			if ((u=*codePtr++)!=0xff) vdx=u>>6,u&=0x3f; else {vdx=codePtr[0]; u=codePtr[1]|codePtr[2]<<8; codePtr+=3;}
+			u=((uint32_t*)(&exp->hdr+1))[u]&STORE_MAX_URIID;
+			if (op==OP_SETPROP) {top[-1].property=u; if (ff) top[-1].meta=*codePtr++; continue;}
+			if (op==OP_ELT||op==OP_ENVV_ELT) {afy_dec32(codePtr,eid); eid=afy_dec32zz(eid);} else eid=STORE_COLLECTION_ID;
+			pin=op==OP_PROP||op==OP_ELT?vdx<ctx.nVars?ctx.vars[vdx]:NULL:vdx<ctx.nEnv?ctx.env[vdx]:NULL;
+		get_prop:
+			if (eid>=STORE_MAX_ELEMENT && eid<=STORE_SUM_COLLECTION) {op=aggops[eid-STORE_MAX_ELEMENT]; eid=STORE_COLLECTION_ID;} 
 			else {
-				if ((vdx=codePtr[0])>=ctx.nVars) {/*...*/}
-				if (vdx<4) vd=&vds[vdx]; else {/*???*/ vd=NULL;}
-				u=codePtr[1]|codePtr[2]<<8; codePtr+=3;
-			}
-			if (!vd->fInit) {
-				if (vdx>=exp->hdr.nVars) return RC_CORRUPTED; const VarHdr *vh=(VarHdr*)(&exp->hdr+1);
-				for (unsigned i=0; i<vdx; i++) vh=(VarHdr*)((byte*)(vh+1)+vh->nProps*sizeof(uint32_t));
-				vd->props=(PropertyID*)(vh+1); vd->fInit=true; vd->fLoaded=false; 
-				vd->pp=op<=OP_ENVV_PROP?(vdx=(0xFFFE)-vh->var)<ctx.nEnv?ctx.env[vdx]:NULL:vh->var<ctx.nVars?ctx.vars[vh->var]:NULL;
-				if ((exp->hdr.flags&EXPR_PRELOAD)!=0) {
-					// ...alloc Value's
-					//... load, if RC_NOTFOUND -> RC_FALSE or RC_NOTFOUND
-					vd->fLoaded=true;
+				op=0;
+				if (eid==STORE_VAR_ELEMENT) {
+					if (top[-1].type!=VT_INT && top[-1].type!=VT_UINT) {rc=RC_TYPE; break;}
+					eid=(--top)->ui;
 				}
 			}
-			if (op==OP_SETPROP) {
-				top[-1].property=vd->props[u]&STORE_MAX_URIID; if (ff) top[-1].meta=*codePtr++;
-			} else if (!vd->fLoaded) {
-				if (op==OP_ELT||op==OP_ENVV_ELT) {afy_dec32(codePtr,eid); eid=afy_dec32zz(eid);} else eid=STORE_COLLECTION_ID;
-				if (eid>=STORE_MAX_ELEMENT && eid<=STORE_SUM_COLLECTION) {op=aggops[eid-STORE_MAX_ELEMENT]; eid=STORE_COLLECTION_ID;} else op=0;
-				rc=vd->pp!=NULL?vd->pp->getV(vd->props[u],*top,ff?LOAD_CARDINALITY|LOAD_SSV:LOAD_SSV,NULL,eid):RC_NOTFOUND;
-				if (rc!=RC_OK) {if (cntCatch!=0 && rc==RC_NOTFOUND) {top->setError(); rc=RC_OK;}}
-				else if ((op==0 || (rc=calcAgg((ExprOp)op,*top,NULL,1,0,ctx))==RC_OK) && top->fcalc!=0 && isString((ValueType)top->type)) pgcnt++;
-			} else {
-				v=&vd->vals[u]; assert(u<vd->nVals && vd->vals!=NULL); 
-				if (op==OP_PROP||op==OP_ENVV_PROP) {*top=*v; setHT(*top);}		// pgcnt?
-				else {
-					afy_dec32(codePtr,eid); eid=afy_dec32zz(eid); *top=*v; setHT(*top);
-					if (v->type==VT_ARRAY || v->type==VT_COLLECTION) {
-						if (eid<STORE_MAX_ELEMENT || eid>STORE_SUM_COLLECTION) {
-							// find eid
-						} else rc=calc(aggops[eid-STORE_MAX_ELEMENT],*top,NULL,1,0,ctx);
-					} else if (eid<STORE_MAX_ELEMENT) {if (cntCatch!=0) top->setError(); else rc=RC_NOTFOUND;}
-				}
-			}
-			if (top->type==VT_EXPR && (((Expr*)top->expr)->hdr.flags&EXPR_PARAMS)==0) {
+			rc=pin!=NULL?((PIN*)pin)->getV(u,*top,ff?LOAD_CARDINALITY|LOAD_SSV:LOAD_SSV,NULL,eid):RC_NOTFOUND; if (pin==&px) px.cleanup();
+			if (rc!=RC_OK) {if (cntCatch!=0 && rc==RC_NOTFOUND) {top->setError(); rc=RC_OK;}} else if (op!=0) rc=calcAgg((ExprOp)op,*top,NULL,1,0,ctx);
+			if (top->type==VT_EXPR && (((Expr*)top->expr)->hdr.flags&EXPR_PARAMS)==0) {		// params <-> WITH
 				Expr *expr=(Expr*)top->expr; const bool fFree=(top->flags&HEAP_TYPE_MASK)>=SES_HEAP;
 				if ((rc=Expr::eval(&expr,1,*top,ctx))==RC_OK) {if (fFree) ctx.ma->free(expr);}
 				else if (cntCatch!=0) {top->setError(); rc=RC_OK;}
 			} else if ((top->flags&HEAP_TYPE_MASK)==PAGE_HEAP) onr.setCheck();
 			top++; break;
+		case OP_NAMED_PROP: case OP_NAMED_ELT:
+			if ((u=*codePtr++)==0xFF) {u=codePtr[0]|codePtr[1]<<8; codePtr+=2;}
+			if ((rc=ctx.ses->getStore()->namedMgr->getNamed(((uint32_t*)(&exp->hdr+1))[u]&STORE_MAX_URIID,px))!=RC_OK)
+				{if (cntCatch!=0 && rc==RC_NOTFOUND) {top->setError(); rc=RC_OK;} break;}
+			pin=&px;
+			if ((u=*codePtr++)==0xFF) {u=codePtr[0]|codePtr[1]<<8; codePtr+=2;}
+			if (op==OP_NAMED_ELT) {afy_dec32(codePtr,eid); eid=afy_dec32zz(eid);} else eid=STORE_COLLECTION_ID;
+			u=((uint32_t*)(&exp->hdr+1))[u]&STORE_MAX_URIID; goto get_prop;
+		case OP_CALL:
+			if (ff) {
+				if ((u=*codePtr++)==0xFF) {u=codePtr[0]|codePtr[1]<<8; codePtr+=2;} 
+				rc=ctx.ses->getStore()->namedMgr->getNamed(((uint32_t*)(&exp->hdr+1))[u]&STORE_MAX_URIID,px);
+				if ((u=*codePtr++)==0xFF) {u=codePtr[0]|codePtr[1]<<8; codePtr+=2;}
+				u=((uint32_t*)(&exp->hdr+1))[u]&STORE_MAX_URIID; nops=*codePtr++; w.setEmpty();
+				if (rc==RC_OK) {rc=px.getV(u,w,LOAD_SSV,(MemAlloc*)ctx.ses,STORE_COLLECTION_ID); px.cleanup();}
+			} else {
+				if ((u=*codePtr++)!=0xff) vdx=u>>6,u&=0x3f; else {vdx=codePtr[0]; u=codePtr[1]|codePtr[2]<<8; codePtr+=3;}
+				u=((uint32_t*)(&exp->hdr+1))[u]&STORE_MAX_URIID; nops=*codePtr++; w.setEmpty();
+				rc=vdx<ctx.nVars&&ctx.vars[vdx]!=NULL?ctx.vars[vdx]->getV(u,w,LOAD_SSV,NULL,STORE_COLLECTION_ID):RC_NOTFOUND;
+				if (rc==RC_NOTFOUND && ctx.nEnv>=2 && ctx.env[1]!=NULL) rc=ctx.env[1]->getV(u,w,ff?LOAD_CARDINALITY|LOAD_SSV:LOAD_SSV,NULL,eid);
+				if (rc==RC_NOTFOUND) goto ext_call;
+			}
+			if (rc==RC_OK) switch (w.type) {
+			default: freeV(w); rc=RC_TYPE; break;
+			case VT_EXPR: case VT_STMT:
+				{ValueV vv(nops!=0?top-nops:NULL,nops); EvalCtx ectx(ctx.ses,ctx.env,ctx.nEnv,ctx.vars,ctx.nVars,&vv,1,&ctx,ctx.ma,ctx.ect);
+				rc=ctx.ses->getStore()->queryMgr->eval(&w,ectx,&w); while (--nops>=0) freeV(*--top); if (rc==RC_OK) *top++=w; else freeV(w);}
+				break;
+			}
+			break;
+		case OP_EXTCALL:
+			if ((u=*codePtr++)==0xFF) {u=codePtr[0]|codePtr[1]<<8; codePtr+=2;} u=((uint32_t*)(&exp->hdr+1))[u]&STORE_MAX_URIID;
+		ext_call:
+			// try to call extFunc
+			break;
 		case OP_CONID:
 			if ((u=*codePtr++)==0xFF) {u=codePtr[0]|codePtr[1]<<8; codePtr+=2;}
-			if (!ff && vds[0].fInit) u=vds[0].props[u];
-			else {
-				const VarHdr *vh=(VarHdr*)(&exp->hdr+1),*vend=(VarHdr*)((byte*)vh+exp->hdr.lProps);
-				for (vdx=ff?0xffff:0; vh<vend && vh->var!=vdx; vh=(VarHdr*)((byte*)(vh+1)+vh->nProps*sizeof(uint32_t)));
-				if (!ff) {
-					vds[0].pp=vh->var<ctx.nVars?ctx.vars[vh->var]:NULL;
-					vds[0].props=(PropertyID*)(vh+1); vds[0].fInit=true; vds[0].fLoaded=false;
-				}
-				u=((uint32_t*)(vh+1))[u];
-			}
-			if (ff) top->setIdentity(u); else top->setURIID(u&STORE_MAX_URIID);
+			// check u<exp->hdr.nProps
+			u=((uint32_t*)(&exp->hdr+1))[u];
+			if (ff) top->setIdentity(u); else top->setURIID(u&STORE_MAX_URIID);		// identity???
 			top++; break;
 		case OP_RXREF:
 			if ((u=*codePtr++)==0xFF) {u=codePtr[0]|codePtr[1]<<8; codePtr+=2;}
@@ -225,14 +228,14 @@ RC Expr::eval(const Expr *const *exprs,unsigned nExp,Value& result,const EvalCtx
 			memset(path,0,u*sizeof(PathSeg)); --top;
 			for (nops=(int)u,rc=RC_OK; rc==RC_OK && --nops>=0; ) {
 				PathSeg& sg=path[nops]; byte f=*codePtr++; Expr *filter=NULL; unsigned i;
-				sg.eid=STORE_COLLECTION_ID; sg.cid=STORE_INVALID_CLASSID; sg.rmin=sg.rmax=1; sg.fLast=(f&0x01)!=0;
+				sg.eid.setEmpty(); sg.cid=STORE_INVALID_URIID; sg.rmin=sg.rmax=1; sg.fLast=(f&0x01)!=0;
 				if ((f&0x02)!=0) v=top--; else if ((rc=AfyKernel::deserialize(w,codePtr,codeEnd,ctx.ma,true))==RC_OK) v=&w;
 				switch (v->type) {
 				default: rc=RC_TYPE; break;
 				case VT_ANY: break;
 				case VT_URIID: sg.pid=v->uid; sg.nPids=1; break;
-				case VT_ARRAY:
-					if ((sg.pids=new(ctx.ma) PropertyID[v->length])==NULL) rc=RC_NORESOURCES;
+				case VT_COLLECTION:
+					if (v->isNav() || (sg.pids=new(ctx.ma) PropertyID[v->length])==NULL) rc=RC_NORESOURCES;
 					else for (i=0; i<v->length; i++) if (v->varray[i].type==VT_URIID && (sg.pids[sg.nPids]=v->varray[i].uid)!=PROP_SPEC_ANY) sg.nPids++;
 					if (sg.nPids==0) {ctx.ma->free(sg.pids); sg.pid=PROP_SPEC_ANY;} else if (sg.nPids==1) {PropertyID pid=sg.pids[0]; ctx.ma->free(sg.pids); sg.pid=pid;}
 					else qsort(sg.pids,sg.nPids,sizeof(PropertyID),cmpProps);
@@ -241,8 +244,8 @@ RC Expr::eval(const Expr *const *exprs,unsigned nExp,Value& result,const EvalCtx
 				freeV(*(Value*)v);
 				if (rc==RC_OK) switch (f&0x18) {
 				case 0: break;
-				case 0x08: afy_dec32(codePtr,sg.eid); sg.eid=afy_dec32zz((uint32_t)sg.eid); break;
-				case 0x10: if (top->type!=VT_INT && top->type!=VT_UINT) rc=RC_TYPE; else sg.eid=(top--)->ui; break;	// convert type?
+				case 0x08: afy_dec32(codePtr,sg.eid.eid); sg.eid.eid=afy_dec32zz((uint32_t)sg.eid.eid); break;
+				case 0x10: if (top->type!=VT_INT && top->type!=VT_UINT) rc=RC_TYPE; else sg.eid.eid=(top--)->ui; break;	// convert type?
 				case 0x18: if ((rc=deserialize(filter,codePtr,codeEnd,ctx.ses))==RC_OK) sg.filter=filter; break; //classID ??
 				}
 				if (rc==RC_OK) switch (f&0xE0) {
@@ -358,17 +361,9 @@ const Value *PathIt::navigate(GO_DIR dir,ElementID eid)
 	const Value *pv; bool fOK=false; //RC rc;
 	for (;;) {
 		if (pst==NULL) {
-			switch (src.type) {
-			default:
-				if (sidx!=0) return NULL;
-				pv=&src; break;
-			case VT_ARRAY:
-				if (sidx>=src.length) return NULL;
-				pv=&src.varray[sidx]; break;
-			case VT_COLLECTION:
-				if ((pv=src.nav->navigate(sidx==0?GO_FIRST:GO_NEXT))==NULL) return NULL;
-				break;
-			}
+			if (src.type!=VT_COLLECTION) {if (sidx==0) pv=&src; else return NULL;}
+			else if (!src.isNav()) {if (sidx<src.length) pv=&src.varray[sidx]; else return NULL;}
+			else if ((pv=src.nav->navigate(sidx==0?GO_FIRST:GO_NEXT))==NULL) return NULL;
 			sidx++; //pex.getID(id);
 //			if ((rc=push(id))!=RC_OK) return NULL; pst->v[0].setError(path[0].pid);
 //			if ((rc=getData(pex,&pst->v[0],1,NULL,ses,path[0].eid))!=RC_OK) {state|=QST_EOF; return rc;}
@@ -379,7 +374,7 @@ const Value *PathIt::navigate(GO_DIR dir,ElementID eid)
 			pst->state=1; assert(pst!=NULL && pst->idx>0);
 			if (pst->idx>=nPathSeg && pst->rcnt>=path[pst->idx-1].rmin && path[pst->idx-1].filter==NULL) {/*printf("->\n");*/ return &res;}
 		case 1:
-			pst->state=2; //printf("%*s(%d,%d):"_LX_FM"\n",(pst->idx-1+pst->rcnt-1)*2,"",pst->idx,pst->rcnt,res->id.pid);
+			pst->state=2; //printf("%*s(%d,%d):" _LX_FM "\n",(pst->idx-1+pst->rcnt-1)*2,"",pst->idx,pst->rcnt,res->id.pid);
 //			if ((rc=getBody(*res))!=RC_OK || (res->hpin->hdr.descr&HOH_HIDDEN)!=0)
 //				{res->cleanup(); if (rc==RC_OK || rc==RC_NOACCESS || rc==RC_REPEAT || rc==RC_DELETED) {pop(); continue;} else {state|=QST_EOF; return rc;}}
 //			fOK=path[pst->idx-1].filter==NULL || ses->getStore()->queryMgr->condSatisfied((const Expr* const*)&path[pst->idx-1].filter,1,(const PINx**)&res,1,params,nParams,ses);
@@ -411,10 +406,10 @@ const Value *PathIt::navigate(GO_DIR dir,ElementID eid)
 			case VT_STRUCT:
 				//????
 				continue;
-			case VT_COLLECTION: case VT_ARRAY: pst->state=3; pst->cidx=0; break;
+			case VT_COLLECTION: pst->state=3; pst->cidx=0; break;
 			}
 		case 3:
-			pv=pst->v[pst->vidx].type==VT_COLLECTION?pst->v[pst->vidx].nav->navigate(pst->cidx==0?GO_FIRST:GO_NEXT):pst->cidx<pst->v[pst->vidx].length?&pst->v[pst->vidx].varray[pst->cidx]:(const Value*)0;
+			pv=pst->v[pst->vidx].isNav()?pst->v[pst->vidx].nav->navigate(pst->cidx==0?GO_FIRST:GO_NEXT):pst->cidx<pst->v[pst->vidx].length?&pst->v[pst->vidx].varray[pst->cidx]:(const Value*)0;
 			if (pv!=NULL) {
 				pst->cidx++;
 				switch (pv->type) {
@@ -465,6 +460,12 @@ void PathIt::destroy()
 RC Expr::calc(ExprOp op,Value& arg,const Value *moreArgs,int nargs,unsigned flags,const EvalCtx& ctx)
 {
 	int c,i; RC rc=RC_OK; long start,lstr; const Value *arg2,*arg3,*pv; unsigned dtPart; Value *rng,*args,val,val2; uint32_t len,sht; byte *p; char *s; ServiceCtx *srv; uint8_t ty;
+	if (op>=OP_FIRST_EXPR && op<OP_ALL && ctx.ses->getStore()->opTab!=NULL) {
+		for (ExtOp *eo=ctx.ses->getStore()->opTab[op]; eo!=NULL; eo=eo->next)
+			if ((rc=eo->func(arg,moreArgs,nargs,flags,ctx.ses))!=RC_REPEAT) return rc;
+		rc=RC_OK;
+	}
+	if (arg.type==VT_ARRAY || nargs==2 && moreArgs->type==VT_ARRAY) return linear(op,arg,moreArgs,nargs,flags,ctx);
 	switch (op) {
 	case OP_PLUS:
 		if ((!isNumeric((ValueType)arg.type) || arg.type!=moreArgs->type) && (moreArgs=numOpConv(arg,moreArgs,val,NO_FLT|NO_INT|NO_DAT1|NO_ITV1|NO_ITV2,ctx))==NULL) return RC_TYPE;
@@ -745,14 +746,18 @@ RC Expr::calc(ExprOp op,Value& arg,const Value *moreArgs,int nargs,unsigned flag
 		case VT_UINT64:	arg.ui64>>=lstr; break;
 		}
 		break;
-	case OP_MIN: case OP_MAX: 
+	case OP_MIN: case OP_MAX:
 		assert(nargs==2); c=cmp(arg,*moreArgs,flags,ctx.ma);
 		if (c==-1 && op==OP_MAX || c==1 && op==OP_MIN) {freeV(arg); if ((rc=copyV(*moreArgs,arg,ctx.ma))!=RC_OK) return rc;}
+		break;
+	case OP_ARGMIN: case OP_ARGMAX:
+		assert(nargs==2); c=cmp(arg,*moreArgs,flags,ctx.ma); freeV(arg);
+		arg.set((unsigned)(c==-1&&op==OP_ARGMIN||c==1&&op==OP_ARGMAX?0:1));
 		break;
 	case OP_LENGTH:
 		switch (arg.type) {
 		case VT_STREAM: val.ui64=arg.stream.is->length(); freeV(arg); arg.setU64(val.ui64); return RC_OK;
-		case VT_ARRAY: case VT_COLLECTION:
+		case VT_COLLECTION:
 			if ((rc=calcAgg(OP_CONCAT,arg,moreArgs,nargs,flags,ctx))!=RC_OK) return rc;
 		calc_length:
 		case VT_STRING: case VT_URL:
@@ -765,7 +770,7 @@ RC Expr::calc(ExprOp op,Value& arg,const Value *moreArgs,int nargs,unsigned flag
 		freeV(arg); arg.set(unsigned(len)); break;
 	case OP_CONCAT:
 		if (nargs==1) {
-			if (arg.type==VT_ARRAY || arg.type==VT_COLLECTION) return calcAgg(OP_CONCAT,arg,moreArgs,nargs,flags,ctx);
+			if (arg.type==VT_COLLECTION) return calcAgg(OP_CONCAT,arg,moreArgs,nargs,flags,ctx);
 			if (!isString((ValueType)arg.type)) return convV(arg,arg,VT_STRING,ctx.ma);
 			break;
 		}
@@ -891,50 +896,52 @@ RC Expr::calc(ExprOp op,Value& arg,const Value *moreArgs,int nargs,unsigned flag
 	case OP_NE: flags|=CND_NE; goto comp;
 	case OP_LT: case OP_LE: case OP_GT: case OP_GE:
 	comp:
-		switch (arg.type) {
-		default: break;
-		case VT_ARRAY:
-			for (len=arg.length,rc=RC_FALSE; len!=0; ) {
-				rc=calc(op,const_cast<Value&>(arg.varray[--len]),moreArgs,2,flags,ctx);
-				if (rc==RC_TRUE) {if (op==OP_EQ) break;} else if (rc!=RC_FALSE || op!=OP_EQ) break;
+		if (arg.type==VT_COLLECTION) {
+			if (!arg.isNav()) {
+				for (len=arg.length,rc=RC_FALSE; len!=0; ) {
+					rc=calc(op,const_cast<Value&>(arg.varray[--len]),moreArgs,2,flags,ctx);
+					if (rc==RC_TRUE) {if (op==OP_EQ) break;} else if (rc!=RC_FALSE || op!=OP_EQ) break;
+				}
+			} else {
+				for (arg2=arg.nav->navigate(GO_FIRST),rc=RC_FALSE; arg2!=NULL; arg2=arg.nav->navigate(GO_NEXT)) {
+					val=*arg2; setHT(val); rc=calc(op,val,moreArgs,2,flags,ctx); freeV(val);
+					if (rc==RC_TRUE) {if (op==OP_EQ) break;} else if (rc!=RC_FALSE || op!=OP_EQ) break;
+				}
+				arg.nav->navigate(GO_FINDBYID,STORE_COLLECTION_ID);
 			}
 			return rc;
-		case VT_COLLECTION:
-			for (arg2=arg.nav->navigate(GO_FIRST),rc=RC_FALSE; arg2!=NULL; arg2=arg.nav->navigate(GO_NEXT)) {
-				val=*arg2; setHT(val); rc=calc(op,val,moreArgs,2,flags,ctx); freeV(val);
-				if (rc==RC_TRUE) {if (op==OP_EQ) break;} else if (rc!=RC_FALSE || op!=OP_EQ) break;
-			}
-			arg.nav->navigate(GO_FINDBYID,STORE_COLLECTION_ID); return rc;
 		}
 		switch (moreArgs->type) {
 		default: break;
-		case VT_ARRAY:
-			for (len=moreArgs->length; len!=0;) {
-				c=cmp(arg,moreArgs->varray[--len],flags,ctx.ma); if (op==OP_EQ) {if (c==0) return RC_TRUE;} else if ((rc=condRC(c,op))!=RC_TRUE) return rc;
-			}
-			return op!=OP_EQ?RC_TRUE:RC_FALSE;
 		case VT_COLLECTION:
-			for (arg2=moreArgs->nav->navigate(GO_FIRST); ;arg2=moreArgs->nav->navigate(GO_NEXT)) {
-				if (arg2==NULL) {rc=op!=OP_EQ?RC_TRUE:RC_FALSE; break;}
-				c=cmp(arg,*arg2,flags,ctx.ma); if (op==OP_EQ) {if (c==0) {rc=RC_TRUE; break;}} else if ((rc=condRC(c,op))!=RC_TRUE) break;
+			if (!moreArgs->isNav()) {
+				for (len=moreArgs->length; len!=0;) {
+					c=cmp(arg,moreArgs->varray[--len],flags,ctx.ma); if (op==OP_EQ) {if (c==0) return RC_TRUE;} else if ((rc=condRC(c,op))!=RC_TRUE) return rc;
+				}
+				return op!=OP_EQ?RC_TRUE:RC_FALSE;
+			} else {
+				for (arg2=moreArgs->nav->navigate(GO_FIRST); ;arg2=moreArgs->nav->navigate(GO_NEXT)) {
+					if (arg2==NULL) {rc=op!=OP_EQ?RC_TRUE:RC_FALSE; break;}
+					c=cmp(arg,*arg2,flags,ctx.ma); if (op==OP_EQ) {if (c==0) {rc=RC_TRUE; break;}} else if ((rc=condRC(c,op))!=RC_TRUE) break;
+				}
+				moreArgs->nav->navigate(GO_FINDBYID,STORE_COLLECTION_ID); return rc;
 			}
-			moreArgs->nav->navigate(GO_FINDBYID,STORE_COLLECTION_ID); return rc;
 		case VT_STMT:
 			return ((Stmt*)moreArgs->stmt)->cmp(ctx,arg,op,flags);
 		}
 		return condRC(cmp(arg,*moreArgs,flags,ctx.ma),op);
 	case OP_IS_A:
 	case OP_IN:
-		switch (arg.type) {
-		default: break;
-		case VT_ARRAY:
-			for (len=arg.length,rc=RC_FALSE; rc==RC_FALSE && len!=0; )
-				rc=calc(op,const_cast<Value&>(arg.varray[--len]),moreArgs,2,flags,ctx);
+		if (arg.type==VT_COLLECTION) {
+			if (!arg.isNav()) {
+				for (len=arg.length,rc=RC_FALSE; rc==RC_FALSE && len!=0; )
+					rc=calc(op,const_cast<Value&>(arg.varray[--len]),moreArgs,2,flags,ctx);
+			} else {
+				for (arg2=arg.nav->navigate(GO_FIRST),rc=RC_FALSE; rc==RC_FALSE && arg2!=NULL; arg2=arg.nav->navigate(GO_NEXT))
+					{val=*arg2; setHT(val); rc=calc(op,val,moreArgs,2,flags,ctx); freeV(val);}
+				arg.nav->navigate(GO_FINDBYID,STORE_COLLECTION_ID);
+			}
 			return rc;
-		case VT_COLLECTION:
-			for (arg2=arg.nav->navigate(GO_FIRST),rc=RC_FALSE; rc==RC_FALSE && arg2!=NULL; arg2=arg.nav->navigate(GO_NEXT))
-				{val=*arg2; setHT(val); rc=calc(op,val,moreArgs,2,flags,ctx); freeV(val);}
-			arg.nav->navigate(GO_FINDBYID,STORE_COLLECTION_ID); return rc;
 		}
 		if (op==OP_IS_A) {
 			if (moreArgs->type==VT_STMT) return ((Stmt*)moreArgs->stmt)->cmp(ctx,arg,op,flags);
@@ -945,16 +952,18 @@ RC Expr::calc(ExprOp op,Value& arg,const Value *moreArgs,int nargs,unsigned flag
 			default: return RC_TYPE;
 			case VT_URIID:
 				return ctx.ses->getStore()->queryMgr->test(ppe,moreArgs->uid,ctx2,nargs<=2)?RC_TRUE:RC_FALSE;
-			case VT_ARRAY:
-				for (len=moreArgs->length,rc=RC_FALSE; len!=0;) {
-					arg2=&moreArgs->varray[--len];
-					if (arg2->type==VT_URIID && ctx.ses->getStore()->queryMgr->test(ppe,arg2->uid,ctx2,nargs<=2)) return RC_TRUE;
-				}
-				return RC_FALSE;
 			case VT_COLLECTION:
-				for (arg2=moreArgs->nav->navigate(GO_FIRST),rc=RC_FALSE; arg2!=NULL; arg2=moreArgs->nav->navigate(GO_NEXT))
-					if (arg2->type==VT_URIID && ctx.ses->getStore()->queryMgr->test(ppe,arg2->uid,ctx2,nargs<=2)) return RC_TRUE;
-				moreArgs->nav->navigate(GO_FINDBYID,STORE_COLLECTION_ID); return rc;
+				if (!moreArgs->isNav()) {
+					for (len=moreArgs->length,rc=RC_FALSE; len!=0;) {
+						arg2=&moreArgs->varray[--len];
+						if (arg2->type==VT_URIID && ctx.ses->getStore()->queryMgr->test(ppe,arg2->uid,ctx2,nargs<=2)) return RC_TRUE;
+					}
+					return RC_FALSE;
+				} else {
+					for (arg2=moreArgs->nav->navigate(GO_FIRST),rc=RC_FALSE; arg2!=NULL; arg2=moreArgs->nav->navigate(GO_NEXT))
+						if (arg2->type==VT_URIID && ctx.ses->getStore()->queryMgr->test(ppe,arg2->uid,ctx2,nargs<=2)) return RC_TRUE;
+					moreArgs->nav->navigate(GO_FINDBYID,STORE_COLLECTION_ID); return rc;
+				}
 			}
 		} else switch (moreArgs->type) {
 		default: return cmp(arg,*moreArgs,flags|CND_EQ,ctx.ma)==0?RC_TRUE:RC_FALSE;
@@ -965,31 +974,33 @@ RC Expr::calc(ExprOp op,Value& arg,const Value *moreArgs,int nargs,unsigned flag
 			return c==-2 || (compareCodeTab[(flags&CND_IN_RBND)!=0?OP_LT-OP_EQ:OP_LE-OP_EQ]&1<<(c+1))==0?RC_FALSE:RC_TRUE;
 		case VT_STMT:
 			return ((Stmt*)moreArgs->stmt)->cmp(ctx,arg,op,flags);
-		case VT_ARRAY:
-			for (len=moreArgs->length; len!=0;) {
-				arg2=&moreArgs->varray[--len];
-				if (arg2->type!=VT_RANGE) {if (cmp(arg,*arg2,flags|CND_EQ,ctx.ma)==0) return RC_TRUE;}
-				else {
-					c=cmp(arg,arg2->range[0],(flags&CND_IN_LBND)!=0?flags|CND_NE:flags|CND_EQ,ctx.ma);
-					if (c>=-1 && (compareCodeTab[OP_GE-OP_EQ]&1<<(c+1))!=0) {
-						c=cmp(arg,arg2->range[1],(flags&CND_IN_RBND)!=0?flags|CND_NE:flags|CND_EQ,ctx.ma);
-						if (c>=-1 && (compareCodeTab[OP_LE-OP_EQ]&1<<(c+1))!=0) return RC_TRUE;
-					}
-				}
-			}
-			return RC_FALSE;
 		case VT_COLLECTION:
-			for (arg2=moreArgs->nav->navigate(GO_FIRST),rc=RC_FALSE; arg2!=NULL; arg2=moreArgs->nav->navigate(GO_NEXT)) {
-				if (arg2->type!=VT_RANGE) {if (cmp(arg,*arg2,flags|CND_EQ,ctx.ma)==0) {rc=RC_TRUE; break;}}
-				else {
-					c=cmp(arg,arg2->range[0],(flags&CND_IN_LBND)!=0?flags|CND_NE:flags|CND_EQ,ctx.ma);
-					if (c>=-1 && (compareCodeTab[OP_GE-OP_EQ]&1<<(c+1))!=0) {
-						c=cmp(arg,arg2->range[1],(flags&CND_IN_RBND)!=0?flags|CND_NE:flags|CND_EQ,ctx.ma);
-						if (c>=-1 && (compareCodeTab[OP_LE-OP_EQ]&1<<(c+1))!=0) {rc=RC_TRUE; break;}
+			if (!moreArgs->isNav()) {
+				for (len=moreArgs->length; len!=0;) {
+					arg2=&moreArgs->varray[--len];
+					if (arg2->type!=VT_RANGE) {if (cmp(arg,*arg2,flags|CND_EQ,ctx.ma)==0) return RC_TRUE;}
+					else {
+						c=cmp(arg,arg2->range[0],(flags&CND_IN_LBND)!=0?flags|CND_NE:flags|CND_EQ,ctx.ma);
+						if (c>=-1 && (compareCodeTab[OP_GE-OP_EQ]&1<<(c+1))!=0) {
+							c=cmp(arg,arg2->range[1],(flags&CND_IN_RBND)!=0?flags|CND_NE:flags|CND_EQ,ctx.ma);
+							if (c>=-1 && (compareCodeTab[OP_LE-OP_EQ]&1<<(c+1))!=0) return RC_TRUE;
+						}
 					}
 				}
+				return RC_FALSE;
+			} else {
+				for (arg2=moreArgs->nav->navigate(GO_FIRST),rc=RC_FALSE; arg2!=NULL; arg2=moreArgs->nav->navigate(GO_NEXT)) {
+					if (arg2->type!=VT_RANGE) {if (cmp(arg,*arg2,flags|CND_EQ,ctx.ma)==0) {rc=RC_TRUE; break;}}
+					else {
+						c=cmp(arg,arg2->range[0],(flags&CND_IN_LBND)!=0?flags|CND_NE:flags|CND_EQ,ctx.ma);
+						if (c>=-1 && (compareCodeTab[OP_GE-OP_EQ]&1<<(c+1))!=0) {
+							c=cmp(arg,arg2->range[1],(flags&CND_IN_RBND)!=0?flags|CND_NE:flags|CND_EQ,ctx.ma);
+							if (c>=-1 && (compareCodeTab[OP_LE-OP_EQ]&1<<(c+1))!=0) {rc=RC_TRUE; break;}
+						}
+					}
+				}
+				moreArgs->nav->navigate(GO_FINDBYID,STORE_COLLECTION_ID); return rc;
 			}
-			moreArgs->nav->navigate(GO_FINDBYID,STORE_COLLECTION_ID); return rc;
 		}
 		break;
 	case OP_CONTAINS:	// optimization (Boyer-Moore etc.)
@@ -1001,57 +1012,40 @@ RC Expr::calc(ExprOp op,Value& arg,const Value *moreArgs,int nargs,unsigned flag
 		case VT_STREAM:
 			// special implementation
 		default: break;
-		case VT_ARRAY:
-			if (op==OP_POSITION) {
-#if 1
-				return RC_TYPE;
-#else
-				if (moreArgs->type!=VT_ARRAY && moreArgs->type!=VT_COLLECTION) {freeV(arg); arg.set(-1);}
-				if (arg.length==1) {/* replace with arg.varray[0]*/}
-				break;
-#endif
-			}
-			for (len=arg.length; rc==RC_FALSE && len!=0; ) rc=calc(op,const_cast<Value&>(arg.varray[--len]),moreArgs,2,flags,ctx);
-			return rc;
 		case VT_COLLECTION:
 			if (op==OP_POSITION) {
 #if 1
 				return RC_TYPE;
 #else
-				if (moreArgs->type!=VT_ARRAY && moreArgs->type!=VT_COLLECTION) {freeV(arg); arg.set(-1);}
+				if (moreArgs->type!=VT_COLLECTION) {freeV(arg); arg.set(-1);}
 				if (arg.length==1) {/* replace with arg.varray[0]*/}
-				break;
 #endif
+			} else if (!arg.isNav()) {
+				for (len=arg.length; rc==RC_FALSE && len!=0; ) rc=calc(op,const_cast<Value&>(arg.varray[--len]),moreArgs,2,flags,ctx);
+			} else {
+				for (arg2=arg.nav->navigate(GO_FIRST); rc==RC_FALSE && arg2!=NULL; arg2=arg.nav->navigate(GO_NEXT)) {
+					val=*arg2; setHT(val); rc=calc(op,val,moreArgs,2,flags,ctx); freeV(val);
+				}
+				arg.nav->navigate(GO_FINDBYID,STORE_COLLECTION_ID);
 			}
-			for (arg2=arg.nav->navigate(GO_FIRST); rc==RC_FALSE && arg2!=NULL; arg2=arg.nav->navigate(GO_NEXT)) {
-				val=*arg2; setHT(val); rc=calc(op,val,moreArgs,2,flags,ctx); freeV(val);
-			}
-			arg.nav->navigate(GO_FINDBYID,STORE_COLLECTION_ID); return rc;
+			return rc;
 		}
 		switch (moreArgs->type) {
 		default: break;
-		case VT_ARRAY:
-			if (op==OP_POSITION) {
-#if 1
-				return RC_TYPE;
-#else
-				//???
-				break;
-#endif
-			}
-			for (len=moreArgs->length; rc==RC_FALSE && len!=0; ) rc=calc(op,arg,&moreArgs->varray[len],2,flags,ctx);
-			return rc;
 		case VT_COLLECTION:
 			if (op==OP_POSITION) {
 #if 1
 				return RC_TYPE;
 #else
 				//???
-				break;
 #endif
+			} else if (!moreArgs->isNav()) {
+				for (len=moreArgs->length; rc==RC_FALSE && len!=0; ) rc=calc(op,arg,&moreArgs->varray[len],2,flags,ctx);
+			} else {
+				for (arg2=moreArgs->nav->navigate(GO_FIRST); rc==RC_FALSE && arg2!=NULL; arg2=moreArgs->nav->navigate(GO_NEXT)) rc=calc(op,val,arg2,2,flags,ctx);
+				moreArgs->nav->navigate(GO_FINDBYID,STORE_COLLECTION_ID);
 			}
-			for (arg2=moreArgs->nav->navigate(GO_FIRST); rc==RC_FALSE && arg2!=NULL; arg2=moreArgs->nav->navigate(GO_NEXT)) rc=calc(op,val,arg2,2,flags,ctx);
-			moreArgs->nav->navigate(GO_FINDBYID,STORE_COLLECTION_ID); return rc;
+			return rc;
 		}
 		if ((arg2=strOpConv(arg,moreArgs,val,ctx))==NULL) return RC_TYPE;
 		if (arg.length>=arg2->length) switch (arg.type) {
@@ -1112,8 +1106,7 @@ RC Expr::calc(ExprOp op,Value& arg,const Value *moreArgs,int nargs,unsigned flag
 			pv=arg.pin->getValue(moreArgs->uid);
 			if (pv==NULL && op==OP_PATH) return RC_NOTFOUND;
 			freeV(arg);
-			if (op==OP_PATH) {if ((rc=copyV(*pv,arg,ctx.ma))!=RC_OK) return rc;}
-			else arg.set(pv==NULL?0u:pv->type==VT_ARRAY?unsigned(pv->length):pv->type==VT_COLLECTION?~0u:1u);
+			if (op==OP_PATH) {if ((rc=copyV(*pv,arg,ctx.ma))!=RC_OK) return rc;} else arg.set(pv==NULL?0u:pv->count());
 			break;
 		case VT_REFID:
 			if (ctx.ses->getStore()->queryMgr->loadValue(ctx.ses,arg.id,moreArgs->uid,STORE_COLLECTION_ID,arg,LOAD_CARDINALITY)!=RC_OK) {
@@ -1160,47 +1153,53 @@ RC Expr::calc(ExprOp op,Value& arg,const Value *moreArgs,int nargs,unsigned flag
 		rng[0].property=rng[1].property=STORE_INVALID_URIID;
 		rng[0].eid=rng[1].eid=STORE_COLLECTION_ID;
 		arg.setRange(rng); arg.flags=ctx.ma->getAType(); break;
-	case OP_ARRAY:
-		if ((rc=ExprTree::normalizeArray(&arg,nargs,val,ctx.ses,ctx.ses->getStore()))!=RC_OK) return rc;
-		arg=val; assert(arg.type==VT_ARRAY); break;
+	case OP_COLLECTION:
+		if ((rc=ExprTree::normalizeCollection(&arg,nargs,val,ctx.ses,ctx.ses->getStore()))!=RC_OK) return rc;
+		arg=val; assert(arg.type==VT_COLLECTION); break;
 	case OP_STRUCT: case OP_PIN:
 		if (nargs==1) switch (arg.type) {
 		case VT_REF:
 		case VT_REFID:
 		case VT_STRUCT:
-		case VT_ARRAY:
 		case VT_COLLECTION:
 			//???
 			break;
 		}
-		if ((rc=ExprTree::normalizeStruct(&arg,nargs,val,ctx.ses))!=RC_OK) return rc;
+		if ((rc=ExprTree::normalizeStruct(ctx.ses,&arg,nargs,val,ctx.ses,op==OP_PIN))!=RC_OK) return rc;
 		if (val.type==VT_EXPRTREE) {freeV(val); return RC_TYPE;}
-		assert(val.type==VT_STRUCT);
-		if (op==OP_PIN) {
-			PIN *pin=new(ctx.ma) PIN(ctx.ses,0,(Value*)val.varray,val.length);
-			if (pin!=NULL) {val.set(pin); val.flags=ctx.ma->getAType();} else return RC_NORESOURCES;
-		}
 		arg=val; break;
 	case OP_EDIT:
-		assert(arg.type!=VT_STREAM);
-		sht=unsigned(moreArgs->edit.shift); len=moreArgs->edit.length;		// ???
-		if ((arg2=strOpConv(arg,moreArgs,val,ctx))==NULL) return RC_TYPE;
-		if (sht==uint32_t(~0u)) sht=arg.length; rc=RC_OK;
-		if (sht+len>arg.length) rc=RC_INVPARAM;
-		else if (arg2->length<=len && (arg.flags&HEAP_TYPE_MASK)>=SES_HEAP) {
-			p=(byte*)arg.bstr; if (arg2->length>0) memcpy(p+sht,arg2->bstr,arg2->length);
-			if (len>arg2->length && sht+len<arg.length) memmove(p+sht+arg2->length,arg.bstr+sht+len,arg.length-sht-len);
-			arg.length-=len-arg2->length;
-		} else if ((p=(byte*)ctx.ma->malloc(arg.length-len+arg2->length+(arg.type!=VT_BSTR?1:0)))==NULL)
-			rc=RC_NORESOURCES;
-		else {
-			if (sht>0) memcpy(p,arg.bstr,sht); if (arg2->length>0) memcpy(p+sht,arg2->bstr,arg2->length);
-			if (sht+len<arg.length) memcpy(p+sht+arg2->length,arg.bstr+sht+len,arg.length-sht-len);
-			if ((arg.flags&HEAP_TYPE_MASK)>=SES_HEAP) free((byte*)arg.bstr,(HEAP_TYPE)(arg.flags&HEAP_TYPE_MASK));
-			arg.length+=arg2->length-len; setHT(arg,ctx.ma->getAType()); arg.bstr=p;
+		if (moreArgs->type==VT_UINT || moreArgs->type==VT_UINT64) {
+			if (!isInteger((ValueType)arg.type) && !numOpConv(arg,NO_INT,ctx)) rc=RC_TYPE;
+			else switch (arg.type) {
+			case VT_INT: case VT_UINT:
+				arg.ui=moreArgs->type==VT_UINT?(arg.ui&~moreArgs->bedt.mask)|(moreArgs->bedt.bits&moreArgs->bedt.mask):
+					(arg.ui&~(uint32_t)moreArgs->bedt64.mask)|uint32_t(moreArgs->bedt64.bits&moreArgs->bedt64.mask);
+				break;
+			case VT_INT64: case VT_UINT64:
+				arg.ui64=moreArgs->type==VT_UINT64?(arg.ui64&~moreArgs->bedt64.mask)|(moreArgs->bedt64.bits&moreArgs->bedt64.mask):
+					(arg.ui64&~(uint64_t)moreArgs->bedt.mask)|uint64_t(moreArgs->bedt.bits&moreArgs->bedt.mask);
+				break;
+			}
+		} else {
+			assert(arg.type!=VT_STREAM);
+			sht=unsigned(moreArgs->edit.shift); len=moreArgs->edit.length;		// ???
+			if ((arg2=strOpConv(arg,moreArgs,val,ctx))==NULL) return RC_TYPE;
+			if (sht==uint32_t(~0u)) sht=arg.length; rc=RC_OK;
+			if (sht+len>arg.length) rc=RC_INVPARAM;
+			else if (arg2->length<=len && (arg.flags&HEAP_TYPE_MASK)>=SES_HEAP) {
+				p=(byte*)arg.bstr; if (arg2->length>0) memcpy(p+sht,arg2->bstr,arg2->length);
+				if (len>arg2->length && sht+len<arg.length) memmove(p+sht+arg2->length,arg.bstr+sht+len,arg.length-sht-len);
+				arg.length-=len-arg2->length;
+			} else if ((p=(byte*)ctx.ma->malloc(arg.length-len+arg2->length+(arg.type!=VT_BSTR?1:0)))!=NULL) {
+				if (sht>0) memcpy(p,arg.bstr,sht); if (arg2->length>0) memcpy(p+sht,arg2->bstr,arg2->length);
+				if (sht+len<arg.length) memcpy(p+sht+arg2->length,arg.bstr+sht+len,arg.length-sht-len);
+				if ((arg.flags&HEAP_TYPE_MASK)>=SES_HEAP) free((byte*)arg.bstr,(HEAP_TYPE)(arg.flags&HEAP_TYPE_MASK));
+				arg.length+=arg2->length-len; setHT(arg,ctx.ma->getAType()); arg.bstr=p;
+			} else rc=RC_NORESOURCES;
+			if (rc==RC_OK && arg.type!=VT_BSTR) p[arg.length]=0;
+			if (arg2==&val) freeV(val);
 		}
-		if (rc==RC_OK && arg.type!=VT_BSTR) p[arg.length]=0;
-		if (arg2==&val) freeV(val);
 		return rc;
 	case OP_EXTRACT:
 		if (nargs==2) {
@@ -1216,17 +1215,11 @@ RC Expr::calc(ExprOp op,Value& arg,const Value *moreArgs,int nargs,unsigned flag
 			arg.set(dtPart);
 		}
 		break;
-	case OP_CALL:
-		if (arg.type==VT_STRING) {
-			// try to compile
-		}
-		{ValueV vv(moreArgs,nargs-1); if ((rc=ctx.ses->getStore()->queryMgr->eval(&arg,EvalCtx(ctx.ses,ctx.env,ctx.nEnv,ctx.vars,ctx.nVars,&vv,1,&ctx,ctx.ma,ctx.ect),&arg))!=RC_OK) return rc;}
-		break;
 	case OP_MEMBERSHIP:
 		if (arg.type==VT_REFID) {
 			ClassResult clr(ctx.ses,ctx.ses->getStore()); PINx pex(ctx.ses,arg.id); 
 			if ((rc=pex.getSes()->getStore()->queryMgr->getBody(pex))!=RC_OK) return rc;
-			if ((rc=ctx.ses->getStore()->classMgr->classify(&pex,clr))!=RC_OK) return rc;
+			if ((rc=ctx.ses->getStore()->classMgr->classify(&pex,clr,ctx.ses))!=RC_OK) return rc;
 			if (clr.nClasses==0) arg.setError();
 			else if ((args=new(ctx.ma) Value[clr.nClasses])==NULL) return RC_NORESOURCES;
 			else {
@@ -1237,7 +1230,7 @@ RC Expr::calc(ExprOp op,Value& arg,const Value *moreArgs,int nargs,unsigned flag
 		else if ((((PIN*)arg.pin)->getMode()&PIN_HIDDEN)!=0) freeV(arg);
 		else {
 			ClassResult clr(ctx.ses,ctx.ses->getStore());
-			if ((rc=ctx.ses->getStore()->classMgr->classify((PIN*)arg.pin,clr))!=RC_OK) return rc;
+			if ((rc=ctx.ses->getStore()->classMgr->classify((PIN*)arg.pin,clr,ctx.ses))!=RC_OK) return rc;
 			freeV(arg);
 			if (clr.nClasses!=0) {
 				if ((args=new(ctx.ma) Value[clr.nClasses])==NULL) return RC_NORESOURCES;
@@ -1255,16 +1248,15 @@ RC Expr::calc(ExprOp op,Value& arg,const Value *moreArgs,int nargs,unsigned flag
 		rc=srv->invoke(&arg,nargs,&arg); srv->destroy(); if (rc!=RC_OK) return rc;
 		break;
 	default:
-		return RC_INTERNAL;
+		return RC_INVOP;
 	}
 	return RC_OK;
 }
 
 RC AggAcc::next(const Value& v)
 {
-	RC rc=RC_OK; assert(!v.isEmpty());
-	if (op==OP_COUNT) count++;
-	else if (op==OP_HISTOGRAM) {
+	RC rc=RC_OK; assert(!v.isEmpty()); count++;
+	if (op==OP_HISTOGRAM) {
 		assert(hist!=NULL); Value *pv=NULL;
 		switch (hist->add(v,&pv)) {
 		case SLO_ERROR: rc=RC_NORESOURCES; break;
@@ -1274,20 +1266,20 @@ RC AggAcc::next(const Value& v)
 			break;
 		default: assert(0);
 		}
-		count++;
 	} else if (sum.isEmpty()) {
-		*(Value*)&sum=v; setHT(sum);
+		*(Value*)&sum=v; setHT(sum); count=1;
 		if (op==OP_SUM) {
-			if (isNumeric((ValueType)sum.type) || sum.type==VT_INTERVAL || Expr::numOpConv(sum,NO_INT|NO_FLT|NO_ITV1,*ctx)) count=1; else sum.type=VT_ERROR;
+			if (!isNumeric((ValueType)sum.type) && sum.type!=VT_INTERVAL && !Expr::numOpConv(sum,NO_INT|NO_FLT|NO_ITV1,*ctx)) sum.type=VT_ERROR;
 		} else if (op>=OP_AVG) {
-			if (op==OP_AVG && sum.type==VT_DATETIME || sum.type==VT_DOUBLE || (rc=convV(sum,sum,VT_DOUBLE,ma))==RC_OK) count=1; else sum.type=VT_ERROR;
+			if ((op!=OP_AVG || sum.type!=VT_DATETIME) && sum.type!=VT_DOUBLE && (rc=convV(sum,sum,VT_DOUBLE,ma))!=RC_OK) sum.type=VT_ERROR;
 		} else if (op==OP_CONCAT && !isString((ValueType)v.type)) {
-			if ((rc=convV(v,sum,VT_STRING,ma))==RC_OK) count=1; else sum.type=VT_ERROR;
+			if ((rc=convV(v,sum,VT_STRING,ma))!=RC_OK) sum.type=VT_ERROR;
 		} else {
-			if ((rc=copyV(v,sum,ma))==RC_OK) count=1; else sum.type=VT_ERROR;
+			if ((rc=copyV(v,sum,ma))==RC_OK) eid=v.eid==STORE_COLLECTION_ID?0:v.eid; else sum.type=VT_ERROR;
 		}
-	} else if (op==OP_MIN || op==OP_MAX) {
-		int c=cmp(sum,v,flags,ma); if (c==-1 && op==OP_MAX || c==1 && op==OP_MIN) {freeV(sum); rc=copyV(v,sum,ma);}
+	} else if (op==OP_MIN || op==OP_MAX || op==OP_ARGMIN || op==OP_ARGMAX) {
+		int c=cmp(sum,v,flags,ma);
+		if (c==-1 && (op==OP_MAX||op==OP_ARGMAX) || c==1 && (op==OP_MIN||op==OP_ARGMIN)) {freeV(sum); rc=copyV(v,sum,ma); eid=v.eid==STORE_COLLECTION_ID?(ElementID)count-1:v.eid;}
 	} else if (op==OP_CONCAT) {
 		assert(isString((ValueType)sum.type)); const Value *pv=&v; Value w;
 		if ((v.type==sum.type || (pv=&w,rc=convV(v,w,sum.type,ma))==RC_OK) && pv->length!=0) {
@@ -1296,9 +1288,9 @@ RC AggAcc::next(const Value& v)
 			else {memcpy((byte*)sum.bstr+sum.length,pv->bstr,pv->length); sum.length+=pv->length; if (sum.type!=VT_BSTR) ((char*)sum.str)[sum.length]='\0';}
 		}
 		if (pv==&w) freeV(w);
-	} else {
+	} else if (op!=OP_COUNT) {
 		const Value *pv=&v; Value val;
-		if (op!=OP_COUNT) try {
+		try {
 			if (pv->type!=sum.type && (pv=Expr::numOpConv(sum,pv,val,NO_INT|NO_FLT|NO_ITV1|NO_DAT1|NO_DAT2|NO_ITV2,*ctx))==NULL) rc=RC_TYPE;
 			else {
 				switch (sum.type) {
@@ -1310,7 +1302,6 @@ RC AggAcc::next(const Value& v)
 				case VT_FLOAT: sum.f+=pv->f; assert(op==OP_SUM); break;
 				case VT_DOUBLE:	sum.d+=pv->d; if (op>=OP_VAR_POP) sum2+=pv->d*pv->d; break;
 				}
-				count++;
 			}
 		} catch (...) {rc=RC_TOOBIG;}
 	}
@@ -1337,7 +1328,10 @@ RC AggAcc::result(Value& res,bool fRestore)
 			unsigned flags=hist->getExtra(); hist->~Histogram(); ma->free(hist);		// cleanup!!!
 			hist=fRestore?new(ma) Histogram(*ma,flags):NULL;}
 			break;
-		case OP_MIN: case OP_MAX: case OP_SUM: case OP_CONCAT: res=sum; sum.type=VT_ERROR; setHT(sum); break;
+		case OP_MIN: case OP_MAX: case OP_SUM: case OP_CONCAT:
+			res=sum; sum.type=VT_ERROR; setHT(sum); break;
+		case OP_ARGMIN: case OP_ARGMAX:
+			res.set((unsigned)eid); freeV(sum); break;
 		case OP_AVG:
 			if (sum.type==VT_DATETIME) res.setDateTime(sum.ui64/count);
 			else {assert(sum.type==VT_DOUBLE); res.set(sum.d/(double)count);}
@@ -1365,17 +1359,20 @@ RC AggAcc::process(const Value &v)
 	unsigned i; const Value *cv; RC rc;
 	switch (v.type) {
 	case VT_ERROR: if (op==OP_COUNT) count++; break;
-	case VT_ARRAY:
-		if (op==OP_COUNT && (flags&CND_DISTINCT)==0) count+=v.length;
-		else for (i=0; i<v.length; i++) if ((flags&CND_DISTINCT)!=0) {
-			//...
-		} else if ((rc=next(v.varray[i]))!=RC_OK) return rc;
-		break;
 	case VT_COLLECTION:
-		if (op==OP_COUNT && (flags&CND_DISTINCT)==0) count+=v.nav->count();
-		else for (cv=v.nav->navigate(GO_FIRST); cv!=NULL; cv=v.nav->navigate(GO_NEXT)) if ((flags&CND_DISTINCT)!=0) {
-			//...
-		} else if ((rc=next(*cv))!=RC_OK) return rc;
+		if (op==OP_COUNT && (flags&CND_DISTINCT)==0) count+=v.count();
+		else if (!v.isNav()) {
+			for (i=0; i<v.length; i++) if ((flags&CND_DISTINCT)!=0) {
+				//...
+			} else if ((rc=next(v.varray[i]))!=RC_OK) return rc;
+		} else {
+			for (cv=v.nav->navigate(GO_FIRST); cv!=NULL; cv=v.nav->navigate(GO_NEXT)) if ((flags&CND_DISTINCT)!=0) {
+				//...
+			} else if ((rc=next(*cv))!=RC_OK) return rc;
+		}
+		break;
+	case VT_ARRAY:
+		//????
 		break;
 	case VT_STMT:
 		if (op==OP_COUNT && (flags&CND_DISTINCT)==0) {uint64_t cnt=0ULL; if (v.stmt->count(cnt)==RC_OK) count+=cnt;}
@@ -1393,6 +1390,7 @@ RC AggAcc::process(const Value &v)
 		}
 		break;
 	default:
+		v.eid=STORE_COLLECTION_ID;
 		if ((flags&CND_DISTINCT)!=0) {
 			//...
 		} else if (op==OP_COUNT) count++; else if ((rc=next(v))!=RC_OK) return rc;
@@ -1441,6 +1439,10 @@ RC Expr::getI(const Value& v,long& num,const EvalCtx& ctx)
 			if (pv==&val) return RC_INVPARAM;
 			if ((rc=derefValue(*pv,val,ctx.ses))!=RC_OK) return rc;
 			pv=&val; continue;
+		case VT_COLLECTION: 
+			if (pv->length!=1) return RC_TYPE;
+			if (fFree) decoll(val); else pv=pv->varray;
+			continue;
 		}
 		if (fFree) freeV(val);
 		return RC_OK;
@@ -1449,8 +1451,15 @@ RC Expr::getI(const Value& v,long& num,const EvalCtx& ctx)
 
 const Value *Expr::strOpConv(Value& arg,const Value *arg2,Value& buf,const EvalCtx& ctx)
 {
-	while (isRef((ValueType)arg.type)) if (derefValue(arg,arg,ctx.ses)!=RC_OK) return NULL;
-	for (;isRef((ValueType)arg2->type);arg2=&buf) if (derefValue(*arg2,buf,ctx.ses)!=RC_OK) return NULL;
+	for (;;) {
+		if (isRef((ValueType)arg.type)) {if (derefValue(arg,arg,ctx.ses)!=RC_OK) return NULL;}
+		else if (arg.type==VT_COLLECTION && arg.length==1) decoll(arg); else break;
+	}
+	for (;;arg2=&buf) {
+		if (isRef((ValueType)arg2->type)) {if (derefValue(*arg2,buf,ctx.ses)!=RC_OK) return NULL;}
+		else if (arg2->type!=VT_COLLECTION || arg2->length!=1) break;
+		else {if (arg2!=&buf) {buf=*arg2; setHT(buf);} decoll(buf);}
+	}
 	ValueType vt1=(ValueType)arg.type,vt2=(ValueType)arg2->type;
 	if (isString(vt1)) {
 		if (isString(vt2)) {
@@ -1470,12 +1479,19 @@ const Value *Expr::strOpConv(Value& arg,const Value *arg2,Value& buf,const EvalC
 
 const Value *Expr::numOpConv(Value& arg,const Value *arg2,Value& buf,unsigned flg,const EvalCtx& ctx)
 {
-	while (isRef((ValueType)arg.type)) if (derefValue(arg,arg,ctx.ses)!=RC_OK) return NULL;
+	for (;;) {
+		if (isRef((ValueType)arg.type)) {if (derefValue(arg,arg,ctx.ses)!=RC_OK) return NULL;}
+		else if (arg.type==VT_COLLECTION && arg.length==1) decoll(arg); else break;
+	}
 	if (arg.type==VT_STRING) {
 		if (Session::strToNum(arg.str,arg.length,buf)!=RC_OK) return NULL;
 		freeV(arg); arg=buf;
 	}
-	for (;isRef((ValueType)arg2->type);arg2=&buf) if (derefValue(*arg2,buf,ctx.ses)!=RC_OK) return NULL;
+	for (;;arg2=&buf) {
+		if (isRef((ValueType)arg2->type)) {if (derefValue(*arg2,buf,ctx.ses)!=RC_OK) return NULL;}
+		else if (arg2->type!=VT_COLLECTION || arg2->length!=1) break;
+		else {if (arg2!=&buf) {buf=*arg2; setHT(buf);} decoll(buf);}
+	}
 	if (arg2->type==VT_STRING) {
 		const char *p=arg2->str; if (Session::strToNum(p,arg2->length,buf)!=RC_OK) return NULL;
 		if (arg2!=&buf) arg2=&buf; else if ((arg2->flags&HEAP_TYPE_MASK)>=SES_HEAP) free((void*)p,(HEAP_TYPE)(arg2->flags&HEAP_TYPE_MASK));
@@ -1556,5 +1572,7 @@ bool Expr::numOpConv(Value& arg,unsigned flg,const EvalCtx& ctx)
 	case VT_REF: case VT_REFID: case VT_REFPROP: case VT_REFELT: case VT_REFIDPROP: case VT_REFIDELT:
 		if (derefValue(arg,arg,ctx.ses)==RC_OK) continue;
 		return false;
+	case VT_COLLECTION:
+		if (arg.length!=1) return false; decoll(arg); continue;
 	}
 }

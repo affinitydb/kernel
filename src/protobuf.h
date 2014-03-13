@@ -1,6 +1,6 @@
 /**************************************************************************************
 
-Copyright © 2004-2013 GoPivotal, Inc. All rights reserved.
+Copyright © 2004-2014 GoPivotal, Inc. All rights reserved.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -97,7 +97,7 @@ protected:
 		};
 	}	os,stateStack[STACK_DEPTH];
 	uint32_t	sidx;
-	SubAlloc	cache;
+	StackAlloc	cache;
 	struct IDCache {
 		MemAlloc *const ma;	
 		uint32_t *ids;
@@ -148,22 +148,6 @@ public:
 	// compound, status
 };
 
-class ProtoBufStreamOut : public IStreamOut 
-{
-	Session		*const	ses;
-	EncodePB			enc;
-	Cursor				*ic;
-	ValueC				res;
-	Result				result;
-	bool				fRes;
-public:
-	ProtoBufStreamOut(Session *s,Cursor *pr=NULL,unsigned md=0) : ses(s),enc(s,md),ic(pr),fRes(false)
-		{result.rc=RC_OK; result.cnt=0; result.op=MODOP_QUERY;}
-	~ProtoBufStreamOut() {if (ic!=NULL) ic->destroy();}
-	RC next(unsigned char *buf,size_t& lbuf);
-	void destroy() {try {this->~ProtoBufStreamOut(); ses->free(this);} catch (...) {}}
-};
-
 enum IN_STATE {ST_TAG, ST_LEN, ST_READ, ST_RET};
 
 struct URIIDMapElt
@@ -186,11 +170,23 @@ struct IdentityIDMapElt
 
 typedef HashTab<IdentityIDMapElt,IdentityID,&IdentityIDMapElt::list> IdentityIDMap;
 
-struct OInfo
+struct PINIn
 {
+	PID			id;
+	uint32_t	mode;
+	Value		*properties;
+	uint32_t	nProperties;
 	uint64_t	cid;
 	bool		fCid;
 	RTTYPE		rtt;
+	uint8_t		op;
+};
+
+struct ValueIn
+{
+	Value		v;
+	uint64_t	cid;
+	bool		fCid;
 };
 
 struct StmtIn
@@ -205,36 +201,43 @@ struct StmtIn
 	uint32_t	limit;
 	uint32_t	offset;
 	uint32_t	mode;
+	uint64_t	cid;
+	bool		fCid;
+	RTTYPE		rtt;
 	bool		fAbort;
-	StmtIn() : stmt(NULL),str(NULL),lstr(0),uids(NULL),nUids(0),params(NULL),nParams(0),limit(0),offset(0),mode(0),fAbort(false) {}
 };
 
 struct IState
 {
 	SType		type;
-	uint8_t		op;
-	OInfo		oi;
 	uint32_t	tag;
 	uint32_t	idx;
 	uint32_t	fieldMask;
 	uint64_t	msgEnd;
 	union {
 		void	*obj;
-		PIN		*pin;
 		Value	*pv;
 		PID		*id;
-		StmtIn	*stmt;
 	};
 };
 
 class DecodePB
 {
 protected:
-	Session 		*const	ses;
-	StreamInType	const	stype;
+	StoreCtx 		*const	ctx;
 	MemAlloc		*const	ma;
+	StreamInType	const	stype;
 
 	IN_STATE		inState;
+	union {
+		PINIn		pin;
+		StmtIn		stmt;
+		ValueIn		val;
+		uint64_t	u64;
+	}				u;
+	size_t			ileft;
+
+private:
 	IState			is;
 	IState			stateStack[STACK_DEPTH];
 	uint32_t		sidx;
@@ -255,69 +258,82 @@ protected:
 	uint8_t			defType;
 	const	byte	*savedIn;
 	const	byte	*savedBuf;
-	size_t			ileft;
 
 	byte			*mapBuf;
 	size_t			lMapBuf;
 	uint64_t		lSave;
 	IdentityID		owner;
 	uint16_t		storeID;
-	SubAlloc		dataAlloc;
-	SubAlloc		mapAlloc;
-	URIIDMap		*uriMap;
-	IdentityIDMap	*identMap;
+	URIIDMap		uriMap;
+	IdentityIDMap	identMap;
 private:
 	__forceinline void advance() {inState=ST_TAG; val=0; vsht=0;}
 	__forceinline void set_skip() {if (inState==ST_LEN) {sbuf=NULL; left=lField;} else advance();}
 	__forceinline void push_state(SType ot,void *obj,size_t sht) {
-		assert(sidx<STACK_DEPTH); stateStack[sidx++]=is; is.type=ot; is.op=OP_SET; is.oi.fCid=false; is.oi.rtt=RTT_DEFAULT;
-		is.tag=~0u; is.idx=0; is.msgEnd=offset+sht+lField; is.fieldMask=0; is.obj=obj; advance();
+		assert(sidx<STACK_DEPTH); stateStack[sidx++]=is; is.type=ot; is.tag=~0u; is.idx=0; is.msgEnd=offset+sht+lField; is.fieldMask=0; is.obj=obj; advance();
 	}
-	__forceinline void save_state(const byte *in,const byte *buf,size_t lft) {savedIn=in; savedBuf=buf; ileft=lft; inState=ST_RET;}
+	__forceinline void save_state(const byte *in,const byte *buf,size_t lft) {savedIn=in; savedBuf=lft!=0?buf:NULL; ileft=lft; inState=ST_RET;}
 	__forceinline void restore_state(const unsigned char *&in) {if (in==savedBuf) in=savedIn; inState=ST_TAG;}
 	__forceinline Value *initV(Value *v) const {v->setEmpty(); return v;}
 	uint32_t map(uint32_t id,bool fProp=true);
 	RC addToMap(bool fProp);
 public:
-	DecodePB(Session *s,MemAlloc *m,StreamInType st=SITY_NORMAL) : ses(s),stype(st),ma(m==NULL?s:m),inState(ST_TAG),sidx(0),lField(0),val(0),vsht(0),offset(0),
-		left(0),sbuf(NULL),defType(VT_ANY),savedIn(NULL),savedBuf(NULL),ileft(0),mapBuf(NULL),lMapBuf(0),lSave(0),owner(STORE_OWNER),storeID(0),dataAlloc(ma),mapAlloc(ma) {
-		is.type=ST_PBSTREAM; is.op=MODOP_INSERT; is.oi.cid=0; is.oi.fCid=false; is.oi.rtt=RTT_DEFAULT; is.tag=~0u; is.idx=0; is.msgEnd=~0ULL; is.fieldMask=0; is.obj=NULL;
-		uriMap=new(&mapAlloc) URIIDMap(64,&mapAlloc,false); identMap=new(&mapAlloc) IdentityIDMap(32,&mapAlloc,false);
+	DecodePB(StoreCtx *ct,MemAlloc *m,StreamInType st=SITY_NORMAL) : ctx(ct),ma(m),stype(st),inState(ST_TAG),sidx(0),lField(0),val(0),vsht(0),offset(0),
+		left(0),sbuf(NULL),defType(VT_ANY),savedIn(NULL),savedBuf(NULL),ileft(0),mapBuf(NULL),lMapBuf(0),lSave(0),owner(STORE_OWNER),storeID(0),uriMap(64,m,false),identMap(32,m,false) {
+		is.type=ST_PBSTREAM; is.tag=~0u; is.idx=0; is.msgEnd=~0ULL; is.fieldMask=0; is.obj=NULL;
 	}
-	const IState& getState() const {return is;}
-	uint64_t getResVal() const {return val;}
-	RC decode(const unsigned char *in,size_t lbuf);
+	SType getSType() const {return is.type;}
+	RC decode(const unsigned char *in,size_t lbuf,IMemAlloc *ra);
 	void cleanup();
 };
 
-class ProcessStream : public IStreamIn, public DecodePB
+class ProtoBufStreamOut : public IStreamOut 
 {
+	Session		*const	ses;
+	EncodePB			enc;
+	Cursor				*ic;
+	ValueC				res;
+	Result				result;
+	bool				fRes;
+public:
+	ProtoBufStreamOut(Session *s,Cursor *pr=NULL,unsigned md=0) : ses(s),enc(s,md),ic(pr),fRes(false)
+		{result.rc=RC_OK; result.cnt=0; result.op=MODOP_QUERY;}
+	~ProtoBufStreamOut() {if (ic!=NULL) ic->destroy();}
+	RC next(unsigned char *buf,size_t& lbuf);
+	void destroy() {try {this->~ProtoBufStreamOut(); ses->free(this);} catch (...) {}}
+};
+
+class ProcessStream : public StackAlloc, public IStreamIn, public DecodePB
+{
+	struct OInfo {
+		uint64_t	cid;
+		bool		fCid;
+		RTTYPE		rtt;
+	};
 protected:
-	IStreamIn	*const	out;
+	Session		*const	ses;
+	IStreamIn	*const	outStr;
 	const	size_t		lobuf;
 	EncodePB			enc;
 	byte				*obuf;
 	size_t				obleft;
-	PIN					**pins;
-	OInfo				*pinoi;
-	uint32_t			nPins;
-	uint32_t			xPins;
-	uint32_t			limit;
+	BatchInsert			pins;
+	DynArray<OInfo,100>	oi;
 	unsigned			txLevel;
 private:
-	RC resultOut(const Result& res);
-	RC pinOut(PIN *pin,const OInfo& oi);
-	RC valueOut(const Value *v,const OInfo& oi);
+	RC resultOut(const Result& res,uint64_t cid,bool fCid);
+	RC pinOut(PIN *pin,uint64_t cid,bool fCid,RTTYPE rtt);
+	RC valueOut(const Value *v,uint64_t cid,bool fCid);
 	RC commitPINs();
 public:
-	ProcessStream(Session *s,IStreamIn *o=NULL,size_t lo=0,StreamInType st=SITY_NORMAL) : DecodePB(s,s,st),out(o),enc(s,0),lobuf(lo==0?DEFAULT_OBUF_SIZE:lo),
-						obuf(NULL),obleft(0),pins(NULL),pinoi(NULL),nPins(0),xPins(0),limit(DEFAULT_PIN_BATCH_SIZE),txLevel(0) {
-		if (o!=NULL && (obuf=(byte*)s->malloc(lo))==NULL) throw RC_NORESOURCES; obleft=lobuf;
+	ProcessStream(Session *s,IStreamIn *o=NULL,size_t lo=0,StreamInType st=SITY_NORMAL) : StackAlloc(s),DecodePB(s->getStore(),this,st),
+				ses(s),outStr(o),enc(s,0),lobuf(lo==0?DEFAULT_OBUF_SIZE:lo),obuf(NULL),obleft(0),pins(s),oi((MemAlloc*)s),txLevel(0)
+	{
+		if (o!=NULL && (obuf=(byte*)StackAlloc::malloc(lobuf))==NULL) throw RC_NORESOURCES; obleft=lobuf;
 	}
-	virtual ~ProcessStream() {if (pins!=NULL) {ses->free(pins); ses->free(pinoi);} if (obuf!=NULL) ses->free(obuf);}
-	RC next(const unsigned char *in,size_t lbuf);
-	void operator delete(void *p) {if (p!=NULL) ((ProcessStream*)p)->ses->free(p);}
-	void destroy() {try {delete this;} catch (...) {}}
+	void	operator delete(void *p) {if (p!=NULL) ((ProcessStream*)p)->ses->free(p);}
+	RC		next(const unsigned char *in,size_t lbuf);
+	void	destroy() {try {delete this;} catch (...) {}}
 };
 	
 class ServiceEncodePB : public IService::Processor, public EncodePB
@@ -325,15 +341,15 @@ class ServiceEncodePB : public IService::Processor, public EncodePB
 public:
 	ServiceEncodePB(Session *s,unsigned md) : EncodePB(s,md) {}
 	RC		invoke(IServiceCtx *ctx,const Value& inp,Value& out,unsigned& mode);
-	void	cleanup(IServiceCtx *ctx,bool fDestroy);
+	void	cleanup(IServiceCtx *ctx,bool fDestroying);
 };
 	
 class ServiceDecodePB : public IService::Processor, public DecodePB
 {
 public:
-	ServiceDecodePB(Session *s,MemAlloc *m,StreamInType st=SITY_NORMAL) : DecodePB(s,m,st) {}
+	ServiceDecodePB(StoreCtx *ct,MemAlloc *m,StreamInType st=SITY_NORMAL) : DecodePB(ct,m,st) {}
 	RC		invoke(IServiceCtx *ctx,const Value& inp,Value& out,unsigned& mode);
-	void	cleanup(IServiceCtx *ctx,bool fDestroy);
+	void	cleanup(IServiceCtx *ctx,bool fDestroying);
 };
 
 class ProtobufService : public IService

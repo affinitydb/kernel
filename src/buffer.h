@@ -1,6 +1,6 @@
 /**************************************************************************************
 
-Copyright © 2004-2013 GoPivotal, Inc. All rights reserved.
+Copyright © 2004-2014 GoPivotal, Inc. All rights reserved.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -72,7 +72,7 @@ class PBlock
 	friend	class	BufMgr;
 	PageID			pageID;
 	volatile long	state;
-	byte * const	frame;
+	byte	* const	frame;
 	PageMgr*		pageMgr;
 	LSN				redoLSN;
 	struct myaio	*aio;
@@ -100,10 +100,11 @@ public:
 	byte			*getPageBuf() const {return frame;}
 	PageMgr			*getPageMgr() const {return pageMgr;}
 	bool			isFirstPageOp() const {return (state&(BLOCK_NEW_PAGE|BLOCK_REDO_SET))==BLOCK_NEW_PAGE;}
+	void			resetNewPage() {resetStateBits(BLOCK_NEW_PAGE);}
 	const LSN&		getRedoLSN() const {return redoLSN;}
 	void			setRedo(LSN lsn);
-	void			setDependency(PBlock *dp) {assert(dp!=NULL && dp->isXLocked() && dp->dependent==NULL && isXLocked()); dp->dependent=this; ++dependCnt;}
-	void			removeDependency(PBlock *dp) {assert(dp!=NULL && dp->isXLocked() && isXLocked()); if (dp->dependent!=NULL) {assert(dp->dependent==this); --dependCnt; dp->dependent=NULL;}}
+	void			setDependency(PBlock *dp);
+	void			removeDependency(PBlock *dp);
 	PBlock			*getDependent() const {return dependent;}
 	bool			isDependent() const {return dependCnt!=0;}
 	bool			isWritable() const {return QE!=NULL && QE->isXLocked() && (state&(BLOCK_IO_READ|BLOCK_IO_WRITE|BLOCK_ASYNC_IO))==0;}
@@ -139,7 +140,7 @@ public:
 class PBlockP
 {
 	PBlock			*pb;
-	unsigned			flags;
+	unsigned		flags;
 public:
 	PBlockP(PBlock *p,unsigned flg) : pb(p),flags(flg) {}
 	PBlockP(PBlockP& pbp) : pb(pbp.pb),flags(pbp.flags) {pbp.flags|=PGCTL_NOREL;}
@@ -169,7 +170,9 @@ class BufMgr : public BufQMgr
 {
 	class	StoreCtx *const	ctx;
 	const	size_t			lPage;
-	const	unsigned			nStoreBuffers;
+	const	unsigned		nStoreBuffers;
+	const	bool			fInMem;
+	const	bool			fRT;
 	RWLock					pageQLock;
 	HChain<PBlock>			pageList;
 	RWLock					flushQLock;

@@ -1,6 +1,6 @@
 /**************************************************************************************
 
-Copyright © 2004-2013 GoPivotal, Inc. All rights reserved.
+Copyright © 2004-2014 GoPivotal, Inc. All rights reserved.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -36,20 +36,10 @@ const unsigned LockMgr::lockConflictMatrix[LOCK_ALL] = {
 	1<<LOCK_IS|1<<LOCK_IX|1<<LOCK_SHARED|1<<LOCK_SIX|1<<LOCK_UPDATE|1<<LOCK_EXCLUSIVE	//	EXCLUSIVE
 };
 
-#if 0
-LockStoreHdr LockMgr::lockStoreHdr;
-
-#ifdef WIN32
-static DWORD WINAPI _lockDaemon(void *param) {((LockStoreHdr*)param)->lockDaemon(); return 0;}
-#else
-static void *_lockDaemon(void *param) {((LockStoreHdr*)param)->lockDaemon(); return NULL;}
-#endif
-#endif
-
 LockMgr::LockMgr(StoreCtx *ct) : ctx(ct),nFreeBlocks(0),pageVTab(VB_HASH_SIZE,(MemAlloc*)ct),topmost(NULL),oldSes(NULL),oldTimestamp(0)
 {
 	InitializeSListHead(&freeHeaders); InitializeSListHead(&freeGranted);
-	RC rc=ct->tqMgr->add(new(ct) DLD(ct)); if (rc!=RC_OK) throw rc;
+	if ((ct->mode&STARTUP_RT)==0) {RC rc=ct->tqMgr->add(new(ct) DLD(ct)); if (rc!=RC_OK) throw rc;}
 }
 
 template<class T> inline T* LockMgr::alloc(SLIST_HEADER& sHdr)
@@ -72,7 +62,7 @@ RC LockMgr::lock(LockType lt,PINx& pe,unsigned flags)
 {
 	RC rc=RC_OK; assert(lt<LOCK_ALL);
 	Session *ses=pe.getSes(); if (ses==NULL) return RC_NOSESSION;
-	if (!ses->inWriteTx() || (ses->getStore()->mode&STARTUP_SINGLE_SESSION)!=0) return RC_OK;
+	if (!ses->inWriteTx() || (ses->getStore()->mode&STARTUP_RT)!=0) return RC_OK;
 	if (pe.tv==NULL && (rc=getTVers(pe,lt==LOCK_SHARED?TVO_READ:TVO_UPD))!=RC_OK) return rc==RC_NOTFOUND?RC_OK:rc;
 	bool fLocked=false; GrantedLock *gl=NULL,*og=NULL; if (lt>=LOCK_UPDATE) ses->lockClass(); assert(pe.tv!=NULL);
 	LockHdr *lh=pe.tv->hdr;
@@ -201,7 +191,7 @@ void PageV::release()
 RC LockMgr::getTVers(PINx& pe,TVOp tvo)
 {
 	assert(tvo==TVO_READ || pe.pb.isNull() || pe.pb->isXLocked() || pe.pb->isULocked());
-	if (pe.tv==NULL) {
+	if (pe.tv==NULL && (ctx->mode&STARTUP_RT)==0) {
 		Session *ses=pe.getSes(); if (ses==NULL) return RC_NOSESSION;
 		PageV *pv=NULL; PageID pageID=INVALID_PAGEID;
 		if (!pe.pb.isNull()) {pageID=pe.pb->getPageID(); pv=(PageV*)pe.pb->getVBlock();}

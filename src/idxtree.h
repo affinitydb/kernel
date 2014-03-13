@@ -1,6 +1,6 @@
 /**************************************************************************************
 
-Copyright © 2004-2013 GoPivotal, Inc. All rights reserved.
+Copyright © 2004-2014 GoPivotal, Inc. All rights reserved.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -112,10 +112,8 @@ struct SearchKey
  * index page format descriptor constants
  */
 #define	KT_VARKEY		0x0FFF				/**< variable length key */
-#define	KT_VARDATA		0x8000				/**< variable length data */
-#define	KT_MULTIDATA(a)	((a)|0x8000)		/**< multiple data elements corresponding to 1 key */
-#define	KT_VARMULTIDATA	0xFFFF				/**< multiple data elements of variable length */
-#define	KT_VARMDPINREFS	0xFFFE				/**< multiple PIN references corresponding to one key */
+#define	KT_VARDATA		0xFFFF				/**< multiple data elements of variable length */
+#define	KT_PINREFS		0xFFFE				/**< multiple PIN references corresponding to one key */
 
 /**
  * index page format descriptor
@@ -131,16 +129,12 @@ struct IndexFormat
 	bool		isPrefNumKey() const {return (dscr&0x0f)<=KT_INT;}
 	bool		isNumKey() const {return (dscr&0x0f)<=KT_DOUBLE;}
 	bool		isFixedLenKey() const {return (dscr&0x0000FF00)<0x0000FF00;}
-	bool		isVarKeyOnly() const {return (dscr&0xFFFFFFE0)==0xFFE0;}
-	bool		isRefKeyOnly() const {return dscr==(0xFFE0|KT_REF);}
 	bool		isKeyOnly() const {return (dscr&0xFFFF0000)==0;}
+	bool		isRefKeyOnly() const {return dscr==(KT_VARKEY<<4|KT_REF);}
 	ushort		keyLength() const {return ushort((dscr&0x0000FFF0)>>4);}
-	bool		isFixedLenData() const {return (dscr&0x80000000)==0;}
-	bool		isUnique() const {return dscr<=0x8000FFFF;}
-	bool		isVarMultiData() const {return dscr>=0xFFF00000;}
-	bool		isPinRef() const {return (dscr>>16)==KT_VARMDPINREFS;}
-	ushort		dataLength() const {return ushort(dscr>>16&0x7FFF);}
-	ushort		makeSubKey() const {return ushort(dscr>>16&0x0FFF);}
+	bool		isFixedLenData() const {return dscr<0xFFFE0000;}
+	bool		isPinRef() const {return (dscr>>16)==KT_PINREFS;}
+	ushort		dataLength() const {return ushort(dscr>>16);}
 	void		makeInternal() {dscr=(isSeq()?sizeof(uint64_t)<<4|KT_UINT:dscr&0x0000FFFF)|sizeof(PageID)<<16;}
 	bool		operator==(const IndexFormat& rhs) const {return dscr==rhs.dscr;}
 	bool		operator!=(const IndexFormat& rhs) const {return dscr!=rhs.dscr;}
@@ -226,7 +220,7 @@ struct CheckTreeReport
 class IMultiKey
 {
 public:
-	virtual	RC		nextKey(const SearchKey *&nk,const void *&value,ushort& lValue,bool& fMulti,bool fForceNext=false) = 0;
+	virtual	RC		nextKey(const SearchKey *&nk,const void *&value,ushort& lValue,unsigned& multi,bool fAppend=false) = 0;
 	virtual	void	push_back() = 0;
 };
 
@@ -249,7 +243,6 @@ public:
 	// index tree interface
 	virtual	TreeFactory *getFactory() const = 0;
 	virtual	IndexFormat	indexFormat() const = 0;
-	virtual	unsigned	getMode() const;
 	virtual	PageID		startPage(const SearchKey*,int& level,bool=true,bool=false) = 0;
 	virtual	PageID		prevStartPage(PageID pid) = 0;
 	virtual	RC			addRootPage(const SearchKey& key,PageID& pageID,unsigned level) = 0;
@@ -266,22 +259,24 @@ public:
 	RC					find(const SearchKey& key,void *buf,size_t &size);
 	RC					findByPrefix(const SearchKey& key,uint32_t prefix,byte *buf,byte& lData);
 	RC					countValues(const SearchKey& key,uint64_t& nValues);
+	RC					insert(const SearchKey& key,class SubTreeInit&,Session *ses);
 	RC					insert(IMultiKey& mk);
-	RC					insert(const SearchKey& key,const void *value=NULL,ushort lValue=0,bool fMulti=false);
+	RC					insert(const SearchKey& key,const void *value=NULL,ushort lValue=0,unsigned multi=0,bool fUnique=false);
 	RC					insert(const void *value,ushort lValue,uint32_t& id,PageID& pid);
 	RC					update(const SearchKey& key,const void *oldValue,ushort lOldValue,const void *newValue,ushort lNewValue);
 	RC					edit(const SearchKey& key,const void *newValue,ushort lNewValue,ushort lOld,ushort sht);
-	RC					remove(const SearchKey& key,const void *value=NULL,ushort lValue=0,bool fMulti=false);
+	RC					truncate(const SearchKey& key,uint64_t val,bool fCount=false);
+	RC					remove(const SearchKey& key,const void *value=NULL,ushort lValue=0,unsigned multi=0);
 	TreeScan			*scan(Session *ses,const SearchKey *start,const SearchKey *finish=NULL,unsigned flgs=0,const IndexSeg *sg=NULL,unsigned nSegs=0,IKeyCallback *kc=NULL);
 	static	RC			drop(PageID,StoreCtx*,TreeFreeData* =NULL);
 	static	unsigned	checkTree(StoreCtx*,PageID root,CheckTreeReport& res,CheckTreeReport *sec=NULL);
 	StoreCtx			*getStoreCtx() const {return ctx;}
 protected:
 	StoreCtx			*const ctx;
-	Tree(StoreCtx *ct) : ctx(ct) {}
+	uint16_t			mode;
+	Tree(StoreCtx *ct,uint16_t md=TF_WITHDEL) : ctx(ct),mode(md) {}
 	enum	TreeOp		{TO_READ,TO_INSERT,TO_UPDATE,TO_DELETE,TO_EDIT};		/**< used in recovery */
 	PBlock				*getPage(PageID pid,unsigned stamp,TREE_NODETYPE type);
-	RC					insert(const SearchKey& key,const void *val,ushort lval,bool fMulti,struct TreeCtx& rtr,PageID& pid);
 	friend	class		TreePageMgr;
 	friend	class		TreeScanImpl;
 	friend	class		TreeRQ;
@@ -315,7 +310,7 @@ protected:
 	unsigned		height;
 	unsigned		stamps[TREE_NODETYPE_ALL];
 public:
-	TreeStdRoot(PageID rt,StoreCtx *ct) : Tree(ct),root(rt),height(0) {memset(stamps,0,sizeof(stamps));}
+	TreeStdRoot(PageID rt,StoreCtx *ct,unsigned md=TF_WITHDEL) : Tree(ct,md),root(rt),height(0) {memset(stamps,0,sizeof(stamps));}
 	virtual			~TreeStdRoot();
 	virtual	PageID	startPage(const SearchKey*,int& level,bool,bool=false);
 	virtual	PageID	prevStartPage(PageID pid);
@@ -338,14 +333,12 @@ class TreeGlobalRoot : public TreeStdRoot, public TreeFactory
 	mutable	RWLock		rootLock;
 	const	unsigned	index;
 	const	IndexFormat	ifmt;
-	const	unsigned	mode;
 	RC					setRoot(PageID,PageID);
 public:
 	TreeGlobalRoot(unsigned idx,IndexFormat ifm,StoreCtx *ct,unsigned md=0);
 	virtual				~TreeGlobalRoot();
 	TreeFactory			*getFactory() const;
 	IndexFormat			indexFormat() const;
-	unsigned			getMode() const;
 	PageID				startPage(const SearchKey*,int& level,bool,bool=false);
 	RC					addRootPage(const SearchKey& key,PageID& pageID,unsigned level);
 	RC					removeRootPage(PageID page,PageID leftmost,unsigned level);

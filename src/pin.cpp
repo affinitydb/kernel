@@ -1,6 +1,6 @@
 /**************************************************************************************
 
-Copyright © 2004-2013 GoPivotal, Inc. All rights reserved.
+Copyright © 2004-2014 GoPivotal, Inc. All rights reserved.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -38,16 +38,13 @@ const PID PIN::noPID = {STORE_INVALID_PID,STORE_INVALID_IDENTITY};
 
 PIN::~PIN()
 {
-	if (fNoFree==0) {
-		assert(ses==NULL || ses==Session::getSession());
-		freeV(properties,nProperties,ses!=NULL?(MemAlloc*)ses:(MemAlloc*)StoreCtx::get());
-	}
+	if (fNoFree==0) freeV(properties,nProperties,ma);
 }
 
 RC PIN::refresh(bool fNet)
 {
 	try {
-		if (!addr.defined()) return RC_OK; if (ses==NULL) return RC_NOSESSION; assert(ses==Session::getSession());
+		if (!addr.defined()) return RC_OK; Session *ses=Session::getSession(); if (ses==NULL) return RC_NOSESSION;
 		StoreCtx *ctx=ses->getStore(); if (ctx->inShutdown()) return RC_SHUTDOWN; if (ctx->isServerLocked()) return RC_READONLY;
 		RC rc=RC_OK; TxGuard txg(ses);
 		if (fNet && isRemote(id) && (mode&PIN_REPLICATED)==0) rc=ctx->netMgr->refresh(this,ses);
@@ -63,7 +60,7 @@ RC PIN::refresh(bool fNet)
 RC PIN::setExpiration(uint32_t exp)
 {
 	try {
-		if (ses==NULL) return RC_NOSESSION; if (ses->inReadTx()) return RC_READTX; assert(ses==Session::getSession());
+		Session *ses=Session::getSession(); if (ses==NULL) return RC_NOSESSION; if (ses->inReadTx()) return RC_READTX;
 		StoreCtx *ctx=ses->getStore(); if (ctx->inShutdown()) return RC_SHUTDOWN; if (ctx->isServerLocked()) return RC_READONLY;
 		TxGuard txg(ses); return addr.defined()&&isRemote(id)&&(mode&PIN_REPLICATED)==0?ctx->netMgr->setExpiration(id,exp):RC_INVOP;
 	} catch (RC rc) {return rc;} catch (...) {report(MSG_ERROR,"Exception in IPIN::setExpiration()\n"); return RC_INTERNAL;}
@@ -109,37 +106,49 @@ const Value	*PIN::getValue(PropertyID pid) const
 RC PIN::setReplicated()
 {
 	try {
-		if (ses==NULL) return RC_NOSESSION;
-		mode|=PIN_REPLICATED; if (ses->inReadTx()) return RC_READTX; assert(ses==Session::getSession());
-		StoreCtx *ctx=ses->getStore(); if (ctx->inShutdown()) return RC_SHUTDOWN; if (ctx->isServerLocked()) return RC_READONLY;
-		TxGuard txg(ses); return addr.defined()?ctx->queryMgr->setFlag(EvalCtx(ses,ECT_INSERT),id,&addr,HOH_REPLICATED,false):RC_OK;
+		mode|=PIN_REPLICATED;
+		if (addr.defined()) {
+			Session *ses=Session::getSession(); if (ses==NULL) return RC_NOSESSION; if (ses->inReadTx()) return RC_READTX;
+			StoreCtx *ctx=ses->getStore(); if (ctx->inShutdown()) return RC_SHUTDOWN; if (ctx->isServerLocked()) return RC_READONLY;
+			TxGuard txg(ses); Value w; w.setEdit((uint32_t)PIN_REPLICATED,(uint32_t)PIN_REPLICATED); w.setPropID(PROP_SPEC_SELF);
+			RC rc=ctx->queryMgr->modifyPIN(EvalCtx(ses,ECT_INSERT),id,&w,1,NULL,this,0); if (rc!=RC_OK) return rc;
+		}
+		return RC_OK;
 	} catch (RC rc) {return rc;} catch (...) {report(MSG_ERROR,"Exception in IPIN::setReplicated()\n"); return RC_INTERNAL;}
 }
 
 RC PIN::hide()
 {
 	try {
-		if (ses==NULL) return RC_NOSESSION;
-		mode|=PIN_HIDDEN; if (ses->inReadTx()) return RC_READTX; assert(ses==Session::getSession());
-		StoreCtx *ctx=ses->getStore(); if (ctx->inShutdown()) return RC_SHUTDOWN; if (ctx->isServerLocked()) return RC_READONLY;
-		TxGuard txg(ses); return addr.defined()?ctx->queryMgr->setFlag(EvalCtx(ses,ECT_INSERT),id,&addr,HOH_HIDDEN,false):RC_OK;
+		mode|=PIN_HIDDEN;
+		if (addr.defined()) {
+			Session *ses=Session::getSession(); if (ses==NULL) return RC_NOSESSION; if (ses->inReadTx()) return RC_READTX;
+			StoreCtx *ctx=ses->getStore(); if (ctx->inShutdown()) return RC_SHUTDOWN; if (ctx->isServerLocked()) return RC_READONLY;
+			TxGuard txg(ses); Value w; w.setEdit((uint32_t)PIN_HIDDEN,(uint32_t)PIN_HIDDEN); w.setPropID(PROP_SPEC_SELF);
+			RC rc=ctx->queryMgr->modifyPIN(EvalCtx(ses,ECT_INSERT),id,&w,1,NULL,this,0); if (rc!=RC_OK) return rc;
+		}
+		return RC_OK;
 	} catch (RC rc) {return rc;} catch (...) {report(MSG_ERROR,"Exception in IPIN::setNoIndex()\n"); return RC_INTERNAL;}
 }
 
 RC PIN::setNotification(bool fReset)
 {
 	try {
-		if (ses==NULL) return RC_NOSESSION; if (ses->inReadTx()) return RC_READTX;
-		StoreCtx *ctx=ses->getStore(); if (ctx->inShutdown()) return RC_SHUTDOWN; if (ctx->isServerLocked()) return RC_READONLY;
 		if (fReset) mode&=~PIN_NOTIFY; else mode|=PIN_NOTIFY;
-		TxGuard txg(ses); return addr.defined()?ctx->queryMgr->setFlag(EvalCtx(ses,ECT_INSERT),id,&addr,HOH_NOTIFICATION,fReset):RC_OK;
+		if (addr.defined()) {
+			Session *ses=Session::getSession(); if (ses==NULL) return RC_NOSESSION; if (ses->inReadTx()) return RC_READTX;
+			StoreCtx *ctx=ses->getStore(); if (ctx->inShutdown()) return RC_SHUTDOWN; if (ctx->isServerLocked()) return RC_READONLY;
+			TxGuard txg(ses); Value w; w.setEdit(fReset?0u:(uint32_t)PIN_NOTIFY,(uint32_t)PIN_NOTIFY); w.setPropID(PROP_SPEC_SELF);
+			RC rc=ctx->queryMgr->modifyPIN(EvalCtx(ses,ECT_INSERT),id,&w,1,NULL,this,0); if (rc!=RC_OK) return rc;
+		}
+		return RC_OK;
 	} catch (RC rc) {return rc;} catch (...) {report(MSG_ERROR,"Exception in IPIN::setNotification(...)\n"); return RC_INTERNAL;}
 }
 
 RC PIN::deletePIN()
 {
 	try {
-		if (ses==NULL) return RC_NOSESSION; if (ses->inReadTx()) return RC_READTX; assert(ses==Session::getSession());
+		Session *ses=Session::getSession(); if (ses==NULL) return RC_NOSESSION; if (ses->inReadTx()) return RC_READTX;
 		StoreCtx *ctx=ses->getStore(); if (ctx->inShutdown()) return RC_SHUTDOWN; if (ctx->isServerLocked()) return RC_READONLY;
 		TxGuard txg(ses); if (addr.defined()) {PIN *p=this; RC rc=ctx->queryMgr->deletePINs(EvalCtx(ses),&p,&id,1,MODE_CLASS); if (rc!=RC_OK) return rc;}
 		destroy(); return RC_OK;
@@ -149,17 +158,22 @@ RC PIN::deletePIN()
 RC PIN::undelete()
 {
 	try {
-		if (ses==NULL) return RC_NOSESSION; if (ses->inReadTx()) return RC_READTX; assert(ses==Session::getSession());
-		StoreCtx *ctx=ses->getStore(); if (ctx->inShutdown()) return RC_SHUTDOWN; if (ctx->isServerLocked()) return RC_READONLY;
-		TxGuard txg(ses); return addr.defined()?ctx->queryMgr->setFlag(EvalCtx(ses,ECT_INSERT),id,&addr,HOH_DELETED,true):RC_OK;
+		if (addr.defined()) {
+			Session *ses=Session::getSession(); if (ses==NULL) return RC_NOSESSION; if (ses->inReadTx()) return RC_READTX;
+			StoreCtx *ctx=ses->getStore(); if (ctx->inShutdown()) return RC_SHUTDOWN; if (ctx->isServerLocked()) return RC_READONLY;
+			TxGuard txg(ses); Value w; w.setEdit(0u,(uint32_t)PIN_DELETED); w.setPropID(PROP_SPEC_SELF);
+			RC rc=ctx->queryMgr->modifyPIN(EvalCtx(ses,ECT_INSERT),id,&w,1,NULL,this,MODE_DELETED); if (rc!=RC_OK) return rc;
+		}
+		return RC_OK;
 	} catch (RC rc) {return rc;} catch (...) {report(MSG_ERROR,"Exception in IPIN::undelete()\n"); return RC_INTERNAL;}
 }
 
 RC PIN::getPINValue(Value& res) const 
 {
 	try {
-		if (ses==NULL) return RC_NOSESSION; assert(ses==Session::getSession());
-		if (ses->getStore()->inShutdown()) return RC_SHUTDOWN; TxGuard txg(ses); return getPINValue(res,ses);
+		Session *ses=Session::getSession(); if (ses==NULL) return RC_NOSESSION;
+		StoreCtx *ctx=ses->getStore(); if (ctx->inShutdown()) return RC_SHUTDOWN;
+		TxGuard txg(ses); return getPINValue(res,ses);
 	} catch (RC rc) {return rc;} catch (...) {report(MSG_ERROR,"Exception in IPIN::getPINValue(Value&)\n"); return RC_INTERNAL;}
 }
 
@@ -199,28 +213,30 @@ RC PIN::getPINValue(Value& res,Session *ses) const
 IPIN *PIN::clone(const Value *overwriteValues,unsigned nOverwriteValues,unsigned md)
 {
 	try {
-		if (ses==NULL || ses->getStore()->inShutdown()) return NULL;
 		unsigned pmd=(md&(PIN_NO_REPLICATION|PIN_NOTIFY|PIN_REPLICATED|PIN_HIDDEN|PIN_TRANSIENT))|(mode&(PIN_REPLICATED|PIN_NO_REPLICATION|PIN_HIDDEN));
-		PIN *newp=new(ses) PIN(ses,pmd); if (newp==NULL) return NULL;
-		newp->properties=(Value*)ses->malloc(nProperties*sizeof(Value));
+		PIN *newp=new(ma) PIN(ma,pmd); if (newp==NULL) return NULL;
+		newp->properties=(Value*)ma->malloc(nProperties*sizeof(Value));
 		if (newp->properties==NULL) {delete newp; return NULL;}
 		for (unsigned i=0; (newp->nProperties=i)<nProperties; i++)
-			if (properties[i].type!=VT_COLLECTION||properties[i].nav==NULL) {
-				if (copyV(properties[i],newp->properties[i],ses)!=RC_OK) {delete newp; return NULL;}
+			if (properties[i].type!=VT_COLLECTION||!properties[i].isNav()||properties[i].nav==NULL) {
+				if (copyV(properties[i],newp->properties[i],ma)!=RC_OK) {delete newp; return NULL;}
 			} else {
 				INav *nav=properties[i].nav; unsigned nElts=nav->count(),cnt=0;
-				Value *pv=new(ses) Value[nElts]; if (pv==NULL) {delete newp; return NULL;}
+				Value *pv=new(ma) Value[nElts]; if (pv==NULL) {delete newp; return NULL;}
 				for (const Value *cv=nav->navigate(GO_FIRST); cnt<nElts && cv!=NULL; ++cnt,cv=nav->navigate(GO_NEXT))
-					if (copyV(*cv,pv[cnt],ses)!=RC_OK) {delete newp; return NULL;} 
+					if (copyV(*cv,pv[cnt],ma)!=RC_OK) {delete newp; return NULL;} 
 				Value *nv=&newp->properties[i]; nv->set(pv,cnt); nv->setPropID(properties[i].property);
 				nv->op=properties[i].op; nv->meta=properties[i].meta; setHT(*nv,SES_HEAP);
 			}
 		if (overwriteValues!=NULL && nOverwriteValues>0) for (unsigned j=0; j<nOverwriteValues; j++)
-			{const Value *pv=&overwriteValues[j]; newp->modify(pv,pv->eid,STORE_COLLECTION_ID,0,ses);}
-		if ((md&MODE_PERSISTENT)!=0 && ses!=NULL) {
-			if (ses->getStore()->isServerLocked()) {delete newp; return NULL;}
-			TxGuard txg(ses); assert(newp->id.pid==STORE_INVALID_PID && ses==Session::getSession());
-			if (ses->getStore()->queryMgr->persistPINs(EvalCtx(ses,ECT_INSERT),&newp,1,md)!=RC_OK) {delete newp; newp=NULL;}
+			{const Value *pv=&overwriteValues[j]; newp->modify(pv,pv->eid,STORE_COLLECTION_ID,0);}
+		if ((md&MODE_PERSISTENT)!=0) {
+			Session *ses=Session::getSession();
+			if (ses!=NULL && !ses->inReadTx()) {
+				StoreCtx *ctx=ses->getStore(); if (ctx->inShutdown() || ctx->isServerLocked()) {delete newp; return NULL;}
+				TxGuard txg(ses); assert(newp->id.isEmpty());
+				if (ctx->queryMgr->persistPINs(EvalCtx(ses,ECT_INSERT),&newp,1,md)!=RC_OK) {delete newp; newp=NULL;}
+			}
 		}
 		return newp;
 	} catch (RC) {} catch (...) {report(MSG_ERROR,"Exception in IPIN::clone(...)\n");}
@@ -230,33 +246,35 @@ IPIN *PIN::clone(const Value *overwriteValues,unsigned nOverwriteValues,unsigned
 IPIN *PIN::project(const PropertyID *props,unsigned nProps,const PropertyID *newProps,unsigned md)
 {
 	try {
-		if (ses==NULL || ses->getStore()->inShutdown()) return NULL;
 		unsigned pmd=(md&(PIN_NO_REPLICATION|PIN_NOTIFY|PIN_REPLICATED|PIN_HIDDEN|PIN_TRANSIENT))|(mode&(PIN_REPLICATED|PIN_NO_REPLICATION|PIN_HIDDEN));
-		PIN *newp=new(ses) PIN(ses,pmd); if (newp==NULL) return NULL;
+		PIN *newp=new(ma) PIN(ma,pmd); if (newp==NULL) return NULL;
 		if (props!=NULL && nProps>0) {
-			newp->properties=(Value*)ses->malloc(nProps*sizeof(Value));
+			newp->properties=(Value*)ma->malloc(nProps*sizeof(Value));
 			if (newp->properties==NULL) {delete newp; return NULL;}
 			const Value *oldProp;
 			for (unsigned i=0; i<nProps; i++) if ((oldProp=findProperty(props[i]))!=NULL) {
 				PropertyID newpid=newProps!=NULL?newProps[i]:props[i];
 				Value *newProp=NULL; VBIN::find(newpid,newp->properties,newp->nProperties,&newProp);
 				if (newProp<&newp->properties[newp->nProperties]) memmove(newProp+1,newProp,(byte*)&newp->properties[newp->nProperties]-(byte*)newProp);
-				if (oldProp->type!=VT_COLLECTION||oldProp->nav==NULL) {
-					if (copyV(*oldProp,*newProp,ses)!=RC_OK) {delete newp; return NULL;}
+				if (oldProp->type!=VT_COLLECTION||!oldProp->isNav()||oldProp->nav==NULL) {
+					if (copyV(*oldProp,*newProp,ma)!=RC_OK) {delete newp; return NULL;}
 				} else {
 					INav *nav=oldProp->nav; unsigned nElts=nav->count(),cnt=0;
-					Value *pv=new(ses) Value[nElts]; if (pv==NULL) {delete newp; return NULL;}
+					Value *pv=new(ma) Value[nElts]; if (pv==NULL) {delete newp; return NULL;}
 					for (const Value *cv=nav->navigate(GO_FIRST); cnt<nElts && cv!=NULL; ++cnt,cv=nav->navigate(GO_NEXT))
-						if (copyV(*cv,pv[cnt],ses)!=RC_OK) {delete newp; return NULL;} 
+						if (copyV(*cv,pv[cnt],ma)!=RC_OK) {delete newp; return NULL;} 
 					newProp->set(pv,cnt); newProp->op=oldProp->op; newProp->meta=oldProp->meta; setHT(*newProp,SES_HEAP);
 				}
 				newProp->setPropID(newpid); newp->nProperties++;
 			}
 		}
-		if ((md&MODE_PERSISTENT)!=0 && ses!=NULL) {
-			if (ses->getStore()->isServerLocked()) {delete newp; return NULL;}
-			TxGuard txg(ses); assert(newp->id.pid==STORE_INVALID_PID && ses==Session::getSession());
-			if (ses->getStore()->queryMgr->persistPINs(EvalCtx(ses,ECT_INSERT),&newp,1,md)!=RC_OK) {delete newp; newp=NULL;}
+		if ((md&MODE_PERSISTENT)!=0) {
+			Session *ses=Session::getSession();
+			if (ses!=NULL && !ses->inReadTx()) {
+				StoreCtx *ctx=ses->getStore(); if (ctx->inShutdown() || ctx->isServerLocked()) {delete newp; return NULL;}
+				TxGuard txg(ses); assert(newp->id.isEmpty());
+				if (ctx->queryMgr->persistPINs(EvalCtx(ses,ECT_INSERT),&newp,1,md)!=RC_OK) {delete newp; newp=NULL;}
+			}
 		}
 		return newp;
 	} catch (RC) {} catch (...) {report(MSG_ERROR,"Exception in IPIN::project(...)\n");}
@@ -266,19 +284,25 @@ IPIN *PIN::project(const PropertyID *props,unsigned nProps,const PropertyID *new
 RC PIN::modify(const Value *values,unsigned nValues,unsigned md,const ElementID *eids,unsigned *pNFailed)
 {
 	try {
-		if (ses==NULL) return RC_NOSESSION; if (ses->inReadTx()) return RC_READTX; assert(ses==Session::getSession());
+		Session *ses=Session::getSession(); if (ses==NULL) return RC_NOSESSION; if (ses->inReadTx()) return RC_READTX;
 		StoreCtx *ctx=ses->getStore(); if (ctx->inShutdown()) return RC_SHUTDOWN; if (ctx->isServerLocked()) return RC_READONLY;
 		if (!ses->isReplication() && (md&MODE_FORCE_EIDS)!=0 && eids!=NULL) return RC_INVPARAM;
 		TxGuard txg(ses); return ctx->queryMgr->modifyPIN(EvalCtx(ses,ECT_INSERT),id,values,nValues,NULL,this,md|MODE_CHECKBI,eids,pNFailed);
 	} catch (RC rc) {return rc;} catch (...) {report(MSG_ERROR,"Exception in IPIN::modify(...)\n"); return RC_INTERNAL;}
 }
 
-RC PIN::modify(const Value *pv,unsigned epos,unsigned eid,unsigned flags,MemAlloc *ma)
+RC PIN::modify(const Value *pv,unsigned epos,unsigned eid,unsigned flags)
 {
-	bool fAdd=pv->op==OP_ADD||pv->op==OP_ADD_BEFORE; if (ma==NULL) ma=ses;
+	bool fAdd=pv->op==OP_ADD||pv->op==OP_ADD_BEFORE;
+	if (pv->property==PROP_SPEC_SELF) {
+		if (pv->op!=OP_EDIT || pv->type!=VT_UINT ||
+			(pv->bedt.mask&~(PIN_TRANSIENT|PIN_DELETED|PIN_IMMUTABLE|PIN_PERSISTENT|PIN_HIDDEN|PIN_REPLICATED|PIN_NOTIFY|PIN_NO_REPLICATION))!=0)
+				return RC_INVPARAM;
+		mode=(mode&~pv->bedt.mask)|(pv->bedt.bits&pv->bedt.mask); return RC_OK;
+	}
 	Value *ins=NULL,*pval=(Value*)VBIN::find(pv->property,properties,nProperties,&ins),save,*pv2;
 	if (pval==NULL) {if (pv->op==OP_SET) fAdd=true; else if (!fAdd) return RC_NOTFOUND;}
-	RC rc=RC_OK; StoreCtx *ctx=ses->getStore();
+	RC rc=RC_OK;
 	if (fAdd) {
 		if (pval==NULL) {
 			ptrdiff_t sht=ins==NULL?0:ins-properties;
@@ -293,26 +317,26 @@ RC PIN::modify(const Value *pv,unsigned epos,unsigned eid,unsigned flags,MemAllo
 			if ((unsigned)sht<nProperties) memmove(ins+1,ins,sizeof(Value)*(nProperties-sht));
 			if ((flags&MODP_NCPY)!=0) *ins=*pv; else rc=copyV(*pv,*ins,ma);
 			if (rc==RC_OK) {
-				ins->eid=eid=(flags&MODP_EIDS)!=0?eid:isCollection((ValueType)pv->type)?STORE_COLLECTION_ID:getPrefix(ctx);
+				ins->eid=eid=(flags&MODP_EIDS)!=0?eid:isCollection((ValueType)pv->type)?STORE_COLLECTION_ID:getPrefix(StoreCtx::get());
 				ins->op=OP_SET; nProperties++;
 			}
-		} else if (pval->type==VT_COLLECTION) {
+		} else if (pval->type==VT_COLLECTION && pval->isNav()) {
 			// aggregate CNAVIGATOR
 			return RC_INTERNAL;
-		} else if (pv->type==VT_COLLECTION) {
+		} else if (pv->type==VT_COLLECTION && pv->isNav()) {
 			// aggregate CNAVIGATOR (Value + CNAV)
 			for (const Value *cv=pv->nav->navigate(GO_FIRST); cv!=NULL; cv=pv->nav->navigate(GO_NEXT)) {
 				// ???
 				Value w=*cv; setHT(w); w.op=pv->op;
-				if ((rc=modify(&w,epos,cv->eid,MODP_EIDS|MODP_NEID,ma))!=RC_OK) break;
+				if ((rc=modify(&w,epos,cv->eid,MODP_EIDS|MODP_NEID))!=RC_OK) break;
 			}
 			return rc;
-		} else if (pval->type!=VT_ARRAY) {		// create collection
-			unsigned nElts=pv->type==VT_ARRAY?pv->length+1:2,idx;
+		} else if (pval->type!=VT_COLLECTION) {		// create collection
+			unsigned nElts=pv->type==VT_COLLECTION?pv->length+1:2,idx; uint8_t meta=pval->meta; PropertyID pid=pval->property;
 			Value *coll=(Value*)ma->malloc(nElts*sizeof(Value)); if (coll==NULL) return RC_NORESOURCES;
 			if (pv->op==OP_ADD) {coll[0]=*pval; idx=1;} else {coll[nElts-1]=*pval; idx=0;}
-			if ((flags&MODP_EIDS)==0 && (eid=getPrefix(ctx))==pval->eid) eid++;
-			if (pv->type!=VT_ARRAY) {
+			if ((flags&MODP_EIDS)==0 && (eid=getPrefix(StoreCtx::get()))==pval->eid) eid++;
+			if (pv->type!=VT_COLLECTION) {
 				if ((flags&MODP_NCPY)!=0) coll[idx]=*pv;
 				else if ((rc=copyV(*pv,coll[idx],ma))!=RC_OK) {ma->free(coll); return rc;}
 				coll[idx].op=OP_SET; coll[idx].eid=eid;
@@ -322,11 +346,10 @@ RC PIN::modify(const Value *pv,unsigned epos,unsigned eid,unsigned flags,MemAllo
 			} else {
 				memcpy(&coll[idx],pv->varray,pv->length*sizeof(Value)); free((void*)pv->varray,(HEAP_TYPE)(pv->flags&HEAP_TYPE_MASK));
 			}
-			setHT(*pval,SES_HEAP); pval->eid=STORE_COLLECTION_ID; pval->op=OP_SET;
-			pval->type=VT_ARRAY; pval->length=nElts; pval->varray=coll;
+			pval->set(coll,nElts); pval->setPropID(pid); pval->setMeta(meta); setHT(*pval,SES_HEAP);
 		} else {								// add to collection
 			assert(pval->varray!=NULL && pval->length>0);
-			unsigned nElts=pv->type==VT_ARRAY?pv->length:1; if (epos==STORE_COLLECTION_ID) epos=STORE_LAST_ELEMENT;
+			unsigned nElts=pv->type==VT_COLLECTION?pv->length:1; if (epos==STORE_COLLECTION_ID) epos=STORE_LAST_ELEMENT;
 			pval->varray=(const Value*)ma->realloc(const_cast<Value*>(pval->varray),(pval->length+nElts)*sizeof(Value),pval->length*sizeof(Value));
 			if (pval->varray==NULL) {pval->type=VT_ERROR; return RC_NORESOURCES;}
 			Value *v=(Value*)findElement(pval,epos);
@@ -335,8 +358,8 @@ RC PIN::modify(const Value *pv,unsigned epos,unsigned eid,unsigned flags,MemAllo
 				if (pv->op!=OP_ADD_BEFORE) v++;
 				if (v<&pval->varray[pval->length]) memmove(v+nElts,v,(pval->length-(v-pval->varray))*sizeof(Value));
 			}
-			if ((flags&MODP_EIDS)==0) eid=getPrefix(ctx)+pval->length;		// find max of existing!!!
-			if (pv->type!=VT_ARRAY) {
+			if ((flags&MODP_EIDS)==0) eid=getPrefix(StoreCtx::get())+pval->length;		// find max of existing!!!
+			if (pv->type!=VT_COLLECTION) {
 				if ((flags&MODP_NCPY)!=0) *v=*pv; else if ((rc=copyV(*pv,*v,ma))==RC_OK) v->op=OP_SET; 
 				v->eid=eid;
 			} else if ((flags&MODP_NCPY)==0) for (unsigned i=0; i<pv->length; ++v,++i) {
@@ -346,13 +369,13 @@ RC PIN::modify(const Value *pv,unsigned epos,unsigned eid,unsigned flags,MemAllo
 			}
 			pval->length+=nElts;
 		}
-		if (rc==RC_OK && (flags&MODP_NEID)==0 && pv->type!=VT_ARRAY) pv->eid=eid;
+		if (rc==RC_OK && (flags&MODP_NEID)==0 && pv->type!=VT_COLLECTION) pv->eid=eid;
 	} else switch (pv->op) {
 	case OP_SET:
-		if (epos==STORE_COLLECTION_ID || pval->type!=VT_ARRAY && pval->type!=VT_COLLECTION) {
+		if (epos==STORE_COLLECTION_ID || pval->type!=VT_COLLECTION) {
 			freeV(*pval); if ((flags&MODP_NCPY)==0) rc=copyV(*pv,*pval,ma); else *pval=*pv;
-			if (pval->type!=VT_ARRAY && pval->type!=VT_COLLECTION) pval->eid=(flags&MODP_EIDS)!=0?eid:getPrefix(ctx);
-		} else if (pval->type==VT_ARRAY) {
+			if (pval->type!=VT_COLLECTION) pval->eid=(flags&MODP_EIDS)!=0?eid:getPrefix(StoreCtx::get());
+		} else if (!pval->isNav()) {
 			Value *elt=(Value*)findElement(pval,epos); if (elt==NULL) return RC_NOTFOUND;
 			freeV(*elt); if ((flags&MODP_NCPY)==0) rc=copyV(*pv,*elt,ma); else *elt=*pv;
 		} else {
@@ -361,10 +384,10 @@ RC PIN::modify(const Value *pv,unsigned epos,unsigned eid,unsigned flags,MemAllo
 		}
 		break;
 	case OP_DELETE:
-		if (epos==STORE_COLLECTION_ID || pval->type!=VT_ARRAY && pval->type!=VT_COLLECTION) {
+		if (epos==STORE_COLLECTION_ID || pval->type!=VT_COLLECTION) {
 			freeV(*pval); --nProperties;
 			if (pval!=properties+nProperties) memmove(pval,pval+1,(nProperties-(pval-properties))*sizeof(Value));
-		} else if (pval->type==VT_COLLECTION) {
+		} else if (pval->isNav()) {
 			//... aggregate (CNAV-Value)
 			return RC_INTERNAL;
 		} else {
@@ -393,11 +416,11 @@ RC PIN::modify(const Value *pv,unsigned epos,unsigned eid,unsigned flags,MemAllo
 		pval->property=pv->uid; break;
 	case OP_MOVE:
 	case OP_MOVE_BEFORE:
-		if (pval->type==VT_COLLECTION) {
+		if (pval->type==VT_COLLECTION && pval->isNav()) {
 			//???
 			return RC_INTERNAL;
 		}
-		if (pval->type!=VT_ARRAY||pv->type!=VT_UINT) return RC_TYPE;
+		if (pval->type!=VT_COLLECTION||pv->type!=VT_UINT) return RC_TYPE;
 		pv2=(Value*)findElement(pval,pv->ui); pval=(Value*)findElement(pval,epos);
 		if (pval==NULL||pv2==NULL) return RC_NOTFOUND;
 		if (pv->op==OP_MOVE) pv2++;
@@ -410,7 +433,7 @@ RC PIN::modify(const Value *pv,unsigned epos,unsigned eid,unsigned flags,MemAllo
 		break;
 	default:
 		if (pv->op>OP_LAST_MODOP) return RC_INVPARAM;
-		save=*pval; rc=Expr::calc((ExprOp)pv->op,*pval,pv,2,0,EvalCtx(ses)); if ((flags&MODP_NCPY)!=0) freeV(*(Value*)pv);
+		save=*pval; rc=Expr::calc((ExprOp)pv->op,*pval,pv,2,0,EvalCtx(Session::getSession())); if ((flags&MODP_NCPY)!=0) freeV(*(Value*)pv);
 		pval->property=save.property; pval->eid=save.eid; pval->meta=save.meta; pval->op=save.op;
 		break;
 	}
@@ -420,9 +443,8 @@ RC PIN::modify(const Value *pv,unsigned epos,unsigned eid,unsigned flags,MemAllo
 bool PIN::testClassMembership(ClassID classID,const Value *params,unsigned nParams) const
 {
 	try {
-		if (ses==NULL) return false; assert(ses==Session::getSession());
-		if (ses->getStore()->inShutdown()) return false; ValueV vv(params,nParams);
-		TxGuard txg(ses); return ses->getStore()->queryMgr->test((PIN*)this,classID,EvalCtx(ses,NULL,0,NULL,0,&vv,1),true);
+		Session *ses=Session::getSession(); if (ses==NULL || ses->getStore()->inShutdown()) return false; 
+		ValueV vv(params,nParams); TxGuard txg(ses); return ses->getStore()->queryMgr->test((PIN*)this,classID,EvalCtx(ses,NULL,0,NULL,0,&vv,1),true);
 	} catch (RC) {} catch (...) {report(MSG_ERROR,"Exception in IPIN::testClassMembership(ClassID=%08X)\n",classID);}
 	return false;
 }
@@ -467,8 +489,8 @@ RC PIN::getV(PropertyID pid,Value& v,unsigned md,MemAlloc *ma,ElementID eid)
 {
 	if (pid==STORE_INVALID_URIID) {if ((md&LOAD_CARDINALITY)==0) {v.setError(); return RC_INVPARAM;} else {v.set(0u); return RC_OK;}}
 	if ((pid&=STORE_MAX_URIID)==PROP_SPEC_PINID) {
-		if (id.pid==STORE_INVALID_PID) {
-			if (fPartial!=0) return ((PINx*)this)->getVx(pid,v,md,ma,eid);
+		if (!id.isPID()) {
+			if (fPINx!=0) return ((PINx*)this)->getVx(pid,v,md,ma,eid);
 			if ((md&LOAD_CARDINALITY)!=0) {v.set(0u); return RC_OK;}
 			v.setError(pid); return RC_NOTFOUND;
 		}
@@ -481,25 +503,14 @@ RC PIN::getV(PropertyID pid,Value& v,unsigned md,MemAlloc *ma,ElementID eid)
 		if ((md&LOAD_CARDINALITY)!=0) {v.set(0u); return RC_OK;}
 		v.setError(pid); return RC_NOTFOUND;
 	}
-	if ((md&LOAD_CARDINALITY)!=0) {
-		switch (pv->type) {
-		case VT_ARRAY: v.set((unsigned)pv->length); break;
-		case VT_COLLECTION: v.set((unsigned)pv->nav->count()); break;
-		default: v.set(1u); break;
-		}
-		return RC_OK;
-	}
-	if (eid!=STORE_COLLECTION_ID) switch (pv->type) {
-	default: break;
-	case VT_ARRAY:
+	if ((md&LOAD_CARDINALITY)!=0) {v.set(pv->count()); return RC_OK;}
+	if (eid!=STORE_COLLECTION_ID && pv->type==VT_COLLECTION) {
+		if (pv->isNav()) return pv->nav->getElementByID(eid,v);
 		if (eid==STORE_FIRST_ELEMENT) pv=&pv->varray[0];
 		else if (eid==STORE_LAST_ELEMENT) pv=&pv->varray[pv->length-1];
 		else for (unsigned i=0; ;i++)
 			if (i>=pv->length) return RC_NOTFOUND;
-			else if (pv->varray[i].eid==eid) pv=&pv->varray[i]; break;
-		break;
-	case VT_COLLECTION:
-		return pv->nav->getElementByID(eid,v);
+			else if (pv->varray[i].eid==eid) {pv=&pv->varray[i]; break;}
 	}
 	v=*pv; setHT(v); return RC_OK;
 }
@@ -507,11 +518,10 @@ RC PIN::getV(PropertyID pid,Value& v,unsigned md,MemAlloc *ma,ElementID eid)
 RC PIN::isMemberOf(ClassID *&clss,unsigned& nclss)
 {
 	try {
-		clss=NULL; nclss=0; if (ses==NULL) return RC_NOSESSION;
-		if (id.pid==STORE_INVALID_PID) return RC_INVPARAM;
-		if ((mode&PIN_HIDDEN)==0) {
+		clss=NULL; nclss=0; Session *ses=Session::getSession();
+		if ((mode&PIN_HIDDEN)==0 && ses!=NULL) {
 			ClassResult clr(ses,ses->getStore());
-			RC rc=ses->getStore()->classMgr->classify(this,clr); if (rc!=RC_OK) return rc;
+			RC rc=ses->getStore()->classMgr->classify(this,clr,ses); if (rc!=RC_OK) return rc;
 			if (clr.nClasses!=0) {
 				if ((clss=new(ses) ClassID[clr.nClasses])==NULL) return RC_NORESOURCES;
 				for (unsigned i=0; i<clr.nClasses; i++) clss[i]=clr.classes[i]->cid;
@@ -525,12 +535,12 @@ RC PIN::isMemberOf(ClassID *&clss,unsigned& nclss)
 PIN *PIN::getPIN(const PID& id,VersionID vid,Session *ses,unsigned md)
 {
 	try {
-		if (ses==NULL||ses->getStore()->inShutdown()) return NULL; assert(ses==Session::getSession());
+		Session *ses=Session::getSession(); if (ses==NULL||ses->getStore()->inShutdown()) return NULL;
 		TxGuard txg(ses); bool fRemote=isRemote(id); PageAddr addr=PageAddr::noAddr; PIN *pin=NULL;
 		if (!fRemote && (md&LOAD_EXT_ADDR)!=0 && addr.convert(uint64_t(id.pid))) ses->setExtAddr(addr);
 		if (ses->getStore()->queryMgr->loadPIN(ses,id,pin,md|LOAD_ENAV,NULL,vid)!=RC_OK) {delete pin; pin=NULL;}
 		ses->setExtAddr(PageAddr::noAddr); return pin;
-	} catch (RC) {} catch (...) {report(MSG_ERROR,"Exception in IPIN::getPIN(PID="_LX_FM",IdentityID=%08X)\n",id.pid,id.ident);}
+	} catch (RC) {} catch (...) {report(MSG_ERROR,"Exception in IPIN::getPIN(PID=" _LX_FM ",IdentityID=%08X)\n",id.pid,id.ident);}
 	return NULL;
 }
 
@@ -541,14 +551,44 @@ RC PIN::checkSet(const Value *&pv,const Value& w)
 	if (fNoFree==0) freeV(*(Value*)pv);
 	else {
 		ptrdiff_t sht=pv-properties;
-		Value *pp=new(ses) Value[nProperties]; if (pp==NULL) return RC_NORESOURCES;
+		Value *pp=new(ma) Value[nProperties]; if (pp==NULL) return RC_NORESOURCES;
 		memcpy(pp,properties,nProperties*sizeof(Value));
 		for (unsigned i=0; i<nProperties; i++) setHT(pp[i]);
 		properties=pp; fNoFree=0; pv=pp+sht;
 	}
 	if (!w.isEmpty()) {*(Value*)pv=w; ((Value*)pv)->property=pid; ((Value*)pv)->meta=meta; ((Value*)pv)->op=op;}
-	else if (--nProperties==0) {ses->free((Value*)properties); properties=NULL;}
+	else if (--nProperties==0) {ma->free((Value*)properties); properties=NULL;}
 	else if (pv<&properties[nProperties]) memmove((Value*)pv,pv+1,(byte*)&properties[nProperties]-(byte*)pv);
+	return RC_OK;
+}
+
+size_t PIN::serSize() const
+{
+	size_t l=afy_len32(nProperties);
+	for (unsigned i=0; i<nProperties; i++) l+=afy_len32(properties[i].property)+1+AfyKernel::serSize(properties[i]);
+	return l;
+}
+
+byte *PIN::serialize(byte *buf) const
+{
+	afy_enc32(buf,nProperties);
+	for (unsigned i=0; i<nProperties; i++) {afy_enc32(buf,properties[i].property); *buf++=properties[i].meta; buf=AfyKernel::serialize(properties[i],buf);}
+	return buf;
+}
+
+RC PIN::deserialize(PIN *&pin,const byte *&buf,const byte *const ebuf,MemAlloc *ma,bool fInPlace)
+{
+	Value *props=NULL; uint32_t nProps; CHECK_dec32(buf,nProps,ebuf); 
+	if (nProps!=0) {
+		if ((props=(Value*)ma->malloc(sizeof(Value)*nProps))==NULL) return RC_NORESOURCES;
+		for (unsigned i=0; i<nProps; i++) {
+			uint32_t propID; CHECK_dec32(buf,propID,ebuf);
+			if (buf>=ebuf) return RC_CORRUPTED; uint8_t meta=*buf++; RC rc;
+			if ((rc=AfyKernel::deserialize(props[i],buf,ebuf,ma,fInPlace))!=RC_OK) return rc;
+			props[i].property=propID; props[i].meta=meta;
+		}
+	}
+	if ((pin=new(ma) PIN(Session::getSession(),0,props,nProps))==NULL) {freeV(props,nProps,ma); return RC_NORESOURCES;}
 	return RC_OK;
 }
 
@@ -575,7 +615,7 @@ void PINx::checkNotHeld(PBlock *p)
 void PINx::moveTo(PINx& cb)
 {
 	cb.id=id; cb.addr=addr; cb.properties=properties; cb.nProperties=nProperties; cb.mode=mode; cb.meta=meta; pb.moveTo(cb.pb); cb.hpin=hpin; cb.epr=epr; cb.tv=tv;
-	id=PIN::noPID; addr=PageAddr::noAddr; properties=NULL; nProperties=0; mode=0; meta=0; hpin=NULL; tv=NULL; epr.lref=0; epr.flags=0;
+	id=PIN::noPID; addr=PageAddr::noAddr; properties=NULL; nProperties=0; mode=0; meta=0; hpin=NULL; tv=NULL; epr.buf[0]=0; epr.flags=0;
 }
 
 bool PINx::defined(const PropertyID *pids,unsigned nP) const
@@ -584,8 +624,8 @@ bool PINx::defined(const PropertyID *pids,unsigned nP) const
 		if (properties==NULL && hpin==NULL) return false;
 		for (unsigned i=0; i<nP; i++) {
 			const PropertyID pid=pids[i]&STORE_MAX_URIID;
-			if (pid==PROP_SPEC_PINID) {if (id.pid==STORE_INVALID_PID || id.ident==STORE_INVALID_IDENTITY) return false;}
-			else if (VBIN::find(pid,properties,nProperties)==NULL && (fPartial==0 || hpin->findProperty(pid)==NULL)) return false;
+			if (pid==PROP_SPEC_PINID) {if (!id.isPID()) return false;}
+			else if (VBIN::find(pid,properties,nProperties)==NULL && (fPartial==0 || hpin==NULL || hpin->findProperty(pid)==NULL)) return false;
 		}
 	}
 	return true;
@@ -595,7 +635,7 @@ bool PINx::isCollection(PropertyID pid) const
 {
 	if (properties!=NULL) {
 		const Value *cv=VBIN::find(pid,properties,nProperties);
-		return cv!=NULL && (cv->type==VT_ARRAY||cv->type==VT_COLLECTION);
+		return cv!=NULL && cv->type==VT_COLLECTION;
 	}
 	if (hpin!=NULL) {
 		const HeapPageMgr::HeapV *hprop=hpin->findProperty(pid);
@@ -609,8 +649,8 @@ RC PINx::getVx(PropertyID pid,Value& v,unsigned md,MemAlloc *ma,ElementID eid)
 	RC rc; assert(fPartial!=0);
 	if (pid!=PROP_SPEC_PINID) {
 		if (!pb.isNull() || (rc=ses->getStore()->queryMgr->getBody(*this))==RC_OK)
-			return ses->getStore()->queryMgr->loadV(v,pid,*this,md,ma,eid);
-	} else if (id.pid!=STORE_INVALID_PID || (rc=unpack())==RC_OK) {
+			{Value vei; vei.setEmpty(); vei.eid=eid; return ses->getStore()->queryMgr->loadV(v,pid,*this,md,ma,&vei);}
+	} else if (!id.isEmpty() || (rc=unpack())==RC_OK) {
 		if ((md&LOAD_CARDINALITY)!=0) v.set(1u); else v.set(id);
 		return RC_OK;
 	}
@@ -625,35 +665,31 @@ RC PINx::loadV(const PropertyID *pids,Value *res,unsigned nP) const
 	const HeapPageMgr::HeapV *hprop=!pb.isNull() && hpin!=NULL?(nhp=hpin->nProps,hpin->getPropTab()):(HeapPageMgr::HeapV*)0,*hp;
 	for (unsigned i=0; i<nP; i++) {
 		const PropertyID pid=pids[i]&STORE_MAX_URIID; unsigned flg=pids[i];
-		if (res!=NULL && (flg&PROP_NO_LOAD)!=0) (res++)->setError(pid);
 		switch (pid) {
 		default: break;
 		case STORE_INVALID_URIID:
 			if ((flg&PROP_OPTIONAL)==0) return RC_INVPARAM;
-			if (res!=NULL && (flg&PROP_NO_LOAD)==0) {if ((flg&PROP_ORD)!=0) res->set(0u); else res->setError(); res++;}
+			if (res!=NULL) {res->setError(); res++;}
 			continue;
 		case PROP_SPEC_PINID:
-			if (res!=NULL && (flg&PROP_NO_LOAD)==0) {
-				if ((flg&PROP_ORD)!=0) res->set(1u); else if (id.pid!=STORE_INVALID_PID || (rc=unpack())==RC_OK) res->set(id); else return rc;
+			if (res!=NULL) {
+				if (!id.isNull() || (rc=unpack())==RC_OK) res->set(id); else return rc;
 				res->property=pid; res++;
 			}
 			continue;
 		}
 		if (pv!=NULL && (v=VBIN::find(pid,pv,np))!=NULL) {
-			if (res!=NULL && (flg&PROP_NO_LOAD)==0) {
-				if ((flg&PROP_ORD)!=0) res->set((unsigned)(v->type==VT_ARRAY?v->length:v->type==VT_COLLECTION?v->nav->count():1u)); else {*res=*v; setHT(*res);}
-				res->property=pid; res++;
-			}
+			if (res!=NULL) {*res=*v; setHT(*res); res->property=pid; res++;}
 			pv=v+1; np=nProperties-unsigned(pv-properties);
 		} else if (hprop!=NULL && (hp=BIN<HeapPageMgr::HeapV,PropertyID,HeapPageMgr::HeapV::HVCmp>::find(pid,hprop,nhp))!=NULL) {
-			if (res!=NULL && (flg&PROP_NO_LOAD)==0) {
+			if (res!=NULL) {
 				//loadV
 				res++;
 			}
 			// adjust hprop, nhp
 		} else {
 			if ((flg&PROP_OPTIONAL)==0) return RC_NOTFOUND;
-			if (res!=NULL && (flg&PROP_NO_LOAD)==0) {if ((flg&PROP_ORD)!=0) res->set(0u); else res->setError(pid); res++;}
+			if (res!=NULL) {res->setError(pid); res++;}
 		}
 	}
 	return rc;
@@ -663,7 +699,7 @@ RC PINx::loadV(const PropertyID *pids,Value *res,unsigned nP) const
 RC PINx::unpack() const
 {
 	try {
-		PINRef pr(ses->getStore()->storeID,epr.buf,epr.lref);
+		PINRef pr(ses->getStore()->storeID,epr.buf);
 		if ((pr.def&PR_ADDR)!=0) {addr=pr.addr; epr.flags|=PINEX_ADDRSET;}
 		const_cast<PID&>(id)=pr.id; return RC_OK;
 	} catch (RC rc) {return rc;}
@@ -671,14 +707,12 @@ RC PINx::unpack() const
 
 RC PINx::pack() const
 {
-	if (epr.lref==0) {
-		if (id.pid==STORE_INVALID_PID) return RC_NOTFOUND;
-		else {
-			PINRef pr(ses->getStore()->storeID,id);
-			if ((meta&PMT_COMM)!=0) pr.def|=PR_SPECIAL;
-			if (addr.defined()) {pr.def|=PR_ADDR; pr.addr=addr;}
-			epr.lref=pr.enc(epr.buf);
-		}
+	if (epr.buf[0]==0) {
+		if (!id.isPID()) return RC_NOTFOUND;
+		PINRef pr(ses->getStore()->storeID,id);
+		if ((meta&PMT_COMM)!=0) pr.def|=PR_SPECIAL;
+		if (addr.defined()) {pr.def|=PR_ADDR; pr.addr=addr;}
+		pr.enc(epr.buf);
 	}
 	return RC_OK;
 }
@@ -699,10 +733,13 @@ void PINx::copyFlags()
 
 RC PINx::load(unsigned md,const PropertyID *flt,unsigned nFlt)
 {
-	if (id.pid==STORE_INVALID_PID) {RC rc=unpack(); if (rc!=RC_OK) return rc;}
-	if (properties!=NULL || fPartial==0) return RC_OK; // check LOAD_ENAV, LOAD_SSV/PIN_SSV, MODE_FORCED_SSV_AS_STREAM
+	if (id.isEmpty()) {RC rc=unpack(); if (rc!=RC_OK) return rc;}
+	if (fPartial==0) return RC_OK; // check LOAD_ENAV, LOAD_SSV/PIN_SSV, MODE_FORCED_SSV_AS_STREAM
+	if (properties!=NULL && flt!=NULL && nProperties>=nFlt) for (unsigned i=0,j=0; i<nProperties; i++)
+		{int c=cmp3(properties[i].property,flt[j]&STORE_MAX_URIID); if (c>0) break; if (c==0 && ++j>=nFlt) return RC_OK;}
+	if (fNoFree==0) freeV(properties,nProperties,ma); properties=NULL; nProperties=0; fNoFree=0;
 	if (hpin==NULL) {
-		if (id.pid==STORE_INVALID_PID) return RC_NOTFOUND;
+		if (!id.isPID()) return RC_NOTFOUND;
 		RC rc=ses->getStore()->queryMgr->getBody(*this,TVO_READ,(md&MODE_DELETED)!=0?GB_DELETED:0);
 		if (rc!=RC_OK) {if (rc==RC_DELETED) mode|=PIN_DELETED; return rc;}
 	}
@@ -716,8 +753,8 @@ const Value *PINx::loadProperty(PropertyID pid)
 	if (fNoFree!=0) {
 		// copy properties
 	}
-	if (ses->getStore()->queryMgr->loadV(v,pid,*this,LOAD_SSV,ses)!=RC_OK) return NULL;
-	if (VBIN::insert(properties,nProperties,pid,v,(MemAlloc*)ses,NULL,&pv)!=RC_OK) {freeV(v); return NULL;}
+	if (ses->getStore()->queryMgr->loadV(v,pid,*this,LOAD_SSV,ma)!=RC_OK) return NULL;
+	if (VBIN::insert(properties,nProperties,pid,v,ma,NULL,&pv)!=RC_OK) {freeV(v); return NULL;}
 	return pv;
 }
 
@@ -729,17 +766,18 @@ const void *PINx::getPropTab(unsigned& nProps) const
 
 void PINx::copy(const PIN *pin,unsigned flags)
 {
-	id=pin->id; addr=pin->addr; properties=pin->properties; nProperties=pin->nProperties; mode=pin->mode; fNoFree=1; meta=pin->meta; epr.lref=0;
-	if (!addr.defined()) epr.flags=PINEX_DERIVED;
-	else if (pin->fPartial!=0) {
-		const PINx *px=(const PINx *)pin; epr=px->epr; tv=px->tv;
-		if (!px->pb.isNull() && pb.getPage(px->pb->getPageID(),px->pb->getPageMgr(),flags,pin->ses)!=NULL) fill();
+	if (pin->id.isPID()||pin->id.isPtr()) id=pin->id; else id.setPtr((PIN*)pin);
+	addr=pin->addr; properties=pin->properties; nProperties=pin->nProperties; mode=pin->mode; fNoFree=1; fPartial=0; meta=pin->meta; epr.buf[0]=0;
+	if (!id.isPID() && (pin->fPINx==0 || (((PINx*)pin)->epr.flags&PINEX_DERIVED)!=0)) epr.flags=PINEX_DERIVED;
+	else if (pin->fPINx!=0) {
+		const PINx *px=(const PINx *)pin; fPartial=px->fPartial; epr=px->epr; tv=px->tv; if (id.isEmpty() && epr.buf[0]!=0) unpack();
+		if (!px->pb.isNull() && pb.getPage(px->pb->getPageID(),px->pb->getPageMgr(),flags,ses)!=NULL) fill();
 	}
 }
 
 void PINx::free()
 {
-	if (properties!=NULL && fNoFree==0) freeV((Value*)properties,nProperties,ses);
+	if (properties!=NULL && fNoFree==0) freeV((Value*)properties,nProperties,ma);
 	properties=NULL; nProperties=0; fPartial=1; fNoFree=fSSV=fReload=0; meta=0;
 	//if (tv!=NULL) ???
 }
@@ -761,10 +799,11 @@ RC Session::normalize(const Value *&pv,uint32_t& nv,unsigned f,ElementID prefix,
 	TIMESTAMP ts=0ULL; RC rc; unsigned nBI=0;
 
 	for (unsigned j=0; j<nv; j++) {
-		Value &v=*(Value*)&pv[j]; setHT(v,flags); if (fEID&&!fCV && v.type!=VT_VARREF) v.eid=prefix;
+		Value &v=*(Value*)&pv[j]; setHT(v,flags);
+		if (fCV&&v.type!=VT_VARREF) if (fEID) v.eid=prefix; else if (v.eid>=STORE_ALL_ELEMENTS) return RC_INVPARAM;
 		if (j!=0&&pv[j-1].property>=v.property) sort|=pv[j-1].property==v.property?1:2;
 		if ((f&MODE_COMPOUND)==0 && v.property<=MAX_BUILTIN_URIID) nBI++;
-		if (v.type==VT_ARRAY) {
+		if (v.type==VT_COLLECTION && !v.isNav()) {
 			for (uint32_t k=0; k<v.length; k++) {
 				Value &vv=*(Value*)&v.varray[k]; setHT(vv,flags);
 				if (fEID && vv.type!=VT_VARREF) {
@@ -785,7 +824,7 @@ RC Session::normalize(const Value *&pv,uint32_t& nv,unsigned f,ElementID prefix,
 				rc=pn[0].type!=VT_STRUCT?copyV(pn[0],pn[0],ma):normalize(pn[0].varray,pn[0].length,f|MODE_COMPOUND,prefix,ma);
 				if (rc!=RC_OK) {ma->free(pn); return rc;}
 			}
-			if (fEID && pn[0].type!=VT_VARREF) pn[0].eid=prefix;
+			if (pn[0].type!=VT_VARREF) if (fEID) pn[0].eid=prefix; else if (pn[0].eid>=STORE_ALL_ELEMENTS) return RC_INVPARAM;
 		}
 		for (unsigned i=1; i<nv; ) {
 			Value *pv1=&pn[i-1],*pv2=&pn[i];
@@ -799,30 +838,31 @@ RC Session::normalize(const Value *&pv,uint32_t& nv,unsigned f,ElementID prefix,
 			if (pv1->property<pv2->property) {
 				if ((f&MODE_COMPOUND)==0 && pv1->property<=MAX_BUILTIN_URIID && (rc=checkBuiltinProp(*pv1,ts,true))!=RC_OK) return rc;
 				i++;
-			} else if (pv1->type==VT_COLLECTION || pv2->type==VT_COLLECTION) {
+			} else if (pv1->type==VT_COLLECTION && pv1->isNav() || pv2->type==VT_COLLECTION && pv2->isNav()) {
 				// ???
 				i++;
 			} else {
-				unsigned l1=pv1->type==VT_ARRAY?pv1->length:1,l2=0,ii=0; assert(pv1->property==pv2->property);
-				do l2+=pv2[ii].type==VT_ARRAY?pv2[ii].length:1;
+				unsigned l1=pv1->type==VT_COLLECTION?pv1->length:1,l2=0,ii=0; assert(pv1->property==pv2->property);
+				do l2+=pv2[ii].type==VT_COLLECTION?pv2[ii].length:1;
 				while (++ii+i<nv && pv2[ii].property==pv1->property);
-				Value *vals=pv1->type!=VT_ARRAY||fCV?(Value*)ma->malloc((l1+l2)*sizeof(Value)):
+				Value *vals=pv1->type!=VT_COLLECTION||fCV?(Value*)ma->malloc((l1+l2)*sizeof(Value)):
 					(Value*)ma->realloc(const_cast<Value*>(pv1->varray),(l1+l2)*sizeof(Value),l1*sizeof(Value));
-				if (pv1->type!=VT_ARRAY) {vals[0]=*pv1; vals[0].property=STORE_INVALID_URIID;}
+				if (pv1->type!=VT_COLLECTION) {vals[0]=*pv1; vals[0].property=STORE_INVALID_URIID;}
 				else if (fCV) memcpy(vals,pv1->varray,l1*sizeof(Value));
-				pv1->varray=vals; pv1->length=l1+l2; pv1->type=VT_ARRAY; pv1->eid=STORE_COLLECTION_ID;
+				pv1->varray=vals; pv1->length=l1+l2; pv1->type=VT_COLLECTION; pv1->eid=STORE_COLLECTION_ID;
 				setHT(*pv1,ht); vals+=l1; unsigned ll; ElementID eid=prefix+l1;
 				do {
-					ll=pv2->type==VT_ARRAY?pv2->length:1; pv1->meta|=pv2->meta;
+					ll=pv2->type==VT_COLLECTION?pv2->length:1; pv1->meta|=pv2->meta;
 					if (!fCV || fNF) {
-						memcpy(vals,pv2->type==VT_ARRAY?pv2->varray:pv2,ll*sizeof(Value));
-						if (fEID) for (unsigned k=0; k<ll; k++) if (vals[k].type!=VT_VARREF) vals[k].eid=eid++;
-						if (!fCV && pv2->type==VT_ARRAY && (pv2->flags&HEAP_TYPE_MASK)>=SES_HEAP) 
+						memcpy(vals,pv2->type==VT_COLLECTION?pv2->varray:pv2,ll*sizeof(Value));
+						for (unsigned k=0; k<ll; k++) if (vals[k].type!=VT_VARREF)
+							if (fEID) vals[k].eid=eid++; else if (vals[k].eid>=STORE_ALL_ELEMENTS) return RC_INVPARAM;
+						if (!fCV && pv2->type==VT_COLLECTION && (pv2->flags&HEAP_TYPE_MASK)>=SES_HEAP) 
 							{AfyKernel::free(const_cast<Value*>(pv2->varray),(HEAP_TYPE)(pv2->flags&HEAP_TYPE_MASK)); setHT(*pv2);}
-					} else for (unsigned j=0; j<ll; j++) if ((rc=copyV(pv2->type==VT_ARRAY?pv2->varray[j]:*pv2,vals[j],ma))!=RC_OK) {
+					} else for (unsigned j=0; j<ll; j++) if ((rc=copyV(pv2->type==VT_COLLECTION?pv2->varray[j]:*pv2,vals[j],ma))!=RC_OK) {
 						//...free
 						return rc;
-					} else if (fEID && vals[j].type!=VT_VARREF) vals[j].eid=eid++;
+					} else if (vals[j].type!=VT_VARREF) {if (fEID) vals[j].eid=eid++; else if (vals[j].eid>=STORE_ALL_ELEMENTS) return RC_INVPARAM;}
 					pv2++; vals+=ll; --nv; assert(nv>=i);
 				} while ((l2-=ll)!=0);
 				if (nv>i && ii>0) memmove(pv1+1,pv1+ii+1,(nv-i)*sizeof(Value));
@@ -838,23 +878,21 @@ RC Session::normalize(const Value *&pv,uint32_t& nv,unsigned f,ElementID prefix,
 RC Session::createPIN(Value *values,unsigned nValues,IPIN **result,unsigned md,const PID *orig)
 {
 	try {
-		if (ctx->inShutdown()) return RC_SHUTDOWN;
+		if (result!=NULL) *result=NULL; if (ctx->inShutdown()) return RC_SHUTDOWN;
 		unsigned pmd=md; RC rc=newPINFlags(pmd,orig); if (rc!=RC_OK) return rc;
-		PIN *pin=active!=NULL?active->createPIN(values,nValues,pmd,orig):NULL;
-		if (pin==NULL) {
-			if ((pin=new(this) PIN(this,pmd))==NULL) rc=RC_NORESOURCES; else if (orig!=NULL) *pin=*orig;
-			if (values!=NULL && nValues!=0) {
-				if (pin!=NULL) {
-					uint32_t nv=(uint32_t)nValues; const Value *pv=values;
-					if ((rc=normalize(pv,nv,md,orig!=NULL?ctx->genPrefix(ushort(orig->pid>>48)):ctx->getPrefix(),this))==RC_OK) {pin->properties=(Value*)pv; pin->nProperties=nv;}
-				} else if ((md&MODE_COPY_VALUES)==0) {
-					for (unsigned i=0; i<nValues; i++) {
-						if (values[i].type==VT_ARRAY) for (unsigned j=0; j<values[i].length; j++) setHT(values[i].varray[i],SES_HEAP);
-						// struct ???
-						setHT(values[i],SES_HEAP); freeV(values[i]);
-					}
-					free(values);
+		PIN *pin=NULL;	//active!=NULL?active->createPIN(values,nValues,pmd,orig):NULL;
+		if ((pin=new(this) PIN(this,pmd))==NULL) rc=RC_NORESOURCES; else if (orig!=NULL) *pin=*orig;
+		if (values!=NULL && nValues!=0) {
+			if (pin!=NULL) {
+				uint32_t nv=(uint32_t)nValues; const Value *pv=values;
+				if ((rc=normalize(pv,nv,md,orig!=NULL?ctx->genPrefix(ushort(orig->pid>>48)):ctx->getPrefix(),this))==RC_OK) {pin->properties=(Value*)pv; pin->nProperties=nv;}
+			} else if ((md&MODE_COPY_VALUES)==0) {
+				for (unsigned i=0; i<nValues; i++) {
+					if (values[i].type==VT_COLLECTION && !values[i].isNav()) for (unsigned j=0; j<values[i].length; j++) setHT(values[i].varray[i],SES_HEAP);
+					// struct ???
+					setHT(values[i],SES_HEAP); freeV(values[i]);
 				}
+				free(values);
 			}
 		}
 		if (pin!=NULL) {
@@ -868,12 +906,12 @@ RC Session::createPIN(Value *values,unsigned nValues,IPIN **result,unsigned md,c
 
 RC Session::checkBuiltinProp(Value &v,TIMESTAMP &ts,bool fInsert)
 {
-	Value w; RC rc; const Value *cv; Stmt *qry;
 	if (fInsert) {
 		if (v.op!=OP_SET && v.op!=OP_ADD) return RC_INVOP;
 	} else if (v.op==OP_DELETE) {
 		return v.property==PROP_SPEC_PINID||v.property==PROP_SPEC_SELF?RC_INVPARAM:RC_OK;
 	}
+	Value w; RC rc; const Value *cv; Stmt *qry; const bool fE=isEval(v),fE1=fE&&!isComposite((ValueType)v.type);
 	switch (v.property) {
 	default: if (v.property>MAX_BUILTIN_URIID) return RC_INVPARAM; break;
 	case PROP_SPEC_SUBCLASSES:
@@ -888,10 +926,10 @@ RC Session::checkBuiltinProp(Value &v,TIMESTAMP &ts,bool fInsert)
 		if ((sFlags&S_REPLICATION)==0) {v.type=VT_UINT; v.length=sizeof(uint32_t); v.ui=0;} else if (v.type!=VT_UINT && v.type!=VT_UINT64) return RC_TYPE;
 		break;
 	case PROP_SPEC_DOCUMENT:
-		if (v.op<=OP_ADD_BEFORE && v.type!=VT_REF && v.type!=VT_REFID) return RC_TYPE;
+		if (v.op<=OP_ADD_BEFORE && !fE && v.type!=VT_REF && v.type!=VT_REFID) return RC_TYPE;
 		break;
 	case PROP_SPEC_PARENT:
-		if (v.op<=OP_ADD_BEFORE && v.type!=VT_REF && v.type!=VT_REFID) return RC_TYPE;
+		if (v.op<=OP_ADD_BEFORE && !fE && v.type!=VT_REF && v.type!=VT_REFID) return RC_TYPE;
 		//check mutual link
 		break;
 	case PROP_SPEC_CREATED:
@@ -914,26 +952,26 @@ RC Session::checkBuiltinProp(Value &v,TIMESTAMP &ts,bool fInsert)
 			}
 			URI *uri=ctx->uriMgr->insert(p,l); if (uri==NULL) return RC_NORESOURCES;
 			w.setURIID(uri->getID()); w.setPropID(PROP_SPEC_OBJID); w.setMeta(v.meta); uri->release(); v=w;
-		} else if (v.type!=VT_URIID) return RC_TYPE;
-		if (v.uid==STORE_INVALID_CLASSID || v.uid<=MAX_BUILTIN_PROPID && v.uid>MAX_BUILTIN_CLASSID) return RC_INVPARAM;
+		} else if (v.type!=VT_URIID) {if (fE1) break; else  return RC_TYPE;}
+		if (v.uid==STORE_INVALID_URIID || v.uid<=MAX_BUILTIN_PROPID && v.uid>MAX_BUILTIN_CLASSID) return RC_INVPARAM;
 		break;
 	case PROP_SPEC_PREDICATE:
 		if (v.type==VT_STRING) {
 			if ((rc=convV(v,w,VT_STMT,(MemAlloc*)this))!=RC_OK) return rc;
 			w.property=PROP_SPEC_PREDICATE; w.meta=v.meta; v=w;
-		} else if (v.type!=VT_STMT||v.stmt==NULL) return RC_TYPE;
+		} else if (v.type!=VT_STMT||v.stmt==NULL) {if (fE1) break; return RC_TYPE;}
 		if ((qry=(Stmt*)v.stmt)->getOp()!=STMT_QUERY || qry->getTop()==NULL || qry->getTop()->getType()!=QRY_SIMPLE || (qry->getMode()&QRY_CPARAMS)!=0)	// UNION/INTERSECT/EXCEPT ??? -> condSatisfied
 			return RC_INVPARAM;
 		if ((v.meta&META_PROP_INDEXED)!=0 && !qry->isClassOK()) v.meta&=~META_PROP_INDEXED;
 		break;
 	case PROP_SPEC_WINDOW:
-		if (v.type!=VT_INTERVAL && v.type!=VT_UINT && v.type!=VT_INT) return RC_TYPE;
+		if (v.type!=VT_INTERVAL && v.type!=VT_UINT && v.type!=VT_INT && !fE1) return RC_TYPE;
 		if (v.type==VT_INTERVAL && v.i64<0 || v.type==VT_INT && v.i<0) return RC_INVPARAM;
 		break;
 	case PROP_SPEC_SERVICE:
 	case PROP_SPEC_LISTEN:
 		switch (v.type) {
-		default: return RC_TYPE;
+		default: if (!fE) return RC_TYPE; break;
 		//case VT_STRING: case VT_URL:// cv to URIID
 		case VT_REF: if ((((PIN*)v.pin)->meta&PMT_COMM)==0) return RC_TYPE;
 		case VT_URIID: case VT_REFID: break;
@@ -941,8 +979,8 @@ RC Session::checkBuiltinProp(Value &v,TIMESTAMP &ts,bool fInsert)
 			if ((cv=VBIN::find(PROP_SPEC_SERVICE,v.varray,v.length))==NULL) return RC_INVPARAM;
 			if (cv->type!=VT_MAP && cv->type!=VT_URIID && cv->type!=VT_STRING && cv->type!=VT_URL) return RC_TYPE;
 			break;
-		case VT_ARRAY:
-			for (unsigned k=0; k<v.length; k++) {
+		case VT_COLLECTION:
+			if (!fE && !v.isNav()) for (unsigned k=0; k<v.length; k++) {
 				const Value *pv2=&v.varray[k];
 				switch (pv2->type) {
 				default: return RC_TYPE;
@@ -959,7 +997,7 @@ RC Session::checkBuiltinProp(Value &v,TIMESTAMP &ts,bool fInsert)
 		}
 		break;
 	case PROP_SPEC_INTERVAL:
-		if (v.type!=VT_INTERVAL) return RC_TYPE;
+		if (v.type!=VT_INTERVAL && !fE1) return RC_TYPE;
 		break;
 	case PROP_SPEC_ACTION:
 	case PROP_SPEC_ONENTER:
@@ -969,30 +1007,29 @@ RC Session::checkBuiltinProp(Value &v,TIMESTAMP &ts,bool fInsert)
 			if ((rc=convV(v,w,VT_STMT,this))!=RC_OK) return rc;
 			w.property=PROP_SPEC_ACTION; w.meta=v.meta; v=w;
 		}
-		if (v.type==VT_ARRAY) {
+		if (v.type==VT_COLLECTION && !v.isNav()) {
 			// check all VT_STMT
-		} else if (v.type!=VT_STMT) return RC_TYPE;
+		} else if (v.type!=VT_STMT && !fE) return RC_TYPE;
 		break;
 	case PROP_SPEC_ENUM:
 		if (!fInsert) return RC_INVPARAM;
 		if (v.type!=VT_STRING) {
-			if (v.type!=VT_ARRAY) return RC_TYPE;
+			if (v.type!=VT_COLLECTION || v.isNav()) return RC_TYPE;
 			for (unsigned i=0; i<v.length; i++) if (v.varray[i].type!=VT_STRING) return RC_TYPE;
 		}
 		break;
 	case PROP_SPEC_IDENTITY:
-		if (v.type!=VT_IDENTITY) return RC_TYPE;
+		if (v.type!=VT_IDENTITY && !fE1) return RC_TYPE;
 		break;
 	case PROP_SPEC_LOAD:
 	case PROP_SPEC_NAMESPACE:
-		if (v.type!=VT_STRING) return RC_TYPE;
+		if (v.type!=VT_STRING && !fE1) return RC_TYPE;
 		break;
 	case PROP_SPEC_TRANSITION:
 		//???
 		break;
 	case PROP_SPEC_STATE:
-		if ((v.meta&META_PROP_IMMUTABLE)!=0) return RC_INVPARAM;
-		if (v.type!=VT_REF && v.type!=VT_REFID) return RC_TYPE;
+		if (v.type!=VT_REF && v.type!=VT_REFID) return RC_TYPE;		// VT_COLLECTION?
 		break;
 	}
 	return RC_OK;
@@ -1002,12 +1039,12 @@ RC Session::newPINFlags(unsigned& md,const PID *&orig)
 {
 	unsigned m=md; md&=(PIN_NO_REPLICATION|PIN_NOTIFY|PIN_REPLICATED|PIN_HIDDEN|PIN_TRANSIENT);
 	if ((itf&(ITF_DEFAULT_REPLICATION|ITF_REPLICATION))!=0 && (md&PIN_NO_REPLICATION)==0) md|=PIN_REPLICATED;
-	if (orig!=NULL && (orig->ident==STORE_INVALID_IDENTITY||orig->pid==STORE_INVALID_PID)) orig=NULL;
+	if (orig!=NULL && !orig->isPID()) orig=NULL;
 	if (isRestore()) {if (orig==NULL) return RC_INVPARAM; else if ((m&MODE_DELETED)!=0) md|=PIN_DELETED;}
 	else {
 		if (orig!=NULL && (itf&ITF_CATCHUP)==0) {
-			if (!isRemote(*orig)) {report(MSG_ERROR,"Can't load PIN "_LX_FM" in non-loading session\n",orig->pid); return RC_INVPARAM;}
-			if (active==NULL && !isReplication()) {report(MSG_ERROR,"Can't create replicated PIN "_LX_FM":%08X in non-replication session\n",orig->pid,orig->ident); return RC_INVPARAM;}
+			if (!isRemote(*orig)) {report(MSG_ERROR,"Can't load PIN " _LX_FM " in non-loading session\n",orig->pid); return RC_INVPARAM;}
+			if (active==NULL && !isReplication()) {report(MSG_ERROR,"Can't create replicated PIN " _LX_FM ":%08X in non-replication session\n",orig->pid,orig->ident); return RC_INVPARAM;}
 		}
 		md&=~PIN_DELETED;
 	}
@@ -1017,7 +1054,7 @@ RC Session::newPINFlags(unsigned& md,const PID *&orig)
 IBatch *Session::createBatch()
 {
 	try {return ctx->inShutdown()?NULL:new(this) BatchInsert(this);}
-	catch (RC) {} catch (...) {report(MSG_ERROR,"Exception in IBatch::createValues(...)\n");}
+	catch (RC) {} catch (...) {report(MSG_ERROR,"Exception in IBatch::createBatch(...)\n");}
 	return NULL;
 }
 
@@ -1035,7 +1072,7 @@ Value *BatchInsert::createValues(uint32_t nValues)
 {
 	try {
 		if (ses->getStore()->inShutdown()) return NULL;
-		Value *pv=(Value*)SubAlloc::malloc(nValues*sizeof(Value));
+		Value *pv=(Value*)StackAlloc::malloc(nValues*sizeof(Value));
 		if (pv!=NULL) memset(pv,0,nValues*sizeof(Value));
 		return pv;
 	} catch (RC) {} catch (...) {report(MSG_ERROR,"Exception in IBatch::createValues(...)\n");}
@@ -1048,7 +1085,7 @@ RC BatchInsert::createPIN(Value *values,unsigned nValues,unsigned md,const PID *
 		StoreCtx *ctx=ses->getStore(); if (ctx->inShutdown()) return RC_SHUTDOWN;
 		unsigned pmd=md; uint32_t nv=(uint32_t)nValues; RC rc=ses->newPINFlags(pmd,orig); if (rc!=RC_OK) return rc;
 		if (values!=NULL && nValues!=0 && (rc=ses->normalize(*(const Value**)&values,nv,md,orig!=NULL?ctx->genPrefix(ushort(orig->pid>>48)):ctx->getPrefix(),this))!=RC_OK) return rc;
-		PIN *pin=new(this) PIN(ses,pmd,values,nv); if (pin==NULL) {freeV(values,nv,this); return RC_NORESOURCES;}
+		PIN *pin=new(this) PIN(this,pmd,values,nv); if (pin==NULL) {freeV(values,nv,this); return RC_NORESOURCES;}
 		if (orig!=NULL) *pin=*orig; return (*this)+=pin;
 	} catch (RC rc) {return rc;} catch (...) {report(MSG_ERROR,"Exception in IBatch::createPIN(...)\n"); return RC_INTERNAL;}
 }
@@ -1066,8 +1103,32 @@ RC BatchInsert::addRef(unsigned from,const Value& to,bool fAdd)
 		case VT_REFID: v.set(to.id); break;
 		}
 		v.setPropID(to.property); v.setOp(fAdd?OP_ADD:OP_SET);
-		return ts[from]->modify(&v,to.eid==STORE_COLLECTION_ID&&fAdd?STORE_LAST_ELEMENT:to.eid,ses->getStore()->getPrefix(),MODP_NCPY,this);
+		return ts[from]->modify(&v,to.eid==STORE_COLLECTION_ID&&fAdd?STORE_LAST_ELEMENT:to.eid,ses->getStore()->getPrefix(),MODP_NCPY);
 	} catch (RC rc) {return rc;} catch (...) {report(MSG_ERROR,"Exception in IBatch::addRef(...)\n"); return RC_INTERNAL;}
+}
+
+RC BatchInsert::clone(IPIN *p,const Value *values,unsigned nValues,unsigned md)
+{
+	try {
+		if (ses->getStore()->inShutdown()) return RC_SHUTDOWN; PIN *pin=(PIN*)p; RC rc;
+		unsigned pmd=(md&(PIN_NO_REPLICATION|PIN_NOTIFY|PIN_REPLICATED|PIN_HIDDEN|PIN_TRANSIENT))|(pin->mode&(PIN_REPLICATED|PIN_NO_REPLICATION|PIN_HIDDEN));
+		PIN *newp=new(this) PIN(this,pmd); if (newp==NULL) return RC_NORESOURCES;
+		newp->properties=(Value*)malloc(pin->nProperties*sizeof(Value)); if (newp->properties==NULL) return RC_NORESOURCES;
+		for (unsigned i=0; (newp->nProperties=i)<pin->nProperties; i++)
+			if (pin->properties[i].type!=VT_COLLECTION||!pin->properties[i].isNav()||pin->properties[i].nav==NULL) {
+				if ((rc=copyV(pin->properties[i],newp->properties[i],this))!=RC_OK) return rc;
+			} else {
+				INav *nav=pin->properties[i].nav; unsigned nElts=nav->count(),cnt=0;
+				Value *pv=new(this) Value[nElts]; if (pv==NULL) return RC_NORESOURCES;
+				for (const Value *cv=nav->navigate(GO_FIRST); cnt<nElts && cv!=NULL; ++cnt,cv=nav->navigate(GO_NEXT))
+					if ((rc=copyV(*cv,pv[cnt],this))!=RC_OK) return rc;
+				Value *nv=&newp->properties[i]; nv->set(pv,cnt); nv->setPropID(pin->properties[i].property);
+				nv->op=pin->properties[i].op; nv->meta=pin->properties[i].meta; setHT(*nv);
+			}
+		if (values!=NULL && nValues>0) for (unsigned j=0; j<nValues; j++)
+			{const Value *pv=&values[j]; newp->modify(pv,pv->eid,STORE_COLLECTION_ID,0);}
+		return (*this)+=newp;
+	} catch (RC rc) {return rc;} catch (...) {report(MSG_ERROR,"Exception in IBatch::clone(...)\n"); return RC_INTERNAL;}
 }
 
 RC BatchInsert::process(bool fDestroy,unsigned md,const AllocCtrl *actrl,const IntoClass *into,unsigned nInto)
@@ -1083,7 +1144,7 @@ RC BatchInsert::process(bool fDestroy,unsigned md,const AllocCtrl *actrl,const I
 	} catch (RC rc) {return rc;} catch (...) {report(MSG_ERROR,"Exception in IBatch::process(...)\n"); return RC_INTERNAL;}
 }
 
-RC BatchInsert::getPIDs(PID *pids,unsigned& nPids,unsigned start)
+RC BatchInsert::getPIDs(PID *pids,unsigned& nPids,unsigned start) const
 {
 	try {
 		if (pids==NULL || nPids==0) return RC_INVPARAM;
@@ -1096,6 +1157,18 @@ RC BatchInsert::getPIDs(PID *pids,unsigned& nPids,unsigned start)
 	} catch (RC rc) {return rc;} catch (...) {report(MSG_ERROR,"Exception in IBatch::getPIDs(...)\n"); return RC_INTERNAL;}
 }
 
+RC BatchInsert::getPID(unsigned idx,PID& pid) const
+{
+	try {if (idx>=nTs) {pid=PIN::noPID; return RC_INVPARAM;} pid=ts[idx]->id; return RC_OK;}
+	catch (RC rc) {return rc;} catch (...) {report(MSG_ERROR,"Exception in IBatch::getPID(...)\n"); return RC_INTERNAL;}
+}
+	
+const Value *BatchInsert::getProperty(unsigned idx,URIID pid) const
+{
+	try {return idx>=nTs?NULL:ts[idx]->findProperty(pid);}
+	catch (RC) {return NULL;} catch (...) {report(MSG_ERROR,"Exception in IBatch::getProperty(...)\n"); return NULL;}
+}
+
 ElementID BatchInsert::getEIDBase() const
 {
 	try {return ses->getStore()->getPrefix();} catch (...) {report(MSG_ERROR,"Exception in IBatch::getEIDBase(...)\n"); return STORE_COLLECTION_ID;}
@@ -1103,16 +1176,22 @@ ElementID BatchInsert::getEIDBase() const
 
 void *BatchInsert::malloc(size_t s)
 {
-	return SubAlloc::malloc(s);
+	return StackAlloc::malloc(s);
 }
 
 void *BatchInsert::realloc(void *p,size_t s,size_t old)
 {
-	return SubAlloc::realloc(p,s,old);
+	return StackAlloc::realloc(p,s,old);
 }
 
 void BatchInsert::free(void *)
 {
+}
+
+void BatchInsert::clear()
+{
+	DynArray<PIN*>::clear();
+	truncate(TR_REL_ALL);
 }
 
 void BatchInsert::destroy()

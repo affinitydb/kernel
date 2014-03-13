@@ -1,6 +1,6 @@
 /**************************************************************************************
 
-Copyright © 2004-2013 GoPivotal, Inc. All rights reserved.
+Copyright © 2004-2014 GoPivotal, Inc. All rights reserved.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -53,16 +53,16 @@ struct BuiltinURI
 class NamedMgr : public TreeGlobalRoot
 {
 	friend	class Classifier;
-	StoreCtx		*const	ctx;
-	const char		*storePrefix;
-	size_t			lStorePrefix;
-	volatile long	xPropID;
-	Mutex			lock;
-	bool			fInit;
+	StoreCtx			*const	ctx;
+	const char			*storePrefix;
+	size_t				lStorePrefix;
+	volatile long		xPropID;
+	Mutex				lock;
+	bool				fInit;
 public:
 	NamedMgr(StoreCtx *ct);
 	RC					createBuiltinObjects(Session *ses);
-	RC					loadObjects(Session *ses);
+	RC					loadObjects(Session *ses,bool fSafe);
 	RC					initStorePrefix(Identity *ident=NULL);
 	RC					restoreXPropID(Session *ses);
 	bool				isInit() const {return fInit;}
@@ -73,6 +73,7 @@ public:
 	RC					getNamedPID(URIID uid,PID& id);
 	RC					getNamed(URIID id,PINx&,bool fUpdate=false);
 	RC					update(URIID id,PINRef& pr,uint16_t meta,bool fInsert);
+	const char			*getTraceName(class URI *uri,size_t& l) const;
 	static	const char	*getBuiltinName(URIID uid,size_t& lname);
 	static	URIID		getBuiltinURIID(const char *name,size_t lname,bool fSrv);
 	static	uint16_t	getMeta(ClassID cid);

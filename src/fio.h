@@ -1,6 +1,6 @@
 /**************************************************************************************
 
-Copyright © 2004-2013 GoPivotal, Inc. All rights reserved.
+Copyright © 2004-2014 GoPivotal, Inc. All rights reserved.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -26,6 +26,9 @@ Written by Mark Venguerov 2004-2012
 
 #include "utils.h"
 #include "startup.h"
+#if !defined(WIN32) && !defined(ANDROID)
+#include <aio.h>
+#endif
 
 /*
  * Flags to open()
@@ -61,11 +64,9 @@ struct myaio
 	size_t			aio_nbytes;						/**< Size of buffer */
 	int				aio_lio_opcode;					/**< Action, from LIOOP enum */
 #elif defined(__APPLE__)
-#include <aio.h>
 struct myaio : public aiocb
 {
 #else
-#include <aio.h>
 struct myaio : public aiocb64
 {
 #endif

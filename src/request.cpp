@@ -1,6 +1,6 @@
 /**************************************************************************************
 
-Copyright © 2004-2013 GoPivotal, Inc. All rights reserved.
+Copyright © 2004-2014 GoPivotal, Inc. All rights reserved.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -154,7 +154,9 @@ void ThreadGroup::processRequests()
 			if ((cnt&0x80000000)==0) ses->set(&ref->ctx); else continue;
 		}
 		for (long s=req->state; !cas(&req->state,s,s|RQ_IN_PROGRESS); s=req->state);
-		if ((req->state&RQ_SKIP)==0 && (ref==NULL||!ref->ctx.inShutdown())) try {req->process();} catch (...) {}
+		if ((req->state&RQ_SKIP)==0 && (ref==NULL||!ref->ctx.inShutdown())) try {req->process();}
+		catch (RC rc) {report(MSG_ERROR,"Exception \"%s\" in request\n", getErrMsg(rc));}
+		catch (...) {report(MSG_ERROR,"Unknown exception in request\n");}
 		for (long s=req->state; !cas(&req->state,s,s&~(RQ_IN_PROGRESS|RQ_IN_QUEUE)); s=req->state);
 		req->destroy(); assert(ses->getTxState()==TX_NOTRAN && !ses->hasLatched());
 		ses->cleanup(); ses->set(NULL); if (ref!=NULL) InterlockedDecrement(&ref->cnt);
@@ -169,7 +171,7 @@ void ThreadGroup::processRequests()
 
 bool RequestQueue::postRequest(Request *req,StoreCtx *ctx,RQType rqt)
 {
-	if (req==NULL||ctx!=NULL&&(ctx->ref==NULL||ctx->inShutdown())) return false;
+	if (req==NULL||ctx!=NULL&&(ctx->ref==NULL||ctx->inShutdown()||(ctx->mode&STARTUP_RT)!=0)) return false;
 	for (long s=req->state; ;s=req->state) {
 		if ((s&RQ_IN_QUEUE)!=0) return true;
 		if (cas(&req->state,s,s|RQ_IN_QUEUE)) break;

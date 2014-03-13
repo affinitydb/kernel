@@ -1,6 +1,6 @@
 /**************************************************************************************
 
-Copyright © 2004-2013 GoPivotal, Inc. All rights reserved.
+Copyright © 2004-2014 GoPivotal, Inc. All rights reserved.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -41,7 +41,7 @@ public:
 		{return left==right?SLO_NOOP:left.ident<right.ident||left.ident==right.ident&&left.pid<right.pid?SLO_LT:SLO_GT;}
 };
 
-class PIDStore : public SubAlloc
+class PIDStore : public StackAlloc
 {
 	const	unsigned		limit;
 	SList<PID,PIDCmp>	cache;

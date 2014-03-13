@@ -1,6 +1,6 @@
 /**************************************************************************************
 
-Copyright © 2004-2013 GoPivotal, Inc. All rights reserved.
+Copyright © 2004-2014 GoPivotal, Inc. All rights reserved.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -14,7 +14,7 @@ WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the
 License for the specific language governing permissions and limitations
 under the License.
 
-Written by Mark Venguerov 2004-2012
+Written by Mark Venguerov 2004-2013
 
 **************************************************************************************/
 
@@ -24,13 +24,14 @@ Written by Mark Venguerov 2004-2012
 #ifndef _CRYPT_H_
 #define _CRYPT_H_
 
-#include "utils.h"
+#include "ecc.h"
 
 #ifndef __arm__
 #ifndef __APPLE__
 #include "wmmintrin.h"
 #include "smmintrin.h"
 #define MM_AES_NI
+#define MM_CMULQDQ
 #endif
 #endif
 
@@ -83,7 +84,7 @@ public:
 #define SHA_INPUT_WORDS		16
 #define SHA_INPUT_BYTES		(SHA_INPUT_WORDS*sizeof(uint32_t))
 
-class SHA
+class SHA256
 {
 	uint64_t	bits;
 	uint32_t	H[SHA_DIGEST_WORDS];
@@ -91,8 +92,8 @@ class SHA
 	void		transform();
 	static		const	uint32_t IV[SHA_DIGEST_WORDS];
 public:
-	SHA() : bits(0) {memcpy(H,IV,sizeof(H));}
-	SHA(const SHA& s) {bits=s.bits; memcpy(H,s.H,sizeof(H)); memcpy(M,s.M,sizeof(M));}
+	SHA256() : bits(0) {memcpy(H,IV,sizeof(H));}
+	SHA256(const SHA256& s) {bits=s.bits; memcpy(H,s.H,sizeof(H)); memcpy(M,s.M,sizeof(M));}
 	void		init() {bits=0; memcpy(H,IV,sizeof(H));}
 	void		add(const byte *data,size_t len);
 	const byte	*result();
@@ -107,7 +108,7 @@ public:
 class HMAC
 {
 protected:
-	SHA		in,out;
+	SHA256		in,out;
 public:
 	HMAC(const byte *key,size_t lkey);
 	HMAC(const HMAC& hm) : in(hm.in),out(hm.out) {}
@@ -159,41 +160,6 @@ public:
 	void decrypt(byte *buf,size_t lbuf,const uint32_t IV[4],AESMode mode=AES_CBC);
 };
 
-class MPN
-{
-	union {
-		struct {
-			uint16_t	fNeg	:1;
-			uint16_t	fNegY	:1;
-			uint16_t	nBits	:14;
-		};
-		uint32_t		words[1];
-	};
-public:
-	MPN&	add(MPN& mpn1,MPN& mpn2);
-	MPN&	sub(MPN& mpb1,MPN& mpn2);
-	MPN&	mul(MPN& mpb1,MPN& mpn2,SubAlloc& ma);
-	MPN&	div(MPN& mpb1,MPN& mpn2,SubAlloc& ma);
-	MPN&	mod(MPN& mpb1,MPN& mpn2,SubAlloc& ma);
-	MPN&	square(MPN& mpn,SubAlloc& ma);
-	MPN&	sqrt(MPN& mpn,SubAlloc& ma);
-	MPN&	random(unsigned bits,SubAlloc& ma);
-	MPN&	random(const MPN& range,SubAlloc& ma);
-private:
-	MPN&	operator+=(const MPN&);
-	MPN&	operator-=(const MPN&);
-	MPN&	operator*=(const MPN&);
-	MPN&	operator/=(const MPN&);
-	MPN&	operator%=(const MPN&);
-};
-
-struct ECParams
-{
-	MPN		*A;
-	MPN		*B;
-	//...
-};
-
 class StoreCtx;
 
 class CryptService : public IService
@@ -202,13 +168,13 @@ class CryptService : public IService
 	struct CryptProcessor : public Processor, public AES, public HMAC {
 		uint32_t	save_enc_key_sch[64];
 		uint32_t	save_dec_key_sch[64];
-		SHA			save_in,save_out;
+		SHA256			save_in,save_out;
 		CryptProcessor(const byte *key,unsigned lkey,bool fDec) : AES(key,lkey,fDec),HMAC(key,lkey) {
 			memcpy(save_enc_key_sch,enc_key_sch,sizeof(enc_key_sch)); memcpy(save_dec_key_sch,dec_key_sch,sizeof(dec_key_sch));
-			memcpy(&save_in,&in,sizeof(SHA)); memcpy(&save_out,&out,sizeof(SHA));
+			memcpy(&save_in,&in,sizeof(SHA256)); memcpy(&save_out,&out,sizeof(SHA256));
 		}
 		RC invoke(IServiceCtx *ctx,const Value& inp,Value& out,unsigned& mode);
-		void cleanup(IServiceCtx *,bool fDestroy);
+		void cleanup(IServiceCtx *,bool fDestroying);
 	};
 public:
 	CryptService(StoreCtx *ct) : ctx(ct) {}

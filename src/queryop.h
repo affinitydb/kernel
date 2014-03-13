@@ -1,6 +1,6 @@
 /**************************************************************************************
 
-Copyright © 2004-2013 GoPivotal, Inc. All rights reserved.
+Copyright © 2004-2014 GoPivotal, Inc. All rights reserved.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -54,6 +54,7 @@ namespace AfyKernel
 #define	QO_HIDDEN		0x00020000			/**< return hidden pins in initialization */
 #define	QO_AUGMENT		0x00040000			/**< SEL_AUGMENTED for TransOp */
 #define	QO_LOADALL		0x00080000			/**< load all properties for TransOp or in Sort */
+#define	QO_FIRST		0x00100000			/**< return only first PIN/value */
 
 /**
  * query operator state flags
@@ -326,8 +327,9 @@ public:
 __forceinline bool storeEPR(EncPINRef **pep,PINx& qr)
 {
 #if defined(__x86_64__) || defined(IA64) || defined(_M_X64) || defined(_M_IA64)
-	if (qr.epr.lref<sizeof(EncPINRef*) && qr.epr.flags==0)
-		{byte *p=(byte*)pep; p[0]=qr.epr.lref<<1|1; memcpy(p+1,qr.epr.buf,qr.epr.lref); return true;}
+	byte lref=PINRef::len(qr.epr.buf);
+	if (lref<sizeof(EncPINRef*) && qr.epr.flags==0)
+		{byte *p=(byte*)pep; p[0]=lref<<1|1; memcpy(p+1,qr.epr.buf,lref); return true;}
 #endif
 	return false;
 }
@@ -335,7 +337,7 @@ __forceinline bool storeEPR(EncPINRef **pep,PINx& qr)
 __forceinline void loadEPR(const EncPINRef *ep,PINx &res)
 {
 #if defined(__x86_64__) || defined(IA64) || defined(_M_X64) || defined(_M_IA64)
-	if ((((ptrdiff_t)ep)&1)!=0) {res.epr.flags=0; memcpy(res.epr.buf,(byte*)&ep+1,res.epr.lref=byte((ptrdiff_t)ep)>>1);} else
+	if ((((ptrdiff_t)ep)&1)!=0) {res.epr.flags=0; memcpy(res.epr.buf,(byte*)&ep+1,byte((ptrdiff_t)ep)>>1);} else
 #endif
 	memcpy(&res.epr,ep,ep->trunc<DEFAULT_ALIGN>());
 }
@@ -345,10 +347,10 @@ __forceinline const Value *getStoredValues(const EncPINRef *ep)
 	return (const Value*)((byte*)ep+ep->trunc<DEFAULT_ALIGN>());
 }
 
-__forceinline EncPINRef *storeValues(const PINx& qr,unsigned nValues,SubAlloc& pinMem)
+__forceinline EncPINRef *storeValues(const PINx& qr,unsigned nValues,StackAlloc& pinMem)
 {
 	EncPINRef *ep=(EncPINRef*)pinMem.malloc(qr.epr.trunc<DEFAULT_ALIGN>()+nValues*sizeof(Value));
-	if (ep!=NULL) {ep->flags=qr.epr.flags; memcpy(ep->buf,qr.epr.buf,ep->lref=qr.epr.lref);}
+	if (ep!=NULL) {ep->flags=qr.epr.flags; memcpy(ep->buf,qr.epr.buf,PINRef::len(qr.epr.buf));}
 	return ep;
 }
 
@@ -375,8 +377,8 @@ class MergeOp : public QueryOp
 	PropList			props2;
 	unsigned			*index2;
 	DynArray<EncPINRef*> rvals;
-	SubAlloc			rvbuf;
-	SubAlloc::SubMark	rvmrk;
+	StackAlloc			rvbuf;
+	StackAlloc::SubMark	rvmrk;
 	unsigned			nRp;
 	unsigned			iRp;
 	Value				*pV1;
@@ -502,7 +504,7 @@ class Sort : public QueryOp
 {
 	const	unsigned		nPreSorted;
 	mutable	bool			fRepeat;
-	SubAlloc				pinMem;
+	StackAlloc				pinMem;
 	uint64_t				nAllPins;
 	uint64_t				idx;
 	EncPINRef				**pins;
@@ -536,10 +538,10 @@ public:
 	Sort(QueryOp *qop,const OrderSegQ *os,unsigned nSegs,unsigned qf,unsigned nP,const PropList *pids,unsigned nPids);
 	void*		operator new(size_t s,Session *ses,unsigned nSegs,unsigned nPids) throw() {return ses->malloc(s+int(nSegs-1)*sizeof(OrderSegQ)+nPids*sizeof(PropList)+nSegs*sizeof(unsigned));}
 	const	Value	*getvalues() const;
+	__forceinline void	swap(unsigned i,unsigned j) {assert(pins!=NULL); EncPINRef *tmp=pins[i]; pins[i]=pins[j]; pins[j]=tmp;}
+	__forceinline int	cmp(unsigned i,unsigned j) const {assert(pins!=NULL); return cmp(pins[i],pins[j]);}
 private:
-	__forceinline void	swap(unsigned i,unsigned j) {EncPINRef *tmp=pins[i]; pins[i]=pins[j]; pins[j]=tmp;}
 	RC			sort(unsigned nAbort=~0u);
-	void		quickSort(unsigned);
 	int			cmp(const EncPINRef *ep1,const EncPINRef *ep2) const;
 	RC			writeRun(unsigned nRunPins,size_t&);
 	RC          prepMerge();

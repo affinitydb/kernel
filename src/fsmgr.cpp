@@ -1,6 +1,6 @@
 /**************************************************************************************
 
-Copyright © 2004-2013 GoPivotal, Inc. All rights reserved.
+Copyright © 2004-2014 GoPivotal, Inc. All rights reserved.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -160,16 +160,10 @@ PBlock *FSMgr::getExtentMapPage(ExtentInfo *ext,PBlock *pb)
 {
 	pb = ctx->bufMgr->getPage(ext->extentStart,&extentMapPage,PGCTL_XLOCK|QMGR_UFORCE,pb);
 	if (pb!=NULL && (ext->state&EXTMAP_READ)==0) {
-		TxPageHeader *emp = (TxPageHeader*)pb->getPageBuf();
+		ExtentMapPage::ExtentMapHeader *emp = (ExtentMapPage::ExtentMapHeader*)pb->getPageBuf();
 		ext->nPages = emp->nPages;
-		ext->nFreePages = 0;
-		uint32_t *pBmp=extentMapPage.getBMP(emp); long n=(long)(emp->nPages+BITSPERELT-1)/BITSPERELT-1;
-		uint32_t w=pBmp[n],mask=(1<<ext->nPages%BITSPERELT)-1;
-		if ((w&mask)!=mask) {ext->nFreePages+=pop(~w&mask); ext->firstFree=n;}
-		while (--n>=0) {
-			if ((w=~pBmp[n])!=0) {ext->nFreePages+=pop(w); ext->firstFree=n;}
-			// maxContiguous ???
-		}
+		ext->nFreePages = emp->nFreePages;
+		ext->firstFree = emp->firstFree;
 		ext->state|=EXTMAP_READ;
 	}
 	return pb;
@@ -183,7 +177,8 @@ PBlock *FSMgr::getNewPage(PageMgr *mgr)
 
 RC FSMgr::allocPages(unsigned nPages,PageID *buf,PBlock **pAllocPage)
 {
-	Session *ses=Session::getSession(); unsigned nAlloc=0,ndw=0;
+	Session *ses=Session::getSession(); if (ses==NULL) return RC_NOSESSION;
+	unsigned nAlloc=0,ndw=0; ses->setCodeTrace(2);
 	if (!ses->inWriteTx() && pAllocPage==NULL) return RC_READTX;
 	if (ses!=NULL && (unsigned)ses->tx.defFree!=0) while ((buf[nAlloc]=ses->tx.defFree.pop())!=INVALID_PAGEID)
 		if (++nAlloc==nPages) {if (pAllocPage!=NULL) *pAllocPage=NULL; return RC_OK;}
@@ -199,7 +194,7 @@ RC FSMgr::allocPages(unsigned nPages,PageID *buf,PBlock **pAllocPage)
 			lock.lock(RW_X_LOCK); ext->list.remove(); lock.unlock(); continue;
 		}
 		uint32_t nExtAlloc=0,sht=ext->firstFree*BITSPERELT;
-		uint32_t *pBmp=extentMapPage.getBMP((TxPageHeader*)pb->getPageBuf());
+		uint32_t *pBmp=((ExtentMapPage::ExtentMapHeader*)pb->getPageBuf())->bmp;
 		for (unsigned limit=(ext->nPages+BITSPERELT-1)/BITSPERELT; ext->firstFree<limit; ++ext->firstFree,sht+=BITSPERELT) {
 			uint32_t bmp=pBmp[ext->firstFree],mask=ext->firstFree+1==limit?(1<<ext->nPages%BITSPERELT)-1:~0u;
 			while ((bmp&mask)!=mask) {
@@ -223,8 +218,9 @@ RC FSMgr::allocPages(unsigned nPages,PageID *buf,PBlock **pAllocPage)
 
 RC FSMgr::allocNewExtent(ExtentInfo*& ext,PBlock*& pb,bool fForce)
 {
-	unsigned nNewPages=ctx->theCB->nPagesPerExtent;
-	size_t lPage=ctx->fileMgr->getPageSize(),pageSpace=ExtentMapPage::contentSize(lPage);
+	Session *ses=Session::getSession(); if (ses!=NULL) ses->setCodeTrace(1);
+	unsigned nNewPages=ctx->theCB->nPagesPerExtent; RC rc=RC_OK; bool fNewFile=false; off64_t addr;
+	size_t lPage=ctx->bufMgr->getPageSize(),pageSpace=ExtentMapPage::contentSize(lPage);
 	ext=nExtents>0?extentTable[nExtents-1]:NULL;
 	pb=ext!=NULL?getExtentMapPage(ext,pb):NULL;
 	RWLockP lck(&lock,RW_X_LOCK); ExtentInfo *ext2;
@@ -234,29 +230,30 @@ RC FSMgr::allocNewExtent(ExtentInfo*& ext,PBlock*& pb,bool fForce)
 		pb=getExtentMapPage(ext=extentTable[nExtents-1],pb);
 		lck.set(&lock,RW_X_LOCK);
 	}
-	off64_t addr=ctx->fileMgr->getFileSize(dataFile);
-	if (ctx->theCB->maxSize!=0) {
-		uint64_t fullSize=addr;
-		if (ctx->theCB->nDataFiles>1) fullSize+=uint64_t(ctx->theCB->nDataFiles-1)*MAXPAGESPERFILE*lPage;
-		if (fullSize>=ctx->theCB->maxSize || fullSize+uint64_t(nNewPages)*lPage>ctx->theCB->maxSize &&
-											(nNewPages=unsigned((ctx->theCB->maxSize-fullSize)/lPage))==0) 
-			{if (pb!=NULL) pb->release(); return RC_QUOTA;}
-	}
-	RC rc; bool fNewFile=false;
-	if (addr/lPage + nNewPages>MAXPAGESPERFILE) {
-		FileID fid=dataFile+1; char buf[100];
-		sprintf(buf,STOREPREFIX"%u"DATAFILESUFFIX,ctx->theCB->nDataFiles);
-		if ((rc=ctx->fileMgr->open(fid,buf,FIO_CREATE|FIO_NEW))!=RC_OK) {
-			report(MSG_ERROR,"FSMgr::allocNewExtent cannot create new file %s: %d\n",buf,rc);
-			return rc;
+	if (ctx->fileMgr==NULL) {
+		assert(ctx->memory!=NULL); addr=ctx->theCB->totalMemUsed;
+		uint64_t xPages=(ctx->lMemory-ctx->theCB->totalMemUsed)/lPage; if (xPages<4) return RC_FULL;
+		if (nNewPages>xPages) nNewPages=(unsigned)xPages; ctx->theCB->totalMemUsed+=(uint64_t)nNewPages*lPage;
+	} else {
+		addr=ctx->fileMgr->getFileSize(dataFile);
+		if (ctx->theCB->maxSize!=0) {
+			uint64_t fullSize=addr;
+			if (ctx->theCB->nDataFiles>1) fullSize+=uint64_t(ctx->theCB->nDataFiles-1)*MAXPAGESPERFILE*lPage;
+			if (fullSize>=ctx->theCB->maxSize || fullSize+uint64_t(nNewPages)*lPage>ctx->theCB->maxSize &&
+												(nNewPages=unsigned((ctx->theCB->maxSize-fullSize)/lPage))==0) 
+				{if (pb!=NULL) pb->release(); return RC_QUOTA;}
 		}
-		dataFile=fid; ctx->theCB->nDataFiles++; fNewFile=true;
-	}
-	while ((rc=ctx->fileMgr->allocateExtent(dataFile,nNewPages,addr))!=RC_OK) {
-		if (rc!=RC_FULL || (nNewPages>>=1)<=2) {
-			report(MSG_ERROR,"FSMgr::allocNewExtent failed: %d\n",rc);
-			return rc;
+		if (addr/lPage+nNewPages>MAXPAGESPERFILE) {
+			FileID fid=dataFile+1; char buf[100];
+			sprintf(buf,STOREPREFIX"%u"DATAFILESUFFIX,ctx->theCB->nDataFiles);
+			if ((rc=ctx->fileMgr->open(fid,buf,FIO_CREATE|FIO_NEW))!=RC_OK) {
+				report(MSG_ERROR,"FSMgr::allocNewExtent cannot create new file %s: %d\n",buf,rc);
+				return rc;
+			}
+			dataFile=fid; ctx->theCB->nDataFiles++; fNewFile=true;
 		}
+		while ((rc=ctx->fileMgr->allocateExtent(dataFile,nNewPages,addr))!=RC_OK)
+			if (rc!=RC_FULL || (nNewPages>>=1)<=2) {report(MSG_ERROR,"FSMgr::allocNewExtent failed: %d\n",rc); return rc;}
 	}
 	assert(addr%lPage==0);
 	PBlockP dir; bool fNewDirPage=false,fNewExtent=false;
@@ -300,8 +297,9 @@ RC FSMgr::allocNewExtent(ExtentInfo*& ext,PBlock*& pb,bool fForce)
 	}
 	extentList.insertFirst(&ext->list);
 	if (!fNewExtent) {pb=getExtentMapPage(ext,pb); assert(pb!=NULL);}
-	TxPageHeader *emp=(TxPageHeader*)pb->getPageBuf();
-	emp->nPages=ext->nPages; lck.set(NULL); pb->flushPage();
+	ExtentMapPage::ExtentMapHeader *emp=(ExtentMapPage::ExtentMapHeader*)pb->getPageBuf();
+	emp->nPages=ext->nPages; emp->nFreePages=ext->nFreePages; emp->firstFree=ext->firstFree;
+	lck.set(NULL); pb->flushPage();
 	if (dir.isNull()) {
 		dir=ctx->bufMgr->getPage(ext->dirPage,&extentDirPage,PGCTL_XLOCK); dir.set(QMGR_UFORCE);
 		if (dir.isNull()) {
@@ -375,7 +373,7 @@ bool FSMgr::isFreePage(PageID pid)
 {
 	ExtentInfo *ext=findExtent(pid,true); PBlock *pb; bool rc=true;
 	if (ext!=NULL && (pb=getExtentMapPage(ext,NULL))!=NULL) {
-		rc=extentMapPage.isFree((TxPageHeader*)pb->getPageBuf(),pid-ext->extentStart-1);
+		rc=extentMapPage.isFree((ExtentMapPage::ExtentMapHeader*)pb->getPageBuf(),pid-ext->extentStart-1);
 		pb->release();
 	}
 	return rc;
@@ -391,7 +389,7 @@ RC FSMgr::reservePage(PageID pid)
 		if (pid==ext->extentStart) return RC_CORRUPTED;
 		if (pid>ext->extentStart && pid<ext->extentStart+ext->nPages) break;
 	} else if ((pb=getExtentMapPage(ext,NULL))==NULL) return RC_CORRUPTED;
-	const TxPageHeader *ep=(const TxPageHeader*)pb->getPageBuf();
+	const ExtentMapPage::ExtentMapHeader *ep=(const ExtentMapPage::ExtentMapHeader*)pb->getPageBuf();
 	if (extentMapPage.isFree(ep,pid-ext->extentStart-1)) {
 		rc=ctx->txMgr->update(pb,&extentMapPage,pid-ext->extentStart-1); ext->state|=EXTMAP_MODIFIED;
 		if (--ext->nFreePages==0) {lock.lock(RW_X_LOCK); ext->list.remove(); lock.unlock();}
@@ -404,7 +402,7 @@ PBlock *FSMgr::getNewPage(PageMgr *mgr,PageID pid)
 {
 	ExtentInfo *ext=findExtent(pid); PBlock *pb;
 	if (ext==NULL || (pb=getExtentMapPage(ext,NULL))==NULL) return NULL;
-	if (!extentMapPage.isFree((TxPageHeader*)pb->getPageBuf(),pid-ext->extentStart-1))
+	if (!extentMapPage.isFree((ExtentMapPage::ExtentMapHeader*)pb->getPageBuf(),pid-ext->extentStart-1))
 		{pb->release(); return NULL;}
 	ctx->txMgr->update(pb,&extentMapPage,pid-ext->extentStart-1);	// if !=RC_OK ???
 	return ctx->bufMgr->newPage(pid,mgr,pb);
@@ -412,23 +410,25 @@ PBlock *FSMgr::getNewPage(PageMgr *mgr,PageID pid)
 
 //-------------------------------------------------------------------------------------------
 
-ExtentMapPage::ExtentMapPage(StoreCtx *ctx) 
-: TxPage(ctx),lExtHdr(EXT_HDR_SIZE)
+ExtentMapPage::ExtentMapPage(StoreCtx *ctx) : TxPage(ctx)
 {
 }
 
 RC ExtentMapPage::update(PBlock *pb,size_t len,unsigned info,const byte *rec,size_t lrec,unsigned flags,PBlock *)
 {
-	byte *frame=pb->getPageBuf(); TxPageHeader *emp=(TxPageHeader*)frame; 
+	byte *frame=pb->getPageBuf(); ExtentMapHeader *emp=(ExtentMapHeader*)frame; 
 	bool fReset=(info&RESETBIT)==((flags&TXMGR_UNDO)!=0?0:RESETBIT);
 	FSMgr::ExtentInfo *ext=(flags&(TXMGR_UNDO|TXMGR_RECV))!=0?ctx->fsMgr->findExtent(emp->pageID+1):NULL;
 	assert(ext==NULL||ext->extentStart==emp->pageID);
 	if (rec==NULL || lrec==0) {
 		unsigned bitN=info&~RESETBIT;
 		if (bitN>MAXBITNUMBER || bitN>=emp->nPages) {report(MSG_ERROR,"FSMgr::update: invalid bit number %d\n",bitN); return RC_CORRUPTED;}
-		uint32_t *pBmp=&getBMP(emp)[bitN/BITSPERELT],mask=1<<bitN%BITSPERELT;
-		if (!fReset) {*pBmp|=mask; if (ext!=NULL) ext->nFreePages--;}
-		else {*pBmp&=~mask; if (ext!=NULL) {ext->nFreePages++; if (bitN/BITSPERELT<ext->firstFree) ext->firstFree=bitN/BITSPERELT;}}
+		uint32_t *pBmp=&emp->bmp[bitN/BITSPERELT],mask=1<<bitN%BITSPERELT;
+		if (!fReset) {*pBmp|=mask; emp->nFreePages--; if (ext!=NULL) ext->nFreePages--;}
+		else {
+			*pBmp&=~mask; emp->nFreePages--; if (bitN/BITSPERELT<emp->firstFree) emp->firstFree=bitN/BITSPERELT;
+			if (ext!=NULL) {ext->nFreePages++; if (bitN/BITSPERELT<ext->firstFree) ext->firstFree=bitN/BITSPERELT;}
+		}
 	} else {
 		if ((lrec&(sizeof(uint32_t)*2-1))!=0) {	// check valid rec len
 			// error msg
@@ -439,9 +439,12 @@ RC ExtentMapPage::update(PBlock *pb,size_t len,unsigned info,const byte *rec,siz
 			if (idx*BITSPERELT>=MAXBITNUMBER) {
 				// error msg
 			} else {
-				uint32_t *pBmp=&getBMP(emp)[idx];
-				if (!fReset) {*pBmp|=mask; if (ext!=NULL) ext->nFreePages-=pop(mask);}
-				else {*pBmp&=~mask; if (ext!=NULL) {ext->nFreePages+=pop(mask); if (idx<ext->firstFree) ext->firstFree=idx;}}
+				uint32_t *pBmp=&emp->bmp[idx]; const unsigned n=pop(mask);
+				if (!fReset) {*pBmp|=mask; emp->nFreePages-=n; if (ext!=NULL) ext->nFreePages-=n;}
+				else {
+					*pBmp&=~mask; emp->nFreePages+=n; if (idx<emp->firstFree) emp->firstFree=idx;
+					if (ext!=NULL) {ext->nFreePages+=n; if (idx<ext->firstFree) ext->firstFree=idx;}
+				}
 			}
 		}
 	}
@@ -456,14 +459,14 @@ void ExtentMapPage::initPage(byte *frame,size_t len,PageID pid)
 bool ExtentMapPage::afterIO(PBlock *pb,size_t lPage,bool fLoad)
 {
 	if (!TxPage::afterIO(pb,lPage,fLoad)) return false;
-	if (((TxPageHeader*)pb->getPageBuf())->nPages<=contentSize(lPage)*8) return true;
+	if (((ExtentMapHeader*)pb->getPageBuf())->nPages<=contentSize(lPage)*8) return true;
 	report(MSG_ERROR,"Page %08X corrupt after read: incorrect nPages\n",pb->getPageID());
 	return false;
 }
 
 bool ExtentMapPage::beforeFlush(byte *frame,size_t len,PageID pid)
 {
-	if (((TxPageHeader*)frame)->nPages>contentSize(len)*8) {
+	if (((ExtentMapHeader*)frame)->nPages>contentSize(len)*8) {
 		report(MSG_ERROR,"Page %08X corrupt before write: incorrect nPages\n",pid);
 		return false;
 	}

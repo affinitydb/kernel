@@ -1,6 +1,6 @@
 /**************************************************************************************
 
-Copyright © 2004-2013 GoPivotal, Inc. All rights reserved.
+Copyright © 2004-2014 GoPivotal, Inc. All rights reserved.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -201,7 +201,7 @@ RC TxMgr::abort(Session *ses,AbortType at)
 		if ((save&TX_READONLY)==0) {
 			ses->txState=ses->txState&~0xFFFFul|TX_ABORTING;
 			if (!ses->firstLSN.isNull() && (rc=ctx->logMgr->rollback(ses,at!=TXA_ALL && ses->tx.next!=NULL))!=RC_OK) {
-				report(MSG_ERROR,"Couldn't rollback transaction "_LX_FM"\n",ses->txid); 
+				report(MSG_ERROR,"Couldn't rollback transaction " _LX_FM "\n",ses->txid); 
 				cleanup(ses); return rc;
 			}
 		}
@@ -275,8 +275,14 @@ RC TxMgr::update(PBlock *pb,PageMgr *pageMgr,unsigned info,const byte *rec,size_
 	Session *ses=Session::getSession(); if (ses!=NULL && (ses->txState&TX_READONLY)!=0) return RC_READTX;
 	if (pb->isULocked()) pb->upgradeLock(); assert(pb->isWritable() && (newp==NULL||newp->isXLocked()));
 	RC rc=pageMgr->update(pb,ctx->bufMgr->getPageSize(),info,rec,(unsigned)lrec,0,newp);		// size_t?
-	if (rc==RC_OK) ctx->logMgr->insert(ses,pb->isFirstPageOp()?LR_CREATE:LR_UPDATE,info<<PGID_SHIFT|pageMgr->getPGID(),
-																		pb->getPageID(),NULL,rec,lrec,flags,pb,newp);
+	if (rc==RC_OK) {
+		if (ctx->memory!=NULL && pb->isFirstPageOp()) {pb->resetNewPage(); assert(newp==NULL);}
+		else {
+			if (ctx->memory!=NULL && newp!=NULL && newp->isFirstPageOp()) {newp->resetNewPage(); /* ???? */}
+			ctx->logMgr->insert(ses,pb->isFirstPageOp()?LR_CREATE:LR_UPDATE,info<<PGID_SHIFT|pageMgr->getPGID(),
+																	pb->getPageID(),NULL,rec,lrec,flags,pb,newp);
+		}
+	}
 #ifdef STRICT_UPDATE_CHECK
 	else
 		report(MSG_ERROR,"TxMgr::update: page %08X, pageMgr %d, error %d\n",pb->getPageID(),pageMgr->getPGID(),rc);
@@ -379,7 +385,7 @@ RC Session::popTx(bool fCommit,bool fAll)
 		} else if (fAll) st->nInserted=nTotalIns=0;
 		else {
 			ctx->lockMgr->releaseLocks(this,tx.subTxID,true); st->nInserted-=tx.nInserted; nTotalIns-=tx.nInserted;
-			if (repl!=NULL) repl->truncate(tx.rmark);
+			if (repl!=NULL) repl->truncate(TR_REL_ALL,&tx.rmark);
 		}
 		st->lastLSN=tx.lastLSN;	//???
 		tx.next=NULL; tx.~SubTx(); memcpy(&tx,st,sizeof(SubTx)); free(st); if (!fAll) break;

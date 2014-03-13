@@ -1,6 +1,6 @@
 /**************************************************************************************
 
-Copyright © 2004-2013 GoPivotal, Inc. All rights reserved.
+Copyright © 2004-2014 GoPivotal, Inc. All rights reserved.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -14,13 +14,12 @@ WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the
 License for the specific language governing permissions and limitations
 under the License.
 
-Written by Adam Back and Mark Venguerov 2004-2012
+Written by Adam Back and Mark Venguerov 2004-2013
 
 **************************************************************************************/
 
 #include "crypt.h"
 #include "session.h"
-#include "utils.h"
 #ifdef WIN32
 #include <wincrypt.h>
 #else
@@ -102,7 +101,7 @@ __forceinline void	make_big_endian32(uint32_t *data,unsigned n) {if (fLEnd) for 
 __forceinline void	restore_endian32(uint32_t *data,unsigned n) {if (fLEnd) for (;n>0;++data,--n) *data=afy_rev(*data);}
 template<typename T> __forceinline void	axor(T *p1,const T *p2,size_t l) {for (;l!=0; --l) *p1++^=*p2++;}
 
-const uint32_t SHA::IV[SHA_DIGEST_WORDS] =
+const uint32_t SHA256::IV[SHA_DIGEST_WORDS] =
 {
 	0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a, 0x510e527f, 0x9b05688c, 0x1f83d9ab, 0x5be0cd19
 };
@@ -146,7 +145,7 @@ static const uint32_t K[64] =
 #define R0(i) t7(i)+=S1(t4(i))+Ch(t4(i),t5(i),t6(i))+K[i]+(W[i]=((uint32_t*)M)[i]); t3(i)+=t7(i); t7(i)+=S0(t0(i))+Maj(t0(i),t1(i),t2(i))
 #define R(i) t7(i)+=S1(t4(i))+Ch(t4(i),t5(i),t6(i))+K[i+j]+(W[i&15]+=s1(W[(i-2)&15])+W[(i-7)&15]+s0(W[(i-15)&15])); t3(i)+=t7(i); t7(i)+=S0(t0(i))+Maj(t0(i),t1(i),t2(i))
 
-void SHA::transform()
+void SHA256::transform()
 {
 	uint32_t W[16],T[8]; T[0]=H[0]; T[1]=H[1]; T[2]=H[2]; T[3]=H[3]; T[4]=H[4]; T[5]=H[5]; T[6]=H[6]; T[7]=H[7];
 	R0( 0); R0( 1); R0( 2); R0( 3); R0( 4); R0( 5); R0( 6); R0( 7); R0( 8); R0( 9); R0(10); R0(11); R0(12); R0(13); R0(14); R0(15);
@@ -156,7 +155,7 @@ void SHA::transform()
     H[0]+=t0(0); H[1]+=t1(0); H[2]+=t2(0); H[3]+=t3(0); H[4]+=t4(0); H[5]+=t5(0); H[6]+=t6(0); H[7]+=t7(0);
 }
 
-void SHA::add(const byte* data, size_t data_len)
+void SHA256::add(const byte* data, size_t data_len)
 {
     unsigned mlen=(unsigned)((bits>>3)%SHA_INPUT_BYTES);
     bits+=(uint64_t)data_len<<3;
@@ -172,7 +171,7 @@ void SHA::add(const byte* data, size_t data_len)
     }
 }
 
-const byte *SHA::result()
+const byte *SHA256::result()
 {
     unsigned mlen=(unsigned)((bits>>3)%SHA_INPUT_BYTES),padding=SHA_INPUT_BYTES-mlen; M[mlen++]=0x80;
     if (padding>BIT_COUNT_BYTES) {
@@ -195,8 +194,8 @@ const byte *SHA::result()
 static struct TestSHA
 {
 	TestSHA(const char *k,const char *test,unsigned rpt=1) {
-		SHA sha; size_t l=strlen(k); while (rpt--!=0) sha.add((byte*)k,l);
-		if (memcmp(sha.result(),test,SHA_DIGEST_BYTES)!=0) printf("SHA error: %s\n",k);
+		SHA256 sha; size_t l=strlen(k); while (rpt--!=0) sha.add((byte*)k,l);
+		if (memcmp(sha.result(),test,SHA_DIGEST_BYTES)!=0) printf("SHA256 error: %s\n",k);
 	}
 }
 	tst1("abc",																"\xba\x78\x16\xbf\x8f\x01\xcf\xea\x41\x41\x40\xde\x5d\xae\x22\x23\xb0\x03\x61\xa3\x96\x17\x7a\x9c\xb4\x10\xff\x61\xf2\x00\x15\xad"),
@@ -210,7 +209,7 @@ HMAC::HMAC(const byte *key,size_t lkey)
     memset(ibuf,0x36,sizeof(ibuf)); memset(obuf,0x5c,sizeof(obuf));
 	if (lkey<SHA_INPUT_BYTES) {axor(ibuf,key,lkey); axor(obuf,key,lkey);}
 	else {
-		SHA tmp; tmp.add(key,lkey); 
+		SHA256 tmp; tmp.add(key,lkey); 
 		const uint32_t *key2=(uint32_t*)tmp.result();
 		axor((uint32_t*)ibuf,key2,SHA_DIGEST_WORDS); 
 		axor((uint32_t*)obuf,key2,SHA_DIGEST_WORDS);
@@ -562,17 +561,16 @@ RC CryptService::CryptProcessor::invoke(IServiceCtx *ctx,const Value& inp,Value&
 	}
 	memcpy(enc_key_sch,save_enc_key_sch,sizeof(enc_key_sch));
 	memcpy(dec_key_sch,save_dec_key_sch,sizeof(dec_key_sch));
-	memcpy(&in,&save_in,sizeof(SHA));
-	memcpy(&out,&save_out,sizeof(SHA));
+	memcpy(&in,&save_in,sizeof(SHA256));
+	memcpy(&out,&save_out,sizeof(SHA256));
 	mode|=ISRV_REFINP; return RC_OK;
 }
 		
-void CryptService::CryptProcessor::cleanup(IServiceCtx *ctx,bool fDestroy)
+void CryptService::CryptProcessor::cleanup(IServiceCtx *ctx,bool fDestroying)
 {
-	if (fDestroy) ctx->free(this);
-	else {
+	if (!fDestroying) {
 		memcpy(enc_key_sch,save_enc_key_sch,sizeof(enc_key_sch)); memcpy(dec_key_sch,save_dec_key_sch,sizeof(dec_key_sch));
-		memcpy(&in,&save_in,sizeof(SHA)); memcpy(&out,&save_out,sizeof(SHA));
+		memcpy(&in,&save_in,sizeof(SHA256)); memcpy(&out,&save_out,sizeof(SHA256));
 	}
 }
 

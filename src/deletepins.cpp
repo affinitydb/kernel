@@ -1,6 +1,6 @@
 /**************************************************************************************
 
-Copyright © 2004-2013 GoPivotal, Inc. All rights reserved.
+Copyright © 2004-2014 GoPivotal, Inc. All rights reserved.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -39,12 +39,17 @@ RC QueryPrc::deletePINs(const EvalCtx& ectx,const PIN *const *pins,const PID *pi
 	ClassResult clr(ses,ctx); TxSP tx(ses); RC rc=tx.start(TXI_DEFAULT,nPins==1?TX_ATOMIC:0); if (rc!=RC_OK) return rc; 
 	bool fRepSes=ses->isReplication(); PINx cb(ses); if (pcb!=NULL && pcb->pb.isNull()) pcb=NULL;
 	const size_t threshold=ceil(size_t((HeapPageMgr::contentSize(ctx->bufMgr->getPageSize())-sizeof(PageOff))*(1.-ctx->theCB->pctFree)),HP_ALIGN);
-	DynOArray<PID> parts((MemAlloc*)ses); DynArray<Value> SSVs((MemAlloc*)ses); SubAlloc sft(ses); Value *vals=NULL; unsigned nvals=0;
+	DynOArray<PID> parts((MemAlloc*)ses); DynArray<Value> SSVs((MemAlloc*)ses); StackAlloc sft(ses); Value *vals=NULL; unsigned nvals=0;
 	const unsigned flgs=(mode&(MODE_DELETED|MODE_PURGE))!=0?GB_DELETED|GB_FORWARD:GB_FORWARD; const bool fPurge=(mode&MODE_PURGE)!=0; 
 
 	try {
 		for (unsigned np=0; np<nPins; pcb=NULL,parts.clear()) {
 			PID pid=pids[np++]; cb=pid; if (pcb==NULL) pcb=&cb;
+			if (pcb->id.isPtr()) {
+				//PIN *pin=(PIN*)pcb->id.pid;
+				//????
+				continue;
+			}
 			if (isRemote(pid) && fPurge && (rc=ctx->netMgr->remove(pid,cb.addr))!=RC_OK) throw rc!=RC_FALSE?rc:RC_NOTFOUND;
 			byte fwdbuf[sizeof(HeapPageMgr::HeapObjHeader)+PageAddrSize]; bool fDelFwd=false; PageAddr fwd=PageAddr::noAddr,deleted=PageAddr::noAddr;
 			FTList *ftl=NULL; ChangeInfo fti; unsigned i; Value v; IStoreNotification::NotificationData *ndata=NULL;
@@ -63,7 +68,7 @@ RC QueryPrc::deletePINs(const EvalCtx& ectx,const PIN *const *pins,const PID *pi
 			}
 			if (pcb->hpin==NULL || pcb->hpin->hdr.getType()!=HO_PIN) break;
 			const HeapPageMgr::HeapPage *hp=(const HeapPageMgr::HeapPage*)pcb->pb->getPageBuf(); const HeapPageMgr::HeapV *hprop;
-			ushort pinDescr=pcb->hpin->hdr.descr; unsigned nProps=pcb->hpin->nProps; ClassID cid=STORE_INVALID_CLASSID;
+			ushort pinDescr=pcb->hpin->hdr.descr; unsigned nProps=pcb->hpin->nProps; ClassID cid=STORE_INVALID_URIID;
 			if ((pcb->hpin->meta&PMT_COMM)!=0) 	ses->removeServiceCtx(pid);
 			if ((pcb->hpin->meta&PMT_CLASS)!=0 && ((mode&MODE_CLASS)==0 || (hprop=pcb->hpin->findProperty(PROP_SPEC_OBJID))!=NULL &&
 				loadVH(v,hprop,*pcb,0,ses)==RC_OK && v.type==VT_URIID && ((cid=v.uid)==CLASS_OF_CLASSES||cid==CLASS_OF_PACKAGES||cid==CLASS_OF_NAMED))) throw RC_NOACCESS;
@@ -117,7 +122,7 @@ RC QueryPrc::deletePINs(const EvalCtx& ectx,const PIN *const *pins,const PID *pi
 							}
 						}
 						break;
-					case VT_ARRAY:
+					case VT_COLLECTION:
 						if (fPurge && hprop->type.getFormat()==HDF_LONG) {
 							daddr.pageID=__una_get(((HeapPageMgr::HeapExtCollection*)((byte*)hp+hprop->offset))->anchor); daddr.idx=0;
 							if ((rc=ses->queueForPurge(daddr,TXP_SSV,(byte*)hp+hprop->offset))!=RC_OK) throw rc;
@@ -126,14 +131,13 @@ RC QueryPrc::deletePINs(const EvalCtx& ectx,const PIN *const *pins,const PID *pi
 							if (!fNotify && (rc=loadVH(v,hprop,*pcb,0,ses))!=RC_OK) throw rc;
 							for (unsigned j=0;;j++) {
 								const Value *cv=NULL;
-								if (pv->type==VT_ARRAY) {
-									if (j<pv->length) cv=&pv->varray[j]; else break;
-								} else if (pv->type==VT_COLLECTION) {
-									if ((cv=pv->nav->navigate(j==0?GO_FIRST:GO_NEXT))==NULL) {pv->nav->navigate(GO_FINDBYID,STORE_COLLECTION_ID); break;}
+								if (pv->type==VT_COLLECTION) {
+									if (!pv->isNav()) {if (j<pv->length) cv=&pv->varray[j]; else break;}
+									else if ((cv=pv->nav->navigate(j==0?GO_FIRST:GO_NEXT))==NULL) {pv->nav->navigate(GO_FINDBYID,STORE_COLLECTION_ID); break;}
 								} else if (j==0) cv=pv; else break;
 								if ((cv->flags&VF_SSV)!=0) {
-									const HRefSSV *href=(const HRefSSV *)&cv->id; assert(cv->type==VT_STREAM||cv->type==VT_STRUCT); 
-									if (fPurge && pv->type!=VT_COLLECTION)
+									const HRefSSV *href=(const HRefSSV *)&cv->id; assert(cv->type==VT_STREAM||isComposite((ValueType)cv->type));
+									if (fPurge && (pv->type!=VT_COLLECTION || !pv->isNav()))		//??????????????????
 										{daddr.pageID=href->pageID; daddr.idx=href->idx; if ((rc=ses->queueForPurge(daddr))!=RC_OK) throw rc;}
 									if (fNotify) fSSV=true;
 									else if (fFT && href->type.getType()==VT_STRING) {fSSV=true; v=*cv; v.setPropID(hprop->getPropID()); if ((rc=SSVs+=v)!=RC_OK) throw rc;}
@@ -164,9 +168,9 @@ RC QueryPrc::deletePINs(const EvalCtx& ectx,const PIN *const *pins,const PID *pi
 				ctx->txMgr->update(pcb->pb,ctx->heapMgr,(unsigned)pcb->addr.idx<<HPOP_SHIFT|(fPurge?HPOP_PURGE:HPOP_DELETE)))!=RC_OK) throw rc;
 
 			if ((pinDescr&HOH_DELETED)==0) {
-				if ((rc=ctx->classMgr->classify(pcb,clr))!=RC_OK || 
+				if ((rc=ctx->classMgr->classify(pcb,clr,ses))!=RC_OK || 
 					clr.nClasses>0 && (rc=ctx->classMgr->index(ses,pcb,clr,!fPurge?CI_SDELETE:(pinDescr&HOH_DELETED)==0?CI_DELETE:CI_PURGE))!=RC_OK ||
-					clr.nActions!=0 && (rc=clr.invokeActions(pcb,CI_DELETE,&ectx))!=RC_OK) throw rc;
+					clr.nActions!=0 && (rc=clr.invokeActions(ses,pcb,CI_DELETE,&ectx))!=RC_OK) throw rc;
 			}
 			if (pcb==&cb) {pcb->pb.release(ses); pcb=NULL;}
 
@@ -177,8 +181,8 @@ RC QueryPrc::deletePINs(const EvalCtx& ectx,const PIN *const *pins,const PID *pi
 					case VT_STRING:
 						fti.propID=pv[i].property; fti.oldV=&pv[i];
 						rc=ctx->ftMgr->index(fti,ftl,IX_OFT,/*(pv[i].meta&META_PROP_STOPWORDS)!=0?*/FTMODE_STOPWORDS,ses); break;
-					case VT_ARRAY:
-						for (j=0; rc==RC_OK && j<pv[i].length; j++) if (pv[i].varray[j].type==VT_STRING) {
+					case VT_COLLECTION:
+						if (!pv[i].isNav()) for (j=0; rc==RC_OK && j<pv[i].length; j++) if (pv[i].varray[j].type==VT_STRING) {
 							fti.propID=pv[i].property; fti.oldV=&pv[i].varray[j]; 
 							rc=ctx->ftMgr->index(fti,ftl,IX_OFT,/*(pv[i].meta&META_PROP_STOPWORDS)!=0?*/FTMODE_STOPWORDS,ses);
 						}
@@ -189,10 +193,10 @@ RC QueryPrc::deletePINs(const EvalCtx& ectx,const PIN *const *pins,const PID *pi
 				if (rc!=RC_OK) throw rc;
 			}
 			if ((pinDescr&HOH_DELETED)==0) {
-				if (cid!=STORE_INVALID_CLASSID) {ClassDrop *cd=new(ses) ClassDrop(cid); if (cd==NULL || ses->addOnCommit(cd)!=RC_OK) throw RC_NORESOURCES;}
+				if (cid!=STORE_INVALID_URIID) {ClassDrop *cd=new(ses) ClassDrop(cid); if (cd==NULL || ses->addOnCommit(cd)!=RC_OK) throw RC_NORESOURCES;}
 				if (ftl!=NULL) {
 					if ((rc=ctx->ftMgr->process(*ftl,pid,fti.docID))!=RC_OK) throw rc;
-					sft.release(); ftl=NULL;
+					sft.truncate(TR_REL_ALL); ftl=NULL;
 				}
 			}
 //			if (replication!=NULL) {}
@@ -202,7 +206,7 @@ RC QueryPrc::deletePINs(const EvalCtx& ectx,const PIN *const *pins,const PID *pi
 					evt.nEvents=0;
 					if ((pinDescr&HOH_NOTIFICATION)!=0) {
 						IStoreNotification::EventData& ev=(IStoreNotification::EventData&)evt.events[0];
-						ev.cid=STORE_INVALID_CLASSID; ev.type=IStoreNotification::NE_PIN_DELETED; evt.nEvents++;
+						ev.cid=STORE_INVALID_URIID; ev.type=IStoreNotification::NE_PIN_DELETED; evt.nEvents++;
 					}
 					if ((clr.notif&CLASS_NOTIFY_DELETE)!=0) for (i=0; i<clr.nClasses; i++) if ((clr.classes[i]->notifications&CLASS_NOTIFY_DELETE)!=0) {
 						IStoreNotification::EventData& ev=(IStoreNotification::EventData&)evt.events[evt.nEvents++];

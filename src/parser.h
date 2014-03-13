@@ -1,6 +1,6 @@
 /**************************************************************************************
 
-Copyright © 2004-2013 GoPivotal, Inc. All rights reserved.
+Copyright © 2004-2014 GoPivotal, Inc. All rights reserved.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -27,7 +27,6 @@ Written by Mark Venguerov 2010-2012
 
 #include "session.h"
 
-class IMapDir;
 struct StartupParameters;
 
 namespace AfyKernel
@@ -115,6 +114,7 @@ public:
 	RC		renderProperty(const Value &v,unsigned flags);														/**< render property name, optional meta-properties and optional value */
 	char	*renderAll();																						/**< append prologue if necessary */
 	RC		renderJSON(class Cursor *cr,uint64_t& cnt);															/**< render JSON output from a cursor */
+	static	const char	*getTypeName(ValueType ty);
 	
 	// helper functions
 	size_t	getCLen() const {return cLen;}
@@ -176,7 +176,7 @@ enum KW {
 	KW_UNION, KW_EXCEPT, KW_INTERSECT, KW_DISTINCT, KW_VALUES, KW_AS, KW_OP, KW_NULLS,
 	KW_TRUE, KW_FALSE, KW_NULL, KW_ALL, KW_ANY, KW_SOME, KW_ASC, KW_DESC, KW_MATCH,
 	KW_NOW, KW_CUSER, KW_CSTORE, KW_TIMESTAMP, KW_INTERVAL, KW_WITH,
-	KW_INSERT, KW_DELETE, KW_UPDATE, KW_CREATE, KW_PURGE, KW_UNDELETE, KW_PERSIST,
+	KW_INSERT, KW_DELETE, KW_UPDATE, KW_CREATE, KW_PURGE, KW_UNDELETE,
 	KW_SET, KW_ADD, KW_MOVE, KW_RENAME, KW_EDIT, KW_START, KW_COMMIT,
 	KW_ROLLBACK, KW_DROP, KW_CASE, KW_WHEN, KW_THEN, KW_ELSE, KW_END, KW_RULE
 };
@@ -199,17 +199,6 @@ enum SynErr
 };
 
 typedef	byte TLx;
-
-/**
- * lexer state descriptor for backtracking in lookahead
- */
-struct LexState
-{
-	const	char	*ptr;
-	const	char	*lbeg;
-	unsigned		lmb;
-	unsigned		line;
-};
 
 /**
  * expression parsing mode constants
@@ -284,13 +273,13 @@ protected:
 	TXI_LEVEL					txi;			/**< statement transaction isolation level */
 public:
 	SInCtx(Session *se,const char *s,size_t ls,const URIID *i=NULL,unsigned ni=0,MemAlloc *m=NULL)
-		: ses(se),ma(m!=NULL?m:se),mtype(ma!=NULL?ma->getAType():SHARED_HEAP),str(s),end(s+ls),ids(i),nids(ni),ptr(s),lbeg(s),lmb(0),line(1),errpos(NULL),
+		: ses(se),ma(m!=NULL?m:se),mtype(ma!=NULL?ma->getAType():NO_HEAP),str(s),end(s+ls),ids(i),nids(ni),ptr(s),lbeg(s),lmb(0),line(1),errpos(NULL),
 		mode(0),base(NULL),lBase(0),lBaseBuf(0),qNames(NULL),nQNames(0),lastQN(~0u),dnames(ma),nextLex(LX_ERR),tids(NULL),txi(TXI_DEFAULT) {v.setEmpty();}
 	~SInCtx();
 	Stmt	*parseStmt();																			/**< parse PathSQL statement; can be called recursively for nested statements */
 	RC		exec(const Value *params,unsigned nParams,char **result=NULL,uint64_t *nProcessed=NULL,unsigned nProcess=~0u,unsigned nSkip=0);	/**< parse PathSQL, execute and return result as JSON */
-	QVarID	parseQuery(Stmt*&,bool fNested=true);													/**< parse a query (i.e. not DML or DDL statement) */
-	void	parseManage(IMapDir *,IAffinity *&,const StartupParameters *sp);						/**< parse and execute database management PathSQL */
+	QVarID	parseQuery(Stmt*&,bool fNested=true,unsigned *pnp=NULL);								/**< parse a query (i.e. not DML or DDL statement) */
+	void	parseManage(IAffinity *&,const StartupParameters *sp);									/**< parse and execute database management PathSQL */
 	void	parse(Value& res,const union QVarRef *vars=NULL,unsigned nVars=0,unsigned flags=0);		/**< parse PathSQL expression */
 	class	ExprTree *parse(bool fCopy);															/**< parse PathSQL expression, return as an expression tree */
 	void	checkEnd(bool fSemi=false) {switch (lex()) {case LX_RPR: throw SY_UNBRPR; case LX_RBR: throw SY_UNBRBR; case LX_RCBR: throw SY_UNBRCBR; case LX_SEMI: if (fSemi && lex()==LX_EOE) {case LX_EOE: return;} default: throw SY_SYNTAX;}}	/**< check end of PathSQL string */
@@ -304,8 +293,6 @@ public:
 	static	const	TLx		charLex[256];															/**< octet to lexem map */
 private:
 	TLx		lex();																					/**< lexer */
-	void	saveLexState(LexState& s) const {s.ptr=ptr; s.lbeg=lbeg; s.lmb=lmb; s.line=line;}		/**< save lexer state for deep lookahead */
-	void	restoreLexState(const LexState& s) {ptr=s.ptr; lbeg=s.lbeg; lmb=s.lmb; line=s.line;}	/**< restore lexer state */
 	void	mapURI(bool fOID=false,const char *prefix=NULL,size_t lPrefix=0,bool fSrv=false);		/**< map string to URIID, use prefixes, base, ect. */
 	void	mapIdentity();																			/**< map identity string to IdentityID */
 	bool	parseEID(TLx lx,ElementID& eid);														/**< parse ':XXX' eid constant */
@@ -352,7 +339,6 @@ class PathSQLParser : public IService::Processor, public SInCtx
 public:
 	PathSQLParser(IServiceCtx *ct,Session *ses) : SInCtx(ses,NULL,0,NULL,0,ses),sctx(ct) {}
 	RC		invoke(IServiceCtx *ctx,const Value& inp,Value& out,unsigned& mode);
-	void	cleanup(IServiceCtx *ctx,bool fDestroy);
 };
 
 class PathSQLRenderer : public IService::Processor, public SOutCtx
@@ -361,7 +347,7 @@ class PathSQLRenderer : public IService::Processor, public SOutCtx
 public:
 	PathSQLRenderer(Session *ses) : SOutCtx(ses),sht(0) {}
 	RC		invoke(IServiceCtx *ctx,const Value& inp,Value& out,unsigned& mode);
-	void	cleanup(IServiceCtx *ctx,bool fDestroy);
+	void	cleanup(IServiceCtx *ctx,bool fDestroying);
 };
 
 class PathSQLService : public IService
@@ -380,7 +366,7 @@ public:
 	JSONOut(Session *ses) : SOutCtx(ses),lc(1),sht(0) {cbuf[0]='[';}
 	RC		invoke(IServiceCtx *ctx,const Value& inp,Value& out,unsigned& mode);
 	RC		outPIN(IServiceCtx *ctx,PIN *pin);
-	void	cleanup(IServiceCtx *ctx,bool fDestroy);
+	void	cleanup(IServiceCtx *ctx,bool fDestroying);
 };
 
 class JSONService : public IService

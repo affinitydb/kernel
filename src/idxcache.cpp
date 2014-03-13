@@ -1,6 +1,6 @@
 /**************************************************************************************
 
-Copyright © 2004-2013 GoPivotal, Inc. All rights reserved.
+Copyright © 2004-2014 GoPivotal, Inc. All rights reserved.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -33,11 +33,11 @@ struct ExtFile
 	StoreCtx	*const	ctx;
 	FileID				fid;
 	PageID				root;
-	ExtFile(StoreCtx *ct) : ctx(ct),fid(INVALID_FILEID),root(INVALID_PAGEID) {}
+	ExtFile(StoreCtx *ct) : ctx(ct),fid(INVALID_FILEID),root(INVALID_PAGEID) {assert(ct->fileMgr!=NULL);}
 	~ExtFile() {if (fid!=INVALID_FILEID) ctx->fileMgr->close(fid);}
-	RC		init(SList<PID,PIDCmp>& sl) {
-		assert(fid==INVALID_FILEID && root==INVALID_PAGEID);
-		RC rc=ctx->fileMgr->open(fid,NULL,FIO_TEMP); 
+	RC	init(SList<PID,PIDCmp>& sl) {
+		assert(fid==INVALID_FILEID && root==INVALID_PAGEID && ctx->fileMgr!=NULL);
+		RC rc=ctx->fileMgr->open(fid,NULL,FIO_TEMP);
 		if (rc==RC_OK) {
 			const PID *pd; sl.start();
 			while ((pd=sl.next())!=NULL) {
@@ -53,7 +53,7 @@ struct ExtFile
 }
 
 PIDStore::PIDStore(Session *ses,unsigned lim)
-: SubAlloc(ses),limit(lim),cache(*this),count(0),extFile(NULL)
+: StackAlloc(ses),limit(lim),cache(*this),count(0),extFile(NULL)
 {
 }
 
@@ -72,9 +72,9 @@ bool PIDStore::operator[](PINx& cb) const
 
 RC PIDStore::operator+=(PINx& cb)
 {
-	if (count+1>=limit) {
+	if (count+1>=limit && cb.getSes()->getStore()->fileMgr!=NULL) {
 //		assert(extFile==NULL);
-//		if ((extFile=new(SES_HEAP) ExtFile(ctx))==NULL) return RC_NORESOURCES;
+//		if ((extFile=new(cb.getSes()) ExtFile(ctx))==NULL) return RC_NORESOURCES;
 //		RC rc=((ExtFile*)extFile)->init(cache); 
 //		if (rc!=RC_OK) {delete (ExtFile*)extFile; extFile=NULL; return rc;}
 	}

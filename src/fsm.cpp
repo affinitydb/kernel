@@ -1,6 +1,6 @@
 /**************************************************************************************
 
-Copyright © 2004-2013 GoPivotal, Inc. All rights reserved.
+Copyright © 2004-2014 GoPivotal, Inc. All rights reserved.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -110,21 +110,18 @@ RC FSMMgr::process(Session *ses,PIN *fsm,const Value *event,ElementID tid)
 		if ((rc=state->getV(PROP_SPEC_TRANSITION,trans))!=RC_OK) {if (rc==RC_NOTFOUND) break; return rc;}
 		// tx.ok() + force commit
 		assert(trans!=NULL);
-		uint32_t i; const Value *cv; rc=RC_TRUE;
+		uint32_t i=0; const Value *cv; rc=RC_TRUE;
 		switch (trans->type) {
 		default: return RC_TYPE;	//???	CORRUPTED
 		case VT_REF: case VT_REFID: break;
 		case VT_STRUCT:
 			rc=addTransition(trans,NULL);
 			break;
-		case VT_ARRAY:
-			for (i=0; i<trans->length; i++) {
-				if ((rc=addTransition(&trans->varray[i],NULL))!=RC_OK) {trans=&trans->varray[i]; break;}	// release later
-			}
-			break;
 		case VT_COLLECTION:
-			for (cv=trans->nav->navigate(GO_FIRST); cv!=NULL; cv=trans->nav->navigate(GO_NEXT)) {
-				if ((rc=addTransition(&trans->varray[i],NULL))!=RC_OK) {trans=cv; break;}					// release later
+			if (!trans->isNav()) for (i=0; i<trans->length; i++) {
+				if ((rc=addTransition(&trans->varray[i],NULL))!=RC_OK) {trans=&trans->varray[i]; break;}	// release later
+			} else for (cv=trans->nav->navigate(GO_FIRST); cv!=NULL; cv=trans->nav->navigate(GO_NEXT)) {
+				if ((rc=addTransition(cv,NULL))!=RC_OK) {trans=cv; break;}					// release later
 			}
 			break;
 		case VT_MAP:

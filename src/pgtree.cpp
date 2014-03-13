@@ -1,6 +1,6 @@
 /**************************************************************************************
 
-Copyright © 2004-2013 GoPivotal, Inc. All rights reserved.
+Copyright © 2004-2014 GoPivotal, Inc. All rights reserved.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -51,11 +51,11 @@ RC TreePageMgr::update(PBlock *pb,size_t len,unsigned info,const byte *rec,size_
 		report(MSG_ERROR,"Invalid lrec %d in TreePageMgr::update, op %d, page %08X\n",lrec,op,tp->hdr.pageID);
 		return RC_CORRUPTED;
 	}
-	unsigned n; const byte *p1,*p2,*pref; ushort l1,l2,lpref; int icmp,delta; SearchKey sKey; RC rc;
+	unsigned n; const byte *p1,*p2; uint16_t l1,l2,lkk; int icmp,delta; SearchKey sKey; RC rc;
 	const TreePageModify *tpm=NULL; const TreePageEdit *tpe; const TreePageSplit *tps; const TreePageMulti *tpmi;
 	const TreePageInit *tpi; const TreePageSpawn *tpa; const TreePageRoot *tpr; const SubTreePageKey *tpk;
-	const PagePtr *oldData=NULL,*newData=NULL; ushort lElt,l,ll,off,newPrefSize=0; byte *ptr; PagePtr *vp,pp; SubTreePage tpExt;
-	bool fFree,fVM=tp->info.fmt.isVarMultiData(),fVarSub=tp->info.fmt.isVarKeyOnly(),fSeq=tp->info.fmt.isSeq(),fPR;
+	const PagePtr *oldData=NULL,*newData=NULL; uint16_t lElt,l,ll,off,newPrefSize=0; byte *ptr; PagePtr *vp,pp; SubTreePage tpExt;
+	bool fFree,fSub=tp->info.fmt.isKeyOnly(),fSeq=tp->info.fmt.isSeq(),fPR;
 	const TreePageAppend *tap; const TreePageAppendElt *tae;
 	const static TREE_OP undoOP[TRO_ALL] = {
 		TRO_DELETE,TRO_UPDATE,TRO_INSERT,TRO_EDIT,TRO_INIT,TRO_SPLIT,TRO_MERGE,TRO_ABSORB,
@@ -74,7 +74,7 @@ RC TreePageMgr::update(PBlock *pb,size_t len,unsigned info,const byte *rec,size_
 			if ((rc=sKey.deserialize(tpm+1,lrec-sizeof(TreePageModify)))!=RC_OK) return rc;
 			if (tp->findKey(sKey,idx)==(op==TRO_INSERT)) {
 				bool fCorrupted=true;
-				if (!tp->info.fmt.isUnique()) switch (op) {
+				if (!tp->info.fmt.isFixedLenData()) switch (op) {
 				default: break;
 				case TRO_INSERT: op=TRO_UPDATE; fCorrupted=false; break;
 				case TRO_DELETE: op=TRO_UPDATE; fCorrupted=false; break;		//???
@@ -83,7 +83,7 @@ RC TreePageMgr::update(PBlock *pb,size_t len,unsigned info,const byte *rec,size_
 				if (fCorrupted) {report(MSG_ERROR,"UNDO in TreePageMgr::update: invalid key, op %d, page %08X\n",op,tp->hdr.pageID); return RC_CORRUPTED;}
 			}
 			if (!fSeq && op==TRO_INSERT && tp->info.nEntries!=0 && tp->info.lPrefix!=0 && (idx==0||idx==tp->info.nEntries))
-				newPrefSize=tp->calcPrefixSize(sKey,idx);
+				newPrefSize=tp->calcPrefixSize(sKey,idx==0?tp->info.nEntries-1:0);
 		}
 	}
 #ifdef _DEBUG
@@ -98,11 +98,11 @@ RC TreePageMgr::update(PBlock *pb,size_t len,unsigned info,const byte *rec,size_
 	case TRO_INSERT:
 		l=newData->len; if (oldData->len!=0) return RC_CORRUPTED;
 		if (!fSeq) {
-			if (tp->info.nEntries==0) {
+			if (tp->info.nEntries==0 && !tp->info.fmt.isKeyOnly() && tp->info.fmt.keyType()<KT_REF) {
 				if ((rc=tp->prefixFromKey(tpm+1))!=RC_OK) return rc;
 			} else {
 				if (newPrefSize<tp->info.lPrefix) {
-					ushort extraSize=tp->info.extraEltSize(newPrefSize);
+					uint16_t extraSize=tp->info.extraEltSize(newPrefSize);
 					if (extraSize==0) {
 						tp->info.lPrefix=newPrefSize;
 						if (tp->info.fmt.isPrefNumKey()) tp->info.prefix=newPrefSize==0?0:tp->info.prefix&~0ULL<<(sizeof(uint64_t)-newPrefSize)*8;
@@ -116,7 +116,6 @@ RC TreePageMgr::update(PBlock *pb,size_t len,unsigned info,const byte *rec,size_
 					if (*(byte*)(tpm+1)<KT_BIN || (l1=SearchKey::keyLen(tpm+1))<tp->info.lPrefix) return RC_CORRUPTED;
 					if (tp->info.fmt.isFixedLenData()) l=l1-tp->info.lPrefix; else l+=l1-tp->info.lPrefix;
 				}
-				if (fVM && oldData->offset==0) l+=newData->len<254?2:2*L_SHT;
 			}
 		}
 		if ((rc=tp->insertKey(idx,(byte*)(tpm+1),rec+newData->offset,newData->len,oldData->offset,l))!=RC_OK) return rc;
@@ -125,7 +124,7 @@ RC TreePageMgr::update(PBlock *pb,size_t len,unsigned info,const byte *rec,size_
 		if (fSeq) return RC_CORRUPTED; if ((flags&TXMGR_UNDO)!=0) return RC_OK;
 		tap=(const TreePageAppend*)rec; tae=(const TreePageAppendElt*)(tap+1);
 		if ((newPrefSize=tap->newPrefixSize)<tp->info.lPrefix) {
-			ushort extraSize=tp->info.extraEltSize(newPrefSize);
+			uint16_t extraSize=tp->info.extraEltSize(newPrefSize);
 			if (extraSize==0) {
 				tp->info.lPrefix=newPrefSize;
 				if (tp->info.fmt.isPrefNumKey()) tp->info.prefix=newPrefSize==0?0:tp->info.prefix&~0ULL<<(sizeof(uint64_t)-newPrefSize)*8;
@@ -144,11 +143,9 @@ RC TreePageMgr::update(PBlock *pb,size_t len,unsigned info,const byte *rec,size_
 				if (*(byte*)(tae+1)<KT_BIN || (l1=SearchKey::keyLen(tae+1))<tp->info.lPrefix) return RC_CORRUPTED;
 				if (tp->info.fmt.isFixedLenData()) l=l1-tp->info.lPrefix; else l+=l1-tp->info.lPrefix;
 			}
-			if (fVM && tae->fMulti==0) l+=tae->ldata<254?2:2*L_SHT;
-			if ((rc=tp->insertKey(tae->idx,(byte*)(tae+1),(byte*)(tae+1)+tae->lkey,tae->ldata,tae->fMulti!=0?ushort(~0u):0,l))!=RC_OK) return rc;
+			if ((rc=tp->insertKey(tae->idx,(byte*)(tae+1),(byte*)(tae+1)+tae->lkey,tae->ldata,tae->ndata,l))!=RC_OK) return rc;
 			tae=(const TreePageAppendElt*)end;
 		}
-//		report(MSG_INFO,"TRO_APPEND: nEntries=%d, total=%d, prefSize=%d, page=%04X\n",tp->info.nEntries,tap->nKeys,tap->newPrefixSize,tp->hdr.pageID);
 		break;
 	case TRO_UPDATE:
 		assert(tp->isLeaf() && idx<tp->info.nSearchKeys);
@@ -163,130 +160,101 @@ RC TreePageMgr::update(PBlock *pb,size_t len,unsigned info,const byte *rec,size_
 		}
 		// assert oldData -> same as ptr,l
 		if (vp==NULL) {assert(tp->info.fmt.isFixedLenData()&&l==newData->len); memcpy(ptr,rec+newData->offset,l); break;}
-		if (tp->info.fmt.isUnique()) {
-			assert(l==vp->len);
-			tp->info.scatteredFreeSpace+=l;
-			if (tp->info.freeSpaceLength<newData->len) {
-				if (tp->info.freeSpaceLength+tp->info.scatteredFreeSpace<newData->len) {
-					report(MSG_ERROR,"TreePageMgr::update UPDATE: insufficient space, requested %d, page %08X\n",newData->len,tp->hdr.pageID);
-					return RC_PAGEFULL;
-				}
-				vp->len=0; tp->compact(); assert(tp->info.freeSpaceLength>=newData->len);
-			}
-			tp->store(rec+newData->offset,newData->len,*vp); break;
-		}
 	update_entry:
-		if (TreePage::isSubTree(*vp)) {
+		assert(!tp->info.fmt.isFixedLenData() && vp!=NULL);
+		if (tp->isSubTree(*vp)) {
 			report(MSG_ERROR,"TreePageMgr::update UPDATE: secondary tree, idx=%d, page %08X\n",idx,tp->hdr.pageID);
 			return RC_INTERNAL;
 		}
 		if (oldData->len!=0) {
-			assert(fVM || oldData->len==tp->info.fmt.dataLength());
-			if (!tp->info.fmt.isUnique() && newData->len==0 && newData->offset!=0) {
-				if (newData->offset!=ushort(~0u)) return RC_CORRUPTED;
-				rec+=oldData->offset; lrec=oldData->len;
-				n=fVM?nKeys(rec):unsigned(lrec/(l1=tp->info.fmt.dataLength()));
+			if (newData->len==0 && newData->offset!=0) {
+				rec+=oldData->offset; lrec=oldData->len; n=newData->offset;
 				for (unsigned idx2=0; idx2<n; ) {
-					if (fVM) {p1=getK(rec,idx2); l1=lenK(rec,idx2);} else p1=rec+idx2*l1;
+					p1=getK(rec,idx2,l1); lkk=l1;
 					if ((ptr=tp->findValue(p1,l1,*vp,&off))==NULL) return RC_NOTFOUND;
 					if (tp->info.fmt.isPinRef()) {
-						p2=(byte*)tp+vp->offset+off;
-						if (vp->len<256) {l2=p2[1]-p2[0]; p2=(byte*)tp+vp->offset+p2[0];}
-						else {l2=_u16(p2+L_SHT)-_u16(p2); p2=(byte*)tp+vp->offset+_u16(p2);}
-						if (PINRef::getCount(p1,l1)!=PINRef::getCount(p2,l2)) {
+						p2=(byte*)tp+vp->offset+off; p2=(byte*)tp+_u16(p2); l2=PINRef::len(p2);
+						if (PINRef::getCount(p1)!=PINRef::getCount(p2)) {
 							if ((rc=tp->adjustCount(ptr,vp,idx,p1,l1,true))!=RC_OK) return rc;
 							idx2++; continue;
 						}
 					}
-					ushort off0=off,sht=fVM?vp->len<256?1:L_SHT:l1; unsigned idx0=idx2; int cmp;
+					uint16_t off0=off; unsigned idx0=idx2; int cmp;
 					do {
-						off+=sht; idx2++; p2=(byte*)tp+vp->offset+off;
-						if (!fVM) cmp=memcmp(rec+idx2*l1,p2,l1);
-						else {
-							p1=getK(rec,idx2); l1=lenK(rec,idx2);
-							if (vp->len<256) {l2=p2[1]-p2[0]; p2=(byte*)tp+vp->offset+p2[0];}
-							else {l2=_u16(p2+L_SHT)-_u16(p2); p2=(byte*)tp+vp->offset+_u16(p2);}
-							if (!tp->info.fmt.isPinRef()) {if ((cmp=memcmp(p1,p2,min(l1,l2)))==0) cmp=cmp3(l1,l2);}
-							else if ((cmp=PINRef::cmpPIDs(p1,l1,p2,l2))==0 && PINRef::getCount(p1,l1)!=PINRef::getCount(p2,l2)) {
-								if ((rc=tp->adjustCount((byte*)tp+vp->offset+off,vp,idx,p1,l1,true))!=RC_OK) return rc;
-								break;
-							}
+						off+=L_SHT; if (++idx2>=n) break; p2=(byte*)tp+vp->offset+off;
+						p1=getK(rec,idx2,l1); lkk+=l1; p2=(byte*)tp+_u16(p2); l2=PINRef::len(p2);
+						if (!tp->info.fmt.isPinRef()) {if ((cmp=memcmp(p1,p2,min(l1,l2)))==0) cmp=cmp3(l1,l2);}
+						else if ((cmp=PINRef::cmpPIDs(p1,p2))==0 && PINRef::getCount(p1)!=PINRef::getCount(p2)) {
+							if ((rc=tp->adjustCount((byte*)tp+vp->offset+off,vp,idx,p1,l1,true))!=RC_OK) return rc;
+							break;
 						}
 						if (cmp<0) return RC_NOTFOUND;
 					} while (cmp==0);
-					tp->deleteValues(fVM?lenKK(rec,idx0,idx2):ushort(l1*(idx2-idx0)),vp,off0,fVM,ushort(idx2-idx0));
+					tp->deleteValues(lkk,vp,off0,uint16_t(idx2-idx0));
 				}
 			} else if ((ptr=tp->findValue(rec+oldData->offset,oldData->len,*vp,&off))==NULL) {
 				report(MSG_ERROR,"TreePageMgr::update UPDATE: value not found, idx=%d, page %08X\n",idx,tp->hdr.pageID);
 				return RC_NOTFOUND;
 			} else {
 				if (newData->len==oldData->len) {
-					ushort off2;
+					uint16_t off2;
 					if (tp->findValue(rec+newData->offset,newData->len,*vp,&off2)!=NULL && off2==off) break;
-					if (off2==off || off2==off+(!fVM?oldData->len:vp->len<256?1:L_SHT)) {
-						if (!fVM) memcpy(ptr,rec+newData->offset,newData->len);
-						else memcpy((byte*)tp+vp->offset+(vp->len>=256?_u16(ptr):ptr[0]),rec+newData->offset,newData->len);
+					if (off2==off || off2==off+(tp->info.fmt.isFixedLenData()?oldData->len:L_SHT)) {
+						if (tp->info.fmt.isFixedLenData()) memcpy(ptr,rec+newData->offset,newData->len);
+						else if ((vp->len&TRO_MANY)==0) memcpy((byte*)tp+vp->offset,rec+newData->offset,newData->len);
+						else memcpy((byte*)tp+_u16((byte*)tp+vp->offset+off),rec+newData->offset,newData->len);
 						break;
 					}
 					// other variants with memmove
 				}
-				if (!tp->info.fmt.isPinRef()) tp->deleteValues(oldData->len,vp,off,fVM);
+				if (!tp->info.fmt.isPinRef()) tp->deleteValues(oldData->len,vp,off);
 				else if ((rc=tp->adjustCount(ptr,vp,idx,rec+oldData->offset,oldData->len,true))!=RC_OK) return rc;
 			}
 		}
 		if (newData->len!=0) {
-			if (tp->info.fmt.isUnique() || oldData->len!=0 || oldData->offset==0) {
-				if (!fVM && newData->len!=tp->info.fmt.dataLength()) return RC_CORRUPTED;
+			if (oldData->len!=0 || oldData->offset==0) {
 				if ((ptr=tp->findValue(rec+newData->offset,newData->len,*vp,&off))!=NULL) {
 					if ((rc=tp->adjustCount(ptr,vp,idx,rec+newData->offset,newData->len))!=RC_OK) return rc;
-				} else if (!tp->insertValues(rec+newData->offset,newData->len,vp,off,idx,fVM))
+				} else if (!tp->insertValues(rec+newData->offset,newData->len,vp,off,idx))
 					return RC_PAGEFULL;
-			} else if (oldData->offset!=ushort(~0u)) return RC_CORRUPTED;
-			else {
-				rec+=newData->offset; lrec=newData->len; fPR=tp->info.fmt.isRefKeyOnly();
-				n=fVM?nKeys(rec):unsigned(lrec/(l1=tp->info.fmt.dataLength()));
+			} else {
+				rec+=newData->offset; lrec=newData->len; fPR=tp->info.fmt.isRefKeyOnly(); n=oldData->offset; assert((n&0x8000)==0);
 				for (unsigned idx2=0; idx2<n; ) {
-					if (fVM) {p1=getK(rec,idx2); l1=lenK(rec,idx2);} else p1=rec+idx2*l1;
+					p1=getK(rec,idx2,l1);
 					if ((ptr=tp->findValue(p1,l1,*vp,&off))!=NULL) {
 						if ((rc=tp->adjustCount(ptr,vp,idx,p1,l1))!=RC_OK) return rc;
 						idx2++;
 					} else {
-						unsigned idx0=idx2; const byte *pd=(byte*)tp+vp->offset;
+						unsigned idx0=idx2; const byte *pd=(byte*)tp+vp->offset; lkk=l1;
 						if (++idx2<n) {
-							if (off>=(!fVM?vp->len:vp->len<256?pd[0]-1:_u16(pd)-L_SHT)) idx2=n;
+							if (off>=(vp->len&~TRO_MANY)) for (;idx2<n;idx2++) {getK(rec,idx2,l2); lkk+=l2;}
 							else {
-								const byte *nxt=pd+(!fVM?off:vp->len<256?pd[off]:_u16(pd+off));
-								const ushort lnxt=!fVM?l1:vp->len<256?pd[off+1]-pd[off]:_u16(pd+off+L_SHT)-_u16(pd+off); int cmp;
+								const byte *nxt=(byte*)tp+_u16(pd+off); const uint16_t lnxt=l2=PINRef::len(nxt); int cmp;
 								do {
-									if (fVM) {p2=getK(rec,idx2); l2=lenK(rec,idx2);} else p2=rec+idx2*(l2=l1);
-									if (fPR) cmp=PINRef::cmpPIDs(p2,l2,nxt,lnxt); else if ((cmp=memcmp(p2,nxt,min(lnxt,l2)))==0) cmp=cmp3(l2,lnxt);
-								} while (cmp<0 && ++idx2<n);
+									p2=getK(rec,idx2,l2);
+									if (fPR) cmp=PINRef::cmpPIDs(p2,nxt); else if ((cmp=memcmp(p2,nxt,min(lnxt,l2)))==0) cmp=cmp3(l2,lnxt);
+								} while (cmp<0 && (lkk+=l2,++idx2)<n);
 							}
 						}
-						if (!tp->insertValues(p1,fVM?lenKK(rec,idx0,idx2):ushort(l1*(idx2-idx0)),
-								vp,off,idx,fVM,ushort(idx2-idx0),fVM?(ushort*)rec+idx0:(ushort*)0)) return RC_PAGEFULL;
+						if (!tp->insertValues(rec,lkk,vp,off,idx,uint16_t(idx2-idx0),(uint16_t*)rec+idx0)) return RC_PAGEFULL;
 					}
 				}
 			}
 			break;
-		} else if (vp->len!=0) break;
+		} else if ((vp->len&~TRO_MANY)!=0) break;
 	case TRO_DELETE:
-		assert(idx<tp->info.nSearchKeys && newData->len==0);
-		lElt=tp->info.calcEltSize(); ptr=(byte*)(tp+1)+idx*lElt;
+		lElt=tp->info.calcEltSize(); ptr=(byte*)(tp+1)+idx*lElt; assert(idx<tp->info.nSearchKeys && newData->len==0);
 		if (fSeq) {
 			if (!tp->info.fmt.isFixedLenData()) {tp->info.scatteredFreeSpace+=((PagePtr*)ptr)->len; ((PagePtr*)ptr)->len=0;}
 			if (idx+1!=tp->info.nEntries || tp->hasSibling()) break;
-		} else if (fVarSub) {
+		} else if (fSub) {
 			if (!tp->info.fmt.isRefKeyOnly()) {
-				ushort *p=(ushort*)(tp+1)+idx; unsigned sht=*p; l=lenK(p,0); ll=((ushort*)(tp+1))[tp->info.nEntries];
-				if (sht+l<ll) memmove((byte*)(tp+1)+sht,(byte*)(tp+1)+sht+l,ll-l-sht);
-				memmove(p,p+1,ll-l-(idx+1)*L_SHT); p=(ushort*)(tp+1); tp->info.freeSpaceLength+=l;
-				for (int j=tp->info.nEntries; --j>=0;) p[j]-=(unsigned)j>=idx?l+L_SHT:L_SHT;
+				uint16_t *p=(uint16_t*)(tp+1)+idx; tp->getK(p,l); if (idx+1<tp->info.nEntries) memmove(p,p+1,(tp->info.nEntries-idx-1)*L_SHT);
+				if (*p==tp->info.freeSpace-sizeof(TreePage)) {tp->info.freeSpace+=l; tp->info.freeSpaceLength+=l;} else tp->info.scatteredFreeSpace+=l;
 			} else if (oldData->len!=0 || newData->len!=0) return RC_CORRUPTED;
-			else if ((rc=tp->adjustKeyCount(idx,(byte*)(tpm+1)+2,((byte*)(tpm+1))[1],NULL,0,true))!=RC_OK) return rc;
+			else if ((rc=tp->adjustKeyCount(idx,(byte*)(tpm+1)+2,((byte*)(tpm+1))[1],true))!=RC_OK) return rc;
 			else break;
-		} else if (!tp->info.fmt.isUnique() && oldData->len>0 && (vp=(PagePtr*)(ptr+tp->info.keyLength()))->len!=0
-																				&& newData->offset==0) goto update_entry;
+		} else if (!tp->info.fmt.isFixedLenData() && oldData->len>0 && ((vp=(PagePtr*)(ptr+tp->info.keyLength()))->len&~TRO_MANY)!=0 && (newData->offset&0x8000)==0) goto update_entry;
 		else {
 			if (!tp->info.fmt.isFixedLenKey() || !tp->info.fmt.isFixedLenData()) {
 				if (!tp->info.fmt.isFixedLenKey()) tp->info.scatteredFreeSpace+=((PagePtr*)ptr)->len;
@@ -300,14 +268,14 @@ RC TreePageMgr::update(PBlock *pb,size_t len,unsigned info,const byte *rec,size_
 		--tp->info.nSearchKeys; tp->info.freeSpaceLength+=lElt;
 		if (--tp->info.nEntries==0) tp->info.initFree(tp->hdr.length());
 		else if (!fSeq && (idx==0 || idx==tp->info.nEntries)) {
-			ushort newPrefSize=tp->calcPrefixSize(0,tp->info.nEntries); assert(newPrefSize>=tp->info.lPrefix);
+			uint16_t newPrefSize=tp->calcPrefixSize(0,tp->info.nEntries); assert(newPrefSize>=tp->info.lPrefix);
 			if (newPrefSize>tp->info.lPrefix) tp->changePrefixSize(newPrefSize);
 		}
 		if ((flags&TXMGR_UNDO)==0 && !tp->isLeaf()) tp->info.stamp++;
 		break;
 	case TRO_EDIT:
 		tpe=(const TreePageEdit*)rec; oldData=&tpe->oldData; newData=&tpe->newData;
-		if (!tp->info.fmt.isUnique() || tp->info.fmt.isKeyOnly() || tp->info.fmt.keyType()!=*(byte*)(tpe+1)) {
+		if (tp->info.fmt.isKeyOnly() || tp->info.fmt.keyType()!=*(byte*)(tpe+1)) {
 			report(MSG_ERROR,"UNDO/RECV in TreePageMgr::update EDIT: invalid key type %d, page %08X\n",*(byte*)(tpe+1),tp->hdr.pageID);
 			return RC_CORRUPTED;
 		}
@@ -321,6 +289,7 @@ RC TreePageMgr::update(PBlock *pb,size_t len,unsigned info,const byte *rec,size_
 			report(MSG_ERROR,"TreePageMgr::update EDIT: data not found, idx=%d, page %08X\n",idx,tp->hdr.pageID);
 			return RC_NOTFOUND;
 		}
+		if (vp!=NULL && (vp->len&TRO_MANY)!=0) return RC_CORRUPTED;
 		if (tpe->shift+oldData->len>l) {
 			report(MSG_ERROR,"TreePageMgr::update EDIT: invalid shift/len, idx=%d, page %08X\n",idx,tp->hdr.pageID);
 			return RC_CORRUPTED;
@@ -351,11 +320,8 @@ RC TreePageMgr::update(PBlock *pb,size_t len,unsigned info,const byte *rec,size_
 			}
 			byte *p=new(SES_HEAP) byte[l]; if (p==NULL) return RC_NORESOURCES;
 			memcpy(p,ptr,l); fFree=true; ptr=p; vp->len=0; tp->info.scatteredFreeSpace+=l; 
-			if (!tp->info.fmt.isVarMultiData()) tp->compact(false,idx);
-			else {
-//.......................				//VM
-			}
-			tp->findData(idx,ll,(const PagePtr**)&vp); assert(vp!=NULL && unsigned(l+lElt)<=tp->info.freeSpaceLength);
+			if (tp->info.fmt.isFixedLenData()) tp->compact(false,idx); else {vp->len=0; tp->compact(false);}
+			tp->findData(idx,ll,(const PagePtr**)&vp); assert(unsigned(l+lElt)<=tp->info.freeSpaceLength);
 		}
 		vp->len=l+lElt; vp->offset=tp->info.freeSpace-=vp->len; tp->info.freeSpaceLength-=vp->len;
 		if (tpe->shift>0) memmove((byte*)tp+tp->info.freeSpace,ptr,tpe->shift);
@@ -388,11 +354,8 @@ RC TreePageMgr::update(PBlock *pb,size_t len,unsigned info,const byte *rec,size_
 				return RC_CORRUPTED;
 			}
 			memcpy(&tp->info,rec,sizeof(TreePageInfo));
-			if (tp->info.fmt.isVarKeyOnly()) memcpy(tp+1,rec+sizeof(TreePageInfo),lrec-sizeof(TreePageInfo));
-			else {
-				ll=tp->info.nEntries*tp->info.calcEltSize(); memcpy(tp+1,rec+sizeof(TreePageInfo),ll);
-				memcpy((byte*)tp+tp->info.freeSpace,rec+sizeof(TreePageInfo)+ll,lrec-sizeof(TreePageInfo)-ll);
-			}
+			ll=tp->info.nEntries*tp->info.calcEltSize(); memcpy(tp+1,rec+sizeof(TreePageInfo),ll);
+			memcpy((byte*)tp+tp->info.freeSpace,rec+sizeof(TreePageInfo)+ll,lrec-sizeof(TreePageInfo)-ll);
 		}
 		break;
 	case TRO_MERGE:
@@ -439,31 +402,27 @@ RC TreePageMgr::update(PBlock *pb,size_t len,unsigned info,const byte *rec,size_
 				assert(!tp->hasSibling() && tps->nEntriesLeft==tp->info.nEntries);
 				tp->info.sibling=tps->newSibling; tp2->info.prefix=tp->info.prefix+tp->info.nEntries;
 			} else {
-				if (tps->nEntriesLeft<tp->info.nEntries) {
-					l=tp->calcPrefixSize(tps->nEntriesLeft,tp->info.nEntries);
-					tp->copyEntries(tp2,l,tps->nEntriesLeft);
-				}
+				if (tps->nEntriesLeft<tp->info.nEntries) tp->copyEntries(tp2,tp->calcPrefixSize(tps->nEntriesLeft,tp->info.nEntries),tps->nEntriesLeft);
 				bool fFixedKey=tp->info.fmt.isFixedLenKey(),fFixedData=tp->info.fmt.isFixedLenData();
 				lElt=tp->info.calcEltSize(); tp->info.freeSpaceLength+=lElt*(tp->info.nEntries-tps->nEntriesLeft);
 				if (fFixedKey && fFixedData) {
-					ushort lFreed=tp->info.fmt.dataLength()*ushort(tp->info.nSearchKeys-tps->nEntriesLeft);
+					uint16_t lFreed=tp->info.fmt.dataLength()*uint16_t(tp->info.nSearchKeys-tps->nEntriesLeft);
 					tp->info.freeSpace+=lFreed; tp->info.freeSpaceLength+=lFreed;
-				} else if (fVarSub) {
-					ushort *p=(ushort*)(tp+1)+tps->nEntriesLeft,*pe=(ushort*)(tp+1)+tp->info.nEntries;
-					tp->info.freeSpaceLength+=pe[0]-p[0]; ushort delta=ushort((byte*)pe-(byte*)p);
-					memmove(p+1,pe+1,p[0]-*(ushort*)(tp+1)); for (pe=(ushort*)(tp+1); pe<=p; *pe++-=delta);
 				} else {
 					byte *p=(byte*)(tp+1)+tps->nEntriesLeft*lElt;
-					for (ushort i=tps->nEntriesLeft; i<tp->info.nSearchKeys; ++i,p+=lElt) {
-						if (!fFixedKey) tp->info.scatteredFreeSpace+=((PagePtr*)p)->len;
-						if (!fFixedData) {vp=(PagePtr*)(p+tp->info.keyLength()); tp->info.scatteredFreeSpace+=tp->length(*vp);}
+					for (uint16_t i=tps->nEntriesLeft; i<tp->info.nEntries; ++i,p+=lElt) {
+						if (fSub) {tp->getK(p,l); tp->info.scatteredFreeSpace+=l;}
+						else {
+							if (!fFixedKey) tp->info.scatteredFreeSpace+=((PagePtr*)p)->len;
+							if (!fFixedData && i<tp->info.nSearchKeys) 
+								{vp=(PagePtr*)(p+tp->info.keyLength()); tp->info.scatteredFreeSpace+=tp->length(*vp);}
+						}
 					}
-					if (!fFixedKey && tp->hasSibling()) tp->info.scatteredFreeSpace+=((PagePtr*)p)->len;
 				}
 				tp->info.nSearchKeys=tp->info.nEntries=tps->nEntriesLeft; tp->info.sibling=INVALID_PAGEID;
 				if (!tp->info.fmt.isNumKey()||tp->info.fmt.isPrefNumKey()) {
 					if ((rc=sKey.deserialize(tps+1,lrec-sizeof(TreePageSplit)))!=RC_OK) return rc;
-					ushort prefixSize=tp->info.nEntries!=0?tp->calcPrefixSize(sKey,0,true):0;			// pass in TreePageSplit?
+					uint16_t prefixSize=tp->info.nEntries!=0?tp->calcPrefixSize(sKey,0,true):0;			// pass in TreePageSplit?
 					if (prefixSize!=tp->info.lPrefix) {tp->changePrefixSize(prefixSize); lElt=tp->info.calcEltSize();}
 				}
 				if (tp->info.scatteredFreeSpace>0) tp->compact();
@@ -497,19 +456,8 @@ RC TreePageMgr::update(PBlock *pb,size_t len,unsigned info,const byte *rec,size_
 				assert((flags&TXMGR_UNDO)!=0 && !tp2->hasSibling() && tps->nEntriesLeft==tp->info.nEntries);
 				tp->info.sibling=tp2->info.sibling;
 			} else {
-				bool fVarKey=!tp->info.fmt.isFixedLenKey(); assert(tp->info.nEntries>0);
-				lElt=tp->info.calcEltSize(); tp->info.freeSpaceLength+=lElt;
-				if (fVarKey) {
-					if (!fVarSub) tp->info.scatteredFreeSpace+=((PagePtr*)((byte*)(tp+1)+(tp->info.nEntries-1)*lElt))->len;
-					else {
-						tp->info.freeSpaceLength+=l=tp->lenPK(tp->info.nEntries-1);
-						if (tp->info.nEntries==1) tp->info.freeSpaceLength+=L_SHT;
-						else {
-							memmove((ushort*)(tp+1)+tp->info.nEntries,(ushort*)(tp+1)+tp->info.nEntries+1,((ushort*)(tp+1))[tp->info.nEntries]-l-tp->info.nEntries*L_SHT);
-							for (int i=tp->info.nEntries; --i>=0;) ((ushort*)(tp+1))[i]-=L_SHT;
-						}
-					}
-				}
+				bool fVarKey=!tp->info.fmt.isFixedLenKey(); assert(tp->info.nEntries>0); lElt=tp->info.calcEltSize(); tp->info.freeSpaceLength+=lElt;
+				if (fVarKey) tp->info.scatteredFreeSpace+=fSub?(tp->getK(tp->info.nEntries-1,l),l):((PagePtr*)((byte*)(tp+1)+(tp->info.nEntries-1)*lElt))->len;
 				--tp->info.nEntries; tp->info.sibling=INVALID_PAGEID;
 				if (tp->info.lPrefix!=tps->oldPrefSize) 
 					{assert(tp->info.nEntries<=1||tp->info.lPrefix>tps->oldPrefSize); tp->changePrefixSize(tps->oldPrefSize); if (!fVarKey) lElt=tp->info.calcEltSize();}
@@ -528,35 +476,22 @@ RC TreePageMgr::update(PBlock *pb,size_t len,unsigned info,const byte *rec,size_
 							else tp->store((byte*)tp2+((PagePtr*)&tp2->info.prefix)->offset,((PagePtr*)&tp2->info.prefix)->len,*(PagePtr*)&tp->info.prefix);
 						}
 					}
-					if (fVarSub) {
-						if (tp->info.nEntries==0) {
-							l=((ushort*)(tp2+1))[tp2->info.nEntries]; if (l>tp->info.freeSpaceLength) return RC_CORRUPTED;
-							memcpy(tp+1,tp2+1,l); tp->info.freeSpaceLength-=l;
-						} else {
-							l=((ushort*)(tp2+1))[tp2->info.nEntries]-L_SHT; if (l>tp->info.freeSpaceLength) return RC_CORRUPTED;
-							tp->info.freeSpaceLength-=l; l=((ushort*)(tp+1))[tp->info.nEntries];
-							memmove((ushort*)(tp+1)+tp->info.nEntries+1+tp2->info.nEntries,(ushort*)(tp+1)+tp->info.nEntries+1,l-((ushort*)(tp+1))[0]);
-							memcpy((ushort*)(tp+1)+tp->info.nEntries,tp2+1,(tp2->info.nEntries+1)*L_SHT);
-							memcpy((byte*)(tp+1)+l+tp2->info.nEntries*L_SHT,(ushort*)(tp2+1)+tp2->info.nEntries+1,
-											((ushort*)(tp2+1))[tp2->info.nEntries]-(tp2->info.nEntries+1)*L_SHT);
-							for (int i=tp->info.nEntries; --i>=0; ) ((ushort*)(tp+1))[i]+=tp2->info.nEntries*L_SHT;
-							for (int j=tp2->info.nEntries+1; --j>=0; ) ((ushort*)(tp+1))[j+tp->info.nEntries]+=l-L_SHT;
-						}
+					l=lElt*tp2->info.nEntries; if (l>tp->info.freeSpaceLength) return RC_CORRUPTED; tp->info.freeSpaceLength-=l;
+					if (fSub) for (uint16_t i=0; i<tp2->info.nEntries; ++i) {
+						ptr=(byte*)tp2->getK(i,l); ((uint16_t*)(tp+1))[i+tp->info.nEntries]=tp->store(ptr,l);
 					} else {
-						l=lElt*tp2->info.nEntries; if (l>tp->info.freeSpaceLength) return RC_CORRUPTED;
-						memcpy((byte*)(tp+1)+lElt*tp->info.nEntries,tp2+1,l); tp->info.freeSpaceLength-=l;
-						bool fVarData=!tp->info.fmt.isFixedLenData();
+						bool fVarData=!tp->info.fmt.isFixedLenData(); if (!fVarKey || !fVarData) memcpy((byte*)(tp+1)+lElt*tp->info.nEntries,tp2+1,l);
 						if (!fVarKey && !fVarData) {
-							l=ushort(tp2->info.fmt.dataLength()*tp2->info.nSearchKeys);
+							l=uint16_t(tp2->info.fmt.dataLength()*tp2->info.nSearchKeys);
 							tp->info.freeSpace-=l; tp->info.freeSpaceLength-=l;
 							memcpy((byte*)tp+tp->info.freeSpace,(byte*)tp2+tp->info.freeSpace,l);
 						} else {
-							ptr=(byte*)(tp+1)+tp->info.nEntries*lElt; unsigned sht=tp2->info.keyLength();
-							for (ushort i=0; i<tp2->info.nEntries; ++i,ptr+=lElt) {
-								if (fVarKey) tp->store((byte*)tp2+((PagePtr*)ptr)->offset,((PagePtr*)ptr)->len,*(PagePtr*)ptr); 
+							ptr=(byte*)(tp+1)+tp->info.nEntries*lElt; byte *ptr2=(byte*)(tp2+1); unsigned sht=tp2->info.keyLength();
+							for (uint16_t i=0; i<tp2->info.nEntries; ++i,ptr+=lElt,ptr2+=lElt) {
+								if (fVarKey) tp->store((byte*)tp2+((PagePtr*)ptr2)->offset,((PagePtr*)ptr2)->len,*(PagePtr*)ptr); 
 								if (fVarData && i<tp2->info.nSearchKeys) {
-									pp=*(PagePtr*)(ptr+sht); tp->store((byte*)tp2+pp.offset,pp.len,*(PagePtr*)(ptr+sht));
-									if (TreePage::isSubTree(pp)) tp->moveExtTree(tp2,pp,*(PagePtr*)(ptr+sht));
+									tp->store((byte*)tp2+((PagePtr*)(ptr2+sht))->offset,((PagePtr*)(ptr2+sht))->len,*(PagePtr*)(ptr+sht));
+									if ((((PagePtr*)(ptr2+sht))->len&TRO_MANY)!=0) tp->moveMulti(tp2,*(PagePtr*)(ptr2+sht),*(PagePtr*)(ptr+sht));
 								}
 							}
 						}
@@ -584,7 +519,7 @@ RC TreePageMgr::update(PBlock *pb,size_t len,unsigned info,const byte *rec,size_
 		}
 		return RC_OK;
 	case TRO_SPAWN:
-		tpa=(const TreePageSpawn*)rec; assert(!tp->info.fmt.isUnique() && !tp->info.fmt.isKeyOnly());
+		tpa=(const TreePageSpawn*)rec; assert(!tp->info.fmt.isFixedLenData() && !tp->info.fmt.isKeyOnly());
 		if ((flags&TXMGR_UNDO)!=0) {
 			if ((rc=sKey.deserialize(tpa+1,lrec))!=RC_OK) return rc;
 			if (!tp->findKey(sKey,idx)) {report(MSG_ERROR,"UNDO in TreePageMgr SPAWN: invalid key, page %08X\n",tp->hdr.pageID); return RC_NOTFOUND;}
@@ -601,8 +536,8 @@ RC TreePageMgr::update(PBlock *pb,size_t len,unsigned info,const byte *rec,size_
 		}
 		assert(newp->getPageID()==tpa->root);
 		tp2=(TreePage*)newp->getPageBuf(); tp2->info.fmt=tpa->fmt;
-		if (TreePage::isSubTree(*vp)) {
-			l=vp->len&~TRO_EXT_DATA;
+		if (tp->isSubTree(*vp)) {
+			l=vp->len&~TRO_MANY;
 			assert(l>=sizeof(SubTreePage) && (l-sizeof(SubTreePage))%sizeof(SubTreePageKey)==0);
 			memcpy(&tpExt,(byte*)tp+vp->offset,sizeof(SubTreePage));
 			tp2->info.level=byte(++tpExt.level); tp2->info.leftMost=tpExt.leftMost; tp2->info.flags=0;
@@ -610,60 +545,38 @@ RC TreePageMgr::update(PBlock *pb,size_t len,unsigned info,const byte *rec,size_
 			n=tp2->info.nSearchKeys=(l-sizeof(SubTreePage))/sizeof(SubTreePageKey);
 			SubTreePageKey tpk; memcpy(&tpk,(byte*)tp+vp->offset+sizeof(SubTreePage),sizeof(SubTreePageKey));
 			const byte *p1=(byte*)tp+tpk.key.offset,*p0=p1; l=tpk.key.len;
-			memcpy(&tpk,(byte*)tp+vp->offset+(vp->len&~TRO_EXT_DATA)-sizeof(SubTreePageKey),sizeof(SubTreePageKey));
+			memcpy(&tpk,(byte*)tp+vp->offset+(vp->len&~TRO_MANY)-sizeof(SubTreePageKey),sizeof(SubTreePageKey));
 			byte *p2=(byte*)tp+tpk.key.offset; if (tpk.key.len<l) l=tpk.key.len;
 			//for (; tp2->info.lPrefix<l; ++tp2->info.lPrefix) if (*p1++!=*p2++) break;					// no prefix (see calcPrefixSize())
 			if (tp2->info.lPrefix>0) tp2->store(p0,tp2->info.lPrefix,*(PagePtr*)&tp2->info.prefix);
 			p1=(byte*)tp+vp->offset+sizeof(SubTreePage); p2=(byte*)(tp2+1);
-			lElt=fVM?sizeof(PagePtr):tp->info.fmt.dataLength()-tp2->info.lPrefix;
 			for (unsigned i=0; i<n; ++i,p1+=sizeof(SubTreePageKey)) {
 				memcpy(&tpk,p1,sizeof(SubTreePageKey)); tp->info.scatteredFreeSpace+=tpk.key.len;
-				assert(tp2->info.freeSpaceLength>=lElt+sizeof(PageID));
-				if (fVM) {
-					tp2->store((byte*)tp+tpk.key.offset+tp2->info.lPrefix,tpk.key.len-tp2->info.lPrefix,*(PagePtr*)p2);
-					*(PageID*)(p2+sizeof(PagePtr))=tpk.pageID; p2+=sizeof(PageID);
-				} else {
-					memcpy(p2,(byte*)tp+tpk.key.offset+tp2->info.lPrefix,lElt);
-					tp2->info.freeSpace-=sizeof(PageID); *(PageID*)((byte*)tp2+tp2->info.freeSpace)=tpk.pageID; 
-				}
-				tp2->info.freeSpaceLength-=lElt+sizeof(PageID); p2+=lElt;
+				assert(tp2->info.freeSpaceLength>=sizeof(PagePtr)+sizeof(PageID));
+				tp2->store((byte*)tp+tpk.key.offset+tp2->info.lPrefix,tpk.key.len-tp2->info.lPrefix,*(PagePtr*)p2);
+				*(PageID*)(p2+sizeof(PagePtr))=tpk.pageID; p2+=sizeof(PageID);
+				tp2->info.freeSpaceLength-=sizeof(PagePtr)+sizeof(PageID); p2+=sizeof(PagePtr);
 			}
 		} else {
-			tpExt.level=0; tpExt.anchor=tpExt.leftMost=tpa->root;
-			if (!fVM) {
-				l=tp->info.fmt.dataLength(); byte *p1=(byte*)tp+vp->offset,*p2=p1+vp->len-l;
-				for (; tp2->info.lPrefix<l && tp2->info.lPrefix<sizeof(tp2->info.prefix); ++tp2->info.lPrefix) if (*p1++!=*p2++) break;
-				if (tp2->info.lPrefix>0) memcpy(&tp2->info.prefix,(byte*)tp+vp->offset,tp2->info.lPrefix);
-				p1=(byte*)tp+vp->offset; p2=(byte*)(tp2+1);
-				tpExt.counter=n=tp2->info.nSearchKeys=vp->len/l; tp2->info.freeSpaceLength-=ushort(n*(l-tp2->info.lPrefix));
-				for (unsigned i=0; i<n; ++i,p1+=l,p2+=l-tp2->info.lPrefix) memcpy(p2,p1+tp2->info.lPrefix,l-tp2->info.lPrefix);
-			} else if (vp->len>=256) {
-				const byte *p1=(byte*)tp+vp->offset,*p2,*p0; l=_u16(p1);
-				p2=p1+l-4; ll=min(_u16(p2+2)-_u16(p2),_u16(p1+2)-l); p2=p1+_u16(p2); p0=p1+=l;
-				//for (; tp2->info.lPrefix<ll; ++tp2->info.lPrefix) if (*p1++!=*p2++) break;			// no prefix (see calcPrefixSize())
-				p1=p2=(byte*)tp+vp->offset; tpExt.counter=tp2->info.nSearchKeys=l/L_SHT-1;
-				tp2->info.freeSpaceLength-=ushort(vp->len-tp2->info.nSearchKeys*tp2->info.lPrefix);
-				if (tp2->info.lPrefix==0) memcpy((ushort*)(tp2+1),p1,vp->len);
-				else {
-					tp2->store(p0,tp2->info.lPrefix,*(PagePtr*)&tp2->info.prefix); 
-					ushort *to=(ushort*)(tp2+1); memcpy(to+tp2->info.nSearchKeys+1,p1+l,vp->len-l);
-					for (unsigned i=0; i<tp2->info.nSearchKeys; ++i,p1+=L_SHT,++to) {
-						ll=_u16(p1+L_SHT)-_u16(p1); *to=l; assert(ll>=tp2->info.lPrefix);
-						memcpy((byte*)(tp2+1)+l,p2+_u16(p1)+tp2->info.lPrefix,ll-=tp2->info.lPrefix); l+=ll;
-					}
-					*to=l;
-				}
+			tpExt.fSubPage=0xFFFF; tpExt.level=0; tpExt.anchor=tpExt.leftMost=tpa->root;
+			if ((vp->len&TRO_MANY)==0) {
+				tpExt.counter=tp2->info.nSearchKeys=1; tp2->info.freeSpaceLength-=vp->len+L_SHT;
+				*(uint16_t*)(tp2+1)=tp2->store((byte*)tp+vp->offset,vp->len);
 			} else {
-				//???
-				assert(0 && "spawn vp->len<256");
+				const byte *p1=(byte*)tp+vp->offset; uint16_t *p2=(uint16_t*)(tp2+1); l=vp->len&~TRO_MANY;
+				tpExt.counter=tp2->info.nSearchKeys=l/L_SHT; tp2->info.freeSpaceLength-=l;
+				for (uint16_t i=0; i<tp2->info.nSearchKeys; i++,p1+=L_SHT) {
+					uint16_t sht=_u16(p1); assert(sht!=0);
+					*p2++=tp2->store((byte*)tp+sht,PINRef::len((byte*)tp+sht));
+				}
 			}
 			tp->info.scatteredFreeSpace+=tp->length(*vp); vp->len=0;
 			if (tp->info.freeSpaceLength<sizeof(SubTreePage)) {tp->compact(); assert(tp->info.freeSpaceLength>=sizeof(SubTreePage));}
 			vp->offset=tp->info.freeSpace-=sizeof(SubTreePage); tp->info.freeSpaceLength-=sizeof(SubTreePage);
 		}
-		tp2->info.nEntries=(ushort)tp2->info.nSearchKeys;
+		tp2->info.nEntries=(uint16_t)tp2->info.nSearchKeys;
 		memcpy((byte*)tp+vp->offset,&tpExt,sizeof(SubTreePage));
-		vp->len=sizeof(SubTreePage)|TRO_EXT_DATA;
+		vp->len=sizeof(SubTreePage)|TRO_MANY;
 		if (tp->info.level>TREE_MAX_DEPTH) {
 			report(MSG_ERROR,"Invalid level %d after spawn(1), page %08X\n",tp->info.level,tp->hdr.pageID);
 			return RC_CORRUPTED;
@@ -673,7 +586,7 @@ RC TreePageMgr::update(PBlock *pb,size_t len,unsigned info,const byte *rec,size_
 			return RC_CORRUPTED;
 		}
 #ifdef _DEBUG
-		tp->compact(true); if (fVM) tp2->compact(true);
+		tp->compact(true); if (!tp2->info.fmt.isFixedLenData()) tp2->compact(true);
 #endif
 		if (!fSeq && tp->info.nEntries!=tp->info.nSearchKeys+(tp->info.sibling!=INVALID_PAGEID?1:0)) {
 			report(MSG_ERROR,"Invalid nEntries/nSearchKeys %d/%d after spawn, page %08X\n",tp->info.nEntries,tp->info.nSearchKeys,tp->hdr.pageID);
@@ -681,7 +594,7 @@ RC TreePageMgr::update(PBlock *pb,size_t len,unsigned info,const byte *rec,size_
 		}
 		pb->setDependency(newp); return RC_OK;
 	case TRO_ABSORB:
-		tpa=(const TreePageSpawn*)rec; assert(!tp->info.fmt.isUnique() && !tp->info.fmt.isKeyOnly());
+		tpa=(const TreePageSpawn*)rec; assert(!tp->info.fmt.isFixedLenData() && !tp->info.fmt.isKeyOnly());
 		if ((flags&TXMGR_UNDO)!=0) {
 			if ((rc=sKey.deserialize(tpa+1,lrec))!=RC_OK) return rc;
 			if (!tp->findKey(sKey,idx)) {report(MSG_ERROR,"UNDO in TreePageMgr ABSORB: invalid key, page %08X\n",tp->hdr.pageID); return RC_NOTFOUND;}
@@ -692,11 +605,11 @@ RC TreePageMgr::update(PBlock *pb,size_t len,unsigned info,const byte *rec,size_
 			return RC_CORRUPTED;
 		}
 		assert(vp!=NULL);
-		if (!TreePage::isSubTree(*vp)) {
+		if (!tp->isSubTree(*vp)) {
 			// report
 			break;
 		}
-		l=vp->len&~TRO_EXT_DATA; assert(l>=sizeof(SubTreePage));
+		l=vp->len&~TRO_MANY; assert(l>=sizeof(SubTreePage));
 		memcpy(&tpExt,(byte*)tp+vp->offset,sizeof(SubTreePage));
 		if (l>sizeof(SubTreePage)||tpExt.leftMost!=tpa->root) {
 			// report error
@@ -715,7 +628,7 @@ RC TreePageMgr::update(PBlock *pb,size_t len,unsigned info,const byte *rec,size_
 		}
 		return RC_OK;
 	case TRO_ADDROOT:
-		tpr=(const TreePageRoot*)rec; assert(!tp->info.fmt.isUnique() && !tp->info.fmt.isKeyOnly());
+		tpr=(const TreePageRoot*)rec; assert(!tp->info.fmt.isFixedLenData() && !tp->info.fmt.isKeyOnly());
 		if ((flags&TXMGR_UNDO)!=0) {
 			if ((rc=sKey.deserialize(tpr+1,lrec))!=RC_OK) return rc;
 			if (!tp->findKey(sKey,idx)) {report(MSG_ERROR,"UNDO in TreePageMgr ADDROOT: invalid key, page %08X\n",tp->hdr.pageID); return RC_NOTFOUND;}
@@ -726,11 +639,11 @@ RC TreePageMgr::update(PBlock *pb,size_t len,unsigned info,const byte *rec,size_
 			return RC_CORRUPTED;
 		}
 		assert(vp!=NULL && ptr==(byte*)tp+vp->offset);
-		if (!TreePage::isSubTree(*vp)) {
+		if (!tp->isSubTree(*vp)) {
 			report(MSG_ERROR,"TreePageMgr::update: not a secondary tree in ADDROOT, idx %d, page %08X\n",idx,tp->hdr.pageID);
 			break;
 		}
-		l=vp->len&~TRO_EXT_DATA;
+		l=vp->len&~TRO_MANY;
 		if ((tpk=tp->findExtKey(rec+tpr->pkey.offset,tpr->pkey.len,(SubTreePageKey*)((byte*)tp+vp->offset+sizeof(SubTreePage)),
 															(l-sizeof(SubTreePage))/sizeof(SubTreePageKey),&off))!=NULL) {
 			PageID pid; memcpy(&pid,&tpk->pageID,sizeof(PageID)); if (pid==tpr->pageID) break;
@@ -762,7 +675,7 @@ RC TreePageMgr::update(PBlock *pb,size_t len,unsigned info,const byte *rec,size_
 		__una_set(((SubTreePageKey*)ptr)->key,pp); __una_set(((SubTreePageKey*)ptr)->pageID,tpr->pageID);
 		break;
 	case TRO_DELROOT:
-		tpr=(const TreePageRoot*)rec; assert(!tp->info.fmt.isUnique() && !tp->info.fmt.isKeyOnly());
+		tpr=(const TreePageRoot*)rec; assert(!tp->info.fmt.isFixedLenData() && !tp->info.fmt.isKeyOnly());
 		if ((flags&TXMGR_UNDO)!=0) {
 			if ((rc=sKey.deserialize(tpr+1,lrec))!=RC_OK) return rc;
 			if (!tp->findKey(sKey,idx)) {report(MSG_ERROR,"UNDO in TreePageMgr DELROOT: invalid key, page %08X\n",tp->hdr.pageID); return RC_NOTFOUND;}
@@ -773,11 +686,11 @@ RC TreePageMgr::update(PBlock *pb,size_t len,unsigned info,const byte *rec,size_
 			return RC_CORRUPTED;
 		}
 		assert(vp!=NULL);
-		if (!TreePage::isSubTree(*vp)) {
+		if (!tp->isSubTree(*vp)) {
 			report(MSG_ERROR,"TreePageMgr::update: not a secondary tree in DELROOT, idx %d, page %08X\n",idx,tp->hdr.pageID);
 			break;
 		}
-		l=(vp->len&~TRO_EXT_DATA)-sizeof(SubTreePage);
+		l=(vp->len&~TRO_MANY)-sizeof(SubTreePage);
 		if ((tpk=tp->findExtKey(rec+tpr->pkey.offset,tpr->pkey.len,(SubTreePageKey*)((byte*)tp+vp->offset+sizeof(SubTreePage)),
 																					l/sizeof(SubTreePageKey),&off))!=NULL) {
 			SubTreePageKey t; memcpy(&t,tpk,sizeof(SubTreePageKey));
@@ -790,7 +703,7 @@ RC TreePageMgr::update(PBlock *pb,size_t len,unsigned info,const byte *rec,size_
 		break;
 	case TRO_MULTI:
 		assert((flags&TXMGR_UNDO)==0); if (lrec<=sizeof(TreePageMulti)) return RC_CORRUPTED;
-		tpmi=(TreePageMulti*)rec; rec+=sizeof(TreePageMulti); fVarSub=tpmi->fmt.isVarKeyOnly();
+		tpmi=(TreePageMulti*)rec; rec+=sizeof(TreePageMulti);
 		switch (idx) {
 		default: return RC_CORRUPTED;
 		case MO_INSERT:
@@ -798,48 +711,27 @@ RC TreePageMgr::update(PBlock *pb,size_t len,unsigned info,const byte *rec,size_
 			if (tp->info.sibling!=INVALID_PAGEID) {
 				if (tp->info.nEntries!=tp->info.nSearchKeys+1) return RC_CORRUPTED;
 				if (tpmi->fLastR!=0) {
-					ushort *p=(ushort*)(tp+1)+tp->info.nEntries-1; l=(ll=p[1])-p[0];
-					memmove(p+1,p+2,ll-l-tp->info.nEntries*L_SHT);
-					tp->info.freeSpaceLength+=l+L_SHT; p=(ushort*)(tp+1);
-					for (int j=tp->info.nEntries; --j>=0;) *p++-=L_SHT;
+					const byte *p=tp->getK(tp->info.nEntries-1,l);
+					if (p==(byte*)tp+tp->info.freeSpace) {tp->info.freeSpace+=l; tp->info.freeSpaceLength+=l;} else tp->info.scatteredFreeSpace+=l;
 					tp->info.nEntries--; tp->info.sibling=INVALID_PAGEID;
 				}
 			}
-			idx1=idx2=0; pref=NULL; lpref=0; l1=fVarSub?L_SHT:tp->info.fmt.keyLength()-tpmi->lPrefix;
-			if (tp->info.lPrefix>tpmi->lPrefix) {
-				if (tp->info.nEntries*(tp->info.lPrefix-tpmi->lPrefix)>tp->info.freeSpaceLength) return RC_PAGEFULL;	//???
-				tp->changePrefixSize(tpmi->lPrefix);
-			} else if (tp->info.lPrefix<tpmi->lPrefix) {
-				if (tpmi->fLastR!=0 && tp->calcPrefixSize(0,tp->info.nEntries)>=tpmi->lPrefix) tp->changePrefixSize(tpmi->lPrefix);
-				else {pref=rec+tpmi->lData+tp->info.lPrefix; lpref=tpmi->lPrefix-tp->info.lPrefix;}
-			}
-			n=fVarSub?nKeys(rec):tpmi->lData/l1; lElt=tp->info.fmt.keyLength()-tp->info.lPrefix;
+			idx1=idx2=0; l1=lElt=L_SHT; n=tpmi->nKeys;
 			do {
-				if (fVarSub) {p1=getK(rec,idx1); l1=lenK(rec,idx1);} else p1=rec+l1*idx1;
-				if (tp->findSubKey(p1,l1,idx2,pref,lpref)) {
+				p1=getK(rec,idx1,l1);
+				if (tp->findSubKey(p1,l1,idx2)) {
 					if (!tp->info.fmt.isRefKeyOnly()) return RC_ALREADYEXISTS;
-					if ((rc=tp->adjustKeyCount(idx2,p1,l1,tpmi->lPrefix>0?rec+tpmi->lData:(byte*)0,tpmi->lPrefix))!=RC_OK) return rc;
+					if ((rc=tp->adjustKeyCount(idx2,p1,l1))!=RC_OK) return rc;
 					++idx2; ++idx1;
 				} else {
 					idx=idx1;
-					if (idx2>=tp->info.nSearchKeys) idx1=n; else tp->findSubKey(rec,n,idx2,idx1,fVarSub,false);
-					ushort nIns=ushort(idx1-idx);
-					if (fVarSub) {
-						l1=lenKK(rec,idx,idx1); l2=nIns*L_SHT; ushort lIns=ushort(l1+l2+lpref*nIns);
-						if (lIns<=tp->info.freeSpaceLength) tp->info.freeSpaceLength-=lIns; else return RC_PAGEFULL;
-						ushort ll=((ushort*)(tp+1))[tp->info.nEntries],sht=((ushort*)(tp+1))[idx2],sh1=((ushort*)rec)[idx],k;
-						if (sht<ll) memmove((byte*)(tp+1)+sht+l1,(byte*)(tp+1)+sht,ll-sht);
-						memmove((ushort*)(tp+1)+idx2+nIns,(ushort*)(tp+1)+idx2,ll-idx2*L_SHT+(sht<ll?l1:0)); sht+=l2;
-						for (k=0; k<idx2; k++) ((ushort*)(tp+1))[k]+=l2;
-						for (k=0; k<nIns; k++) ((ushort*)(tp+1))[idx2+k]=((ushort*)rec)[idx+k]-sh1+sht;
-						for (k=ushort(idx2); k<=tp->info.nEntries; k++) ((ushort*)(tp+1))[k+nIns]+=lIns;
-						if (pref==NULL) memcpy((byte*)(tp+1)+sht,p1,l1);
-						else for (k=0; k<nIns; k++) {
-							ptr=(byte*)(tp+1)+(((ushort*)(tp+1))[idx2+k]+=ushort(lpref*k)); memcpy(ptr,pref,lpref);
-							memcpy(ptr+lpref,getK(rec,idx+k),lenK(rec,idx+k));
-						}
-					} else {
-						//...
+					if (idx2>=tp->info.nSearchKeys) idx1=n; else tp->findSubKey(rec,n,idx2,idx1);
+					uint16_t nIns=uint16_t(idx1-idx);
+					if (nIns*L_SHT>tp->info.freeSpaceLength) return RC_PAGEFULL; tp->info.freeSpaceLength-=nIns*L_SHT;
+					if (idx2<tp->info.nEntries) memmove((uint16_t*)(tp+1)+idx2+nIns,(uint16_t*)(tp+1)+idx2,(tp->info.nEntries-idx2)*L_SHT);
+					for (; idx<idx1; idx++) {
+						const byte *p=TreePageMgr::getK(rec,idx,l1); if (l1>tp->info.freeSpaceLength) return RC_PAGEFULL;	// undo?
+						((uint16_t*)(tp+1))[idx2++]=tp->store(p,l1);
 					}
 					tp->info.nSearchKeys+=nIns; tp->info.nEntries+=nIns;
 				}
@@ -847,61 +739,49 @@ RC TreePageMgr::update(PBlock *pb,size_t len,unsigned info,const byte *rec,size_
 			if ((tp->info.sibling=tpmi->sibling)!=INVALID_PAGEID) tp->info.nSearchKeys=tp->info.nEntries-1;
 			break;
 		case MO_DELETE:
-			if (!tp->info.fmt.isKeyOnly()) return RC_CORRUPTED; if (tp->info.lPrefix>tpmi->lPrefix) return RC_NOTFOUND;
-			idx1=idx2=0; pref=NULL; lpref=0; l1=fVarSub?L_SHT:tp->info.fmt.keyLength()-tpmi->lPrefix; fPR=tp->info.fmt.isRefKeyOnly();
-			if (tp->info.lPrefix<tpmi->lPrefix) {pref=rec+tpmi->lData+tp->info.lPrefix; lpref=tpmi->lPrefix-tp->info.lPrefix;}
-			n=fVarSub?nKeys(rec):tpmi->lData/l1; l2=ushort(fVarSub?L_SHT:tp->info.fmt.keyLength()-tp->info.lPrefix);
-			if (fVarSub) {p1=getK(rec,idx1); l1=lenK(rec,idx1);} else p1=rec+l1*idx1;
+			if (!tp->info.fmt.isKeyOnly()) return RC_CORRUPTED;
+			idx1=idx2=0; l1=l2=L_SHT; fPR=tp->info.fmt.isRefKeyOnly(); n=tpmi->nKeys;
+			p1=getK(rec,idx1,l1);
 			do {
-				if (idx2>=tp->info.nSearchKeys || !tp->findSubKey(p1,l1,idx2,pref,lpref)) return RC_NOTFOUND;
-				if (!fVarSub) p2=(byte*)(tp+1)+l2*idx2; bool fAdjcnt=false; idx=idx2;
+				if (idx2>=tp->info.nSearchKeys || !tp->findSubKey(p1,l1,idx2)) return RC_NOTFOUND;
+				bool fAdjcnt=false; idx=idx2;
 				do {
 					if (tp->info.fmt.isRefKeyOnly()) {
 						//unsigned cnt2=PINRef::getCount(p1,l1,rec+tpmi->lData,tpmi->lPrefix);
 						// if (cnt1<cnt2) return RC_NOTFOUND; if (cnt1>cnt2) {fAdjcnt=true; break;}
 					}
 					if (++idx1>=n || ++idx2>=tp->info.nSearchKeys) break;
-					if (!fVarSub) {p1+=l1; p2+=l2;}
-					else {p1=getK(rec,idx1); l1=lenK(rec,idx1); p2=(*tp)[idx2]; l2=tp->lenPK(idx2);}
-				} while (fPR && PINRef::cmpPIDs(p1,l1,p2,l2)==0 || !fPR && (pref==NULL || l2>=lpref && memcmp(pref,p2,lpref)==0) && l1+lpref==l2 && memcmp(p1,p2+lpref,l1)==0);
+					p1=getK(rec,idx1,l1); p2=tp->getK(idx2,l2);
+				} while (fPR && PINRef::cmpPIDs(p1,p2)==0 || !fPR && memcmp(p1,p2,l1)==0);
 				if (idx2>idx) {
-					if (fVarSub) {
-						ushort *p=(ushort*)(tp+1)+idx; unsigned sht=*p,nd=idx2-idx; l=p[nd]-p[0]; ll=((ushort*)(tp+1))[tp->info.nEntries];
-						if (sht+l<ll) memmove((byte*)(tp+1)+sht,(byte*)(tp+1)+sht+l,ll-l-sht);
-						memmove(p,p+nd,ll-l-(idx+1)*L_SHT); p=(ushort*)(tp+1);
-						for (unsigned j=tp->info.nEntries; --j>=idx;) p[j]-=ushort(l+L_SHT*nd);
-						for (long k=(long)idx; --k>=0;) p[k]-=ushort(L_SHT*nd);
-					} else {
-						if (idx2<tp->info.nEntries) memmove((byte*)(tp+1)+idx*l1,(byte*)(tp+1)+idx2*l1,(tp->info.nEntries-idx2)*l1);
-						l=ushort(l1*(idx2-idx));
-					}
-					tp->info.nEntries-=ushort(idx2-idx); tp->info.nSearchKeys-=ushort(idx2-idx); tp->info.freeSpaceLength+=l;
+					for (unsigned i=idx; i<idx2; i++)
+						if (tp->getK(i,l2)==(byte*)tp+tp->info.freeSpace) {tp->info.freeSpace+=l2; tp->info.freeSpaceLength+=l2;} else tp->info.scatteredFreeSpace+=l2;
+					if (idx2<tp->info.nEntries) memmove((uint16_t*)(tp+1)+idx,(uint16_t*)(tp+1)+idx2,(tp->info.nEntries-idx2)*L_SHT);
+					l=uint16_t((idx2-idx)*L_SHT); tp->info.nEntries-=uint16_t(idx2-idx); tp->info.nSearchKeys-=uint16_t(idx2-idx); tp->info.freeSpaceLength+=l;
 				}
 				if (fAdjcnt) {
 					//if ((rc=tp->adjustKeyCount(idx,(byte*)(tpm+1)+2,((byte*)(tpm+1))[1],NULL,0,true))!=RC_OK) return rc;
 					idx1++; idx2++;
 				}
 			} while (idx1<n);
-			if (tp->info.nEntries==0) tp->info.freeSpaceLength+=L_SHT;
-			if (tp->info.lPrefix>0) {
-				if (tp->info.nEntries==0) {tp->info.freeSpaceLength+=tp->info.lPrefix; tp->info.lPrefix=0;}
-				else {
-					ushort newPrefSize=tp->calcPrefixSize(0,tp->info.nEntries); assert(newPrefSize>=tp->info.lPrefix);
-					if (newPrefSize>tp->info.lPrefix) tp->changePrefixSize(newPrefSize);
-				}
-			}
 			break;
 		case MO_INIT:
 			tp->info.fmt=tpmi->fmt; tp->info.sibling=tpmi->sibling;
-			if ((tp->info.lPrefix=tpmi->lPrefix)!=0) {
-				if (lrec<=tpmi->lPrefix) return RC_CORRUPTED;
-				if (fVarSub) tp->store(rec+tpmi->lData,tpmi->lPrefix,*(PagePtr*)&tp->info.prefix);
-				else if (tpmi->lPrefix>sizeof(tp->info.prefix)) return RC_CORRUPTED;
-				else memcpy(&tp->info.prefix,rec+tpmi->lData,tpmi->lPrefix);
+			if (tp->info.freeSpaceLength<tpmi->lData) {report(MSG_ERROR,"Not enough space in MULTIINIT, requested: %d\n",tpmi->lData); return RC_PAGEFULL;}
+			tp->info.nEntries=tp->info.nSearchKeys=tpmi->nKeys; if (tp->info.sibling!=INVALID_PAGEID) tp->info.nSearchKeys--;
+			if (!tp->info.fmt.isKeyOnly()) memcpy(tp+1,rec,tpmi->lData);	//????
+			else {
+				memcpy(tp+1,rec,tpmi->nKeys*L_SHT); l=tpmi->lData-tpmi->nKeys*L_SHT; tp->info.freeSpace-=l; memcpy((byte*)tp+tp->info.freeSpace,rec+tpmi->nKeys*L_SHT,l);
+				uint16_t dl=tp->info.freeSpaceLength-tpmi->lData; if (dl!=0) for (uint16_t i=0; i<tpmi->nKeys; i++) ((uint16_t*)(tp+1))[i]+=dl;
 			}
-			if ((unsigned)tp->info.freeSpaceLength<tpmi->lData) {report(MSG_ERROR,"Not enough space in MULTIINIT, requested: %d\n",tpmi->lData); return RC_PAGEFULL;}
-			tp->info.nEntries=tp->info.nSearchKeys=fVarSub?nKeys(rec):ushort(tpmi->lData/(tp->info.fmt.keyLength()-tp->info.lPrefix));
-			memcpy(tp+1,rec,tpmi->lData); tp->info.freeSpaceLength-=tpmi->lData; if (tp->info.sibling!=INVALID_PAGEID) tp->info.nSearchKeys--;
+			tp->info.freeSpaceLength-=tpmi->lData; break;
+		case MO_PAGEINIT:
+			if ((flags&TXMGR_RECV)!=0) {
+				tp->info.fmt=tpmi->fmt; tp->info.sibling=tpmi->sibling;
+				if (tp->info.freeSpaceLength<tpmi->lData) {report(MSG_ERROR,"Not enough space in MULTIPAGEINIT, requested: %d\n",tpmi->lData); return RC_PAGEFULL;}
+				tp->info.nEntries=tp->info.nSearchKeys=tpmi->nKeys; if (tp->info.sibling!=INVALID_PAGEID) tp->info.nSearchKeys--;
+				memcpy(tp+1,rec,tpmi->lData); tp->info.freeSpaceLength-=tpmi->lData; tp->info.freeSpace-=tpmi->lData-tpmi->nKeys*L_SHT;
+			}
 			break;
 		}
 		break;
@@ -915,29 +795,26 @@ RC TreePageMgr::update(PBlock *pb,size_t len,unsigned info,const byte *rec,size_
 			report(MSG_ERROR,"TreePageMgr::update COUNTER: data not found, idx=%d, page %08X\n",idx,tp->hdr.pageID);
 			return RC_NOTFOUND;
 		}
-		if (vp!=NULL && TreePage::isSubTree(*vp)) {
+		if (vp!=NULL && tp->isSubTree(*vp)) {
 			memcpy(&tpExt,(byte*)tp+vp->offset,sizeof(SubTreePage)); int64_t d=__una_get(*(int64_t*)rec);
 			if ((flags&TXMGR_UNDO)!=0) tpExt.counter=tpExt.counter-d; else tpExt.counter=tpExt.counter+d;
 			memcpy((byte*)tp+vp->offset,&tpExt,sizeof(SubTreePage));
 		}
 		break;
 	case TRO_REPLACE:
-		if (!tp->info.fmt.isKeyOnly() || !fVarSub && lrec!=unsigned(tp->info.fmt.keyLength()*2)) {
+		if (!tp->info.fmt.isKeyOnly()) {
 			report(MSG_ERROR,"TreePageMgr::update replace: incorrect page type, page %08X\n",tp->hdr.pageID);
 			return RC_CORRUPTED;
 		}
-		if (!fVarSub) {p1=rec; l1=l2=tp->info.fmt.keyLength(); delta=0;}
-		else {
-			p1=rec+sizeof(uint16_t); l1=*(ushort*)rec; if (lrec<l1+sizeof(uint16_t)) return RC_CORRUPTED;
-			l2=ushort(lrec-l1-sizeof(uint16_t)); if (rec[lrec-1]==0xFF) {if (l2<rec[lrec-3]) return RC_CORRUPTED; l2-=rec[lrec-3];}
-			if ((delta=l2-l1)>(int)tp->info.freeSpaceLength) {
-				report(MSG_ERROR,"TreePageMgr::update replace: insufficient space, req=%d, page %08X\n",l2-l1,tp->hdr.pageID);
-				return RC_PAGEFULL;
-			}
+		p1=rec+sizeof(uint16_t); l1=*(uint16_t*)rec; if (lrec<l1+sizeof(uint16_t)) return RC_CORRUPTED;
+		l2=uint16_t(lrec-l1-sizeof(uint16_t)); if (rec[lrec-1]==0xFF) {if (l2<rec[lrec-3]) return RC_CORRUPTED; l2-=rec[lrec-3];}
+		if ((delta=l2-l1)>(int)tp->info.freeSpaceLength+tp->info.scatteredFreeSpace) {
+			report(MSG_ERROR,"TreePageMgr::update replace: insufficient space, req=%d, page %08X\n",l2-l1,tp->hdr.pageID);
+			return RC_PAGEFULL;
 		}
-		p2=p1+l1; icmp=0;
+		p2=p1+l1;
 		if ((flags&(TXMGR_UNDO|TXMGR_RECV))!=0) {
-			if ((flags&TXMGR_UNDO)!=0) {const byte *pp=p1; p1=p2; p2=pp; ll=l1; l1=l2; l2=ll;}
+			if ((flags&TXMGR_UNDO)!=0) {const byte *pp=p1; p1=p2; p2=pp; ll=l1; l1=l2; l2=ll; delta=-delta;}
 			if (!tp->findSubKey(p1,l1,idx)) {
 				report(MSG_ERROR,"TreePageMgr::update replace UNDO/REDO: key not found, page %08X\n",tp->hdr.pageID);
 				return RC_NOTFOUND;
@@ -952,59 +829,23 @@ RC TreePageMgr::update(PBlock *pb,size_t len,unsigned info,const byte *rec,size_
 			return RC_NOTFOUND;
 		}
 #endif
-		if (tp->info.lPrefix>0) {
-			const byte *pref=fVarSub?(byte*)tp+((PagePtr*)&tp->info.prefix)->offset:(byte*)&tp->info.prefix;
-			for (l=min(l2,tp->info.lPrefix),ll=0; ll<l && (icmp=*p2-*pref)==0; ++p2,++pref,++ll);
-			if ((l1-=ll,l2-=ll)==0) icmp=-1;
-			else if (ll<tp->info.lPrefix) {
-				if ((tp->info.lPrefix-ll)*tp->info.nEntries>tp->info.freeSpaceLength) {
-					report(MSG_ERROR,"TreePageMgr::update replace: insufficient space, newPrefSize=%d, page %08X\n",ll,tp->hdr.pageID);
-					return RC_PAGEFULL;
-				} 
-				tp->changePrefixSize(ll); assert(icmp!=0);
-			}
-		}
-		if (icmp==0 && (icmp=memcmp(p2,p1,min(l2,l1)))==0) icmp=cmp3(l2,l1);
+		icmp=tp->info.fmt.isRefKeyOnly()?PINRef::cmpPIDs(p2,p1):(icmp=memcmp(p2,p1,min(l2,l1)))==0?cmp3(l2,l1):icmp;
 		if (icmp<0 && idx==0 || icmp>0 && idx+1>=tp->info.nSearchKeys) n=idx;
 		else if (tp->findSubKey(p2,l2,n) && n!=idx) {
 			report(MSG_ERROR,"TreePageMgr::update replace: key already exists, page %08X\n",ll,tp->hdr.pageID);
 			return RC_ALREADYEXISTS;
 		}
-		if (!fVarSub) {
-			lElt=tp->info.fmt.keyLength()-tp->info.lPrefix;
-			if (n<idx) memmove((byte*)(tp+1)+(n+1)*lElt,(byte*)(tp+1)+n*lElt,(idx-n)*lElt);
-			else if (n>idx+1) memmove((byte*)(tp+1)+idx*lElt,(byte*)(tp+1)+(idx+1)*lElt,(--n-idx)*lElt);
-			memcpy((byte*)(tp+1)+n*lElt,p2,l2);
-		} else {
-			ushort *from=&((ushort*)(tp+1))[idx],*to=&((ushort*)(tp+1))[n]; l1=tp->lenPK(idx);
-			if (tp->info.fmt.isRefKeyOnly() && PINRef::hasCount((*tp)[from],l1) && !PINRef::hasCount(p2,l2)) {
-				byte buf[XPINREFSIZE]; memcpy(buf,p2,l2); size_t ll=l2;
-				if ((rc=PINRef::adjustCount(buf,ll,PINRef::getCount((*tp)[from],l1)-1,buf))!=RC_OK && rc!=RC_TRUE) return rc;
-				p2=buf; l2=(ushort)ll;
-			}
-			delta=l2-l1;
-			if (n<=idx+1) {
-				if (delta!=0) {
-					if (idx+1<tp->info.nEntries) {byte *pd=(byte*)getK(tp+1,idx+1); memmove(pd+delta,pd,lenKK(tp+1,idx+1,tp->info.nEntries));}
-					ushort *p=from; for (unsigned i=idx; ++i<=tp->info.nEntries; *++p+=(uint16_t)delta);
-				}
-				if (n>=idx) to=from;
-				else {
-					memmove((*tp)[to]+l2,(*tp)[to],lenKK(tp,n,idx));
-					for (int i=idx; --i>=(int)n;) ((ushort*)(tp+1))[i+1]=((ushort*)(tp+1))[i]+l2;
-				}
-			} else {
-				memmove((*tp)[from],(*tp)[from+1],lenKK(tp,idx+1,n)); ll=lenK(from,0);
-				for (unsigned i=idx+1; i<n; i++) ((ushort*)(tp+1))[i]=((ushort*)(tp+1))[i+1]-ll;
-				if (delta!=0) {
-					if (n<tp->info.nEntries) {byte *pd=(byte*)getK(tp+1,n); memmove(pd+delta,pd,lenKK(tp+1,n,tp->info.nEntries));}
-					for (ushort *p=to; n<=tp->info.nEntries; n++) *p+=(uint16_t)delta;
-				}
-				--to;
-			}
-			memcpy((*tp)[to],p2,l2);
-		}
-		tp->info.freeSpaceLength-=delta; break;
+		lElt=L_SHT; off=((uint16_t*)(tp+1))[idx];
+		if (n<idx) memmove((byte*)(tp+1)+(n+1)*lElt,(byte*)(tp+1)+n*lElt,(idx-n)*lElt);
+		else if (n>idx+1) memmove((byte*)(tp+1)+idx*lElt,(byte*)(tp+1)+(idx+1)*lElt,(--n-idx)*lElt);
+		if (delta<0) {
+			delta=-delta;
+			if (off!=tp->info.freeSpace-sizeof(TreePage)) {tp->info.scatteredFreeSpace+=uint16_t(delta); off+=sizeof(TreePage);}
+			else {off=tp->info.freeSpace+=uint16_t(delta); tp->info.freeSpaceLength+=uint16_t(delta);}
+		} else if (off+sizeof(TreePage)==tp->info.freeSpace && tp->info.freeSpaceLength>=delta) {off=tp->info.freeSpace-=uint16_t(delta); tp->info.freeSpaceLength-=uint16_t(delta);}
+		else if (tp->info.freeSpaceLength>=l2) {off=tp->info.freeSpace-=l2; tp->info.freeSpaceLength-=l2; tp->info.scatteredFreeSpace+=l1;}
+		else {((uint16_t*)(tp+1))[n]=0; tp->info.scatteredFreeSpace+=l1; tp->compact(false); assert(tp->info.freeSpaceLength>=l2); off=tp->info.freeSpace-=l2; tp->info.freeSpaceLength-=l2;}
+		((uint16_t*)(tp+1))[n]=off-sizeof(TreePage); memcpy((byte*)tp+off,p2,l2); break;
 	}
 	if (tp->info.level>TREE_MAX_DEPTH || tp->info.nEntries!=tp->info.nSearchKeys+(tp->info.sibling!=INVALID_PAGEID?1:0)) {
 		report(MSG_ERROR,"Invalid nEntries/nSearchKeys %d/%d after op %d, page %08X\n",tp->info.nEntries,tp->info.nSearchKeys,op,tp->hdr.pageID);
@@ -1018,12 +859,12 @@ RC TreePageMgr::update(PBlock *pb,size_t len,unsigned info,const byte *rec,size_
 	return RC_OK;
 }
 
-RC TreePageMgr::TreePage::insertKey(unsigned idx,const byte *key,const byte *data,ushort lData,ushort type,ushort l)
+RC TreePageMgr::TreePage::insertKey(unsigned idx,const byte *key,const byte *data,uint16_t lData,uint16_t nData,uint16_t l)
 {
-	ushort lElt=info.calcEltSize(); l+=lElt;
+	uint16_t lElt=info.calcEltSize(); l+=lElt;
 	if (info.freeSpaceLength<l) {
 		if (info.freeSpaceLength+info.scatteredFreeSpace<l) {
-			report(MSG_ERROR,"TreePageMgr::update insert: requested %d, available %d, page %08X\n",l,info.freeSpaceLength+info.scatteredFreeSpace,hdr.pageID);
+			report(MSG_ERROR,"TreePageMgr::insertKey: requested %d, available %d, page %08X\n",l,info.freeSpaceLength+info.scatteredFreeSpace,hdr.pageID);
 			return RC_PAGEFULL;
 		}
 		compact(); assert(info.freeSpaceLength>=l);
@@ -1031,42 +872,36 @@ RC TreePageMgr::TreePage::insertKey(unsigned idx,const byte *key,const byte *dat
 	byte *ptr=(byte*)(this+1)+idx*lElt;
 	if (info.fmt.isSeq()) {
 		assert(!hasSibling() && idx==info.nEntries); info.freeSpaceLength-=lElt;
-		if (!info.fmt.isFixedLenData()) store(data,lData,*(PagePtr*)ptr);
-		else {assert(lData==lElt); memcpy(ptr,data,lElt);}
-	} else if (info.fmt.isVarKeyOnly()) {
-		storeKey(key,ptr); info.freeSpaceLength-=lElt;
+		if (!info.fmt.isFixedLenData()) store(data,lData,*(PagePtr*)ptr); else {assert(lData==lElt); memcpy(ptr,data,lElt);}
 	} else { 
 		if (idx<info.nEntries) memmove(ptr+lElt,ptr,(info.nEntries-idx)*lElt);
 		storeKey(key,ptr); info.freeSpaceLength-=lElt;
-		if (type!=0 && !info.fmt.isUnique()) {
-			if (type!=ushort(~0u) && (type!=ushort(~1u) ||
-				lData!=sizeof(SubTreePage) && lData<sizeof(SubTreePage)+sizeof(SubTreePageKey))) return RC_CORRUPTED;
-			PagePtr *vp=(PagePtr*)(ptr+info.keyLength()); store(data,lData,*vp);
-			if (type==ushort(~1u)) {
-				if (lData>sizeof(SubTreePage)) {
-					SubTreePageKey *pk=(SubTreePageKey*)((byte*)this+vp->offset+sizeof(SubTreePage));
-					vp->len=__una_get(((const SubTreePageKey*)(data+sizeof(SubTreePage)))->key.offset);
-					for (int i=(vp->len-sizeof(SubTreePage))/sizeof(SubTreePageKey); --i>=0; pk++)
-						{PagePtr pp=__una_get(pk->key); pp.offset+=vp->offset; __una_set(pk->key,pp);}
+		if (!info.fmt.isKeyOnly()) {
+			if (!info.fmt.isFixedLenData()) {
+				store(data,lData,*(PagePtr*)(ptr+info.keyLength()));
+				if (nData!=0) {
+					PagePtr *vp=(PagePtr*)(ptr+info.keyLength());
+					if ((nData&0x8000)==0) {
+						if (nData*L_SHT>=lData) return RC_CORRUPTED;
+						uint16_t *p=(uint16_t*)((byte*)this+vp->offset); vp->len=nData*L_SHT|TRO_MANY;
+						for (uint16_t i=0; i<nData; i++,p++) {uint16_t sht=__una_get(*p); sht+=vp->offset; __una_set(*p,sht);}
+					} else if (lData>sizeof(SubTreePage)) {
+						vp->len=(sizeof(SubTreePage)+(nData&~0x8000)*sizeof(SubTreePageKey))|TRO_MANY;
+						SubTreePageKey *pk=(SubTreePageKey*)((byte*)this+vp->offset+sizeof(SubTreePage));
+						for	(int i=(nData&~0x8000); --i>=0; pk++)
+							{uint16_t pp=_u16(&pk->key.offset); pp+=vp->offset; _set_u16(&pk->key.offset,pp);}
+					} else if (lData==sizeof(SubTreePage)) vp->len|=TRO_MANY; else return RC_CORRUPTED;
 				}
-				vp->len|=TRO_EXT_DATA;
-			}
-		} else if (info.fmt.isVarMultiData()) {
-			byte *p=(byte*)alloca((l=lData)+4); if (p==NULL) return RC_NORESOURCES;
-			if (lData<254) {p[0]=2; p[1]=byte(l+2); memcpy(p+2,data,l); l+=2;}
-			else {_set_u16(p,L_SHT*2); _set_u16(p+L_SHT,l+L_SHT*2); memcpy(p+L_SHT*2,data,l); l+=L_SHT*2;}
-			store(p,l,*(PagePtr*)(ptr+info.keyLength()));
-		} else if (!info.fmt.isFixedLenData()) 
-			store(data,lData,*(PagePtr*)(ptr+info.keyLength()));
-		else if ((l=info.fmt.dataLength())!=0) {
-			assert(lData==l); 
-			if (!info.fmt.isFixedLenKey()) memcpy(ptr+sizeof(PagePtr),data,l);
-			else {
-				assert(info.freeSpaceLength>=l);
-				info.freeSpaceLength-=l; info.freeSpace-=l;
-				ptr=(byte*)this+info.freeSpace+(info.nSearchKeys-idx)*l;
-				if (idx<info.nSearchKeys) memmove((byte*)this+info.freeSpace,(byte*)this+info.freeSpace+l,ptr-(byte*)this-info.freeSpace);
-				if (!isLeaf()) *(PageID*)ptr=*(PageID*)(data); else memcpy(ptr,data,l);
+			} else if ((l=info.fmt.dataLength())!=0) {
+				assert(lData==l);
+				if (!info.fmt.isFixedLenKey()) memcpy(ptr+sizeof(PagePtr),data,l);
+				else {
+					assert(info.freeSpaceLength>=l);
+					info.freeSpaceLength-=l; info.freeSpace-=l;
+					ptr=(byte*)this+info.freeSpace+(info.nSearchKeys-idx)*l;
+					if (idx<info.nSearchKeys) memmove((byte*)this+info.freeSpace,(byte*)this+info.freeSpace+l,ptr-(byte*)this-info.freeSpace);
+					if (!isLeaf()) *(PageID*)ptr=*(PageID*)(data); else memcpy(ptr,data,l);
+				}
 			}
 		}
 	}
@@ -1074,85 +909,59 @@ RC TreePageMgr::TreePage::insertKey(unsigned idx,const byte *key,const byte *dat
 	return RC_OK;
 }
 
-bool TreePageMgr::TreePage::insertValues(const byte *p1,ushort ll,AfyKernel::PagePtr *vp,ushort off,unsigned idx,bool fVM,ushort n,const uint16_t *shs)
+bool TreePageMgr::TreePage::insertValues(const byte *p1,uint16_t ll,AfyKernel::PagePtr *vp,uint16_t off,unsigned idx,uint16_t n,const uint16_t *shs)
 {
-	ushort n2=n*L_SHT; ushort l=ll,l2; byte *ptr=NULL; assert(n==1 || shs!=NULL);
-	if (fVM) l+=vp->len>=256?n2:vp->len==0?ll+n+1<256?n+1:n2+L_SHT:vp->len+n+ll<256?n:((byte*)this+vp->offset)[0]+n2;
+	byte *ptr=NULL; uint16_t n2=n*L_SHT; assert(n==1 || shs!=NULL); assert(!isSubTree(*vp));
+	uint16_t l=ll,l2,len=vp->len&~TRO_MANY,oof=vp->offset; const bool fSingle=(vp->len&TRO_MANY)==0;
+	if (len!=0 || n>1) {l+=n2; if (fSingle) l+=L_SHT;}
 	if (l>info.freeSpaceLength+info.scatteredFreeSpace) {
-		report(MSG_ERROR,"TreePageMgr insertValues: insufficient space, requested %d, page %08X\n",l,hdr.pageID);
-		return false;
+		report(MSG_ERROR,"TreePageMgr insertValues: insufficient space, requested %d, page %08X\n",l,hdr.pageID); return false;
 	}
-	if (vp->offset==info.freeSpace && info.freeSpaceLength>=l) {
-		info.freeSpace-=l; info.freeSpaceLength-=l;
-		memmove((byte*)this+info.freeSpace,(byte*)this+vp->offset,vp->len); 
-		vp->offset=info.freeSpace; ptr=(byte*)this+info.freeSpace;
-	} else if (info.freeSpaceLength>=vp->len+l) {
-		info.freeSpace-=vp->len+l; info.freeSpaceLength-=vp->len+l;
-		memmove((byte*)this+info.freeSpace,(byte*)this+vp->offset,vp->len);
-		info.scatteredFreeSpace+=vp->len; vp->offset=info.freeSpace; ptr=(byte*)this+info.freeSpace;
+	if (fSingle) {
+		if (info.freeSpaceLength<l) {compact(false); findData(idx,l2,(const PagePtr**)&vp); assert(vp!=NULL && info.freeSpaceLength>=l); oof=vp->offset;}
+		ptr=(byte*)this+(vp->offset=info.freeSpace-=l); info.freeSpaceLength-=l;
+		if (len==0 && shs==NULL) {vp->len=ll; memcpy(ptr,p1,ll); return true;}
+		if (off!=0) {assert(off==L_SHT); _set_u16(ptr,oof);} else _set_u16(ptr+n2,oof); vp->len=L_SHT|TRO_MANY; len=L_SHT;
 	} else {
-		compact(false,idx,l); ptr=(byte*)findData(idx,l2,(const PagePtr**)&vp);
-		assert(ptr!=NULL && vp!=NULL && vp->len>=l); vp->len-=l;
-	}
-	if (!fVM) {
-		assert(ptr==(byte*)this+vp->offset);
-		if (off<vp->len) memmove(ptr+off+l,ptr+off,vp->len-off);
-		memcpy(ptr+off,p1,l);
-	} else if (vp->len==0) {
-		assert(n==1);
-		if (ll+2<256) {ptr[0]=2; ptr[1]=ll+2; memcpy(ptr+2,p1,ll);} else {_set_u16(ptr,L_SHT*2); _set_u16(ptr+L_SHT,ll+L_SHT*2); memcpy(ptr+L_SHT*2,p1,ll);}
-	} else {
-		unsigned sht=vp->len<256?ptr[off]:_u16(ptr+off); int j;
-		if (sht<vp->len) memmove(ptr+sht+ll,ptr+sht,vp->len-sht);
-		memcpy(ptr+sht,p1,ll);
-		if (vp->len>=256) {
-			memmove(ptr+off+n2,ptr+off,vp->len-off+ll);
-			for (ushort k=1; k<n; k++) {ushort sh=shs[k]-shs[0]+ushort(sht); _set_u16(ptr+off+k*L_SHT,sh);}
-			for (j=_u16(ptr)+n2; (j-=L_SHT)>=off+n2; ) {sht=_u16(ptr+j)+ll+n2; _set_u16(ptr+j,sht);}
-			for (;j>=0;j-=L_SHT) {sht=_u16(ptr+j)+n2; _set_u16(ptr+j,sht);}
-		} else if (vp->len+n+ll<256) {
-			memmove(ptr+off+n,ptr+off,vp->len-off+ll);
-			for (ushort k=1; k<n; k++) ptr[off+k]=byte(shs[k]-shs[0]+sht);
-			for (j=*ptr+n; --j>=off+n; ) ptr[j]+=ll+n; for (;j>=0;--j) ptr[j]+=n;
+		if (oof==info.freeSpace && info.freeSpaceLength>=l) {
+			memmove(ptr=(byte*)this+(vp->offset=info.freeSpace-=l),(byte*)this+oof,len); info.freeSpaceLength-=l;
+		} else if (info.freeSpaceLength>=len+l) {
+			info.freeSpaceLength-=len+l; info.scatteredFreeSpace+=len;
+			memmove(ptr=(byte*)this+(vp->offset=info.freeSpace-=len+l),(byte*)this+oof,len);
 		} else {
-			sht=*ptr; memmove(ptr+sht*L_SHT+n2,ptr+sht,vp->len-sht+ll); unsigned k,m;
-			for (j=sht; --j>=off;) {k=ptr[j]+sht+n2+ll; m=j*L_SHT+n2; _set_u16(ptr+m,k);}
-			k=ptr[off]+sht+n2; m=off*L_SHT; _set_u16(ptr+m,k);
-			if (n>1) for (ushort sh=shs[0],o=1; o<n; o++) {m=shs[o]-sh+k; _set_u16(ptr+off*L_SHT+o*L_SHT,m);}
-			for (;j>=0;--j) {k=ptr[j]+sht+n2; m=j*L_SHT; _set_u16(ptr+m,k);}
+			compact(false,idx,l); ptr=(byte*)findData(idx,l2,(const PagePtr**)&vp);
+			assert(ptr!=NULL && vp!=NULL && (vp->len&~TRO_MANY)>=l); oof=vp->offset; vp->len-=l;
 		}
+		if (off<len) memmove(ptr+off+n2,ptr+off,len-off);
 	}
-	vp->len+=l; return true;
+	ushort sht=vp->offset+len+n2; vp->len+=n2;
+	if (shs==NULL) {memcpy(ptr+len+n2,p1,ll); _set_u16(ptr+off,sht);}
+	else for (uint16_t j=0; j<n; j++) {
+		const byte *pp=TreePageMgr::getK(p1,&shs[j],ll);
+		_set_u16(ptr+off+j*L_SHT,sht); memcpy((byte*)this+sht,pp,ll); sht+=ll;
+	}
+	return true;
 }
 
-void TreePageMgr::TreePage::deleteValues(ushort l,PagePtr *vp,ushort off,bool fVM,ushort n)
+void TreePageMgr::TreePage::deleteValues(uint16_t l,PagePtr *vp,uint16_t off,uint16_t n)
 {
-	byte *ptr=(byte*)this+vp->offset;
-	if (fVM) {
-		ushort n2=n*L_SHT;
-		if (vp->len<256 && *ptr==n+1) {assert(vp->len==l+n+1); info.scatteredFreeSpace+=vp->len; vp->len=0;}
-		else if (vp->len>=256 && _u16(ptr)==n2+L_SHT) {assert(vp->len==l+n2+L_SHT); info.scatteredFreeSpace+=vp->len; vp->len=0;}
-		else {
-			unsigned sht=vp->len>=256?_u16(ptr+off):ptr[off];
-			if (sht+l<vp->len) memmove(ptr+sht,ptr+sht+l,vp->len-sht-l);
-			if (vp->len<256) {
-				int j=*ptr-1; l+=n; memmove(ptr+off,ptr+off+n,vp->len-off-l);
-				while (--j>=0) ptr[j]-=j>=off?l:n;
-			} else if (vp->len-l-n2<256) {		// better check?
-				int k=_u16(ptr)/L_SHT-1; l+=n2+k;
-				for (int j=0,m=0; j<k; ++j,m+=L_SHT) {if (m==off) m+=n2; ptr[j]=byte(_u16(ptr+m)-(m>=off?l:k+L_SHT)); assert(j==0 || ptr[j]>ptr[j-1]);}
-				memmove(ptr+k,ptr+(k+1)*L_SHT,vp->len-k-l+n2);
-			} else {
-				int j=_u16(ptr)-L_SHT; l+=n2; memmove(ptr+off,ptr+off+n2,vp->len-off-l);
-				while ((j-=L_SHT)>=0) {sht=_u16(ptr+j)-(j>=off?l:n2); assert(sht<=unsigned(vp->len-l)); _set_u16(ptr+j,sht);}
-			}
-			vp->len-=l; info.scatteredFreeSpace+=l;
+	if (vp->len==l) {
+		vp->len=0; if (vp->offset!=info.freeSpace) info.scatteredFreeSpace+=l; else {info.freeSpace+=l; info.freeSpaceLength+=l;}
+	} else {
+		uint16_t n2=n*L_SHT; byte *beg=(byte*)this+vp->offset+off,*ptr=beg+n2; assert((vp->len&TRO_MANY)!=0 && !isSubTree(*vp));
+		// preload ptr+off,n2
+		while ((ptr-=L_SHT)>=beg) {
+			uint16_t ll; TreePageMgr::getK(this,ptr,ll);
+			if (_u16(ptr)!=info.freeSpace) info.scatteredFreeSpace+=ll; else {info.freeSpace+=ll; info.freeSpaceLength+=ll;}
 		}
-	} else if ((vp->len-=l)!=0) {
-		if (vp->len>off) memmove(ptr,ptr+l,vp->len-off);
-		info.scatteredFreeSpace+=l;
-	} else if (vp->offset!=info.freeSpace) info.scatteredFreeSpace+=l;
-	else {info.freeSpace+=l; info.freeSpaceLength+=l;}
+		l=vp->len&~TRO_MANY; if ((vp->len-=n2)==TRO_MANY) vp->len=0; assert (n2+off<=l);
+		if (vp->offset!=info.freeSpace) {
+			if (n2+off<l) memmove(beg,beg+n2,l-off-n2); info.scatteredFreeSpace+=n2;
+		} else {
+			if (n2<l&&off!=0) memmove((byte*)this+vp->offset+n2,(byte*)this+vp->offset,off);
+			vp->offset+=n2; info.freeSpace+=n2; info.freeSpaceLength+=n2;
+		}
+	}
 }
 
 RC TreePageMgr::TreePage::adjustCount(byte *ptr,PagePtr *vp,unsigned idx,const byte *p,size_t lp,bool fDec)
@@ -1162,103 +971,67 @@ RC TreePageMgr::TreePage::adjustCount(byte *ptr,PagePtr *vp,unsigned idx,const b
 		//deleteValues(
 		return RC_OK;
 	}
-	size_t sht,l,l0; byte buf[XPINREFSIZE]; RC rc; int j; ushort ll,off; int dl;
-	if (vp->len<256) {sht=ptr[0]; l0=l=ptr[1]-sht;} else {sht=_u16(ptr); l0=l=_u16(ptr+L_SHT)-sht;}
-	switch (rc=PINRef::adjustCount((byte*)this+vp->offset+sht,l,PINRef::getCount(p,lp),buf,fDec)) {
+	uint16_t sht=(vp->len&TRO_MANY)!=0?_u16(ptr):vp->offset,l0=PINRef::len((byte*)this+sht),l; byte buf[XPINREFSIZE]; RC rc;
+	switch (rc=PINRef::adjustCount((byte*)this+sht,PINRef::getCount(p),buf,fDec)) {
 	default: return rc;
 	case RC_TRUE:
-		off=ushort(ptr-((byte*)this+vp->offset));
-		dl=int(l-l0); assert(fDec && dl<0 || !fDec && dl>0);
-		if (dl<0) info.scatteredFreeSpace+=ushort(-dl);
+		if ((l=PINRef::len(buf))<l0) {memcpy((byte*)this+sht,buf,l0); info.scatteredFreeSpace+=uint16_t(l0-l);}
 		else {
-			int total=vp->len>=256||vp->len+dl<256?dl:dl+*((byte*)this+vp->offset)*(L_SHT-1);
-			if (total>info.freeSpaceLength+info.scatteredFreeSpace) {
-				report(MSG_ERROR,"TreePageMgr adjustCount: insufficient space, requested %d, page %08X\n",total,hdr.pageID);
+			uint16_t dl=l-l0;
+			if (dl>info.freeSpaceLength+info.scatteredFreeSpace) {
+				report(MSG_ERROR,"TreePageMgr adjustCount: insufficient space, requested %d, page %08X\n",dl,hdr.pageID);
 				return RC_PAGEFULL;
 			}
-			if (vp->offset==info.freeSpace && info.freeSpaceLength>=total) {
-				info.freeSpace-=ushort(total); info.freeSpaceLength-=ushort(total);
-				memmove((byte*)this+info.freeSpace,(byte*)this+vp->offset,vp->len);
-				vp->offset=info.freeSpace;
-			} else if (info.freeSpaceLength>=vp->len+total) {
-				info.freeSpace-=vp->len+ushort(total); info.freeSpaceLength-=vp->len+ushort(total);
-				memmove((byte*)this+info.freeSpace,(byte*)this+vp->offset,vp->len);
-				info.scatteredFreeSpace+=vp->len; vp->offset=info.freeSpace;
-			} else {
-				compact(false,idx,ushort(total)); ptr=(byte*)findData(idx,ll,(const PagePtr**)&vp);
-				assert(ptr!=NULL && vp!=NULL && vp->len>=ushort(total)); vp->len-=ushort(total);
+			if (sht!=info.freeSpace || info.freeSpaceLength<dl) {
+				dl=l;
+				if (info.freeSpaceLength>=l) info.scatteredFreeSpace+=l0;
+				else {
+					if ((vp->len&TRO_MANY)!=0) _set_u16(ptr,0); else vp->len=0;
+					uint16_t off=uint16_t(ptr-((byte*)this+vp->offset)); info.scatteredFreeSpace+=l0;
+					compact(false); ptr=(byte*)findData(idx,l0,(const PagePtr**)&vp);
+					assert(ptr!=NULL && vp!=NULL && info.freeSpaceLength>=l); ptr+=off;
+				}
 			}
+			info.freeSpace-=dl; info.freeSpaceLength-=dl; memcpy((byte*)this+info.freeSpace,buf,l);
+			if ((vp->len&TRO_MANY)!=0) _set_u16(ptr,info.freeSpace); else {vp->offset=info.freeSpace; vp->len=l;}
 		}
-		ptr=(byte*)this+vp->offset;
-		if (sht+l0<vp->len) memmove(ptr+sht+l,ptr+sht+l0,vp->len-sht-l0);
-		memcpy(ptr+sht,buf,l);
-		if (vp->len<256 && vp->len+dl<256)
-			for (j=*ptr; --j>off; ) ptr[j]+=byte(dl);
-		else if (vp->len>=256 && vp->len+dl>=256)
-			for (j=_u16(ptr); (j-=L_SHT)>off; ) {ll=_u16(ptr+j)+dl; _set_u16(ptr+j,ll);}
-		else if (vp->len>=256) {
-			int k=nKeys((const byte*)this+vp->offset),dk=(k+1)*(L_SHT-1); byte *to=(byte*)this+vp->offset,*from=to;
-			for (int j=0; j<=k; ++j,from+=L_SHT,++to) {ushort sh=_u16(from); *to=byte(sh-dk+(sh>sht?dl:0));}
-			memmove((byte*)this+vp->offset+k+1,(byte*)this+vp->offset+(k+1)*L_SHT,vp->len-(k+1)*L_SHT+dl);
-			info.scatteredFreeSpace+=dk; dl-=dk;
-		} else {
-			byte *to=(byte*)this+vp->offset,*from=to; int k=*to,dk=k*(L_SHT-1);
-			memmove(to+k*L_SHT,to+k,vp->len-k+dl); to+=L_SHT*k; from+=k;
-			for  (int j=0; j<k; j++) {to-=L_SHT; ushort sh=*--from; sh+=dk+(sh>sht?dl:0); _set_u16(to,sh);}
-			dl+=dk;
-		}
-		vp->len=ushort(vp->len+dl);
 #ifdef  _DEBUG
 		compact(true);
 #endif
 		break;
 	case RC_FALSE:
 		assert(fDec);
-		deleteValues((ushort)l0,vp,ushort(ptr-(byte*)this-vp->offset),true);
+		deleteValues((uint16_t)l0,vp,uint16_t(ptr-(byte*)this-vp->offset),true);
 		break;
 	}
 	return RC_OK;
 }
 
-RC TreePageMgr::TreePage::adjustKeyCount(unsigned idx,const byte *p2,size_t l2,const byte *pref,size_t lpref,bool fDec)
+RC TreePageMgr::TreePage::adjustKeyCount(unsigned idx,const byte *p2,size_t l2,bool fDec)
 {
-	assert(info.fmt.isRefKeyOnly());
-	uint32_t cnt=1; byte buf[XPINREFSIZE],buf2[XPINREFSIZE];
-	if (pref==NULL || lpref==0) cnt=PINRef::getCount(p2,l2);
-	else {
-		if (lpref+l2>XPINREFSIZE) return RC_CORRUPTED;
-		memcpy(buf,pref,lpref); memcpy(buf+lpref,p2,l2);
-		cnt=PINRef::getCount(buf,lpref+l2);
-	}
-	byte *p=(*this)[idx]; size_t l=lenPK(idx),l0=l; 
-	if (info.lPrefix>0) {
-		if (info.lPrefix+l>XPINREFSIZE) return RC_CORRUPTED;
-		memcpy(buf,(byte*)this+((PagePtr*)&info.prefix)->offset,info.lPrefix);
-		memcpy(buf+info.lPrefix,p,l); l0=l+=info.lPrefix; p=buf;
-	}
-	ushort *pp=(ushort*)(this+1)+idx,ll=((ushort*)(this+1))[info.nEntries];
-	unsigned sht=*pp; RC rc; int dl,j;
-	switch (rc=PINRef::adjustCount(p,l,cnt,buf2,fDec)) {
+	assert(info.fmt.isRefKeyOnly() && info.lPrefix==0);
+	uint32_t cnt=PINRef::getCount(p2); byte buf[XPINREFSIZE]; RC rc;
+	uint16_t l0,l; byte *p=(byte*)getK(idx,l0); uint16_t *pp=(uint16_t*)(this+1)+idx;
+	switch (rc=PINRef::adjustCount(p,cnt,buf,fDec)) {
 	default: return rc;
 	case RC_TRUE:
-		if ((dl=int(l-l0))>0 && unsigned(dl)>info.freeSpaceLength) return RC_PAGEFULL;
-		l0-=info.lPrefix; l-=info.lPrefix;
-		if (sht+l0<ll) memmove((byte*)(this+1)+sht+l,(byte*)(this+1)+sht+l0,ll-l0-sht);
-		for (j=info.nEntries+1; --j>(int)idx;) ((ushort*)(this+1))[j]+=ushort(dl);
-		memcpy((byte*)(this+1)+sht,buf2+info.lPrefix,l); info.freeSpaceLength-=ushort(dl);
-		break;
-	case RC_FALSE:
-		assert(fDec); l0-=info.lPrefix;
-		if (sht+l0<ll) memmove((byte*)(this+1)+sht,(byte*)(this+1)+sht+l0,ll-l0-sht);
-		memmove(pp,pp+1,ll-l0-(idx+1)*L_SHT); pp=(ushort*)(this+1);
-		for (j=info.nEntries; --j>=(int)idx;) pp[j]-=ushort(l0+L_SHT); for (;j>=0;--j) pp[j]-=L_SHT;
-		info.freeSpaceLength+=ushort(l0+L_SHT); --info.nSearchKeys;
-		if (--info.nEntries==0) info.freeSpaceLength+=L_SHT;
-		if (info.lPrefix>0 && info.nEntries==0) {info.freeSpaceLength+=info.lPrefix; info.lPrefix=0;}
-		else if (idx==0 || idx==info.nEntries) {
-			ushort newPrefSize=calcPrefixSize(0,info.nEntries); assert(newPrefSize>=info.lPrefix);
-			if (newPrefSize>info.lPrefix) changePrefixSize(newPrefSize);
+		l=PINRef::len(buf); assert(fDec && l<=l0 || !fDec && l>=l0);
+		if (l<=l0) {
+			uint16_t dl=l0-l;
+			if (*pp!=info.freeSpace-sizeof(TreePage)) info.scatteredFreeSpace+=dl; else {*pp=(info.freeSpace+=dl)-sizeof(TreePage); info.freeSpaceLength+=dl;}
+		} else {
+			uint16_t dl=l-l0;
+			if (*pp==info.freeSpace-sizeof(TreePage) && info.freeSpaceLength>=dl) {*pp=info.freeSpace-=dl; info.freeSpaceLength-=dl;}
+			else if (info.freeSpaceLength>=l) {*pp=info.freeSpace-=l; info.freeSpaceLength-=l; info.scatteredFreeSpace+=l0;}
+			else {*pp=0; info.scatteredFreeSpace+=l0; compact(false); assert(info.freeSpaceLength>=l); *pp=info.freeSpace-=l; info.freeSpaceLength-=l;}
+			*pp-=sizeof(TreePage);
 		}
+		memcpy((byte*)(this+1)+*pp,buf,l); break;
+	case RC_FALSE:
+		assert(fDec);
+		if (*pp==info.freeSpace-sizeof(TreePage)) {info.freeSpace+=l0; info.freeSpaceLength+=l0;} else info.scatteredFreeSpace+=l0;
+		if (idx<--info.nEntries) memmove(pp,pp+1,(info.nEntries-idx)*L_SHT);
+		info.freeSpaceLength+=uint16_t(L_SHT); --info.nSearchKeys;
 		break;
 	}
 	return RC_OK;
@@ -1290,8 +1063,8 @@ PageID TreePageMgr::multiPage(unsigned info,const byte *rec,size_t lrec,bool& fM
 RC TreePageMgr::undo(unsigned info,const byte *rec,size_t lrec,PageID pid)
 {
 	Tree *tree=NULL; RC rc=RC_OK; SearchKey key; byte *buf=NULL; size_t ll;
-	TREE_OP op; ushort nl=0,ol=0,off=0; const byte *newV=NULL,*oldV=NULL;
-	const TreePageMgr::TreePage *tp; unsigned idx; bool fMulti=false;
+	TREE_OP op; uint16_t nl=0,ol=0,off=0; const byte *newV=NULL,*oldV=NULL;
+	const TreePageMgr::TreePage *tp; unsigned idx; unsigned multi=0;
 	if (pid!=INVALID_PAGEID) {
 		op=(TREE_OP)(info&TRO_MASK); if (lrec<=2) return RC_CORRUPTED;
 		if (rec[lrec-1]==0xFF) {
@@ -1301,26 +1074,13 @@ RC TreePageMgr::undo(unsigned info,const byte *rec,size_t lrec,PageID pid)
 			const TreePageModify *tpm; const TreePageMulti *tpmi;
 			switch (op) {
 			case TRO_MULTI:
-				tpmi=(TreePageMulti*)rec; newV=rec+sizeof(TreePageMulti); nl=tpmi->lData;
-				if (tpmi->lPrefix!=0) {
-					bool fVarSub=tpmi->fmt.isVarKeyOnly();
-					unsigned n=fVarSub?nKeys(newV):nl/(tpmi->fmt.keyLength()-tpmi->lPrefix); if (n==0) return RC_CORRUPTED;
-					if ((buf=(byte*)malloc(nl=ushort(tpmi->lData+n*tpmi->lPrefix),SES_HEAP))==NULL) return RC_NORESOURCES;
-					const byte *from=newV,*pref=rec+sizeof(TreePageMulti)+tpmi->lData; byte *to=buf; newV=buf;
-					if (!fVarSub) for (unsigned i=0,lElt1=tpmi->fmt.keyLength(),lElt2=lElt1-tpmi->lPrefix; i<n; i++) {
-						memcpy(to,pref,tpmi->lPrefix); memcpy(to+tpmi->lPrefix,from,lElt2); to+=lElt1; from+=lElt2;
-					} else for (unsigned i=0,sht=((ushort*)to)[0]=((ushort*)from)[0]; i<n; i++) {
-						ushort l=lenK(from,0); memcpy(buf+sht,pref,tpmi->lPrefix);
-						memcpy(buf+sht+tpmi->lPrefix,rec+sizeof(TreePageMulti)+((ushort*)from)[0],l);
-						from+=L_SHT; to+=L_SHT; *(ushort*)to=ushort(sht+=l+tpmi->lPrefix);
-					}
-				}
-				op=TRO_INSERT; fMulti=true;
+				tpmi=(TreePageMulti*)rec; newV=rec+sizeof(TreePageMulti); nl=tpmi->lData; multi=tpmi->nKeys;
+				op=TRO_INSERT;
 				if ((info>>TRO_SHIFT&0xFFFF)==MO_DELETE) {op=TRO_DELETE; oldV=newV; ol=nl; newV=NULL; nl=0;}
 				break;
 			case TRO_REPLACE:
 				op=TRO_UPDATE; oldV=rec+sizeof(uint16_t); ol=*(uint16_t*)rec;
-				newV=oldV+ol; nl=ushort(lrec-ol-sizeof(uint16_t)-rec[lrec-3]);
+				newV=oldV+ol; nl=uint16_t(lrec-ol-sizeof(uint16_t)-rec[lrec-3]);
 				break;
 			case TRO_UPDATE: op=TRO_INSERT;
 			case TRO_INSERT: case TRO_DELETE:
@@ -1346,7 +1106,7 @@ RC TreePageMgr::undo(unsigned info,const byte *rec,size_t lrec,PageID pid)
 						}
 						if (cmp<0 && (tctx.depth=0,rc=tctx.findPageForUpdate(&key,true))!=RC_OK) {if (rc!=RC_NOTFOUND) break; rc=RC_OK; continue;}
 					}
-					if (tp->findKey(key,idx) && (rc=remove(tctx,key,(byte*)(tae+1)+tae->lkey,tae->ldata,tae->fMulti!=0))!=RC_OK) break;
+					if (tp->findKey(key,idx) && (rc=remove(tctx,key,(byte*)(tae+1)+tae->lkey,tae->ldata,tae->ndata))!=RC_OK) break;
 				}
 				tree->destroy(); return rc;
 				}
@@ -1354,7 +1114,7 @@ RC TreePageMgr::undo(unsigned info,const byte *rec,size_t lrec,PageID pid)
 				key.deserialize(rec+sizeof(int64_t),lrec-l-sizeof(int64_t)); break;
 			case TRO_EDIT:
 				{const TreePageEdit *tpe=(const TreePageEdit*)rec; key.deserialize(tpe+1,lrec-l-sizeof(TreePageEdit));
-				oldV=rec+tpe->oldData.offset; ol=tpe->oldData.len; nl=tpe->newData.len; off=(ushort)tpe->shift;
+				oldV=rec+tpe->oldData.offset; ol=tpe->oldData.len; nl=tpe->newData.len; off=(uint16_t)tpe->shift;
 				}break;
 			default:
 				{const TreePageModify *tpm=(const TreePageModify*)rec; key.deserialize(tpm+1,lrec-l-sizeof(TreePageModify));
@@ -1372,19 +1132,19 @@ RC TreePageMgr::undo(unsigned info,const byte *rec,size_t lrec,PageID pid)
 		if ((rc=factory->createTree(rec,l,tree))!=RC_OK) return rc;
 		if ((rc=key.deserialize(rec+l,lrec-l,&ll))!=RC_OK) return rc;
 		rec+=l+ll; lrec-=l+ll;
-		if (lrec<sizeof(ushort)*2) return RC_CORRUPTED;
-		memcpy(&nl,rec,sizeof(ushort));
-		memcpy(&off,rec+sizeof(ushort),sizeof(ushort));
-		if (lrec<sizeof(ushort)*2+nl) return RC_CORRUPTED;
-		newV=rec+sizeof(ushort)*2; oldV=newV+nl; 
-		ol=ushort(lrec-sizeof(ushort)*2-nl);
+		if (lrec<sizeof(uint16_t)*2) return RC_CORRUPTED;
+		memcpy(&nl,rec,sizeof(uint16_t));
+		memcpy(&off,rec+sizeof(uint16_t),sizeof(uint16_t));
+		if (lrec<sizeof(uint16_t)*2+nl) return RC_CORRUPTED;
+		newV=rec+sizeof(uint16_t)*2; oldV=newV+nl; 
+		ol=uint16_t(lrec-sizeof(uint16_t)*2-nl);
 	}
 	TreeCtx tctx(*tree); assert(tree!=NULL);
 	if ((rc=tctx.findPageForUpdate(&key,op==TRO_DELETE))!=RC_OK) rc=op==TRO_INSERT?RC_OK:rc;
 	else switch (op) {
 	default: rc=RC_CORRUPTED; break;
-	case TRO_INSERT: rc=remove(tctx,key,newV,nl,fMulti); break;
-	case TRO_DELETE: rc=insert(tctx,key,oldV,ol,fMulti); break;
+	case TRO_INSERT: rc=remove(tctx,key,newV,nl,multi); break;
+	case TRO_DELETE: rc=insert(tctx,key,oldV,ol,multi); break;
 	case TRO_UPDATE: rc=update(tctx,key,newV,nl,oldV,ol); break;
 	case TRO_EDIT: rc=edit(tctx,key,oldV,ol,nl,off); break;
 	case TRO_COUNTER:
@@ -1396,7 +1156,7 @@ RC TreePageMgr::undo(unsigned info,const byte *rec,size_t lrec,PageID pid)
 	return rc==RC_TRUE||rc==RC_FALSE ? RC_OK : rc;
 }
 
-RC TreePageMgr::initPage(PBlock *pb,IndexFormat ifmt,ushort level,const SearchKey* key,PageID pid0,PageID pid1)
+RC TreePageMgr::initPage(PBlock *pb,IndexFormat ifmt,uint16_t level,const SearchKey* key,PageID pid0,PageID pid1)
 {
 	unsigned lrec=sizeof(TreePageInit)+(key!=NULL?key->extLength():0); 
 	TreePageInit *tpi=(TreePageInit*)alloca(lrec); if (tpi==NULL) return RC_NORESOURCES;
@@ -1409,33 +1169,25 @@ RC TreePageMgr::initPage(PBlock *pb,IndexFormat ifmt,ushort level,const SearchKe
 	return ctx->txMgr->update(pb,this,TRO_INIT,(byte*)tpi,lrec);
 }
 
-ushort TreePageMgr::TreePage::calcSplitIdx(bool &fInsR,const SearchKey& key,unsigned idx,size_t lInsert,ushort prefixSize,bool fNewKey) const
+uint16_t TreePageMgr::TreePage::calcSplitIdx(bool &fInsR,const SearchKey& key,unsigned idx,size_t lInsert,uint16_t prefixSize,bool fNewKey) const
 {
-	ushort splitIdx=(ushort)idx; fInsR=true; unsigned level=info.level;
+	uint16_t splitIdx=(uint16_t)idx; fInsR=true; unsigned level=info.level;
 	if (info.nSearchKeys<=1) fInsR=idx>0;
 	else if (idx!=info.nEntries) {
-		unsigned delta=~0u; ushort lElt=info.calcEltSize();
+		unsigned delta=~0u; uint16_t lElt=info.calcEltSize();
 		unsigned d1=idx==0?info.lPrefix-prefixSize:0,d2=idx>=info.nSearchKeys?info.lPrefix-prefixSize:0;
 		bool fFixedKey=info.fmt.isFixedLenKey(),fFixedData=info.fmt.isFixedLenData();
 		if (fFixedKey && fFixedData) {
-			for (ushort imin=0,imax=info.nSearchKeys,iprev=0xffff; imax!=imin;) {
-				ushort i=(imax+imin)/2; if (i==iprev) break; else iprev=i;
+			for (uint16_t imin=0,imax=info.nSearchKeys,iprev=0xffff; imax!=imin;) {
+				uint16_t i=(imax+imin)/2; if (i==iprev) break; else iprev=i;
 				long d=long((i*2-info.nEntries)*(lElt+info.fmt.dataLength()))+
 						d1*i-d2*(info.nEntries-i)+long(idx<=i?lInsert-prefixSize:prefixSize-lInsert);
 				if (d<=0) {imin=i; if (unsigned(-d)<delta) {delta=-d; splitIdx=i;}} else {imax=i; if (unsigned(d)<delta) {delta=d; splitIdx=i;}}
 			}
 			fInsR=idx>=splitIdx;
-		} else if (info.fmt.isVarKeyOnly()) {
-			const ushort *pp=(const ushort*)(this+1); ushort total=pp[nKeys(pp)];
-			for (ushort imin=0,imax=info.nSearchKeys,iprev=0xffff; imax!=imin;) {
-				ushort i=(imax+imin)/2; if (i==iprev) break; else iprev=i;
-				long d=(pp[i]-(info.nEntries-i)*L_SHT)*2-total+d1*i-d2*(info.nEntries-i)+long(idx<=i?lInsert-prefixSize:prefixSize-lInsert);
-				if (d<=0) {imin=i; if (unsigned(-d)<delta) {delta=-d; splitIdx=i;}} else {imax=i; if (unsigned(d)<delta) {delta=d; splitIdx=i;}}
-			}
-			fInsR=idx>=splitIdx;
 		} else {
-			ushort i=0,sht=info.keyLength();
-			size_t total=hdr.length()-sizeof(TreePage)-FOOTERSIZE-info.freeSpaceLength-info.scatteredFreeSpace,l=0; 
+			const bool fSub=info.fmt.isKeyOnly(); uint16_t i=0,sht=fSub?0:info.keyLength();
+			size_t total=hdr.length()-sizeof(TreePage)-FOOTERSIZE-info.freeSpaceLength-info.scatteredFreeSpace,l=0; // contentLength()?
 			for (const byte *p=(const byte*)(this+1);;l+=lElt,p+=lElt) {
 				long d=long(l*2-total)+d1*i-d2*(info.nEntries-i);
 				if (idx<i) d+=long(lInsert-prefixSize); else if (idx>i||!fNewKey) d-=long(lInsert-prefixSize);
@@ -1445,8 +1197,11 @@ ushort TreePageMgr::TreePage::calcSplitIdx(bool &fInsR,const SearchKey& key,unsi
 				} 
 				if (d<0) {if (unsigned(-d)<delta) {delta=-d; splitIdx=i;}} else {if (unsigned(d)<delta) splitIdx=i; break;}
 				if (++i>info.nSearchKeys||!fNewKey&&i==info.nSearchKeys) break;
-				if (!fFixedKey) l+=((PagePtr*)p)->len;
-				if (!fFixedData && i<=info.nSearchKeys) l+=length(*(PagePtr*)(p+sht));
+				if (fSub) {uint16_t ll; getK(p,ll); l+=ll;}
+				else {
+					if (!fFixedKey) l+=((PagePtr*)p)->len;
+					if (!fFixedData && i<=info.nSearchKeys) l+=length(*(PagePtr*)(p+sht));
+				}
 			}
 			if (idx<splitIdx) fInsR=false; else if (!fNewKey) fInsR=idx>=splitIdx;
 		}
@@ -1459,18 +1214,19 @@ ushort TreePageMgr::TreePage::calcSplitIdx(bool &fInsR,const SearchKey& key,unsi
 	return splitIdx;
 }
 
-RC TreePageMgr::split(TreeCtx& tctx,const SearchKey *key,unsigned& idx,ushort splitIdx,bool fInsR,PBlock **pRight)
+RC TreePageMgr::split(TreeCtx& tctx,const SearchKey *key,unsigned& idx,uint16_t splitIdx,bool fInsR,PBlock **pRight)
 {
+	{Session *ses=Session::getSession(); if (ses!=NULL) ses->setCodeTrace(0x10);}
 	const TreePage *tp=(const TreePage*)tctx.pb->getPageBuf();
 	bool fDKey=splitIdx==idx && fInsR; unsigned level=tp->info.level; 
 	assert(tp->info.nSearchKeys!=0); assert(!fDKey || key!=NULL);
 
 	if (level==0 && splitIdx>0 && !tp->info.fmt.isFixedLenKey() && !tp->info.fmt.isRefKeyOnly()) {
-		ushort lkey=fDKey?key->v.ptr.l:tp->getKeyExtra(splitIdx); assert(key==NULL||key->type>=KT_BIN&&key->type<KT_ALL);
-		ushort lTrunc=fDKey?tp->calcPrefixSize(*key,splitIdx-1,true):tp->calcPrefixSize(splitIdx-1,splitIdx+1);
+		uint16_t lkey=fDKey?key->v.ptr.l:tp->getKeyExtra(splitIdx); assert(key==NULL||key->type>=KT_BIN&&key->type<KT_ALL);
+		uint16_t lTrunc=fDKey?tp->calcPrefixSize(*key,splitIdx-1,true):tp->calcPrefixSize(splitIdx-1,splitIdx+1);
 		if (lTrunc!=0) {
 			lTrunc++;
-			if (splitIdx==idx && !fInsR && key!=NULL) {ushort lk=tp->calcPrefixSize(*key,splitIdx,true)+1; if (lk>lTrunc) lTrunc=lk;}
+			if (splitIdx==idx && !fInsR && key!=NULL) {uint16_t lk=tp->calcPrefixSize(*key,splitIdx,true)+1; if (lk>lTrunc) lTrunc=lk;}
 			assert(lTrunc<=lkey);
 			if (lTrunc<lkey) {
 				SearchKey *sk=(SearchKey*)alloca(sizeof(SearchKey)+lkey); if (sk==NULL) return RC_NORESOURCES;
@@ -1489,7 +1245,7 @@ RC TreePageMgr::split(TreeCtx& tctx,const SearchKey *key,unsigned& idx,ushort sp
 	if (fInsR) {assert(idx>=splitIdx); idx-=splitIdx;}
 	assert(idx<=unsigned(fInsR?tp->info.nEntries-splitIdx:splitIdx));
 
-	MiniTx tx(Session::getSession(),(tctx.mode&TF_SPLITINTX)!=0?MTX_SKIP:0); PBlock *pbn; RC rc;
+	MiniTx tx(Session::getSession(),(tctx.tree->mode&TF_SPLITINTX)!=0?MTX_SKIP:0); PBlock *pbn; RC rc;
 	if ((rc=ctx->fsMgr->allocPages(1,&tps->newSibling))!=RC_OK) return rc;
 	assert(tps->newSibling!=INVALID_PAGEID);
 	if ((pbn=ctx->bufMgr->newPage(tps->newSibling,this))==NULL) return RC_NORESOURCES;
@@ -1509,7 +1265,7 @@ RC TreePageMgr::split(TreeCtx& tctx,const SearchKey *key,unsigned& idx,ushort sp
 
 	PageID newSibling=tps->newSibling;
 	if (tctx.depth!=0) {
-		PBlockP spb(tctx.pb); addNewPage(tctx,*key,newSibling,(tctx.tree->getMode()&TF_SPLITINTX)==0);
+		PBlockP spb(tctx.pb); addNewPage(tctx,*key,newSibling,(tctx.tree->mode&TF_SPLITINTX)==0);
 		tctx.pb.moveTo(tctx.parent); spb.moveTo(tctx.pb); tctx.stack[++tctx.depth]=tctx.pb->getPageID();
 		assert((PBlock*)tctx.parent!=(PBlock*)tctx.pb);
 	} else if (tctx.tree->addRootPage(*key,newSibling,level)==RC_OK) {
@@ -1527,16 +1283,16 @@ void TreePageMgr::addNewPage(TreeCtx& tctx,const SearchKey& key,PageID pid,bool 
 		} else {
 			assert(tctx.vp.len!=0 && tctx.vp.offset!=0 && tp->isLeaf() && tctx.leaf==tctx.depth);
 			SubTreePage tpe; memcpy(&tpe,(byte*)tp+tctx.vp.offset,sizeof(SubTreePage));
-			unsigned lk=key.v.ptr.l; ushort off; const PagePtr *pvp;
+			unsigned lk=key.v.ptr.l; uint16_t off; const PagePtr *pvp;
 			if (tctx.lvl2!=tpe.level) {
 				// re-traverse from root etc.
 			} else if (!fTry && tp->findExtKey(key.getPtr2(),lk,(SubTreePageKey*)((byte*)tp+tctx.vp.offset+sizeof(SubTreePage)),
-									((tctx.vp.len&~TRO_EXT_DATA)-sizeof(SubTreePage))/sizeof(SubTreePageKey),&off)!=NULL) return;
-			else if (unsigned((tctx.vp.len&~TRO_EXT_DATA)+sizeof(SubTreePageKey)+lk)<=tp->hdr.length()*SPAWN_THR
+									((tctx.vp.len&~TRO_MANY)-sizeof(SubTreePage))/sizeof(SubTreePageKey),&off)!=NULL) return;
+			else if (unsigned((tctx.vp.len&~TRO_MANY)+sizeof(SubTreePageKey)+lk)<=tp->hdr.length()*SPAWN_THR
 							&&	sizeof(SubTreePageKey)+lk<=unsigned(tp->info.freeSpaceLength+tp->info.scatteredFreeSpace)) {
 				unsigned lrec=sizeof(TreePageRoot)+tctx.mainKey->extLength()+lk; TreePageRoot *tpr=(TreePageRoot*)alloca(lrec); 
 				if (tpr!=NULL) {
-					tpr->pageID=pid; tpr->pkey.len=ushort(lk); tpr->pkey.offset=ushort(lrec-lk);
+					tpr->pageID=pid; tpr->pkey.len=uint16_t(lk); tpr->pkey.offset=uint16_t(lrec-lk);
 					tctx.mainKey->serialize(tpr+1); memcpy((byte*)tpr+tpr->pkey.offset,key.getPtr2(),lk);
 					RC rc=ctx->txMgr->update(tctx.pb,this,tctx.index<<TRO_SHIFT|TRO_ADDROOT,(byte*)tpr,lrec);
 					if (fTry && tp->findData(tctx.index,off,&pvp)!=NULL && pvp!=NULL) tctx.vp=__una_get(*pvp);
@@ -1545,7 +1301,7 @@ void TreePageMgr::addNewPage(TreeCtx& tctx,const SearchKey& key,PageID pid,bool 
 			} else {
 				unsigned ls=sizeof(TreePageSpawn)+tctx.mainKey->extLength(); TreePageSpawn *tpm=(TreePageSpawn*)alloca(ls);
 				if (tpm!=NULL) {
-					IndexFormat ifmt(tp->info.fmt.isPinRef()?KT_REF:KT_BIN,tp->info.fmt.makeSubKey(),sizeof(PageID));
+					IndexFormat ifmt(tp->info.fmt.isPinRef()?KT_REF:KT_BIN,KT_VARKEY,sizeof(PageID));
 					tpm->fmt=ifmt; tctx.mainKey->serialize(tpm+1); PBlock *pbn; TxSP tx(Session::getSession());
 					if (tx.start()==RC_OK && ctx->fsMgr->allocPages(1,&tpm->root)==RC_OK && (pbn=ctx->bufMgr->newPage(tpm->root,ctx->trpgMgr))!=NULL) {
 						if (ctx->txMgr->update(tctx.pb,this,tctx.index<<TRO_SHIFT|TRO_SPAWN,(byte*)tpm,ls,0,pbn)!=RC_OK)
@@ -1566,19 +1322,20 @@ void TreePageMgr::addNewPage(TreeCtx& tctx,const SearchKey& key,PageID pid,bool 
 
 RC TreePageMgr::spawn(TreeCtx& tctx,size_t lInsert,unsigned idx)
 {
+	{Session *ses=Session::getSession(); if (ses!=NULL) ses->setCodeTrace(0x20);}
 	RC rc=RC_OK; tctx.parent.release(); const TreePage *tp=(const TreePage*)tctx.pb->getPageBuf(); 
-	ushort lElt=tp->info.calcEltSize(),sht=tp->info.keyLength();
+	uint16_t lElt=tp->info.calcEltSize(),sht=tp->info.keyLength();
 	if (idx==~0u) {
 		unsigned xLen=0; const byte *p=(const byte*)(tp+1);
 		for (unsigned i=0; i<tp->info.nSearchKeys; ++i,p+=lElt)
-			{const PagePtr *pp=(const PagePtr*)(p+sht); if (!TreePage::isSubTree(*pp) && pp->len>xLen) {xLen=pp->len; idx=i;}}
-		if (idx==~0u || xLen<256 || lInsert>unsigned(tp->info.freeSpaceLength+tp->info.scatteredFreeSpace) &&
+			{const PagePtr *pp=(const PagePtr*)(p+sht); if (!tp->isSubTree(*pp) && pp->len>xLen) {xLen=pp->len; idx=i;}}
+		if (idx==~0u || lInsert>unsigned(tp->info.freeSpaceLength+tp->info.scatteredFreeSpace) &&
 			lInsert-unsigned(tp->info.freeSpaceLength+tp->info.scatteredFreeSpace)>xLen-sizeof(SubTreePage)) return RC_TOOBIG;
 	}
-	unsigned ls=sizeof(TreePageSpawn)+tp->getSerKeySize(ushort(idx));
+	unsigned ls=sizeof(TreePageSpawn)+tp->getSerKeySize(uint16_t(idx));
 	TreePageSpawn *tpm=(TreePageSpawn*)alloca(ls); if (tpm==NULL) return RC_NORESOURCES;
-	IndexFormat ifmt(tp->info.fmt.isPinRef()?KT_REF:KT_BIN,tp->info.fmt.makeSubKey(),0);
-	tpm->fmt=ifmt; tp->serializeKey(ushort(idx),tpm+1); 
+	IndexFormat ifmt(tp->info.fmt.isPinRef()?KT_REF:KT_BIN,KT_VARKEY,0);
+	tpm->fmt=ifmt; tp->serializeKey(uint16_t(idx),tpm+1); 
 	MiniTx tx(Session::getSession(),0); PBlock *pbn;
 	if ((rc=ctx->fsMgr->allocPages(1,&tpm->root))!=RC_OK) return rc;
 	assert(tpm->root!=INVALID_PAGEID);
@@ -1589,63 +1346,53 @@ RC TreePageMgr::spawn(TreeCtx& tctx,size_t lInsert,unsigned idx)
 	return rc;
 }
 
-RC TreePageMgr::modSubTree(TreeCtx& tctx,const SearchKey& key,unsigned kidx,const PagePtr *vp,const void *newV,ushort lNew,const void *oldV,ushort lOld,bool fMulti)
+RC TreePageMgr::modSubTree(TreeCtx& tctx,const SearchKey& key,unsigned kidx,const PagePtr *vp,const void *newV,uint16_t lNew,const void *oldV,uint16_t lOld,unsigned multi)
 {
 	RC rc=RC_OK; PBlockP spb(tctx.pb),spr; if (tctx.moreKeys!=NULL) tctx.parent.moveTo(spr); tctx.pb.moveTo(tctx.parent);
-	tctx.mainKey=&key; tctx.index=kidx; tctx.vp=__una_get(*vp); assert(TreePage::isSubTree(tctx.vp));
+	tctx.mainKey=&key; tctx.index=kidx; tctx.vp=__una_get(*vp); assert(((TreePage*)spb->getPageBuf())->isSubTree(tctx.vp));
 	tctx.stack[tctx.leaf=tctx.depth++]=spb->getPageID(); 
 	const IndexFormat ifmt=((TreePage*)spb->getPageBuf())->info.fmt; const bool fPR=ifmt.isPinRef();
 	SubTreePage tpe; memcpy(&tpe,spb->getPageBuf()+tctx.vp.offset,sizeof(SubTreePage)); tctx.lvl2=tpe.level;
-	const bool fVM=ifmt.isVarMultiData(),fIns=oldV==NULL; assert(oldV==NULL||newV==NULL||!fMulti);
-	const byte *pv=(const byte*)(fIns?newV:oldV); ushort lVal=fIns?lNew:lOld,lElt=fVM?L_SHT:ifmt.dataLength();
-	const unsigned end=!fMulti?1:fVM?nKeys(pv):lVal/lElt;
-	if (oldV==NULL||tpe.counter>=end) {
+	const bool fIns=oldV==NULL; assert(oldV==NULL||newV==NULL||multi==0);
+	const byte *pv=(const byte*)(fIns?newV:oldV);
+	const unsigned start=multi>>16,end=multi==0?1:start+(multi&0xFFFF); assert(start!=0xFFFF);
+	if (oldV==NULL||tpe.counter>=end-start) {
 		unsigned lrec=sizeof(int64_t)+key.extLength();
-		TreeFactory *tf=tctx.tree->getFactory(); ushort lFact=tf!=NULL?tf->getParamLength()+2:0;
+		TreeFactory *tf=tctx.tree->getFactory(); uint16_t lFact=tf!=NULL?tf->getParamLength()+2:0;
 		int64_t *rec=(int64_t*)alloca(lrec+lFact); if (rec==NULL) return RC_NORESOURCES;
-		*rec=fIns?(int64_t)end:-(int64_t)end; key.serialize(rec+1);
+		*rec=fIns?(int64_t)end-start:(int64_t)start-end; key.serialize(rec+1);
 		if (tf!=NULL) {byte *p=(byte*)rec+lrec+lFact; tf->getParams(p-lFact,*tctx.tree); p[-2]=byte(lFact); p[-1]=tf->getID();}
 		if ((rc=ctx->txMgr->update(tctx.parent,this,kidx<<TRO_SHIFT|TRO_COUNTER,(byte*)rec,lrec+lFact,tf!=NULL?LRC_LUNDO:0))!=RC_OK) return rc;
 	}
-	if (fMulti) {
-		unsigned from=0,to=end; const byte *pk=fVM?getK(pv,0):(const byte*)pv;
-		ushort lk=fVM?lenK(pv,0):lElt; SearchKey mkey(pk,lk,fPR);
+	if (multi!=0) {
+		unsigned from=start,to=end; uint16_t lk; const byte *pk=getK(pv,start,lk); SearchKey mkey(pk,lk,fPR);
 		for (rc=tctx.findPageForUpdate(&mkey,fIns); rc==RC_OK; ) {
 			const TreePage *tp=(const TreePage*)tctx.pb->getPageBuf(); PageID sib=tp->info.sibling;
-			if (sib!=INVALID_PAGEID) {to=from; tp->findSubKey(pv,end,tp->info.nEntries-1,to,fVM); assert(from<to);}
+			if (sib!=INVALID_PAGEID) {to=from; tp->findSubKey(pv,end,tp->info.nEntries-1,to); assert(from<to);}
 			if (fIns) {
-				unsigned pageCnt=0; PageID pages[XSUBPAGES]; ushort indcs[XSUBPAGES]; int cmp; bool fFits=false; size_t xSz=calcXSz(pv,from,to,tp);
+				unsigned pageCnt=0; PageID pages[XSUBPAGES]; uint16_t indcs[XSUBPAGES]; int cmp; bool fFits=false; size_t xSz=calcXSz(pv,from,to,tp);
 				while (from<to && tp->info.nSearchKeys!=0) {
-					ushort lPref=0,lP; size_t lChunk=TreePage::calcChunkSize(pv,lVal,from,to,ifmt,lPref,tp); fFits=false;
-					if (lChunk+tp->info.nEntries*(tp->info.lPrefix-lPref)<unsigned(tp->info.freeSpaceLength)) {fFits=true; break;}
-					if ((cmp=tp->cmpKeys(pv,from,tp->info.nSearchKeys-1,lElt,fVM))>0) break;
-					unsigned sidx=0,psidx=0,idx=from,pidx=from; PBlock *right;
-					const byte *pf=fVM?getK(pv,from):(const byte*)pv+lElt*from; ushort lf=fVM?lenK(pv,from):lElt;
-					if ((cmp=tp->cmpKeys(pv,from,0,lElt,fVM))<0) {
-						tp->findSubKey(pv,to,0,idx,fVM); assert(idx>from && idx<=to);
-						size_t sz=TreePage::calcChunkSize(pv,lVal,from,idx,ifmt,lPref); unsigned idx2=0;
+					size_t lChunk=calcChunkSize(pv,from,to); fFits=false;
+					if (lChunk<unsigned(tp->info.freeSpaceLength)) {fFits=true; break;}
+					if ((cmp=tp->cmpKeys(pv,from,tp->info.nSearchKeys-1))>0) break;
+					unsigned sidx=0,psidx=0,idx=from,pidx=from; PBlock *right; uint16_t lf; const byte *pf=getK(pv,from,lf);
+					if ((cmp=tp->cmpKeys(pv,from,0))<0) {
+						tp->findSubKey(pv,to,0,idx); assert(idx>from && idx<=to);
+						size_t sz=calcChunkSize(pv,from,idx); unsigned idx2=0;
 						// lLast?
 						if (sz>xSize) {
 							//??? which key insret in split?
 							if ((rc=split(tctx,NULL,idx2,0,false,&right))!=RC_OK ||
-								(rc=insertSubTree(tctx,pv,lVal,ifmt,from,idx,pageCnt,pages,indcs,xSz,&from))!=RC_OK || from>=to) break;
+								(rc=insertSubTree(tctx,pv,ifmt,from,idx,pageCnt,pages,indcs,xSz,&from))!=RC_OK || from>=to) break;
 							tctx.pb.release(); tctx.pb=right; tctx.pb.set(QMGR_UFORCE); tp=(const TreePage*)right->getPageBuf(); continue;
 						}
 					} else if (cmp>0) tp->findSubKey(pf,lf,sidx);
-					SearchKey first(pf,lf,fPR),*skey=NULL; lPref=tp->calcPrefixSize(first,0,true);
+					SearchKey first(pf,lf,fPR),*skey=NULL;
 					for (unsigned b2=0,e2=~0u;;) {
-						if ((lP=lPref)>0) {
-							if (sidx>0 && (lP=tp->calcPrefixSize(first,sidx,true))>lPref) lP=lPref;	//???
-							if (idx>from && lP!=0) {
-								// idx+1???
-								const byte *p2=fVM?getK(pv,idx):(const byte*)pv+lElt*idx;
-								ushort l2=fVM?lenK(pv,idx):lElt; if (l2<lP) lP=l2;
-								for (unsigned i=0; i<lP; i++) if (pf[i]!=p2[i]) {lP=i; break;}
-							}
-						}
-						size_t lChunk=(fVM?lenKK(pv,from,idx)+lenKK((byte*)(tp+1),0,sidx)+sidx*tp->info.lPrefix+lP+L_SHT:0)+(idx-from+sidx)*(lElt-lP),lK=0;
-						if (idx<to) lK=(fVM?lenK(pv,idx)+L_SHT:lElt)-lP;
-						if (sidx<tp->info.nEntries) {size_t lK2=(fVM?tp->lenPK(sidx)+tp->info.lPrefix+L_SHT:lElt)-lP; if (lK2>lK) lK=lK2;}
+						size_t lChunk=calcChunkSize(pv,from,idx)+sidx*L_SHT,lK=0;
+						for (unsigned j=0; j<sidx; j++) {uint16_t ll; tp->getK(j,ll); lChunk+=ll;}
+						if (idx<to) {uint16_t ll; getK(pv,idx,ll); lK=ll+L_SHT;}
+						if (sidx<tp->info.nEntries) {size_t lK2=PINRef::len((*tp)[sidx])+L_SHT; if (lK2>lK) lK=lK2;}
 						if ((lChunk+=lK)>=xSz && lChunk<=xSize && double(lChunk-xSz)/xSz<0.05) break;
 						if (psidx<sidx) {
 							if (e2!=~0u) {
@@ -1653,93 +1400,77 @@ RC TreePageMgr::modSubTree(TreeCtx& tctx,const SearchKey& key,unsigned kidx,cons
 								if ((sidx=(b2+e2)/2)==psidx) break;
 							} else if (lChunk>xSz) {b2=psidx; e2=sidx; if ((sidx=(b2+e2)/2)==psidx) break;}
 							else if ((psidx=sidx)>=tp->info.nSearchKeys) {b2=idx; e2=idx=to;}
-							else {tp->findSubKey(pv,to,sidx,idx,fVM); assert(idx<=to);}
+							else {tp->findSubKey(pv,to,sidx,idx); assert(idx<=to);}
 						} else {
 							if (e2!=~0u) {
 								if (lChunk>xSz) {if ((e2=idx)==b2) break;} else if ((b2=idx)+1>=e2) break;
 								if ((idx=(b2+e2)/2)==pidx) break; assert(idx<=to);
 							} else if (lChunk>xSz) {b2=pidx; e2=idx; if ((idx=(b2+e2)/2)==pidx) break;}
 							else if ((pidx=idx)==to) {b2=sidx; e2=sidx=tp->info.nEntries;}
-							else {
-								const byte *p2=fVM?getK(pv,idx):(const byte*)pv+lElt*idx;
-								ushort l2=fVM?lenK(pv,idx):lElt; tp->findSubKey(p2,l2,sidx);
-							}
+							else {uint16_t l2; const byte *p2=getK(pv,idx,l2); tp->findSubKey(p2,l2,sidx);}
 						}
 					}
 					assert(idx<=to);
-					if (ushort(sidx)>=tp->info.nSearchKeys) break;
+					if (uint16_t(sidx)>=tp->info.nSearchKeys) break;
 					// here: sidx - where to split, idx - how many to insert
-					if (idx<to && tp->cmpKeys(pv,idx,sidx,lElt,fVM)<0)
-						new(skey=&first) SearchKey(fVM?getK(pv,idx):(const byte*)pv+lElt*idx,fVM?lenK(pv,idx):lElt,fPR);
-					else 
-						while (idx>from && tp->cmpKeys(pv,idx-1,sidx,lElt,fVM)>0) idx--;
-					if ((rc=split(tctx,skey,sidx,ushort(sidx),skey!=NULL,&right))!=RC_OK) break;
+					if (idx<to && tp->cmpKeys(pv,idx,sidx)<0) {
+						uint16_t ll; const byte *p=getK(pv,idx,ll); new(skey=&first) SearchKey(p,ll,fPR);
+					} else
+						while (idx>from && tp->cmpKeys(pv,idx-1,sidx)>0) idx--;
+					if ((rc=split(tctx,skey,sidx,uint16_t(sidx),skey!=NULL,&right))!=RC_OK) break;
 					if (from<idx) {
-						if ((rc=insertSubTree(tctx,pv,lVal,ifmt,from,idx,pageCnt,pages,indcs,xSize))!=RC_OK) break;
+						if ((rc=insertSubTree(tctx,pv,ifmt,from,idx,pageCnt,pages,indcs,xSize))!=RC_OK) break;
 						from=idx; assert(pageCnt==1);
 					}
 					tctx.pb.release(); tctx.pb=right; tctx.pb.set(QMGR_UFORCE); tp=(const TreePage*)right->getPageBuf();
 				}
-				if (rc!=RC_OK || from<to && (rc=insertSubTree(tctx,pv,lVal,ifmt,from,to,pageCnt,pages,indcs,fFits?xSize:xSz))!=RC_OK) break;
+				if (rc!=RC_OK || from<to && (rc=insertSubTree(tctx,pv,ifmt,from,to,pageCnt,pages,indcs,fFits?xSize:xSz))!=RC_OK) break;
 				assert(!fFits || pageCnt==1);
 			} else {
-				ushort sht,l1;
-				if (fVM) {sht=((ushort*)pv)[from]; l1=lenK(pv,from);} else sht=ushort((l1=(ushort)lElt)*from);
-				unsigned lChunk=fVM?(to-from+1)*L_SHT+((ushort*)pv)[to]-sht:(to-from)*lElt;
-				if (tp->info.lPrefix!=0) {
-					// check prefix, if < tp->info.lPrefix -> RC_NOTFOUND
-					lChunk-=(to-from-1)*tp->info.lPrefix;
-				}
+				uint16_t sht=((uint16_t*)pv)[from],l1; getK(pv,from,l1);
+				unsigned lChunk=(to-from+1)*L_SHT+((uint16_t*)pv)[to]-sht;		//??????????????????????????????????????????????????????
 				TreeFactory *tf=tctx.tree->getFactory(); if (tf==NULL) {rc=RC_INTERNAL; break;}
-				ushort lk=mkey.extLength(),lFact=lk+tf->getParamLength()+4; unsigned xbuf=lChunk+sizeof(TreePageMulti)+lFact; 
+				uint16_t lk=mkey.extLength(),lFact=lk+tf->getParamLength()+4; unsigned xbuf=lChunk+sizeof(TreePageMulti)+lFact; 
 				byte *buf=(byte*)malloc(xbuf,SES_HEAP); if (buf==NULL) {rc=RC_NORESOURCES; break;}
-				ushort lData=packMulti(buf,pv,lVal,from,to,tp->info.lPrefix,fVM?~0u:lElt);
+				uint16_t lData=packMulti(buf,pv,from,to);
 				((TreePageMulti*)buf)->fmt=tp->info.fmt; ((TreePageMulti*)buf)->sibling=sib;
-				((TreePageMulti*)buf)->lPrefix=tp->info.lPrefix; ((TreePageMulti*)buf)->fLastR=0; ((TreePageMulti*)buf)->lData=lData;
-				byte *p=(byte*)buf+sizeof(TreePageMulti)+lData+tp->info.lPrefix+lFact; tf->getParams(p-lFact+lk,*tctx.tree);
+				((TreePageMulti*)buf)->fLastR=0; ((TreePageMulti*)buf)->nKeys=to-from; ((TreePageMulti*)buf)->lData=lData;
+				byte *p=(byte*)buf+sizeof(TreePageMulti)+lData+lFact; tf->getParams(p-lFact+lk,*tctx.tree);
 				tctx.mainKey->serialize(p-lFact); p[-4]=byte(lFact>>8); p[-3]=byte(lFact); p[-2]=tf->getID(); p[-1]=0xFF;
-				rc=ctx->txMgr->update(tctx.pb,this,MO_DELETE<<TRO_SHIFT|TRO_MULTI,buf,sizeof(TreePageMulti)+lData+tp->info.lPrefix+lFact,LRC_LUNDO);
+				rc=ctx->txMgr->update(tctx.pb,this,MO_DELETE<<TRO_SHIFT|TRO_MULTI,buf,sizeof(TreePageMulti)+lData+lFact,LRC_LUNDO);
 				free(buf,SES_HEAP); if (rc!=RC_OK) break;
 			}
 			if (to>=end) break;
 			assert(sib!=INVALID_PAGEID);
-			from=to; to=end; ushort lNext=fVM?lenK(pv,from):lElt;
-			const byte *next=fVM?getK(pv,from):(const byte*)pv+lElt*from;
+			from=to; to=end; uint16_t lNext; const byte *next=getK(pv,from,lNext);
 			if (!tctx.parent.isNull() && tctx.parent->getPageID()!=spb->getPageID()) tctx.parent.release();
 			if (tctx.parent.isNull()) {tctx.parent=(PBlock*)spb; tctx.parent.set(PGCTL_NOREL);}
 			++ctx->treeMgr->sibRead;
 			if (tctx.pb.getPage(sib,this,PGCTL_COUPLE|PGCTL_ULOCK)!=NULL) {
 				tp=(const TreePage*)tctx.pb->getPageBuf(); if (!tp->hasSibling()||tp->info.nEntries==0) continue; int cmp=0;
 				if (!tp->info.fmt.isRefKeyOnly()) {
-					const byte *pref=tp->info.lPrefix==0?(const byte*)0:fVM?(byte*)tp+((PagePtr*)&tp->info.prefix)->offset:(byte*)&tp->info.prefix;
-					if (pref!=NULL && ((cmp=memcmp(next,pref,min(lNext,tp->info.lPrefix)))<0 || cmp==0 && lNext<tp->info.lPrefix)) continue;
-					ushort lk0=fVM?L_SHT:lElt-tp->info.lPrefix; const byte *p=(const byte*)(tp+1)+(tp->info.nEntries-1)*lk0;
-					if (fVM) {lk0=lenK(p,0); p=(*tp)[p];}
-					if (cmp==0 && ((cmp=memcmp(next+tp->info.lPrefix,p,min(lk0,ushort(lNext-tp->info.lPrefix))))<0 || cmp==0 && lNext-tp->info.lPrefix<lk0)) continue;
-				} else if (PINRef::cmpPIDs(next,lNext,(*tp)[tp->info.nEntries-1],tp->lenPK(tp->info.nEntries-1))<0) continue;
+					uint16_t lk0; const byte *p=tp->getK(tp->info.nEntries-1,lk0);
+					if (cmp==0 && ((cmp=memcmp(next,p,min(lk0,lNext)))<0 || cmp==0 && lNext<lk0)) continue;
+				} else if (PINRef::cmpPIDs(next,(*tp)[tp->info.nEntries-1])<0) continue;
 			}
 			new(&mkey) SearchKey(next,lNext,fPR); tctx.depth=tctx.leaf+1; rc=tctx.findPageForUpdate(&mkey,fIns);
 		}
 	} else {
 		if (oldV!=NULL && lOld!=0) {
 			SearchKey okey((const byte*)oldV,lOld,fPR); const TreePage *tp; const PagePtr *pvp;
-			if (tctx.findPageForUpdate(&okey,false)!=RC_OK || !(tp=(TreePage*)tctx.pb->getPageBuf())->findKey(okey,tctx.index)) 
-				rc=RC_NOTFOUND;
+			if (tctx.findPageForUpdate(&okey,false)!=RC_OK || !(tp=(TreePage*)tctx.pb->getPageBuf())->findKey(okey,tctx.index)) rc=RC_NOTFOUND;
 			else {
-				tctx.parent.release(); bool fRepl=false; unsigned idx2;
+				tctx.parent.release(); bool fRepl=false; unsigned idx2; oldV=tp->getK(tctx.index,lOld);
 				if (newV!=NULL && lNew!=0 && (lNew<=lOld || lNew-lOld<=tp->info.freeSpaceLength)) {
 					if (tp->findSubKey((const byte*)newV,lNew,idx2)) {
-						if (!ifmt.isPinRef() || PINRef::cmpPIDs((byte*)oldV,lOld,(byte*)newV,lNew)!=0) rc=RC_ALREADYEXISTS; else fRepl=true;
+						if (!ifmt.isPinRef() || PINRef::cmpPIDs((byte*)oldV,(byte*)newV)!=0) rc=RC_ALREADYEXISTS; else fRepl=true;
 					} else if (idx2>0 && (!tp->hasSibling() || idx2<tp->info.nEntries)) fRepl=true;
 					else if (idx2==0) {if (tpe.anchor==tctx.pb->getPageID()) fRepl=true;}
-					if (fRepl && tp->info.lPrefix>0 && (idx2==0 || idx2>=tp->info.nSearchKeys)) {
-						// check prefix
-					}
 				}
 				if (rc==RC_OK) {
-					TreeFactory *tf=tctx.tree->getFactory(); ushort lk=key.extLength(),lFact=tf!=NULL?tf->getParamLength()+lk+4:0;
+					TreeFactory *tf=tctx.tree->getFactory(); uint16_t lk=key.extLength(),lFact=tf!=NULL?tf->getParamLength()+lk+4:0;
 					if (fRepl) {
-						ushort l=sizeof(uint16_t)+lOld+lNew; byte *buf=(byte*)alloca(l+lFact);
+						uint16_t l=sizeof(uint16_t)+lOld+lNew; byte *buf=(byte*)alloca(l+lFact);
 						if (buf==NULL) rc=RC_NORESOURCES;
 						else {
 							((uint16_t*)buf)[0]=lOld; memcpy(buf+sizeof(uint16_t),oldV,lOld); memcpy(buf+sizeof(uint16_t)+lOld,newV,lNew);
@@ -1751,7 +1482,7 @@ RC TreePageMgr::modSubTree(TreeCtx& tctx,const SearchKey& key,unsigned kidx,cons
 						unsigned lrec=sizeof(TreePageModify)+SearchKey::extLength(lOld); TreePageModify *tpm=(TreePageModify*)alloca(lrec+lFact);
 						if (tpm==NULL) rc=RC_NORESOURCES;
 						else {
-							memset(tpm,0,sizeof(TreePageModify)); tpm->newPrefSize=tp->info.lPrefix; SearchKey::serialize(tpm+1,fPR?KT_REF:KT_BIN,oldV,lOld);
+							memset(tpm,0,sizeof(TreePageModify)); tpm->newPrefSize=0; SearchKey::serialize(tpm+1,fPR?KT_REF:KT_BIN,oldV,lOld);
 							if (tf!=NULL) {byte *p=(byte*)tpm+lrec+lFact; tf->getParams(p-lFact+lk,*tctx.tree); key.serialize(p-lFact); p[-4]=byte(lFact>>8); p[-3]=byte(lFact); p[-2]=tf->getID(); p[-1]=0xFF;}
 							rc=ctx->txMgr->update(tctx.pb,this,tctx.index<<TRO_SHIFT|TRO_DELETE,(byte*)tpm,lrec+lFact,tf!=NULL?LRC_LUNDO:0);
 							if (rc==RC_OK && newV!=NULL && lNew!=0) {
@@ -1774,35 +1505,25 @@ RC TreePageMgr::modSubTree(TreeCtx& tctx,const SearchKey& key,unsigned kidx,cons
 	return rc;
 }
 
-RC TreePageMgr::insertSubTree(TreeCtx &tctx,const void *value,ushort lValue,IndexFormat ifmt,unsigned start,unsigned end,unsigned& pageCnt,PageID *pages,ushort *indcs,size_t xSz,unsigned *pRes)
+RC TreePageMgr::insertSubTree(TreeCtx &tctx,const void *value,IndexFormat ifmt,unsigned start,unsigned end,unsigned& pageCnt,PageID *pages,uint16_t *indcs,size_t xSz,unsigned *pRes)
 {
-	bool fVarSub=ifmt.isVarMultiData(); unsigned lElt=fVarSub?L_SHT:ifmt.dataLength(); ushort lprefs[XSUBPAGES];
+	{Session *ses=Session::getSession(); if (ses!=NULL) ses->setCodeTrace(0x40);}
 	RC rc=RC_OK; PBlockP pb; const TreePage *tp=NULL; PageID sibling=INVALID_PAGEID; pageCnt=0;
-	size_t xbuf=0,lLast=0; unsigned nOldPages=0; ushort lPref=0;
+	size_t xbuf=0,lLast=0; unsigned nOldPages=0;
 	if (!tctx.pb.isNull()) {
 		tp=(const TreePage*)tctx.pb->getPageBuf(); pages[0]=tctx.pb->getPageID(); nOldPages=1;
-		if ((sibling=tp->info.sibling)!=INVALID_PAGEID) lLast=tp->getKeyExtra(ushort(~0u))+L_SHT;
+		if ((sibling=tp->info.sibling)!=INVALID_PAGEID) lLast=tp->getKeyExtra(uint16_t(~0u))+L_SHT;
 	}
 	for (unsigned idx=start,i2; idx<end; idx=i2) {
 		if (pageCnt>=XSUBPAGES) return RC_NORESOURCES;
 		for (unsigned b2=idx+(pageCnt>=nOldPages?1:0),e2=i2=end; ;) {
-			size_t dl=TreePage::calcChunkSize((const byte*)value,lValue,idx,i2==end?i2:i2+1,ifmt,lPref,
-													pageCnt==0||i2==end&&lLast!=0?tp:0,lLast!=0&&pageCnt>=nOldPages),lb=dl,xS=xSz;
+			size_t dl=calcChunkSize((const byte*)value,idx,i2==end?i2:i2+1),lb=dl,xS=xSz;
 			if (pageCnt!=0) {if (i2==end) lb=dl+=lLast;}
-			else if (tp!=NULL) {
-				dl+=tp->info.nEntries*(tp->info.lPrefix-lPref); 
-				xS=tp->info.freeSpaceLength; if (i2<end) xS+=lLast; if (xS>xSz) xS=xSz;
-			}
+			else if (tp!=NULL) {xS=tp->info.freeSpaceLength; if (i2<end) xS+=lLast; if (xS>xSz) xS=xSz;}
 			if (dl==xS || dl<xS && (b2=i2)+1>=e2) {
-				if (lb+sizeof(TreePageMulti)+lPref+L_SHT>xbuf) xbuf=lb+sizeof(TreePageMulti)+lPref+L_SHT;
+				if (lb+sizeof(TreePageMulti)+L_SHT>xbuf) xbuf=lb+sizeof(TreePageMulti)+L_SHT;
 				if (i2==end && dl<xSz && pRes!=NULL) {*pRes=idx; assert(pageCnt!=0);}
-				else {
-					if (i2<end && lLast!=0 && pageCnt==0 && tp->info.nEntries>1) {
-						SearchKey key(fVarSub?getK(value,i2):(const byte*)value+lElt*i2,ushort(fVarSub?lenK(value,i2):lElt));
-						lPref=tp->calcPrefixSize(key,0);
-					}
-					indcs[pageCnt]=(ushort)i2; lprefs[pageCnt]=lPref; pageCnt++;
-				}
+				else {indcs[pageCnt]=(uint16_t)i2; pageCnt++;}
 				break;
 			}			
 			if (dl<xS || (e2=i2)!=b2) i2=(e2+b2)/2;
@@ -1814,23 +1535,23 @@ RC TreePageMgr::insertSubTree(TreeCtx &tctx,const void *value,ushort lValue,Inde
 			}
 		}
 	}
-	if (pageCnt<=nOldPages) {assert(lLast==0 || tp->cmpKeys((byte*)value,end-1,tp->info.nEntries-1,ushort(lElt),fVarSub)<=0); lLast=0;}
-	TreeFactory *tf=tctx.tree->getFactory(); ushort lFact=tf!=NULL?tf->getParamLength()+2:0,lk=0; assert(tctx.mainKey!=NULL);
+	if (pageCnt<=nOldPages) {assert(lLast==0 || tp->cmpKeys((byte*)value,end-1,tp->info.nEntries-1)<=0); lLast=0;}
+	TreeFactory *tf=tctx.tree->getFactory(); uint16_t lFact=tf!=NULL?tf->getParamLength()+2:0,lk=0; assert(tctx.mainKey!=NULL);
 	if (tf!=NULL) lFact+=(lk=tctx.mainKey->extLength())+2; xbuf+=lFact;
 	byte *buf=(byte*)malloc(xbuf,SES_HEAP); if (buf==NULL) return RC_NORESOURCES;
-	TreePageMulti *tpm=(TreePageMulti*)buf; IndexFormat subfmt(ifmt.isPinRef()?KT_REF:KT_BIN,ifmt.makeSubKey(),0);
+	TreePageMulti *tpm=(TreePageMulti*)buf; IndexFormat subfmt(ifmt.isPinRef()?KT_REF:KT_BIN,KT_VARKEY,0);
 	if (pageCnt==nOldPages || (rc=ctx->fsMgr->allocPages(pageCnt-nOldPages,pages+nOldPages))==RC_OK) for (unsigned i=pageCnt; i--!=0; sibling=pages[i],lLast=0) {
-		ushort lData=packMulti(buf+sizeof(TreePageMulti),value,lValue,i==0?(ushort)start:indcs[i-1],indcs[i]+(i+1==pageCnt?0:1),lprefs[i],fVarSub?~0u:lElt,
-																									lLast!=0?(TreePage*)tctx.pb->getPageBuf():(TreePage*)0);
-		unsigned op=MO_INSERT<<TRO_SHIFT|TRO_MULTI; assert(sizeof(TreePageMulti)+lData+lprefs[i]+lFact<=xbuf); double prev=0.;
-		tpm->fmt=subfmt; tpm->sibling=sibling; tpm->lPrefix=lprefs[i]; tpm->fLastR=0; tpm->lData=lData;
+		uint16_t strt=i==0?(uint16_t)start:indcs[i-1],end=indcs[i]+(i+1==pageCnt?0:1);
+		uint16_t lData=packMulti(buf+sizeof(TreePageMulti),value,strt,end,lLast!=0?(TreePage*)tctx.pb->getPageBuf():(TreePage*)0);
+		unsigned op=MO_INSERT<<TRO_SHIFT|TRO_MULTI; assert(sizeof(TreePageMulti)+lData+lFact<=xbuf); double prev=0.;
+		tpm->fmt=subfmt; tpm->sibling=sibling; tpm->fLastR=0; tpm->lData=lData; tpm->nKeys=end-strt;
 		if (i>=nOldPages) {op=MO_INIT<<TRO_SHIFT|TRO_MULTI; if (pb.newPage(pages[i],this)==NULL) {rc=RC_NORESOURCES; break;}}
 		else {pb.release(); pb=(PBlock*)tctx.pb; pb.set(PGCTL_NOREL); tpm->fLastR=tp->hasSibling()&&pageCnt>nOldPages; prev=double(xSize-tp->info.freeSpaceLength)*100./xSize;}
 		if (tf!=NULL) {
-			byte *p=(byte*)buf+sizeof(TreePageMulti)+lData+lprefs[i]+lFact; tf->getParams(p-lFact+lk,*tctx.tree);
+			byte *p=(byte*)buf+sizeof(TreePageMulti)+lData+lFact; tf->getParams(p-lFact+lk,*tctx.tree);
 			tctx.mainKey->serialize(p-lFact); p[-4]=byte(lFact>>8); p[-3]=byte(lFact); p[-2]=tf->getID(); p[-1]=0xFF;
 		}
-		if ((rc=ctx->txMgr->update(pb,this,op,buf,sizeof(TreePageMulti)+lData+lprefs[i]+lFact,tf!=NULL?LRC_LUNDO:0))!=RC_OK) break;
+		if ((rc=ctx->txMgr->update(pb,this,op,buf,sizeof(TreePageMulti)+lData+lFact,tf!=NULL?LRC_LUNDO:0))!=RC_OK) break;
 #ifdef TRACE_EMPTY_PAGES
 		report(MSG_DEBUG,"Inserted %d bytes into page %X(%f -> %f)\n",lData,pb->getPageID(),prev,double(xSize-((TreePage*)pb->getPageBuf())->info.freeSpaceLength)*100./xSize);
 #endif
@@ -1853,89 +1574,40 @@ RC TreePageMgr::insertSubTree(TreeCtx &tctx,const void *value,ushort lValue,Inde
 	pb.release(); free(buf,SES_HEAP); return rc;
 }
 
-int TreePageMgr::TreePage::cmpKeys(const byte *pv,unsigned idx,unsigned sidx,ushort lElt,bool fVM) const
+int TreePageMgr::TreePage::cmpKeys(const byte *pv,unsigned idx,unsigned sidx) const
 {
-	const byte *p1=fVM?getK(pv,idx):(const byte*)pv+lElt*idx; ushort l1=fVM?lenK(pv,idx):lElt; int cmp;
-	if (info.fmt.isRefKeyOnly()) return PINRef::cmpPIDs(p1,l1,(*this)[sidx],lenPK(sidx));
-	if (info.lPrefix!=0) {
-		if ((cmp=memcmp(p1,fVM?(byte*)this+((PagePtr*)&info.prefix)->offset:(byte*)&info.prefix,min(l1,info.lPrefix)))!=0) return cmp;
-		if (l1<=info.lPrefix) return -1; p1+=info.lPrefix; l1-=info.lPrefix;
-	}
-	ushort lk0=fVM?L_SHT:lElt-info.lPrefix; const byte *p=(const byte*)(this+1)+sidx*lk0; if (fVM) {lk0=lenK(p,0); p=(*this)[p];}
+	uint16_t l1; const byte *p1=TreePageMgr::getK(pv,idx,l1); int cmp;
+	if (info.fmt.isRefKeyOnly()) return PINRef::cmpPIDs(p1,(*this)[sidx]);
+	uint16_t lk0; const byte *p=getK(sidx,lk0);
 	return (cmp=memcmp(p1,p,min(lk0,l1)))==0?cmp3(l1,lk0):cmp;
 }
 
-size_t TreePageMgr::TreePage::calcChunkSize(const byte *vals,ushort lVals,unsigned start,unsigned end,IndexFormat fmt,ushort& lpref,const TreePage *tp,bool fLast)
+size_t TreePageMgr::calcChunkSize(const byte *vals,unsigned start,unsigned end)
 {
-	lpref=0; const bool fVM=fmt.isVarMultiData(); const ushort lE=fmt.dataLength();
-	assert(start<end && end<=unsigned(fVM?nKeys(vals):lVals/lE));
-	if (!fmt.isPinRef() && (tp==NULL || fLast || tp->info.lPrefix!=0)) {
-		const byte *p1,*p2; ushort l1,l2,i,ll;
-		if (!fVM) p1=vals+start*(l1=lE); else {p1=getK(vals,start); l1=lenK(vals,start);}
-		if (start+1==end) lpref=l1;
-		else {
-			if (!fVM) p2=vals+(end-1)*(l2=lE); else {p2=getK(vals,end-1); l2=lenK(vals,end-1);}
-			for (i=0,ll=min(l1,l2); i<ll; i++) if (p1[i]!=p2[i]) break;
-			lpref=i;
-		}
-		if (tp!=NULL && lpref!=0) {
-			ushort lmax=lpref; lpref=0;
-			if ((l2=tp->info.lPrefix)!=0) {
-				p2=fVM?(byte*)tp+((PagePtr*)&tp->info.prefix)->offset:(byte*)&tp->info.prefix;
-				for (i=0,ll=min(lmax,l2); i<ll; i++) if (p1[i]!=p2[i]) break;
-				lpref=i; p1+=lpref; l1-=lpref;
-			}
-			if (fLast && lpref==l2 && l1!=0) {
-				p2=(const byte*)(tp+1)+(!fVM?lE-l2:L_SHT)*(tp->info.nEntries-1); 
-				if (!fVM) l2=lE-l2; else {l2=lenK(p2,0); p2=(*tp)[p2];}
-				for (i=0,ll=min(l1,l2); i<ll; i++) if (p1[i]!=p2[i]) break;
-				if ((lpref+=i)>lmax) lpref=lmax;
-			}
-		}
-	}
-	return (fVM?(end-start+(tp==NULL||tp->info.nEntries==0?1:0))*L_SHT+lenKK(vals,start,end)+(tp==NULL?lpref:0):(end-start)*lE)-lpref*(end-start);
+	size_t l=(end-start)*L_SHT;
+	for (unsigned i=start; i<end; i++) l+=PINRef::len(vals+((uint16_t*)vals)[i]);
+	return l;
 }
 
-ushort TreePageMgr::packMulti(byte *buf,const void *value,ushort lVal,unsigned start,unsigned end,ushort lpref,unsigned lElt,TreePage *tp)
+uint16_t TreePageMgr::calcXSz(const byte *pv,unsigned from,unsigned to,const TreePage *tp) 
 {
-	assert(start<end && (tp==NULL||tp->hasSibling()));
-	if (tp==NULL && lpref==0 && start==0 && end==nKeys(value)) {memcpy(buf,value,lVal); return lVal;}
-	const byte *pref=NULL,*pp; ushort ll=0,l=0,d;
-	if (lElt==~0u) {
-		ll=ushort(end-start+1+(tp!=NULL?1:0))*L_SHT;
-		if (lpref!=0) pref=getK(value,start);
-		for (unsigned j=0;;ll+=l,j++) {
-			((ushort*)(buf))[j]=ll; if (start+j>=end) break;
-			memcpy(buf+ll,getK(value,start+j)+lpref,l=lenK(value,start+j)-lpref);
-		}
-	} else {
-		l=ushort(lElt)-lpref;
-		if (lpref!=0) {
-			pref=(byte*)value+start*lElt; assert(lpref<=lElt && (tp==NULL||lpref==tp->info.lPrefix));
-			for (; start<end; ll+=(ushort)l,start++) memcpy(buf+ll,(byte*)value+start*lElt+lpref,l);
-		} else memcpy(buf,(byte*)value+lElt*start,ll=ushort(lElt*(end-start)));
-	}
-	if (tp!=NULL) {
-		if (lElt==~0u) {assert(tp->info.nEntries!=0); l=tp->lenPK(tp->info.nEntries-1); pp=(*tp)[tp->info.nEntries-1];} else pp=(byte*)(tp+1)+l*(tp->info.nEntries-1);
-		if (lpref>=tp->info.lPrefix) memcpy(buf+ll,pp+(lpref-tp->info.lPrefix),l-=lpref-tp->info.lPrefix);
-		else {d=tp->info.lPrefix-lpref; memcpy(buf+ll,(lElt==~0u?(byte*)tp+((PagePtr*)&tp->info.prefix)->offset:(byte*)&tp->info.prefix)+lpref,d); memcpy(buf+(ll+=d),pp,l);}
-		ll+=l; if (lElt==~0u) ((ushort*)buf)[end-start+1]=ll;
-	}
-	if (lpref!=0) memcpy(buf+ll,pref,lpref);
+	size_t l=calcChunkSize(pv,from,to); if (tp!=NULL) l+=xSize-tp->info.freeSpaceLength;
+	unsigned nPages=unsigned((l+xSize-1)/xSize); return uint16_t((l/=nPages)>xSize?xSize:l);
+}
+
+uint16_t TreePageMgr::packMulti(byte *buf,const void *value,unsigned start,unsigned end,TreePage *tp)
+{
+	uint16_t ll=uint16_t(end-start)*L_SHT,l; assert(start<end && (tp==NULL||tp->hasSibling()));
+	for (unsigned i=start; i<end; i++)
+		{const byte *pp=getK(value,i,l); ((uint16_t*)buf)[i-start]=ll; memcpy(buf+ll,pp,l); ll+=l;}
+	if (tp!=NULL) {const byte *pp=tp->getK(tp->info.nEntries-1,l); memcpy(buf+ll,pp,l); ll+=l;}
 	return ll;
-}
-
-ushort TreePageMgr::calcXSz(const byte *pv,unsigned from,unsigned to,const TreePage *tp) 
-{
-	size_t l=lenKK(pv,from,to)+(to-from+1)*L_SHT;
-	if (tp!=NULL) l+=xSize-tp->info.freeSpaceLength+tp->info.nEntries*tp->info.lPrefix;
-	unsigned nPages=unsigned((l+xSize-1)/xSize); return ushort((l/=nPages)>xSize?xSize:l);
 }
 
 PageID TreePageMgr::startSubPage(const TreePage *tp,const PagePtr& vp,const SearchKey *key,int& level,bool fRead,bool fBefore)
 {
-	ushort len=vp.len&~TRO_EXT_DATA;
-	assert(TreePage::isSubTree(vp) && size_t(len)>=sizeof(SubTreePage) && (len-sizeof(SubTreePage))%sizeof(SubTreePageKey)==0);
+	uint16_t len=vp.len&~TRO_MANY;
+	assert(tp->isSubTree(vp) && size_t(len)>=sizeof(SubTreePage) && (len-sizeof(SubTreePage))%sizeof(SubTreePageKey)==0);
 	SubTreePage tpe; memcpy(&tpe,(byte*)tp+vp.offset,sizeof(SubTreePage)); level=tpe.level;
 	if (len<=sizeof(SubTreePage) || key==NULL && !fBefore) return tpe.leftMost;
 	const SubTreePageKey *tpk=NULL; PageID pid;
@@ -1950,7 +1622,7 @@ PageID TreePageMgr::startSubPage(const TreePage *tp,const PagePtr& vp,const Sear
 
 PageID TreePageMgr::prevStartSubPage(const TreePage *tp,const PagePtr& vp,PageID pid)
 {
-	ushort len=vp.len&~TRO_EXT_DATA; if (len<=sizeof(SubTreePage)) return INVALID_PAGEID;
+	uint16_t len=vp.len&~TRO_MANY; if (len<=sizeof(SubTreePage)) return INVALID_PAGEID;
 	SubTreePage tpe; memcpy(&tpe,(byte*)tp+vp.offset,sizeof(SubTreePage)); const byte *p=(byte*)tp+vp.offset+len;
 	for (long i=(len-sizeof(SubTreePage))/sizeof(SubTreePageKey); --i>=0; p-=sizeof(SubTreePageKey)) {
 		PageID pp; memcpy(&pp,&((SubTreePageKey*)p)->pageID,sizeof(PageID));
@@ -1961,68 +1633,83 @@ PageID TreePageMgr::prevStartSubPage(const TreePage *tp,const PagePtr& vp,PageID
 
 RC TreePageMgr::count(TreeCtx& tctx,const SearchKey& key,uint64_t& nValues)
 {
-	nValues=0; unsigned idx; ushort lData; const PagePtr *vp; assert(!tctx.pb.isNull());
+	nValues=0; unsigned idx; uint16_t lData; const PagePtr *vp; assert(!tctx.pb.isNull());
 	const TreePage *tp=(const TreePage*)tctx.pb->getPageBuf();
 	if (tp->info.fmt.keyType()!=key.type||!tp->isLeaf()) return RC_INVPARAM;
 	if (tp->info.fmt.isSeq()) {nValues=key.v.u<tp->info.prefix+tp->info.nEntries?1:0; return RC_OK;}
 	if (!tp->findKey(key,idx)) return RC_NOTFOUND;
 	if (tp->info.fmt.isKeyOnly()) return RC_OK;
-	if (tp->info.fmt.isUnique()) {nValues=1; return RC_OK;}
+	if (tp->info.fmt.isFixedLenData()) {nValues=1; return RC_OK;}
 	if (tp->findData(idx,lData,&vp)==NULL||vp==NULL) return RC_CORRUPTED;
-	if (TreePage::isSubTree(*vp)) {
-		if ((vp->len&~TRO_EXT_DATA)<sizeof(SubTreePage)) return RC_CORRUPTED;
-		SubTreePage stp; memcpy(&stp,(byte*)tp+vp->offset,sizeof(SubTreePage));
-		nValues=stp.counter;
-	} else if (tp->info.fmt.isFixedLenData()) nValues=vp->len/tp->info.fmt.dataLength();
-	else if (vp->len<256) nValues=*((byte*)tp+vp->offset)-1;
-	else nValues=_u16((byte*)tp+vp->offset)/L_SHT-1;
+	if (!tp->isSubTree(*vp)) nValues=(vp->len&TRO_MANY)!=0?(vp->len&~TRO_MANY)/L_SHT:1;
+	else if ((vp->len&~TRO_MANY)<sizeof(SubTreePage)) return RC_CORRUPTED;
+	else {SubTreePage stp; memcpy(&stp,(byte*)tp+vp->offset,sizeof(SubTreePage)); nValues=stp.counter;}
 	return RC_OK;
 }
 
 RC TreePageMgr::findByPrefix(TreeCtx& tctx,const SearchKey& key,uint32_t prefix,byte *buf,byte &l)
 {
-	unsigned idx; ushort lData; const PagePtr *vp; const byte *p0,*p; bool fShort; assert(!tctx.pb.isNull());
+	unsigned idx; uint16_t lData; const PagePtr *vp; const byte *p0,*p; assert(!tctx.pb.isNull());
 	const TreePage *tp=(const TreePage*)tctx.pb->getPageBuf();
 	if (tp->info.fmt.keyType()!=key.type||!tp->isLeaf()||!tp->info.fmt.isPinRef()) return RC_INVPARAM;
 	if (!tp->findKey(key,idx)) return RC_NOTFOUND;
 	if (tp->findData(idx,lData,&vp)==NULL||vp==NULL) return RC_CORRUPTED;
-	if (!TreePage::isSubTree(*vp)) {p=p0=(const byte*)tp+vp->offset; fShort=vp->len<256;}
+	if (!tp->isSubTree(*vp)) p=p0=(const byte*)tp+vp->offset;
 	else {
-		if ((vp->len&~TRO_EXT_DATA)<sizeof(SubTreePage)) return RC_CORRUPTED;
+		if ((vp->len&~TRO_MANY)<sizeof(SubTreePage)) return RC_CORRUPTED;
 		SubTreePage stp; memcpy(&stp,(byte*)tp+vp->offset,sizeof(SubTreePage));
 		PID pd={0ULL,0}; PINRef pr(ctx->storeID,pd); pr.prefix=prefix; pr.def|=PR_PREF32; l=pr.enc(buf);
 		PBlockP spb(tctx.pb); tctx.pb.moveTo(tctx.parent); tctx.mainKey=&key; tctx.index=idx;
 		tctx.vp=__una_get(*vp); tctx.stack[tctx.leaf=tctx.depth++]=spb->getPageID(); tctx.lvl2=stp.level;
 		SearchKey mkey(buf,l,true); RC rc=tctx.findPage(&mkey); if (rc!=RC_OK) return rc;
-		p=p0=(const byte*)((const TreePage*)tctx.pb->getPageBuf()+1); fShort=false;
+		p=p0=(const byte*)((const TreePage*)tctx.pb->getPageBuf()+1);
 	}
-	uint64_t pref; const byte *q; ushort ll,sht; int cmp;
-	for (unsigned n=fShort?*p-1:_u16(p)/L_SHT-1,lElt=fShort?1:L_SHT;;) {
-		unsigned k=n>>1; if (fShort) {q=p+k; sht=q[0]; ll=q[1]-sht;} else {q=p+k*L_SHT; sht=_u16(q); ll=_u16(q+L_SHT)-sht;}
-		if (!PINRef::getPrefix(p0+sht,ll,pref)) break; assert(ll<256);
+	uint64_t pref; const byte *q; uint16_t ll,sht; int cmp;
+	for (unsigned n=_u16(p)/L_SHT,lElt=L_SHT;;) {
+		unsigned k=n>>1; q=p+k*L_SHT; sht=_u16(q); ll=_u16(q+L_SHT)-sht;
+		if (!PINRef::getPrefix(p0+sht,pref)) break;
 		if ((cmp=cmp3((uint32_t)pref,prefix))==0) {memcpy(buf,p0+sht,l=(byte)ll); return RC_OK;}
 		if (cmp>0) {if ((n=k)==0) break;} else if ((n-=k+1)==0) break; else p=q+lElt;
 	}
 	return RC_NOTFOUND;
 }
 
-RC TreePageMgr::insert(TreeCtx& tctx,const SearchKey& key0,const void *value,ushort lValue,bool fMulti)
+RC TreePageMgr::truncate(TreeCtx& tctx,const SearchKey& key,uint64_t val,bool fCount)
+{
+	unsigned idx; uint16_t lData; const PagePtr *vp; assert(!tctx.pb.isNull());
+	const TreePage *tp=(const TreePage*)tctx.pb->getPageBuf();
+	if (tp->info.fmt.keyType()!=key.type||!tp->isLeaf()) return RC_INVPARAM;
+	if (tp->info.fmt.isSeq()) return RC_INTERNAL;
+	if (tp->info.fmt.isKeyOnly() || tp->info.fmt.isFixedLenData() || !tp->findKey(key,idx)) return RC_OK;
+	if (tp->findData(idx,lData,&vp)==NULL||vp==NULL) return RC_CORRUPTED;
+	for (;;) {
+		if (tp->isSubTree(*vp)) {
+			if ((vp->len&~TRO_MANY)<sizeof(SubTreePage)) return RC_CORRUPTED;
+			SubTreePage stp; memcpy(&stp,(byte*)tp+vp->offset,sizeof(SubTreePage));
+//			nValues=stp.counter;
+		} 
+//		else if (tp->info.fmt.isFixedLenData()) nValues=vp->len/tp->info.fmt.dataLength();
+//		else nValues=_u16((byte*)tp+vp->offset)/L_SHT;
+		return RC_OK;
+	}
+}
+
+RC TreePageMgr::insert(TreeCtx& tctx,const SearchKey& key0,const void *value,uint16_t lValue,unsigned multi,bool fUnique)
 {
 	RC rc=RC_OK; assert(!tctx.pb.isNull());
 	const TreePage *tp=(const TreePage*)tctx.pb->getPageBuf(); const SearchKey *key=&key0;
-	if (tp->info.fmt.keyType()!=key->type||fMulti&&tp->info.fmt.isUnique()) return RC_INVPARAM;
-	size_t lrec=sizeof(TreePageModify)+key->extLength(),lInsert=0,lExtra=0,lKey=tp->info.calcEltSize(); uint32_t nVals=1;
-	const void *pOld=NULL; const PagePtr *vp=NULL; TREE_OP op=TRO_INSERT; bool fVM=tp->info.fmt.isVarMultiData();
+	if (tp->info.fmt.keyType()!=key->type||multi!=0&&tp->info.fmt.isFixedLenData()) return RC_INVPARAM;
+	size_t lrec=sizeof(TreePageModify)+key->extLength(),lInsert=0,lExtra=0,lKey=tp->info.calcEltSize();
+	const void *pOld=NULL; const PagePtr *vp=NULL; TREE_OP op=TRO_INSERT;
 	
-	if (fMulti && (nVals=fVM?nKeys(value):lValue/tp->info.fmt.dataLength())==1 && tctx.moreKeys==NULL)
-		{fMulti=false; if (fVM) {value=(byte*)value+L_SHT*2; lValue-=L_SHT*2;}}
+	unsigned spaceLeft=tp->info.freeSpaceLength+tp->info.scatteredFreeSpace; 
+	bool fVM=!tp->info.fmt.isFixedLenData(),fSubTree=(multi>>16)==0xFFFF; unsigned idx=0;
+	uint16_t lOld,prefixSize=tp->info.lPrefix,n=uint16_t(multi&0xFFFF),start=fSubTree?0:uint16_t(multi>>16);
 
-	ushort lOld,prefixSize=tp->info.lPrefix,n=fMulti?ushort(~0u):0; unsigned idx=0;
-	unsigned spaceLeft=tp->info.freeSpaceLength+tp->info.scatteredFreeSpace;
+	if (!fSubTree && n==1) {n=multi=0; if (fVM) value=getK(value,start,lValue);}
 
-	assert(!tp->info.fmt.isFixedLenData() || fMulti || lValue==tp->info.fmt.dataLength());
-	assert(!fMulti || !fVM || lValue==((ushort*)value)[nVals]);
-	assert(!tp->hasSibling() || tp->testKey(key0,ushort(~0u))<0);
+	assert(!tp->info.fmt.isFixedLenData() || multi==0 && lValue==tp->info.fmt.dataLength());
+	assert(!tp->hasSibling() || tp->testKey(key0,uint16_t(~0u))<0);
 	assert((PBlock*)tctx.parent!=(PBlock*)tctx.pb);
 
 	if (tp->info.fmt.isSeq()) {
@@ -2031,70 +1718,60 @@ RC TreePageMgr::insert(TreeCtx& tctx,const SearchKey& key0,const void *value,ush
 			return RC_CORRUPTED;
 		}
 		idx=tp->info.nEntries; lInsert=lValue; if (!tp->info.fmt.isFixedLenData()) lInsert+=sizeof(PagePtr);
-	} else if (!tp->findKey(*key,idx)) {
+	} else if (tp->info.nSearchKeys==0 || !tp->findKey(*key,idx)) {
 		assert((idx>0||tp->info.level==0||tp->info.leftMost!=INVALID_PAGEID) && idx<=tp->info.nSearchKeys&&(idx<tp->info.nEntries||!tp->hasSibling()));
-		if (prefixSize!=0 && tp->info.nEntries!=0 && (idx==0 || idx==tp->info.nEntries) && (prefixSize=tp->calcPrefixSize(*key,idx))<tp->info.lPrefix)
+		if (tp->info.nEntries==0) {prefixSize=tp->calcPrefixSize(*key,0); lKey=tp->info.calcEltSize(prefixSize);}
+		else if (prefixSize!=0 && (idx==0 || idx==tp->info.nEntries) && (prefixSize=tp->calcPrefixSize(*key,idx==0?tp->info.nEntries-1:0))<tp->info.lPrefix)
 			lExtra=tp->info.extraEltSize(prefixSize)*(tp->info.nEntries+1);
-		lInsert=lKey; if (!tp->info.fmt.isFixedLenKey()) lKey+=key->extra()-prefixSize;
-		if (!fMulti) {
-			lInsert+=tp->info.calcVarSize(*key,lValue,prefixSize)+(!fVM?0:lValue<254?2:L_SHT*2);
-			if (lInsert>xSize/3) return RC_TOOBIG;
-		} else {
-			if (fVM && lValue-(nVals+1)<256) lValue-=ushort(nVals+1); lInsert+=tp->info.calcVarSize(*key,lValue,prefixSize);
-			if (lValue>=0x8000 || lValue>=256 && lInsert+lExtra>spaceLeft) {
-				unsigned pageCnt=0,lkeys=0; PageID pages[XSUBPAGES]; ushort indcs[XSUBPAGES]; tctx.mainKey=key;
-				PBlockP spb(tctx.pb); tctx.pb.moveTo(tctx.parent); tctx.stack[tctx.leaf=tctx.depth++]=spb->getPageID();
-				rc=insertSubTree(tctx,value,lValue,tp->info.fmt,0,nVals,pageCnt,pages,indcs,calcXSz((byte*)value,0,nVals));
-				tctx.parent.release(); spb.moveTo(tctx.pb); tctx.depth=tctx.leaf; tctx.leaf=~0u; tctx.mainKey=NULL;
-				if (rc!=RC_OK) return rc; assert(pageCnt>0);
-				if (pageCnt>1) {
-					if (!fVM) lkeys=(pageCnt-1)*tp->info.fmt.dataLength();
-					else for (unsigned i=1; i<pageCnt; i++) lkeys+=lenK(value,indcs[i-1]);
-				}
-				unsigned lstp=sizeof(SubTreePage)+int(pageCnt-1)*sizeof(SubTreePageKey)+lkeys;
-				SubTreePage *stp=(SubTreePage*)alloca(lstp); if (stp==NULL) return RC_NORESOURCES;
-				stp->level=0; stp->counter=nVals; stp->leftMost=stp->anchor=pages[0]; unsigned shtkey=lkeys;
-				for (unsigned i=pageCnt; --i>0;) {
-					SubTreePageKey &spk=((SubTreePageKey*)(stp+1))[i-1]; spk.pageID=pages[i]; const byte *pkey; unsigned lk;
-					if (!fVM) pkey=(byte*)value+indcs[i-1]*(lk=tp->info.fmt.dataLength());
-					else {pkey=getK(value,indcs[i-1]); lk=lenK(value,indcs[i-1]);}
-					assert(shtkey>=lk); memcpy((byte*)(stp+1)+int(pageCnt-1)*sizeof(SubTreePageKey)+(shtkey-=lk),pkey,lk);
-					spk.key.offset=ushort(sizeof(SubTreePage)+int(pageCnt-1)*sizeof(SubTreePageKey)+shtkey); spk.key.len=ushort(lk);
-				}
-				value=stp; lValue=ushort(lstp); n=ushort(~1u); fMulti=false; assert(shtkey==0);
-				lInsert=tp->info.calcEltSize()+tp->info.calcVarSize(*key,lValue,prefixSize);
+		lInsert=lKey+tp->info.calcVarSize(*key,lValue,prefixSize); if (!tp->info.fmt.isFixedLenKey()) lKey+=key->extra()-prefixSize;
+		if (multi==0) {if (lInsert>xSize/3) return RC_TOOBIG;}
+		else if (fSubTree) n|=0x8000;
+		else if (lValue>=0x8000 || lInsert+lExtra>spaceLeft && lValue>xSize/6) {
+			unsigned pageCnt=0,lkeys=0; PageID pages[XSUBPAGES]; uint16_t indcs[XSUBPAGES]; tctx.mainKey=key;
+			PBlockP spb(tctx.pb); tctx.pb.moveTo(tctx.parent); tctx.stack[tctx.leaf=tctx.depth++]=spb->getPageID();
+			rc=insertSubTree(tctx,value,tp->info.fmt,start,start+n,pageCnt,pages,indcs,calcXSz((byte*)value,start,start+n));
+			tctx.parent.release(); spb.moveTo(tctx.pb); tctx.depth=tctx.leaf; tctx.leaf=~0u; tctx.mainKey=NULL;
+			if (rc!=RC_OK) return rc; assert(pageCnt>0);
+			if (pageCnt>1) for (unsigned i=1; i<pageCnt; i++) {uint16_t ll; getK(value,indcs[i-1],ll); lkeys+=ll;}
+			unsigned lstp=sizeof(SubTreePage)+int(pageCnt-1)*sizeof(SubTreePageKey)+lkeys;
+			SubTreePage *stp=(SubTreePage*)alloca(lstp); if (stp==NULL) return RC_NORESOURCES;
+			stp->fSubPage=0xFFFF; stp->level=0; stp->counter=n; stp->leftMost=stp->anchor=pages[0]; unsigned shtkey=lkeys;
+			for (unsigned i=pageCnt; --i>0;) {
+				SubTreePageKey &spk=((SubTreePageKey*)(stp+1))[i-1]; spk.pageID=pages[i]; const byte *pkey; uint16_t lk;
+				pkey=getK(value,indcs[i-1],lk); assert(shtkey>=lk);
+				memcpy((byte*)(stp+1)+int(pageCnt-1)*sizeof(SubTreePageKey)+(shtkey-=lk),pkey,lk);
+				spk.key.offset=uint16_t(sizeof(SubTreePage)+int(pageCnt-1)*sizeof(SubTreePageKey)+shtkey); spk.key.len=uint16_t(lk);
 			}
+			value=stp; lValue=uint16_t(lstp); n=(pageCnt-1)|0x8000; assert(shtkey==0);
+			lInsert=tp->info.calcEltSize()+tp->info.calcVarSize(*key,lValue,prefixSize);
 		}
 		if (!tp->isLeaf()) lrec=ceil(lrec,sizeof(PageID));
-		else if (tctx.mainKey==NULL && n!=ushort(~1u) && tctx.moreKeys!=NULL && lInsert+lExtra<spaceLeft) {
-			const SearchKey *pkey; const void *val; ushort lVal; bool fMulti2; bool fPush=false;
+		else if (tctx.mainKey==NULL && (n&0x8000)==0 && tctx.moreKeys!=NULL && lInsert+lExtra<spaceLeft) {
+			const SearchKey *pkey; const void *val; uint16_t lVal; unsigned multi2; bool fPush=false;
 			if ((pkey=(SearchKey*)alloca(sizeof(SearchKey)+key->extra()))!=NULL) {*(SearchKey*)pkey=key0; key=pkey;}
-			if (pkey!=NULL && (rc=tctx.moreKeys->nextKey(pkey,val,lVal,fMulti2,true))==RC_OK) {
-				unsigned idx2=idx; ushort prefSize2=prefixSize; size_t lE=lExtra; uint32_t nVals2=1; fPush=true;
-				if (lVal<0x8000 && (idx2>=tp->info.nEntries || !tp->findKey(*pkey,idx2) && (!tp->hasSibling()||tp->testKey(*pkey,ushort(~0u))<0))) {
+			if (pkey!=NULL && (rc=tctx.moreKeys->nextKey(pkey,val,lVal,multi2,true))==RC_OK) {
+				if ((multi2>>16)!=0xFFFF && (multi2&0xFFFF)==1) {if (fVM) val=getK(val,uint16_t(multi2>>16),lVal); multi2=0;}
+				unsigned idx2=idx; uint16_t prefSize2=prefixSize; size_t lE=lExtra; fPush=true;
+				if (lVal<0x8000 && (idx2>=tp->info.nEntries || !tp->findKey(*pkey,idx2) && (!tp->hasSibling()||tp->testKey(*pkey,uint16_t(~0u))<0))) {
 					if (tp->info.nEntries==0) {prefSize2=tp->calcPrefixSize(*pkey,0,false,key); lE=0;}
-					else if (prefSize2!=0 && (idx2==0 || idx2==tp->info.nEntries) && (prefSize2=tp->calcPrefixSize(*pkey,idx2))<prefixSize)
+					else if (prefSize2!=0 && (idx2==0 || idx2==tp->info.nEntries) && (prefSize2=tp->calcPrefixSize(*pkey,idx2==0?tp->info.nEntries-1:0))<prefixSize)
 						lE=tp->info.extraEltSize(prefSize2)*(tp->info.nEntries+2);
-					size_t lInsert2=tp->info.calcEltSize(),lKey2=lInsert2+(tp->info.fmt.isFixedLenKey()?0:pkey->extra()-prefSize2); lInsert2+=lInsert;
-					if (fMulti2 && fVM) {nVals2=nKeys(val); if (lVal-(nVals2+1)<256) lVal-=ushort(nVals2+1);}
-					lInsert2+=tp->info.calcVarSize(*pkey,lVal,prefSize2); if (!fMulti2 && fVM) lInsert2+=lVal<254?2:L_SHT*2;
+					size_t lInsert2=tp->info.calcEltSize(prefSize2),lKey2=lInsert2+(tp->info.fmt.isFixedLenKey()?0:pkey->extra()-prefSize2); lInsert2+=lInsert+tp->info.calcVarSize(*pkey,lVal,prefSize2);
 					if (lInsert2+lE<=spaceLeft && (tp->info.nEntries==0 || idx2!=tp->info.nEntries || lInsert2+lKey2+lE<spaceLeft)) {
-						TreeFactory *tf=tctx.tree->getFactory(); ushort lFact=tf!=NULL?tf->getParamLength()+2:0; n=2;
+						TreeFactory *tf=tctx.tree->getFactory(); uint16_t lFact=tf!=NULL?tf->getParamLength()+2:0; unsigned nk=2;
 						lrec=sizeof(TreePageAppend)+2*sizeof(TreePageAppendElt)+key->extLength()+lValue+pkey->extLength()+lVal+lFact; size_t lbuf=max(lrec,size_t(0x2000));
 						TreePageAppend *tpa=(TreePageAppend*)alloca(lbuf); Session *ses=NULL;
 						if (tpa==NULL && ((ses=Session::getSession())==NULL || (tpa=(TreePageAppend*)ses->malloc(lbuf))==NULL)) return RC_NORESOURCES;
 						TreePageAppendElt *tae=(TreePageAppendElt*)(tpa+1);
-						tae->fMulti=fMulti?1:0; tae->lkey=key->extLength(); tae->ldata=lValue; tae->idx=(uint16_t)idx; key->serialize(tae+1); byte *ptr=(byte*)(tae+1)+tae->lkey;
-						if (!fMulti || lValue>256) memcpy(ptr,value,lValue); else {unsigned j=nKeys(value)+1; for (unsigned i=0; i<j; i++) *ptr++=byte(((ushort*)value)[i]-j); memcpy(ptr,(ushort*)value+j,lValue-j);}
-						tae=(TreePageAppendElt*)((byte*)(tae+1)+tae->lkey+tae->ldata); tae->fMulti=fMulti2?1:0; tae->idx=(uint16_t)idx2+1;
-						tae->lkey=pkey->extLength(); tae->ldata=lVal; pkey->serialize(tae+1); ptr=(byte*)(tae+1)+tae->lkey;
-						if (!fMulti2 || lVal>256) memcpy(ptr,val,lVal); else {unsigned j=nKeys(val)+1; for (unsigned i=0; i<j; i++) *ptr++=byte(((ushort*)val)[i]-j); memcpy(ptr,(ushort*)val+j,lVal-j);}
-						for (;(rc=tctx.moreKeys->nextKey(pkey,val,lVal,fMulti2,true))==RC_OK && lVal<0x8000 && (idx2>=tp->info.nEntries || !tp->findKey(*pkey,idx2) && (!tp->hasSibling()||tp->testKey(*pkey,ushort(~0u))<0)); n++) {
-							ushort prefSize3=tp->info.nEntries==0?tp->calcPrefixSize(*pkey,0,false,key):prefSize2!=0 && (idx2==0 || idx2==tp->info.nEntries)?tp->calcPrefixSize(*pkey,idx2):prefSize2;
-							if (prefSize3<prefSize2) lE=tp->info.nEntries!=0?tp->info.extraEltSize(prefSize3)*(tp->info.nEntries+n+1):(prefSize2-prefSize3)*(n+1);
-							size_t lIns=tp->info.calcEltSize(); lKey2=lIns+(tp->info.fmt.isFixedLenKey()?0:pkey->extra()-prefSize3); lInsert2+=lIns;
-							if (fMulti2 && fVM) {nVals2=nKeys(val); if (lVal-(nVals2+1)<256) lVal-=ushort(nVals2+1);}
-							lInsert2+=tp->info.calcVarSize(*pkey,lVal,prefSize3); if (!fMulti2 && fVM) lInsert2+=lVal<254?2:L_SHT*2;
+						tae->ndata=(uint16_t)n; tae->lkey=key->extLength(); tae->ldata=lValue; tae->idx=(uint16_t)idx; key->serialize(tae+1); memcpy((byte*)(tae+1)+tae->lkey,value,lValue);
+						tae=(TreePageAppendElt*)((byte*)(tae+1)+tae->lkey+tae->ldata); tae->ndata=(uint16_t)multi2; tae->idx=(uint16_t)idx2+1;
+						tae->lkey=pkey->extLength(); tae->ldata=lVal; pkey->serialize(tae+1); memcpy((byte*)(tae+1)+tae->lkey,val,lVal);
+						for (;(rc=tctx.moreKeys->nextKey(pkey,val,lVal,multi2,true))==RC_OK; nk++) {
+							if ((multi2>>16)!=0xFFFF && (multi2&0xFFFF)==1) {if (fVM) val=getK(val,uint16_t(multi2>>16),lVal); multi2=0;}
+							if (!(lVal<0x8000 && (idx2>=tp->info.nEntries || !tp->findKey(*pkey,idx2) && (!tp->hasSibling()||tp->testKey(*pkey,uint16_t(~0u))<0)))) break;
+							uint16_t prefSize3=tp->info.nEntries==0?tp->calcPrefixSize(*pkey,0,false,key):prefSize2!=0 && (idx2==0 || idx2==tp->info.nEntries)?tp->calcPrefixSize(*pkey,idx2==0?tp->info.nEntries-1:0):prefSize2;
+							if (prefSize3<prefSize2) lE=tp->info.nEntries!=0?tp->info.extraEltSize(prefSize3)*(tp->info.nEntries+nk+1):(prefSize2-prefSize3)*(nk+1);
+							size_t lIns=tp->info.calcEltSize(prefSize3); lKey2=lIns+(tp->info.fmt.isFixedLenKey()?0:pkey->extra()-prefSize3); lInsert2+=lIns+tp->info.calcVarSize(*pkey,lVal,prefSize3);
 							if (lInsert2+lE>spaceLeft || tp->info.nEntries!=0 && idx2==tp->info.nEntries && lInsert2+lKey2+lE>=spaceLeft) break;
 							size_t nlrec=lrec+sizeof(TreePageAppendElt)+pkey->extLength()+lVal; prefSize2=prefSize3;
 							if (nlrec>lbuf) {
@@ -2105,13 +1782,11 @@ RC TreePageMgr::insert(TreeCtx& tctx,const SearchKey& key0,const void *value,ush
 								} else if ((tpa=(TreePageAppend*)ses->realloc(tpa,nlbuf,lbuf))==NULL) return RC_NORESOURCES;
 								lbuf=nlbuf; tae=(TreePageAppendElt*)((byte*)tpa+sht);
 							}
-							tae=(TreePageAppendElt*)((byte*)(tae+1)+tae->lkey+tae->ldata); tae->fMulti=fMulti2?1:0; tae->idx=(uint16_t)(idx2+n);
-							tae->lkey=pkey->extLength(); tae->ldata=lVal; pkey->serialize(tae+1); ptr=(byte*)(tae+1)+tae->lkey;
-							if (!fMulti2 || lVal>256) memcpy(ptr,val,lVal); else {unsigned j=nKeys(val)+1; for (unsigned i=0; i<j; i++) *ptr++=byte(((ushort*)val)[i]-j); memcpy(ptr,(ushort*)val+j,lVal-j);}
-							lrec=nlrec;
+							tae=(TreePageAppendElt*)((byte*)(tae+1)+tae->lkey+tae->ldata); tae->ndata=(uint16_t)multi2; tae->idx=(uint16_t)(idx2+nk);
+							tae->lkey=pkey->extLength(); tae->ldata=lVal; pkey->serialize(tae+1); memcpy((byte*)(tae+1)+tae->lkey,val,lVal); lrec=nlrec;
 						}
 						if (rc==RC_OK || rc==RC_EOF) {
-							tpa->newPrefixSize=prefSize2; tpa->nKeys=n; if (rc==RC_OK) tctx.moreKeys->push_back();
+							tpa->newPrefixSize=prefSize2; tpa->nKeys=nk; if (rc==RC_OK) tctx.moreKeys->push_back();
 							if (tf!=NULL) {byte *p=(byte*)tpa+lrec; tf->getParams(p-lFact,*tctx.tree); p[-2]=byte(lFact); p[-1]=tf->getID();}
 							rc=ctx->txMgr->update(tctx.pb,this,idx<<TRO_SHIFT|TRO_APPEND,(byte*)tpa,lrec,tf!=NULL?LRC_LUNDO:0);
 						}
@@ -2121,53 +1796,54 @@ RC TreePageMgr::insert(TreeCtx& tctx,const SearchKey& key0,const void *value,ush
 			}
 			if (rc==RC_EOF) rc=RC_OK; else if (rc!=RC_OK) return rc; else if (fPush) tctx.moreKeys->push_back();
 		}
-	} else if (!tp->isLeaf()) {assert(lValue==sizeof(PageID)); return tp->getPageID(idx)!=*(PageID*)value?RC_CORRUPTED:RC_FALSE;}
+	} else if (fUnique) return RC_ALREADYEXISTS; else if (fSubTree) return RC_INTERNAL;
+	else if (!tp->isLeaf()) {assert(lValue==sizeof(PageID)); return tp->getPageID(idx)!=*(PageID*)value?RC_CORRUPTED:RC_FALSE;}
 	else if (tp->info.fmt.isKeyOnly()) {
 		if (!tp->info.fmt.isRefKeyOnly()) return RC_FALSE;
 		op=TRO_UPDATE; lInsert=lKey; lKey+=key->extra()-prefixSize;
 	} else if ((pOld=tp->findData(idx,lOld,&vp))==NULL) return RC_CORRUPTED;
-	else if (tp->info.fmt.isUnique()) return lOld==lValue && !memcmp(pOld,value,lOld)?RC_FALSE:RC_ALREADYEXISTS;
-	else if (TreePage::isSubTree(*vp)) return modSubTree(tctx,*key,idx,vp,value,lValue,NULL,0,fMulti);
+	else if (!fVM) return lOld==lValue && !memcmp(pOld,value,lOld)?RC_FALSE:RC_ALREADYEXISTS;
+	else if (tp->isSubTree(*vp)) return modSubTree(tctx,*key,idx,vp,value,lValue,NULL,0,multi);
 	else {
 		op=TRO_UPDATE; lInsert=lValue; if (!tp->info.fmt.isFixedLenKey()) lKey+=key->extra()-prefixSize;
-		if (!fMulti) {
+		if (n==0) {
 			if (!tp->info.fmt.isPinRef() && tp->findValue(value,lValue,*vp)!=NULL) return RC_FALSE;
-			if (fVM) lInsert+=vp->len>=256?L_SHT:vp->len+1+lValue<256?1:((byte*)tp+vp->offset)[0]+L_SHT;
-		} else if (fVM) {
-			if (vp->len<256) if (vp->len+lValue-nVals>=256) lInsert+=((byte*)tp+vp->offset)[0]; else lInsert-=nVals;
+			if (fVM) lInsert+=(vp->len&TRO_MANY)!=0?L_SHT:L_SHT*2;
 		}
-		if (vp->len+lInsert>=0x8000 || tp->info.nSearchKeys<SPAWN_N_THR && lInsert+tp->info.calcEltSize()>unsigned(tp->info.freeSpaceLength+tp->info.scatteredFreeSpace)) {
-			RC rc2=spawn(tctx,lInsert,vp->len+lInsert>=0x8000?idx:~0u);
-			if (rc2!=RC_OK) {if (rc2!=RC_TOOBIG || vp->len+lInsert>=0x8000) return rc2;}
+		const bool fLong=(vp->len&~TRO_MANY)+lInsert>=0x8000;
+		if (fLong || tp->info.nSearchKeys<SPAWN_N_THR && lInsert+tp->info.calcEltSize()>unsigned(tp->info.freeSpaceLength+tp->info.scatteredFreeSpace)) {
+			RC rc2=spawn(tctx,lInsert,fLong?idx:~0u);
+			if (rc2!=RC_OK) {if (rc2!=RC_TOOBIG || fLong) return rc2;}
 			else if ((pOld=tp->findData(idx,lOld,&vp))==NULL||vp==NULL) return RC_INTERNAL;
-			else if (TreePage::isSubTree(*vp)) return modSubTree(tctx,*key,idx,vp,value,lValue,NULL,0,fMulti);
+			else if (tp->isSubTree(*vp)) return modSubTree(tctx,*key,idx,vp,value,lValue,NULL,0,multi);
 		}
 	}
 
 	if (lInsert+lExtra>spaceLeft || tp->info.nEntries!=0 && idx==tp->info.nEntries && lInsert+lExtra+lKey>=spaceLeft) {
 		bool fSplit=true;
-		if (tp->info.nSearchKeys==1 && !tp->info.fmt.isUnique()) {
+		if (tp->info.nSearchKeys==1 && !tp->info.fmt.isFixedLenData()) {
 			const PagePtr *pp=(const PagePtr*)((byte*)(tp+1)+tp->info.keyLength());
-			if (!TreePage::isSubTree(*pp) && pp->len>=256)
-				{RC rc2=spawn(tctx,lInsert,0); if (rc2==RC_OK) fSplit=false; else if (rc2!=RC_TOOBIG) return rc2;}
+			if (!tp->isSubTree(*pp)) {RC rc2=spawn(tctx,lInsert,0); if (rc2==RC_OK) fSplit=false; else if (rc2!=RC_TOOBIG) return rc2;}
 		}
 		if (fSplit) {
-			bool fInsR; ushort splitIdx=tp->calcSplitIdx(fInsR,*key,idx,lInsert,prefixSize,op==TRO_INSERT);
+			bool fInsR; uint16_t splitIdx=tp->calcSplitIdx(fInsR,*key,idx,lInsert,prefixSize,op==TRO_INSERT);
 			if ((rc=split(tctx,key,idx,splitIdx,fInsR))!=RC_OK) return rc;		// idx -> tctx.index ??
 		}
 		tp=(const TreePage*)tctx.pb->getPageBuf(); prefixSize=tp->info.lPrefix;
-		if (op==TRO_INSERT && prefixSize!=0 && (idx==0 || idx==tp->info.nEntries)) prefixSize=tp->calcPrefixSize(*key,idx);
+		if (op==TRO_INSERT && prefixSize!=0 && (idx==0 || idx==tp->info.nEntries)) prefixSize=tp->calcPrefixSize(*key,idx==0?tp->info.nEntries-1:0);
 	}
 	tctx.parent.release();
 
-	TreeFactory *tf=tctx.tree->getFactory(); ushort lFact=tf!=NULL?tf->getParamLength()+2:0,lk=0;
+	TreeFactory *tf=tctx.tree->getFactory(); uint16_t lFact=tf!=NULL?tf->getParamLength()+2:0,lk=0;
 	if (tctx.mainKey!=NULL && tf!=NULL) lFact+=(lk=tctx.mainKey->extLength())+2;
 	TreePageModify *tpm=(TreePageModify*)alloca(lrec+lValue+lFact); if (tpm==NULL) return RC_NORESOURCES;
 	key->serialize(tpm+1); tpm->newPrefSize=prefixSize<tp->info.lPrefix?prefixSize:tp->info.lPrefix;
-	tpm->newData.offset=ushort(lrec); tpm->newData.len=lValue; tpm->oldData.len=0; tpm->oldData.offset=n;
-	byte *ptr=(byte*)tpm+tpm->newData.offset; assert(lrec+lValue<0x10000);
-	if (!fMulti || lValue>=256 || op==TRO_UPDATE) memcpy(ptr,value,lValue);
-	else {unsigned j=nVals+1; for (unsigned i=0; i<j; i++) *ptr++=byte(((ushort*)value)[i]-j); memcpy(ptr,(ushort*)value+j,lValue-j);}
+	tpm->newData.offset=uint16_t(lrec); tpm->newData.len=lValue; tpm->oldData.len=0; tpm->oldData.offset=n;
+	if (start==0) memcpy((byte*)tpm+tpm->newData.offset,value,lValue);
+	else {
+		// move one by one
+	}
+	assert(lrec+lValue<0x10000);
 	if (tf!=NULL) {
 		byte *p=(byte*)tpm+lrec+lValue+lFact; tf->getParams(p-lFact+lk,*tctx.tree);
 		if (tctx.mainKey==NULL) {p[-2]=byte(lFact); p[-1]=tf->getID();}
@@ -2176,37 +1852,33 @@ RC TreePageMgr::insert(TreeCtx& tctx,const SearchKey& key0,const void *value,ush
 	return ctx->txMgr->update(tctx.pb,this,idx<<TRO_SHIFT|op,(byte*)tpm,lrec+lValue+lFact,tf!=NULL?LRC_LUNDO:0);
 }
 
-RC TreePageMgr::update(TreeCtx& tctx,const SearchKey& key,const void *oldValue,ushort lOldValue,
-											const void *newValue,ushort lNewValue)
+RC TreePageMgr::update(TreeCtx& tctx,const SearchKey& key,const void *oldValue,uint16_t lOldValue,const void *newValue,uint16_t lNewValue)
 {
 	const TreePage *tp=(const TreePage*)tctx.pb->getPageBuf();
 	if (tp->info.fmt.keyType()!=key.type||newValue==NULL||lNewValue==0||tp->info.fmt.isKeyOnly()) return RC_INVPARAM;
 
-	ushort lOld,lExtra=0; const void *pOld; unsigned idx=0; const PagePtr *vp; RC rc=RC_OK; bool fExt=false;
+	uint16_t lOld,lExtra=0; const void *pOld; unsigned idx=0; const PagePtr *vp; RC rc=RC_OK; bool fExt=false;
 	if (tp->info.nSearchKeys==0 || !tp->findKey(key,idx) || (pOld=tp->findData(idx,lOld,&vp))==NULL) return RC_NOTFOUND;
-	if (!tp->info.fmt.isUnique()) {
-		if (oldValue==NULL||lOldValue==0) return RC_INVPARAM;
-		if (TreePage::isSubTree(*vp)) fExt=true;
-		else {
-			if (tp->findValue(oldValue,lOldValue,*vp)==NULL) return RC_NOTFOUND;
-			if (tp->info.fmt.isVarMultiData() && vp->len<256 && lNewValue>lOldValue && vp->len+(lNewValue-lOldValue)>=256)
-				lExtra=((byte*)tp+vp->offset)[0];
-			pOld=oldValue; lOld=lOldValue;
-		}
+	if (!tp->info.fmt.isFixedLenData()) {
+		assert(vp!=NULL);
+		if (oldValue==NULL||lOldValue==0) {if ((vp->len&TRO_MANY)!=0) return RC_INVPARAM;}
+		else if (tp->isSubTree(*vp)) fExt=true;
+		else if (tp->findValue(oldValue,lOldValue,*vp)==NULL) return RC_NOTFOUND;
+		else {pOld=oldValue; lOld=lOldValue;}
 	}
 	if (!fExt && lNewValue>lOld && lNewValue-lOld+lExtra>tp->info.freeSpaceLength+tp->info.scatteredFreeSpace) {
 		if (tp->info.nSearchKeys>=2) {
-			bool fInsR; ushort splitIdx=tp->calcSplitIdx(fInsR,key,idx,lNewValue-lOld,tp->info.lPrefix);
+			bool fInsR; uint16_t splitIdx=tp->calcSplitIdx(fInsR,key,idx,lNewValue-lOld,tp->info.lPrefix);
 			if ((rc=split(tctx,&key,idx,splitIdx,fInsR))!=RC_OK) return rc;
 			tp=(const TreePage*)tctx.pb->getPageBuf();
-		} else if (tp->info.fmt.isUnique()) return RC_TOOBIG;
+		} else if (tp->info.fmt.isFixedLenData()) return RC_TOOBIG;
 		else if ((rc=spawn(tctx,lNewValue-lOld+lExtra))!=RC_OK) return rc;
 		else if ((pOld=tp->findData(idx,lOld,&vp))==NULL||vp==NULL) return RC_CORRUPTED;
 		else fExt=true;
 	}
 	if (fExt) return modSubTree(tctx,key,idx,vp,newValue,lNewValue,oldValue,lOldValue);
 	unsigned lrec=sizeof(TreePageModify)+key.extLength(); tctx.parent.release(); assert(tctx.mainKey==NULL);
-	TreeFactory *tf=tctx.tree->getFactory(); ushort lFact=tf!=NULL?tf->getParamLength()+2:0;
+	TreeFactory *tf=tctx.tree->getFactory(); uint16_t lFact=tf!=NULL?tf->getParamLength()+2:0;
 	TreePageModify *tpm=(TreePageModify*)alloca(lrec+lOld+lNewValue+lFact); if (tpm==NULL) return RC_NORESOURCES;
 	key.serialize(tpm+1); tpm->newPrefSize=tp->info.lPrefix;
 	tpm->oldData.len=lOld; tpm->oldData.offset=PageOff(lrec); memcpy((byte*)tpm+lrec,pOld,lOld);
@@ -2215,21 +1887,21 @@ RC TreePageMgr::update(TreeCtx& tctx,const SearchKey& key,const void *oldValue,u
 	return ctx->txMgr->update(tctx.pb,this,idx<<TRO_SHIFT|TRO_UPDATE,(byte*)tpm,lrec+lOld+lNewValue+lFact,tf!=NULL?LRC_LUNDO:0);
 }
 
-RC TreePageMgr::edit(TreeCtx& tctx,const SearchKey& key,const void *newValue,ushort lNewPart,ushort lOldPart,ushort sht)
+RC TreePageMgr::edit(TreeCtx& tctx,const SearchKey& key,const void *newValue,uint16_t lNewPart,uint16_t lOldPart,uint16_t sht)
 {
 	const TreePage *tp=(const TreePage*)tctx.pb->getPageBuf();
-	if (tp->info.fmt.keyType()!=key.type||!tp->info.fmt.isUnique()||tp->info.fmt.isKeyOnly()) return RC_INVPARAM;
+	if (tp->info.fmt.keyType()!=key.type||tp->info.fmt.isKeyOnly()) return RC_INVPARAM;
 
-	unsigned idx; ushort lOld; const void *pOld; RC rc=RC_OK;
-	if (tp->info.nSearchKeys==0 || !tp->findKey(key,idx) || (pOld=tp->findData(idx,lOld))==NULL) return RC_NOTFOUND;
-	if (sht+lOldPart>lOld||tp->info.fmt.isFixedLenData()&&lNewPart!=lOldPart) return RC_INVPARAM;
+	unsigned idx; uint16_t lOld; const void *pOld; RC rc=RC_OK; const PagePtr *vp=NULL;
+	if (tp->info.nSearchKeys==0 || !tp->findKey(key,idx) || (pOld=tp->findData(idx,lOld,&vp))==NULL) return RC_NOTFOUND;
+	if (vp!=NULL&&(vp->len&TRO_MANY)!=0||sht+lOldPart>lOld||tp->info.fmt.isFixedLenData()&&lNewPart!=lOldPart) return RC_INVPARAM;
 	if (lNewPart>lOldPart && lNewPart-lOldPart>tp->info.freeSpaceLength+tp->info.scatteredFreeSpace) {
-		bool fInsR; ushort splitIdx=tp->calcSplitIdx(fInsR,key,idx,lNewPart-lOldPart,tp->info.lPrefix);
+		bool fInsR; uint16_t splitIdx=tp->calcSplitIdx(fInsR,key,idx,lNewPart-lOldPart,tp->info.lPrefix);
 		if ((rc=split(tctx,&key,idx,splitIdx,fInsR))!=RC_OK) return rc;
 		tp=(const TreePage*)tctx.pb->getPageBuf();
 	}
-	unsigned lrec=(unsigned)ceil(sizeof(TreePageEdit)+key.extLength(),sizeof(ushort)); tctx.parent.release();
-	TreeFactory *tf=tctx.tree->getFactory(); ushort lFact=tf!=NULL?tf->getParamLength()+2:0;
+	unsigned lrec=(unsigned)ceil(sizeof(TreePageEdit)+key.extLength(),sizeof(uint16_t)); tctx.parent.release();
+	TreeFactory *tf=tctx.tree->getFactory(); uint16_t lFact=tf!=NULL?tf->getParamLength()+2:0;
 	TreePageEdit *tpe=(TreePageEdit*)alloca(lrec+lOldPart+lNewPart+lFact); if (tpe==NULL) return RC_NORESOURCES;
 	key.serialize(tpe+1); tpe->shift=sht; assert(tctx.mainKey==NULL);
 	tpe->oldData.len=lOldPart; tpe->oldData.offset=PageOff(lrec); memcpy((byte*)tpe+lrec,(const byte*)pOld+sht,lOldPart);
@@ -2239,44 +1911,54 @@ RC TreePageMgr::edit(TreeCtx& tctx,const SearchKey& key,const void *newValue,ush
 	return ctx->txMgr->update(tctx.pb,this,idx<<TRO_SHIFT|TRO_EDIT,(byte*)tpe,lrec+lOldPart+lNewPart+lFact,tf!=NULL?LRC_LUNDO:0);
 }
 
-RC TreePageMgr::remove(TreeCtx& tctx,const SearchKey& key,const void *value,ushort lValue,bool fMulti)
+RC TreePageMgr::remove(TreeCtx& tctx,const SearchKey& key,const void *value,uint16_t lValue,unsigned multi)
 {
 	const TreePage *tp=(const TreePage*)tctx.pb->getPageBuf();
-	if (tp->info.fmt.keyType()!=key.type||fMulti&&tp->info.fmt.isUnique()) return RC_INVPARAM;
+	if (tp->info.fmt.keyType()!=key.type||multi!=0&&tp->info.fmt.isFixedLenData()) return RC_INVPARAM;
 
-	unsigned op=TRO_DELETE; ushort lOld=0,n=fMulti&&value!=NULL&&lValue>0?ushort(~0u):0;
+	unsigned op=TRO_DELETE; uint16_t lOld=0,n=multi!=0&&value!=NULL&&lValue>0?multi&0xFFFF:0;
 	const void *pOld=NULL; unsigned idx=0; const PagePtr *vp=NULL;
 	if (tp->info.nSearchKeys==0 || !tp->findKey(key,idx) ||
 		!tp->info.fmt.isKeyOnly() && (pOld=tp->findData(idx,lOld,&vp))==NULL) return RC_NOTFOUND;
 	
-	bool fMerge=(tctx.mode&TF_WITHDEL)!=0 && tp->info.nSearchKeys==1;
-	if (!tp->info.fmt.isUnique()) {
-		if (TreePage::isSubTree(*vp)) {
+	bool fMerge=(tctx.tree->mode&TF_WITHDEL)!=0 && tp->info.nSearchKeys==1;
+	if (!tp->info.fmt.isFixedLenData()) {
+		assert(vp!=NULL);
+		if (tp->isSubTree(*vp)) {
 			assert(lOld>=sizeof(SubTreePage));
-			if (value!=NULL && lValue!=0) return modSubTree(tctx,key,idx,vp,NULL,0,value,lValue,fMulti);
-			SubTreePage tpe; memcpy(&tpe,(byte*)pOld,sizeof(SubTreePage)); RC rc;
+			if (value!=NULL && lValue!=0) return modSubTree(tctx,key,idx,vp,NULL,0,value,lValue,multi);
+			SubTreePage tpe; memcpy(&tpe,(byte*)pOld,sizeof(SubTreePage)); RC rc; n=0x8000; 
 			if (tpe.leftMost!=INVALID_PAGEID && (rc=Tree::drop(tpe.leftMost,ctx))!=RC_OK) return rc;
-			n=ushort(~1u); fMerge=false;
-			if (lOld>sizeof(SubTreePage)) {
-				// calculate complete
-			}
+			if (lOld>sizeof(SubTreePage)) {n+=(lOld-sizeof(SubTreePage))/sizeof(SubTreePageKey); lOld=tp->length(*vp);}
 		} else if (value!=NULL && lValue!=0) {
 			if (tp->findValue(value,lValue,*vp)==NULL) {
 				return RC_NOTFOUND;
 			}
 			// check if last! if not -> fMerge=false;
 			op=TRO_UPDATE; pOld=value; lOld=lValue;
-		} else n=ushort(~0u);
+		} else if ((vp->len&TRO_MANY)!=0) {
+			lOld=tp->length(*vp); n=(vp->len&~TRO_MANY)/L_SHT;
+		}
 	}
 	if (!fMerge) tctx.parent.release();
 
 	unsigned lrec=sizeof(TreePageModify)+key.extLength(); assert(tctx.mainKey==NULL);
-	TreeFactory *tf=tctx.tree->getFactory(); ushort lFact=tf!=NULL?tf->getParamLength()+2:0;
+	TreeFactory *tf=tctx.tree->getFactory(); uint16_t lFact=tf!=NULL?tf->getParamLength()+2:0;
 	TreePageModify *tpm=(TreePageModify*)alloca(lrec+lOld+lFact); if (tpm==NULL) return RC_NORESOURCES;
 	if (pOld!=NULL && lOld!=0) {
-		if (n!=ushort(~1u)||lOld==sizeof(SubTreePage)) memcpy((byte*)tpm+lrec,pOld,lOld);
-		else {
+		if (vp==NULL || (vp->len&TRO_MANY)==0 || (n&~0x8000)==0) memcpy((byte*)tpm+lrec,pOld,lOld);
+		else if (value!=NULL && lValue!=0) {
+			assert((n&0x8000)==0);
 			//...
+		} else if ((n&0x8000)==0) {
+			uint16_t sht=n*L_SHT,ll; byte *p=(byte*)pOld,*ptr=(byte*)tpm+lrec,*const p0=ptr,*const end=ptr+sht;
+			for (; ptr<end; ptr+=L_SHT,p+=L_SHT) {const byte *q=getK(tp,p,ll); _set_u16(ptr,sht); memcpy(p0+sht,q,ll); sht+=ll;}
+		} else {
+			uint16_t sht=vp->len&~TRO_MANY; memcpy((byte*)tpm+lrec,pOld,sht); const byte *p=(byte*)tpm+lrec+sizeof(SubTreePage);
+			for (unsigned i=0,j=n&~0x8000; i<j; i++,p+=sizeof(SubTreePageKey)) {
+				PagePtr pp=__una_get(((SubTreePageKey*)p)->key); memcpy((byte*)tpm+lrec+sht,(byte*)tp+pp.offset,pp.len);
+				_set_u16(&((SubTreePageKey*)p)->key.offset,sht); sht+=pp.len;
+			}
 		}
 	}
 	key.serialize(tpm+1); tpm->newPrefSize=tp->info.lPrefix;
@@ -2328,11 +2010,11 @@ RC TreePageMgr::merge(PBlock *left,PBlock *right,PBlock *par,Tree& tr,const Sear
 	const TreePage *ltp=(const TreePage*)left->getPageBuf(),*rtp=(const TreePage*)right->getPageBuf(),*ptp=(const TreePage*)par->getPageBuf();
 	assert(ltp->info.sibling==right->getPageID()&&ltp->info.nEntries==ltp->info.nSearchKeys+1);
 	unsigned fSize=ltp->info.freeSpaceLength+ltp->info.scatteredFreeSpace+rtp->info.freeSpaceLength+rtp->info.scatteredFreeSpace;
-	ushort lPrefix=0,lKey=key.extLength(); PBlockP rpp(right,QMGR_UFORCE);
+	uint16_t lPrefix=0,lKey=key.extLength(); PBlockP rpp(right,QMGR_UFORCE);
 	if (rtp->info.nEntries==0) lPrefix=ltp->info.nSearchKeys==1?ltp->calcPrefixSize(0,1):ltp->info.lPrefix;
 	else if (ltp->info.nEntries>1 && ltp->info.lPrefix>0) {
 		if (rtp->info.lPrefix>0) {
-			ushort lkey=rtp->getKeySize(rtp->info.nEntries-1);
+			uint16_t lkey=rtp->getKeySize(rtp->info.nEntries-1);
 			SearchKey *key=(SearchKey*)alloca(sizeof(SearchKey)+lkey);
 			if (key==NULL) return RC_NORESOURCES;
 			rtp->getKey(rtp->info.nEntries-1,*key);
@@ -2358,7 +2040,7 @@ RC TreePageMgr::merge(PBlock *left,PBlock *right,PBlock *par,Tree& tr,const Sear
 	if (rtp->info.nEntries>0) lrec+=xSize-(rtp->info.freeSpaceLength+rtp->info.scatteredFreeSpace);
 	TreePageModify *tpm=(TreePageModify*)alloca(max(lrec,size_t(sizeof(TreePageModify)+lKey+sizeof(PageID))));
 	if (tpm==NULL) return RC_NORESOURCES;
-	MiniTx mtx(NULL,(tr.getMode()&TF_SPLITINTX)!=0?MTX_SKIP:0); RC rc=RC_OK;
+	MiniTx mtx(NULL,(tr.mode&TF_SPLITINTX)!=0?MTX_SKIP:0); RC rc=RC_OK;
 	if (idx!=~0u) {
 #ifdef _DEBUG
 		unsigned idx2; assert(ptp->findKey(key,idx2) && idx==idx2);
@@ -2389,15 +2071,15 @@ RC TreePageMgr::merge(PBlock *left,PBlock *right,PBlock *par,Tree& tr,const Sear
 RC TreePageMgr::drop(PBlock* &pb,TreeFreeData *dd)
 {
 	const TreePageMgr::TreePage *tp=(const TreePageMgr::TreePage*)pb->getPageBuf();
-	if ((!tp->info.fmt.isUnique()||dd!=NULL) && tp->info.nSearchKeys>0) {
-		ushort lElt=tp->info.calcEltSize(),sht=tp->info.keyLength();
+	if ((!tp->info.fmt.isFixedLenData()||dd!=NULL) && tp->info.nSearchKeys>0) {
+		uint16_t lElt=tp->info.calcEltSize(),sht=tp->info.keyLength();
 		const byte *p=(const byte*)(tp+1); RC rc;
-		for (ushort i=0; i<tp->info.nSearchKeys; ++i,p+=lElt)
+		for (uint16_t i=0; i<tp->info.nSearchKeys; ++i,p+=lElt)
 			if (dd!=NULL) {if ((rc=dd->freeData(p+sht,ctx))!=RC_OK) return rc;}
 			else {
 				const PagePtr *vp=(const PagePtr*)(p+sht);
-				if (TreePage::isSubTree(*vp)) {
-					assert((vp->len&~TRO_EXT_DATA)>=sizeof(SubTreePage) && ((vp->len&~TRO_EXT_DATA)-sizeof(SubTreePage))%sizeof(SubTreePageKey)==0);
+				if (tp->isSubTree(*vp)) {
+					assert((vp->len&~TRO_MANY)>=sizeof(SubTreePage) && ((vp->len&~TRO_MANY)-sizeof(SubTreePage))%sizeof(SubTreePageKey)==0);
 					SubTreePage tpe; memcpy(&tpe,(const byte*)tp+vp->offset,sizeof(SubTreePage));
 					if (tpe.leftMost!=INVALID_PAGEID && (rc=Tree::drop(tpe.leftMost,ctx))!=RC_OK) return rc;
 				}
@@ -2407,11 +2089,8 @@ RC TreePageMgr::drop(PBlock* &pb,TreeFreeData *dd)
 	byte *rec=(byte*)alloca(lrec); if (rec==NULL) return RC_NORESOURCES;
 	memcpy(rec,&tp->info,sizeof(TreePageInfo));
 	if (tp->info.nEntries>0) {
-		if (tp->info.fmt.isVarKeyOnly()) memcpy(rec+sizeof(TreePageInfo),tp+1,((ushort*)(tp+1))[tp->info.nEntries]);
-		else {
-			unsigned ll=tp->info.nEntries*tp->info.calcEltSize(); memcpy(rec+sizeof(TreePageInfo),tp+1,ll);
-			memcpy(rec+sizeof(TreePageInfo)+ll,(byte*)tp+tp->info.freeSpace,lrec-sizeof(TreePageInfo)-ll);
-		}
+		unsigned ll=tp->info.nEntries*tp->info.calcEltSize(); memcpy(rec+sizeof(TreePageInfo),tp+1,ll);
+		memcpy(rec+sizeof(TreePageInfo)+ll,(byte*)tp+tp->info.freeSpace,lrec-sizeof(TreePageInfo)-ll);
 	}
 	PageID pid=pb->getPageID(); Session *ses=Session::getSession();
 	ctx->logMgr->insert(ses,LR_DISCARD,TRO_DROP<<PGID_SHIFT|PGID_INDEX,pid,NULL,rec,lrec);
@@ -2423,15 +2102,16 @@ void TreePageMgr::initPage(byte *frame,size_t len,PageID pid)
 	static const IndexFormat defaultFormat(KT_ALL,0,0);
 	TxPage::initPage(frame,len,pid);
 	TreePage *tp=(TreePage*)frame;
-	tp->info.fmt				= defaultFormat;
+	tp->info.fmt			= defaultFormat;
 	tp->info.nEntries		= 0;
 	tp->info.level			= 0;
 	tp->info.flags			= 0;
 	tp->info.prefix			= 0;
-	tp->info.sibling			= INVALID_PAGEID;
+	tp->info.sibling		= INVALID_PAGEID;
 	tp->info.leftMost		= INVALID_PAGEID;
 	tp->info.stamp			= 0;
-	tp->info.nSearchKeys		= 0;
+	tp->info.nSearchKeys	= 0;
+	tp->info.filler			= 0;
 	tp->info.initFree(len);
 }
 
@@ -2458,12 +2138,12 @@ unsigned TreePageMgr::enumPages(PageID pid)
 		pid=tp->isLeaf()?INVALID_PAGEID:tp->info.leftMost;
 		for (;;tp=(const TreePageMgr::TreePage*)pb->getPageBuf()) {
 			++cnt;
-			if (tp->isLeaf() && !tp->info.fmt.isUnique()) {
-				ushort lElt=tp->info.calcEltSize(),sht=tp->info.keyLength(); const byte *p=(const byte*)(tp+1);
-				for (ushort i=0; i<tp->info.nSearchKeys; ++i,p+=lElt) {
+			if (tp->isLeaf() && !tp->info.fmt.isFixedLenData()) {
+				uint16_t lElt=tp->info.calcEltSize(),sht=tp->info.keyLength(); const byte *p=(const byte*)(tp+1);
+				for (uint16_t i=0; i<tp->info.nSearchKeys; ++i,p+=lElt) {
 					const PagePtr *vp=(const PagePtr*)(p+sht);
-					if (TreePage::isSubTree(*vp)) {
-						assert((vp->len&~TRO_EXT_DATA)>=sizeof(SubTreePage) && ((vp->len&~TRO_EXT_DATA)-sizeof(SubTreePage))%sizeof(SubTreePageKey)==0);
+					if (tp->isSubTree(*vp)) {
+						assert((vp->len&~TRO_MANY)>=sizeof(SubTreePage) && ((vp->len&~TRO_MANY)-sizeof(SubTreePage))%sizeof(SubTreePageKey)==0);
 						SubTreePage tpe; memcpy(&tpe,(const byte*)tp+vp->offset,sizeof(SubTreePage)); cnt+=enumPages(tpe.leftMost);
 					}
 				}
@@ -2477,7 +2157,7 @@ unsigned TreePageMgr::enumPages(PageID pid)
 
 unsigned TreePageMgr::checkTree(PageID pid,PageID sib,unsigned depth,CheckTreeReport& out,CheckTreeReport *sec,bool fLM)
 {
-	assert(depth<TREE_MAX_DEPTH); unsigned cnt=0; PBlock *pb=NULL; PageID pid2,sib2; ushort i;
+	assert(depth<TREE_MAX_DEPTH); unsigned cnt=0; PBlock *pb=NULL; PageID pid2,sib2; uint16_t i;
 	while ((pb=ctx->bufMgr->getPage(pid,ctx->trpgMgr,0,pb))!=NULL) {
 		const TreePageMgr::TreePage *tp=(const TreePageMgr::TreePage*)pb->getPageBuf(); 
 		if (depth+1>out.depth) out.depth=depth+1; cnt++; out.total[depth]++;
@@ -2495,15 +2175,15 @@ unsigned TreePageMgr::checkTree(PageID pid,PageID sib,unsigned depth,CheckTreeRe
 			double prc=double(xSize-tp->info.freeSpaceLength-tp->info.scatteredFreeSpace)/xSize; 
 			out.histogram[prc>=1.?TREE_N_HIST_BUCKETS-1:unsigned(prc*TREE_N_HIST_BUCKETS)]++;
 			if (tp->info.nSearchKeys==0) out.empty[depth]++;
-			else if (!tp->info.fmt.isUnique()) {
-				ushort lElt=tp->info.calcEltSize(),sht=tp->info.keyLength(); const byte *p=(const byte*)(tp+1);
-				for (ushort i=0; i<tp->info.nSearchKeys; ++i,p+=lElt) {
+			else if (!tp->info.fmt.isFixedLenData()) {
+				uint16_t lElt=tp->info.calcEltSize(),sht=tp->info.keyLength(); const byte *p=(const byte*)(tp+1);
+				for (uint16_t i=0; i<tp->info.nSearchKeys; ++i,p+=lElt) {
 					const PagePtr *vp=(const PagePtr*)(p+sht);
-					if (TreePage::isSubTree(*vp)) {
-						assert((vp->len&~TRO_EXT_DATA)>=sizeof(SubTreePage) && ((vp->len&~TRO_EXT_DATA)-sizeof(SubTreePage))%sizeof(SubTreePageKey)==0);
+					if (tp->isSubTree(*vp)) {
+						assert((vp->len&~TRO_MANY)>=sizeof(SubTreePage) && ((vp->len&~TRO_MANY)-sizeof(SubTreePage))%sizeof(SubTreePageKey)==0);
 						SubTreePage tpe; memcpy(&tpe,(const byte*)tp+vp->offset,sizeof(SubTreePage));
 						PageID pid2=tpe.leftMost,sib2; const byte *p1=(byte*)tp+vp->offset+sizeof(SubTreePage);
-						unsigned n=((vp->len&~TRO_EXT_DATA)-sizeof(SubTreePage))/sizeof(SubTreePageKey);
+						unsigned n=((vp->len&~TRO_MANY)-sizeof(SubTreePage))/sizeof(SubTreePageKey);
 						CheckTreeReport &rep=sec!=NULL?*sec:out;
 						for (unsigned i=0; i<n; ++i,p1+=sizeof(SubTreePageKey),pid2=sib2) {
 							SubTreePageKey tpk; memcpy(&tpk,p1,sizeof(SubTreePageKey));
@@ -2563,14 +2243,14 @@ bool TreePageMgr::TreePage::checkPage(bool fWrite) const
 	return false;
 }
 
-int TreePageMgr::TreePage::testKey(const SearchKey& key,ushort idx,bool fPrefix) const
+int TreePageMgr::TreePage::testKey(const SearchKey& key,uint16_t idx,bool fPrefix) const
 {
-	assert(info.fmt.keyType()==key.type && (idx==ushort(~0u)||idx<info.nEntries));
-	if (info.fmt.isSeq()) return cmp3(key.v.u,info.prefix+(idx==ushort(~0u)?info.nEntries:idx));
-	const byte *ptr=(const byte*)(this+1)+(idx==ushort(~0u)?info.nEntries-1:idx)*info.calcEltSize(); ushort lk=sizeof(uint64_t)-info.lPrefix,lsib; uint64_t u64=info.lPrefix!=0?info.prefix:0;
+	assert(info.fmt.keyType()==key.type && (idx==uint16_t(~0u)||idx<info.nEntries));
+	if (info.fmt.isSeq()) return cmp3(key.v.u,info.prefix+(idx==uint16_t(~0u)?info.nEntries:idx));
+	const byte *ptr=(const byte*)(this+1)+(idx==uint16_t(~0u)?info.nEntries-1:idx)*info.calcEltSize(); uint16_t lk=sizeof(uint64_t)-info.lPrefix,lsib; uint64_t u64=info.lPrefix!=0?info.prefix:0;
 	switch (key.type) {
-	case KT_UINT: assert(lk<=sizeof(uint64_t)); return cmp3(key.v.u,u64|(lk==sizeof(uint8_t)?*(uint8_t*)ptr:lk==sizeof(uint16_t)?*(uint16_t*)ptr:lk==sizeof(uint32_t)?*(uint32_t*)ptr:lk==sizeof(uint64_t)?*(uint64_t*)ptr:0));
-	case KT_INT: assert(lk<=sizeof(uint64_t)); u64|=lk==sizeof(uint8_t)?*(uint8_t*)ptr:lk==sizeof(uint16_t)?*(uint16_t*)ptr:lk==sizeof(uint32_t)?*(uint32_t*)ptr:lk==sizeof(uint64_t)?*(uint64_t*)ptr:0; return cmp3(key.v.i,int64_t(u64));
+	case KT_UINT: assert(lk<=sizeof(uint64_t)); return cmp3(key.v.u,u64|(lk==sizeof(uint16_t)?*(uint16_t*)ptr:lk==sizeof(uint32_t)?*(uint32_t*)ptr:lk==sizeof(uint64_t)?*(uint64_t*)ptr:0));
+	case KT_INT: assert(lk<=sizeof(uint64_t)); u64|=lk==sizeof(uint16_t)?*(uint16_t*)ptr:lk==sizeof(uint32_t)?*(uint32_t*)ptr:lk==sizeof(uint64_t)?*(uint64_t*)ptr:0; return cmp3(key.v.i,int64_t(u64));
 	case KT_FLOAT: assert(info.lPrefix==0); return cmp3(key.v.f,*(float*)ptr);
 	case KT_DOUBLE: assert(info.lPrefix==0); return cmp3(key.v.d,*(double*)ptr);
 	default: break;
@@ -2578,22 +2258,20 @@ int TreePageMgr::TreePage::testKey(const SearchKey& key,ushort idx,bool fPrefix)
 	assert(!key.isNumKey());
 	const byte *pkey=(const byte*)key.getPtr2(),*pref=NULL; lk=key.v.ptr.l; int res;
 	if (info.lPrefix>0) {
-		pref=info.fmt.isFixedLenKey()?(const byte*)&info.prefix:(const byte*)this+((PagePtr*)&info.prefix)->offset;
+		pref=info.fmt.isFixedLenKey()?(const byte*)&info.prefix:(const byte*)this+((PagePtr*)&info.prefix)->offset; assert(key.type!=KT_REF);
 		if (key.type==KT_VAR) {
 			//if ((res=cmpMSegPrefix(pkey,lkey,pref,info.lPrefix,&lsib))!=0) return res;
 			//if (lsib!=0) {pkey+=lkey-lsib; lkey=lsib;} else return fPrefix?0:-1;
-		} else if (key.type==KT_REF) {
-			//...
 		} else {
 			if ((res=memcmp(pkey,pref,min(lk,info.lPrefix)))!=0) return res;
 			if (lk>info.lPrefix) {pkey+=info.lPrefix; lk-=info.lPrefix;} else return fPrefix?0:-1;
 		}
 	}
-	if (info.fmt.isVarKeyOnly()) {lsib=lenK(ptr,0); ptr=(*this)[ptr];}
+	if (info.fmt.isKeyOnly()) ptr=getK(ptr,lsib);
 	else if (!info.fmt.isFixedLenKey()) {lsib=((PagePtr*)ptr)->len; ptr=(byte*)this+((PagePtr*)ptr)->offset;}
 	else {assert(info.fmt.keyLength()>=info.lPrefix); lsib=info.fmt.keyLength()-info.lPrefix;}
 	if (key.type==KT_VAR) return cmpMSeg(pkey,lk,ptr,lsib);
-	if (key.type==KT_REF) return PINRef::cmpPIDs(pkey,lk,ptr,lsib);
+	if (key.type==KT_REF) return PINRef::cmpPIDs(pkey,ptr);
 	res=(lk|lsib)==0?0:memcmp(pkey,ptr,min(lk,lsib));
 	return res!=0||fPrefix&&lk<=lsib?res:cmp3(lk,lsib);
 }
@@ -2602,20 +2280,18 @@ void TreePageMgr::TreePage::checkKeys() const
 {
 #ifdef _DEBUG
 	if (info.fmt.isSeq()) return;
-	ushort lElt=info.calcEltSize(); const byte *key1=(const byte *)(this+1),*key2=key1+lElt;
-	int c; const byte *s1,*s2; ushort l1,l2;
+	uint16_t lElt=info.calcEltSize(); const byte *key1=(const byte *)(this+1),*key2=key1+lElt;
+	int c; const byte *s1,*s2; uint16_t l1,l2;
 	for (unsigned i=1; i<(unsigned)info.nEntries; ++i,key1+=lElt,key2+=lElt) {
 		switch (info.fmt.keyType()) {
 		default: assert(0);
 		case KT_UINT:
-			if (info.lPrefix==sizeof(uint32_t)+sizeof(uint16_t)+sizeof(uint8_t)) assert(*(uint8_t*)key1<*(uint8_t*)key2);
-			else if (info.lPrefix==sizeof(uint32_t)+sizeof(uint16_t)) assert(*(uint16_t*)key1<*(uint16_t*)key2);
+			if (info.lPrefix==sizeof(uint32_t)+sizeof(uint16_t)) assert(*(uint16_t*)key1<*(uint16_t*)key2);
 			else if (info.lPrefix==sizeof(uint32_t)) assert(*(uint32_t*)key1<*(uint32_t*)key2);
 			else assert(*(uint64_t*)key1<*(uint64_t*)key2);
 			break;
 		case KT_INT:
-			if (info.lPrefix==sizeof(int32_t)+sizeof(int16_t)+sizeof(int8_t)) assert(*(int8_t*)key1<*(int8_t*)key2);
-			else if (info.lPrefix==sizeof(int32_t)+sizeof(int16_t)) assert(*(int16_t*)key1<*(int16_t*)key2);
+			if (info.lPrefix==sizeof(int32_t)+sizeof(int16_t)) assert(*(int16_t*)key1<*(int16_t*)key2);
 			else if (info.lPrefix==sizeof(int32_t)) assert(*(int32_t*)key1<*(int32_t*)key2);
 			else assert(*(int64_t*)key1<*(int64_t*)key2);
 			break;
@@ -2626,18 +2302,18 @@ void TreePageMgr::TreePage::checkKeys() const
 			c=memcmp(s1,s2,min(l1,l2)); assert(c<0||c==0&&l1<l2); break;
 		case KT_VAR: 
 		case KT_REF:
-			if (info.fmt.isVarKeyOnly()) {s1=(*this)[key1]; l1=lenK(key1,0); s2=(*this)[key2]; l2=lenK(key2,0);} else {s1=(byte*)this+((PagePtr*)key1)->offset; l1=((PagePtr*)key1)->len; s2=(byte*)this+((PagePtr*)key2)->offset; l2=((PagePtr*)key2)->len;}
-			if (info.fmt.keyType()==KT_VAR) assert(cmpMSeg(s1,l1,s2,l2)<0); else assert(PINRef::cmpPIDs(s1,l1,s2,l2)<0);
+			if (info.fmt.isKeyOnly()) {s1=getK(key1,l1); s2=getK(key2,l2);} else {s1=(byte*)this+((PagePtr*)key1)->offset; l1=((PagePtr*)key1)->len; s2=(byte*)this+((PagePtr*)key2)->offset; l2=((PagePtr*)key2)->len;}
+			if (info.fmt.keyType()==KT_VAR) assert(cmpMSeg(s1,l1,s2,l2)<0); else assert(PINRef::cmpPIDs(s1,s2)<0);
 		}
 	}
 #endif
 }
 
-bool TreePageMgr::TreePage::testBound(const SearchKey& key,ushort idx,const IndexSeg *sg,unsigned nSegs,bool fStart,bool fPrefix) const
+bool TreePageMgr::TreePage::testBound(const SearchKey& key,uint16_t idx,const IndexSeg *sg,unsigned nSegs,bool fStart,bool fPrefix) const
 {
-	assert(info.fmt.keyType()==key.type && (idx==ushort(~0u)||idx<info.nEntries));
+	assert(info.fmt.keyType()==key.type && (idx==uint16_t(~0u)||idx<info.nEntries));
 	if (info.fmt.keyType()==KT_VAR) {
-		const PagePtr *pp=(const PagePtr*)((byte*)(this+1)+(idx==ushort(~0u)?info.nEntries-1:idx)*info.calcEltSize());
+		const PagePtr *pp=(const PagePtr*)((byte*)(this+1)+(idx==uint16_t(~0u)?info.nEntries-1:idx)*info.calcEltSize());
 		return cmpBound((const byte *)key.getPtr2(),key.v.ptr.l,(byte*)this+pp->offset,pp->len,sg,nSegs,fStart);
 	}
 	int c=testKey(key,idx,fPrefix || sg!=NULL && (sg->flags&SCAN_PREFIX)!=0);
@@ -2669,39 +2345,30 @@ bool TreePageMgr::TreePage::findKey(const SearchKey& skey,unsigned& pos) const
 	if (nEnt==0) pos=0;
 	else if (!info.fmt.isFixedLenKey()) {
 		const byte *pkey=(const byte*)skey.getPtr2(),*pref=NULL; int cmp;
-		ushort lkey=skey.v.ptr.l; const bool fPR=info.fmt.isRefKeyOnly();
+		uint16_t lkey=skey.v.ptr.l;
 		if (info.lPrefix>0) {
-			pref=(byte*)this+((PagePtr*)&info.prefix)->offset;
+			pref=(byte*)this+((PagePtr*)&info.prefix)->offset; assert(skey.type!=KT_REF);
 			if (skey.type==KT_VAR) {
 //				cmp=cmpMSegPrefix(pkey,lkey,pref,info.lPrefix,&ll);
 //				if (cmp<0) {pos=0; return false;} else if (cmp>0) {pos=nEnt; return false;}
 //				else if (ll==0) {pos=0; return info.nEntries==1;}
 //				pkey+=lkey-ll; lkey=ll;
-			} else if (skey.type==KT_REF) {
-				//...
 			} else {
 				cmp=memcmp(pkey,pref,min(lkey,info.lPrefix));
 				if (cmp<0 || cmp==0 && lkey<info.lPrefix) {pos=0; return false;} else if (cmp>0) {pos=nEnt; return false;}
 				pkey+=info.lPrefix; lkey-=info.lPrefix;
 			}
 		}
-		if (info.fmt.isVarKeyOnly()) {
-			const ushort *p0,*p=p0=(const ushort*)(this+1); assert(nKeys(p)==info.nEntries);
-			for (unsigned n=nEnt;;) {
-				unsigned k=n>>1; const ushort *q=p+k; ushort l=q[1]-q[0]; const byte *pp=(byte*)p0+q[0];
-				if (fPR) cmp=PINRef::cmpPIDs(pp,l,pkey,lkey); else if ((cmp=memcmp(pp,pkey,l<lkey?l:lkey))==0) cmp=cmp3(l,lkey);
-				if (cmp==0) {pos=ushort(q-p0); return true;}
-				if (cmp>0) {if ((n=k)==0) {pos=ushort(p-p0); break;}} else if ((n-=k+1)==0) {pos=ushort(q-p0+1); break;} else p=q+1;
-			}
-		} else for (unsigned n=nEnt,base=0,lElt=info.calcEltSize(); n>0; ) {
-			unsigned k=n>>1; const PagePtr *vkey=(const PagePtr*)((byte*)(this+1)+lElt*(pos=base+k));
-			cmp=skey.type==KT_VAR?cmpMSeg(pkey,lkey,(byte*)this+vkey->offset,vkey->len):
-				skey.type==KT_REF?PINRef::cmpPIDs(pkey,lkey,(byte*)this+vkey->offset,vkey->len):
-				(cmp=lkey==0||vkey->len==0?0:memcmp(pkey,(byte*)this+vkey->offset,min(lkey,vkey->len)))==0?int(lkey)-int(vkey->len):cmp;
+		const bool fSub=info.fmt.isKeyOnly();
+		for (unsigned n=nEnt,base=0,lElt=info.calcEltSize(); n>0; ) {
+			unsigned k=n>>1; const byte *pk; uint16_t lk; pos=base+k;
+			if (fSub) pk=getK(base+k,lk); else {const PagePtr *pp=(PagePtr*)((byte*)(this+1)+lElt*(base+k)); pk=(byte*)this+pp->offset; lk=pp->len;}
+			cmp=skey.type==KT_VAR?cmpMSeg(pkey,lkey,pk,lk):skey.type==KT_REF?PINRef::cmpPIDs(pkey,pk):
+				(cmp=lkey==0||lk==0?0:memcmp(pkey,pk,min(lkey,lk)))==0?int(lkey)-int(lk):cmp;
 			if (cmp==0) return true; else if (cmp<0) n=k; else {base+=k+1; n-=k+1; pos++;}
 		}
 	} else {
-		bool fFixed=info.fmt.isFixedLenData(); ushort lkey; const void *pkey;
+		bool fFixed=info.fmt.isFixedLenData(); uint16_t lkey; const void *pkey;
 		if (info.fmt.isSeq()) {
 			if (skey.v.u<info.prefix) pos=0;
 			else if (skey.v.u>=info.prefix+info.nEntries) pos=info.nEntries;
@@ -2714,7 +2381,6 @@ bool TreePageMgr::TreePage::findKey(const SearchKey& skey,unsigned& pos) const
 			case 0: return fFixed?findNumKey(skey.v.u,nEnt,pos):findNumKeyVar(skey.v.u,nEnt,pos);
 			case sizeof(uint32_t): return fFixed?findNumKey((uint32_t)skey.v.u,nEnt,pos):findNumKeyVar((uint32_t)skey.v.u,nEnt,pos);
 			case sizeof(uint32_t)+sizeof(uint16_t): return fFixed?findNumKey((uint16_t)skey.v.u,nEnt,pos):findNumKeyVar((uint16_t)skey.v.u,nEnt,pos);
-			case sizeof(uint32_t)+sizeof(uint16_t)+sizeof(uint8_t): return fFixed?findNumKey((uint8_t)skey.v.u,nEnt,pos):findNumKeyVar((uint8_t)skey.v.u,nEnt,pos);
 			case sizeof(uint64_t): assert(info.nEntries==1); pos=0; return true;
 			}
 			break;
@@ -2727,7 +2393,6 @@ bool TreePageMgr::TreePage::findKey(const SearchKey& skey,unsigned& pos) const
 			case 0: return fFixed?findNumKey(skey.v.i,nEnt,pos):findNumKeyVar(skey.v.i,nEnt,pos);
 			case sizeof(uint32_t): return fFixed?findNumKey((int32_t)skey.v.i,nEnt,pos):findNumKeyVar((int32_t)skey.v.i,nEnt,pos);
 			case sizeof(uint32_t)+sizeof(uint16_t): return fFixed?findNumKey((int16_t)skey.v.i,nEnt,pos):findNumKeyVar((int16_t)skey.v.i,nEnt,pos);
-			case sizeof(uint32_t)+sizeof(uint16_t)+sizeof(uint8_t): return fFixed?findNumKey((int8_t)skey.v.i,nEnt,pos):findNumKeyVar((int8_t)skey.v.i,nEnt,pos);
 			case sizeof(uint64_t): assert(info.nEntries==1); pos=0; return true;
 			}
 			break;
@@ -2751,83 +2416,37 @@ bool TreePageMgr::TreePage::findKey(const SearchKey& skey,unsigned& pos) const
 	return false;
 }
 
-bool TreePageMgr::TreePage::findSubKey(const byte *pkey,ushort lkey,unsigned& pos) const
+bool TreePageMgr::TreePage::findSubKey(const byte *pkey,uint16_t lkey,unsigned& pos) const
 {
-	if (info.nEntries==0) {pos=0; return false;} 
+	if (info.nEntries==0) {pos=0; return false;}
 	const bool fPR=info.fmt.isRefKeyOnly(); assert(info.fmt.isKeyOnly()); 
-	if (info.lPrefix>0) {
-		if (fPR) {
-			//...
-		} else {
-			const byte *pref=info.fmt.isVarKeyOnly()?(byte*)this+((PagePtr*)&info.prefix)->offset:(byte*)&info.prefix;
-			ushort l=min(lkey,info.lPrefix); int cmp=memcmp(pkey,pref,l);
-			if (cmp<0 || cmp==0 && lkey==l) {pos=0; return false;} else if (cmp>0) {pos=info.nSearchKeys; return false;}
-			pkey+=l; lkey-=l;
-		}
-	}
-	if (!fPR && info.fmt.isFixedLenKey()) for (unsigned n=info.nEntries,base=0,lElt=info.fmt.keyLength()-info.lPrefix;;) {
-		unsigned k=n>>1; int cmp=memcmp(pkey,(const byte*)(this+1)+(pos=base+k)*lElt,lkey);
-		if (cmp==0) return true; if (cmp<0) n=k; else {base+=k+1; n-=k+1; pos++;}
-		if (n==0) return false;
-	}
-	const ushort *p0,*p=p0=(const ushort*)(this+1);
+	const uint16_t *p0,*p=p0=(const uint16_t*)(this+1);
 	for (unsigned n=info.nEntries;;) {
-		unsigned k=n>>1; const ushort *q=p+k; ushort l=q[1]-q[0]; int cmp=0;
-		if (fPR) cmp=PINRef::cmpPIDs((byte*)p0+q[0],l,pkey,lkey); else if ((cmp=memcmp((byte*)p0+q[0],pkey,min(l,lkey)))==0) cmp=cmp3(l,lkey);
-		if (cmp==0) {pos=ushort(q-p0); return true;}
-		if (cmp>0) {if ((n=k)==0) {pos=ushort(p-p0); return false;}}
-		else if ((n-=k+1)==0) {pos=ushort(q-p0+1); return false;} else p=q+1;
+		unsigned k=n>>1; int cmp=0;
+		if (fPR) cmp=PINRef::cmpPIDs((byte*)p0+((uint16_t*)p)[k],pkey); 
+		else {uint16_t l; const byte *pk=TreePageMgr::getK(p,k,l); if ((cmp=memcmp(pk,pkey,min(l,lkey)))==0) cmp=cmp3(l,lkey);}
+		if (cmp==0) {pos=uint16_t(p-p0)+k; return true;}
+		if (cmp>0) {if ((n=k)==0) {pos=uint16_t(p-p0); return false;}}
+		else if ((n-=k+1)==0) {pos=uint16_t(p-p0)+k+1; return false;} else p+=k+1;
 	}
 }
 
-bool TreePageMgr::TreePage::findSubKey(const byte *pkey,ushort lkey,unsigned& pos,const byte *pref,ushort lpref) const
+bool TreePageMgr::TreePage::findSubKey(const byte *tab,unsigned nElts,unsigned idx,unsigned& res) const
 {
-	assert(info.fmt.isKeyOnly() && pos<=info.nSearchKeys);
-	if (info.nEntries!=0) {
-		if (info.fmt.isFixedLenKey()) {
-			unsigned lElt=info.fmt.keyLength()-info.lPrefix; assert(lElt>=lpref);
-			for (unsigned n=info.nEntries-pos,base=pos,k=0; n!=0; k=n>>1) {
-				const byte *pp=(const byte*)(this+1)+(pos=base+k)*lElt; int cmp;
-				if ((pref==NULL || (cmp=memcmp(pp,pref,lpref))==0) && (cmp=memcmp(pp+lpref,pkey,lkey-lpref))==0) return true;
-				if (cmp>0) n=k; else {base+=k+1; n-=k+1; pos++;}
-			}
-		} else {
-			const ushort *p0=(const ushort*)(this+1),*p=p0+pos; const bool fPR=info.fmt.isRefKeyOnly();
-			for (unsigned n=info.nEntries-pos,k=0;;k=n>>1) {
-				const ushort *q=p+k; ushort l=q[1]-q[0]; const byte *pp=(byte*)p0+q[0]; int cmp=0;
-				if (!fPR) {
-					if (pref!=NULL && (cmp=memcmp(pp,pref,min(l,lpref)))==0) if (l<lpref) cmp=1; else {pp+=lpref; l-=lpref;}
-					if (cmp==0 && (cmp=memcmp(pp,pkey,min(l,lkey)))==0 && (cmp=cmp3(l,lkey))==0) {pos=ushort(q-p0); return true;}
-				} else if ((cmp=PINRef::cmpPIDs(pp,l,pkey,lkey))==0) {pos=ushort(q-p0); return true;}	// pref???
-				if (cmp>0) {if ((n=k)==0) {pos=ushort(p-p0); break;}} else if ((n-=k+1)==0) {pos=ushort(q-p0+1); break;} else p=q+1;
-			}
-		}
-	}
-	return false;
-}
-
-bool TreePageMgr::TreePage::findSubKey(const byte *tab,unsigned nElts,unsigned idx,unsigned& res,bool fVM,bool fPref) const
-{
-	const bool fPR=info.fmt.isRefKeyOnly(); assert(res<nElts && idx<info.nEntries && info.fmt.isKeyOnly());
-	const ushort lElt=fVM?L_SHT:info.fmt.keyLength(); const ushort lpref=fPref?info.lPrefix:0;
-	const byte *pref=lpref==0?(const byte*)0:fVM?(byte*)this+((PagePtr*)&info.prefix)->offset:(byte*)&info.prefix;
-	ushort lk0=fVM?L_SHT:lElt-info.lPrefix; const byte *p=(const byte*)(this+1)+idx*lk0; if (fVM) {lk0=lenK(p,0); p=(*this)[p];}
+	assert(res<nElts && idx<info.nEntries && info.fmt.isKeyOnly());
+	const bool fPR=info.fmt.isRefKeyOnly(); uint16_t lk0; const byte *p=getK(idx,lk0);
 	for (unsigned base=res,n=nElts-base,k=n-1; n!=0; k=n>>1) {
-		const byte *pk=tab+(base+k)*lElt; ushort lk=lElt; int cmp=0;
-		if (fVM) {lk=lenK(pk,0); pk=tab+((ushort*)pk)[0];}
+		int cmp; uint16_t lk; const byte *pk=TreePageMgr::getK(tab,base+k,lk);
 		if (!fPR) {
-			if (pref!=NULL && (cmp=memcmp(pk,pref,min(lpref,lk)))==0 && lk<lpref) cmp=-1;
-			if (cmp==0) {
-				ushort ll=min(ushort(lk-lpref),lk0); cmp=memcmp(pk+lpref,p,ll);
-				if (cmp==0) {if (ll<lk0) cmp=-1; else if (ushort(lk-lpref)>lk0) cmp=1; else {res=base+k; return true;}}
-			}
-		} else if ((cmp=PINRef::cmpPIDs(pk,lk,p,lk0))==0) {res=base+k; return true;}	// pref, lpref???
+			uint16_t ll=min(lk,lk0); cmp=memcmp(pk,p,ll);
+			if (cmp==0) {if (ll<lk0) cmp=-1; else if (lk>lk0) cmp=1; else {res=base+k; return true;}}
+		} else if ((cmp=PINRef::cmpPIDs(pk,p))==0) {res=base+k; return true;}
 		if (cmp<0) {res=base+=k+1; n-=k+1;} else n=k;
 	}
 	return false;
 }
 
-void *TreePageMgr::TreePage::findData(unsigned idx,ushort& lData,const PagePtr **pPtr) const
+void *TreePageMgr::TreePage::findData(unsigned idx,uint16_t& lData,const PagePtr **pPtr) const
 {
 	assert(isLeaf()&&!info.fmt.isKeyOnly()); if (pPtr!=NULL) *pPtr=NULL;
 	bool fFixedData=info.fmt.isFixedLenData(); if (fFixedData) lData=info.fmt.dataLength();
@@ -2836,118 +2455,116 @@ void *TreePageMgr::TreePage::findData(unsigned idx,ushort& lData,const PagePtr *
 		assert(idx<info.nEntries); 
 		byte *pData=(byte*)(this+1)+(fFixedData?lData:sizeof(PagePtr))*idx;
 		if (fFixedData) return pData; else if (pPtr!=NULL) *pPtr=(PagePtr*)pData;
-		lData=((PagePtr*)pData)->len&~TRO_EXT_DATA; return (byte*)this+((PagePtr*)pData)->offset;
+		lData=((PagePtr*)pData)->len&~TRO_MANY; return (byte*)this+((PagePtr*)pData)->offset;
 	}
 
 	assert(idx<info.nSearchKeys); 
 	if (fFixedData) return info.fmt.isFixedLenKey() ? (byte*)this + info.freeSpace + (info.nSearchKeys-idx-1)*lData :
-				(byte*)(this+1) + idx*(sizeof(PagePtr)+(ushort)ceil(lData,sizeof(ushort))) + sizeof(PagePtr);
+				(byte*)(this+1) + idx*(sizeof(PagePtr)+(uint16_t)ceil(lData,sizeof(uint16_t))) + sizeof(PagePtr);
 
 	const PagePtr *p=(const PagePtr*)((byte*)(this+1)+idx*info.calcEltSize()+info.keyLength()); 
 	if (p->offset<sizeof(TreePage)) return NULL; if (pPtr!=NULL) *pPtr=(PagePtr*)p;
-	lData=p->len&~TRO_EXT_DATA; return (byte*)this+p->offset;
+	lData=p->len&~TRO_MANY; return (byte*)this+p->offset;
 }
 
-byte *TreePageMgr::TreePage::findValue(const void *val,ushort lv,const PagePtr& vp,ushort *pins) const 
+byte *TreePageMgr::TreePage::findValue(const void *val,uint16_t lv,const PagePtr& vp,uint16_t *pins) const 
 {
-	assert(!info.fmt.isUnique() && !isSubTree(vp));
-	if (vp.len==0) {if (pins!=NULL) *pins=0; return NULL;}
-	if (!info.fmt.isVarMultiData()) {
-		ushort l=info.fmt.dataLength(); assert(vp.len>=l && vp.len%l==0);
-		const byte *p0,*p=p0=(const byte*)this+vp.offset;
-		for (unsigned n=vp.len/l;;) {
-			unsigned k=n>>1; const byte *q=p+k*l; int cmp=memcmp(q,val,l);
-			if (cmp==0) {if (pins!=NULL) *pins=ushort(q-p0); return (byte*)q;}
-			if (cmp>0) {if ((n=k)==0) {if (pins!=NULL) *pins=ushort(p-p0); return NULL;}}
-			else if ((n-=k+1)==0) {if (pins!=NULL) *pins=ushort(q-p0+l); return NULL;}
-			else p=q+l;
+	assert(!info.fmt.isFixedLenData() && !isSubTree(vp));
+	return (byte*)TreePageMgr::findValue(val,lv,(byte*)this,(byte*)this+vp.offset,vp.len,info.fmt.isPinRef(),pins);
+}
+
+const byte *TreePageMgr::findValue(const void *val,uint16_t lv,const byte *frame,const byte *ps,uint16_t ls,bool fPR,uint16_t *ins)
+{
+	if (ls==0) {if (ins!=NULL) *ins=0; return NULL;}
+	if ((ls&TRO_MANY)!=0) {
+		const byte *p=ps,*q; uint16_t l,sht; int cmp;
+		for (unsigned n=(ls&~TRO_MANY)/L_SHT;;) {
+			unsigned k=n>>1; q=p+k*L_SHT; sht=_u16(q);
+			if (fPR) cmp=PINRef::cmpPIDs(frame+sht,(byte*)val); 
+			else {l=PINRef::len(frame+sht); if ((cmp=memcmp(frame+sht,val,min(l,lv)))==0) cmp=cmp3(l,lv);}
+			if (cmp==0) {if (ins!=NULL) *ins=uint16_t(q-ps); return q;}
+			if (cmp>0) {if ((n=k)==0) {if (ins!=NULL) *ins=uint16_t(p-ps); return NULL;}}
+			else if ((n-=k+1)==0) {if (ins!=NULL) *ins=uint16_t(q-ps)+L_SHT; return NULL;}
+			else p=q+L_SHT;
 		}
 	} else {
-		const byte *p0,*p=p0=(const byte*)this+vp.offset;
-		const bool fShort=vp.len<256,fPR=info.fmt.isPinRef(); const byte *q; ushort l,sht; int cmp;
-		for (unsigned n=fShort?*p-1:_u16(p)/L_SHT-1,lElt=fShort?1:L_SHT;;) {
-			unsigned k=n>>1; 
-			if (fShort) {q=p+k; sht=q[0]; l=q[1]-sht;} else {q=p+k*L_SHT; sht=_u16(q); l=_u16(q+L_SHT)-sht;}
-			if (fPR) cmp=PINRef::cmpPIDs(p0+sht,l,(byte*)val,lv); else if ((cmp=memcmp(p0+sht,val,min(l,lv)))==0) cmp=cmp3(l,lv);
-			if (cmp==0) {if (pins!=NULL) *pins=ushort(q-p0); return (byte*)q;}
-			if (cmp>0) {if ((n=k)==0) {if (pins!=NULL) *pins=ushort(p-p0); return NULL;}}
-			else if ((n-=k+1)==0) {if (pins!=NULL) *pins=ushort(q-p0+lElt); return NULL;}
-			else p=q+lElt;
-		}
+		int cmp; if (ins!=NULL) *ins=0;
+		if (fPR) cmp=PINRef::cmpPIDs(ps,(byte*)val); else if ((cmp=memcmp(ps,val,min(ls,lv)))==0) cmp=cmp3(ls,lv);
+		if (cmp<0 && ins!=NULL) *ins=L_SHT; return cmp==0?(byte*)ps:NULL;
 	}
 }
 
-const TreePageMgr::SubTreePageKey *TreePageMgr::TreePage::findExtKey(const void *key,size_t lkey,const SubTreePageKey *tpk,unsigned n,ushort *poff) const
+const TreePageMgr::SubTreePageKey *TreePageMgr::TreePage::findExtKey(const void *key,size_t lkey,const SubTreePageKey *tpk,unsigned n,uint16_t *poff) const
 {
 	const byte *p=(const byte*)tpk; if (n==0) {if (poff!=NULL) *poff=0; return NULL;}
 	for (const bool fPR=info.fmt.isPinRef();;) {
 		unsigned k=n>>1; const byte *q=p+k*sizeof(SubTreePageKey);
 		SubTreePageKey tkey; memcpy(&tkey,q,sizeof(SubTreePageKey)); int cmp;
-		if (fPR) cmp=PINRef::cmpPIDs((byte*)this+tkey.key.offset,tkey.key.len,(byte*)key,(unsigned)lkey);
-		else if ((cmp=memcmp((byte*)this+tkey.key.offset,key,min(tkey.key.len,ushort(lkey))))==0) cmp=cmp3(tkey.key.len,(ushort)lkey);
-		if (cmp==0) {if (poff!=NULL) *poff=ushort(q-(const byte*)tpk); return (const SubTreePageKey*)q;}
-		if (cmp>0) {if ((n=k)==0) {if (poff!=NULL) *poff=ushort(p-(const byte*)tpk); return NULL;}}
-		else if ((n-=k+1)==0) {if (poff!=NULL) *poff=ushort(q-(const byte*)tpk+sizeof(SubTreePageKey)); return NULL;}
+		if (fPR) cmp=PINRef::cmpPIDs((byte*)this+tkey.key.offset,(byte*)key);
+		else if ((cmp=memcmp((byte*)this+tkey.key.offset,key,min(tkey.key.len,uint16_t(lkey))))==0) cmp=cmp3(tkey.key.len,(uint16_t)lkey);
+		if (cmp==0) {if (poff!=NULL) *poff=uint16_t(q-(const byte*)tpk); return (const SubTreePageKey*)q;}
+		if (cmp>0) {if ((n=k)==0) {if (poff!=NULL) *poff=uint16_t(p-(const byte*)tpk); return NULL;}}
+		else if ((n-=k+1)==0) {if (poff!=NULL) *poff=uint16_t(q-(const byte*)tpk+sizeof(SubTreePageKey)); return NULL;}
 		else p=q+sizeof(SubTreePageKey);
 	}
 }
 
-void TreePageMgr::TreePage::compact(bool fCheckOnly,unsigned extIdx,ushort lext)
+void TreePageMgr::TreePage::compact(bool fCheckOnly,unsigned extIdx,uint16_t lext)
 {
 	assert(!info.fmt.isFixedLenData() || !info.fmt.isFixedLenKey());
+	{Session *ses=Session::getSession(); if (ses!=NULL) ses->setCodeTrace(0x80);}
 
 	size_t lPage=hdr.length();
 	TreePage *page=(TreePage*)alloca(lPage); memcpy(page,this,sizeof(TreePage));
 	page->info.initFree(lPage); page->info.lPrefix=info.lPrefix;
 
 #ifdef _DEBUG
-	if (fCheckOnly) {if (info.nEntries==0) assert(info.lPrefix==0); else if (!info.fmt.isSeq()) assert(calcPrefixSize(0,info.nEntries)==info.lPrefix);}
+	if (fCheckOnly) {
+		if (info.nEntries==0) assert(info.lPrefix==0); else if (!info.fmt.isSeq()) assert(calcPrefixSize(0,info.nEntries)==info.lPrefix);
+	}
 #endif
 	if (info.nEntries!=0) {
-		bool fVarKey=!info.fmt.isFixedLenKey(), fVarData=!info.fmt.isFixedLenData();
+		bool fVarKey=!info.fmt.isFixedLenKey(),fVarData=!info.fmt.isFixedLenData();
 		if (info.lPrefix>0 && fVarKey) page->store((byte*)this+((PagePtr*)&info.prefix)->offset,info.lPrefix,*(PagePtr*)&page->info.prefix);
-		if (info.fmt.isVarKeyOnly()) {
-			ushort l=((ushort*)(this+1))[info.nEntries];
-			memcpy(page+1,this+1,l); page->info.freeSpaceLength-=l; assert(extIdx==~0u && lext==0);
+		if (info.fmt.isKeyOnly()) {
+			page->info.freeSpaceLength-=info.nEntries*L_SHT;
+			for (uint16_t i=0; i<info.nEntries; ) {
+				uint16_t beg=uint16_t(~0u),end,s=i;
+				do {
+					uint16_t sht=((uint16_t*)(this+1))[i],ll;
+					if (sht!=0) {ll=PINRef::len((byte*)(this+1)+sht); if (beg==uint16_t(~0u)) end=(beg=sht)+ll; else if (sht==end) end+=ll; else if (sht+ll==beg) beg=sht; else break;}
+				} while (++i<info.nEntries);
+				int dl=(int)page->store((byte*)(this+1)+beg,end-beg)-(int)beg; assert(s<i);
+				do {uint16_t sht=((uint16_t*)(this+1))[s]; ((uint16_t*)(page+1))[s]=sht!=0?uint16_t((int)sht+dl):0;} while (++s<i);
+			}
 #ifdef _DEBUG
 			if (fCheckOnly) {
 				const bool fPR=info.fmt.isRefKeyOnly();
-				const ushort *p=(const ushort*)(page+1); assert(nKeys(p)==info.nEntries);
-				for (int i=info.nEntries-1; --i>=0; ) {
-					unsigned l1=lenK(p,i),l2=lenK(p,i+1);
-					if (fPR) {assert(PINRef::cmpPIDs(getK(p,i),l1,getK(p,i+1),l2)<0);}
-					else {int cmp=memcmp(getK(p,i),getK(p,i+1),min(l1,l2)); assert(cmp<0 || cmp==0 && l1<=l2);}
+				for (ushort i=0; i+1<info.nEntries; i++) {
+					if (fPR) {assert(PINRef::cmpPIDs((*page)[i],(*page)[i+1])<0);}
+					else {uint16_t l1,l2; const byte *p1=page->getK(i,l1),*p2=page->getK(i+1,l2); int cmp=memcmp(p1,p2,min(l1,l2)); assert(cmp<0 || cmp==0 && l1<=l2);}
 				}
 			}
 #endif
 		} else {
-			ushort lElt=info.calcEltSize(),sht=info.keyLength();
+			uint16_t lElt=info.calcEltSize(),sht=info.keyLength();
 			byte *from=(byte*)(this+1),*to=(byte*)(page+1); 
-			ushort lMove=lElt*info.nEntries; assert(lMove<page->info.freeSpaceLength);
+			uint16_t lMove=lElt*info.nEntries; assert(lMove<page->info.freeSpaceLength);
 			memcpy(to,from,lMove); page->info.freeSpaceLength-=lMove; 
 			unsigned nEnt=info.fmt.isSeq()?info.nEntries:info.nSearchKeys;
 			for (unsigned idx=0; idx<nEnt; ++idx,from+=lElt,to+=lElt) {
 				if (fVarKey) page->store((byte*)this+((PagePtr*)from)->offset,((PagePtr*)from)->len,*(PagePtr*)to);
 				if (fVarData) {
 					page->store((byte*)this+((PagePtr*)(from+sht))->offset,((PagePtr*)(from+sht))->len,*(PagePtr*)(to+sht));
-					if (!info.fmt.isUnique()) {
-#ifdef _DEBUG
-						if (fCheckOnly && info.fmt.isVarMultiData() && !isSubTree(*(PagePtr*)(from+sht))) {
-							PagePtr *vp=(PagePtr*)(to+sht); const byte *ptr=(byte*)page+vp->offset;
-							if (vp->len<256) {for (int i=*ptr; --i>=1;) assert(ptr[i-1]<ptr[i] && ptr[i]<=vp->len);}
-							else for (int i=_u16(ptr); (i-=L_SHT)>=(int)L_SHT;) assert(_u16(ptr+i-L_SHT)<_u16(ptr+i) && _u16(ptr+i)<=vp->len);
-						}
-#endif
-						if (idx==extIdx) {
-							if (isSubTree(*(PagePtr*)(to+sht))) lext=sizeof(SubTreePageKey);
-							else if (!info.fmt.isVarMultiData()) lext=info.fmt.dataLength();
-							assert(page->info.freeSpaceLength>=lext); lMove=((PagePtr*)(to+sht))->len&~TRO_EXT_DATA;
-							page->info.freeSpace-=lext; page->info.freeSpaceLength-=lext;
-							memmove((byte*)page+page->info.freeSpace,(byte*)page+page->info.freeSpace+lext,lMove);
-							((PagePtr*)(to+sht))->offset=page->info.freeSpace; ((PagePtr*)(to+sht))->len+=lext;
-						}
-						if (isSubTree(*(PagePtr*)(to+sht))) page->moveExtTree(this,*(PagePtr*)(from+sht),*(PagePtr*)(to+sht));
+					if (idx==extIdx) {
+						if (isSubTree(*(PagePtr*)(from+sht))) lext=sizeof(SubTreePageKey);
+						else if (info.fmt.isFixedLenData()) lext=info.fmt.dataLength();
+						assert(page->info.freeSpaceLength>=lext); lMove=((PagePtr*)(to+sht))->len&~TRO_MANY;
+						page->info.freeSpace-=lext; page->info.freeSpaceLength-=lext;
+						memmove((byte*)page+page->info.freeSpace,(byte*)page+page->info.freeSpace+lext,lMove);
+						((PagePtr*)(to+sht))->offset=page->info.freeSpace; ((PagePtr*)(to+sht))->len+=lext;
 					}
+					if ((((PagePtr*)(to+sht))->len&TRO_MANY)!=0) page->moveMulti(this,*(PagePtr*)(from+sht),*(PagePtr*)(to+sht));
 				}
 			}
 			if (fVarKey && hasSibling()) page->store((byte*)this+((PagePtr*)from)->offset,((PagePtr*)from)->len,*(PagePtr*)to);
@@ -2957,15 +2574,16 @@ void TreePageMgr::TreePage::compact(bool fCheckOnly,unsigned extIdx,ushort lext)
 	if (!fCheckOnly) memcpy(&info,&page->info,lPage-FOOTERSIZE-sizeof(TxPageHeader));
 }
 
-void TreePageMgr::TreePage::changePrefixSize(ushort prefLen)
+void TreePageMgr::TreePage::changePrefixSize(uint16_t prefLen)
 {
 	size_t lPage=hdr.length(); assert(prefLen!=info.lPrefix && !info.fmt.isSeq());
 	TreePage *page=(TreePage*)alloca(lPage); copyEntries(page,prefLen,0);
 	memcpy(&info,&page->info,page->info.nEntries!=0?lPage-FOOTERSIZE-sizeof(TxPageHeader):sizeof(TreePageInfo));
 }
 
-void TreePageMgr::TreePage::copyEntries(TreePage *page,ushort prefLen,ushort start) const
+void TreePageMgr::TreePage::copyEntries(TreePage *page,uint16_t prefLen,uint16_t start) const
 {
+	{Session *ses=Session::getSession(); if (ses!=NULL) ses->setCodeTrace(0x100);}
 	memcpy(&page->info,&info,sizeof(TreePageInfo)); assert(start<=info.nEntries);
 	page->info.initFree(hdr.length()); page->info.lPrefix=prefLen;
 	page->info.nEntries=info.nEntries-start; page->info.nSearchKeys=info.nSearchKeys<start?0:info.nSearchKeys-start;
@@ -2976,21 +2594,16 @@ void TreePageMgr::TreePage::copyEntries(TreePage *page,ushort prefLen,ushort sta
 	if (page->info.nEntries==0) {page->info.lPrefix=0; return;}
 
 	assert(prefLen<=info.lPrefix || info.nEntries>0);
-	ushort lElt=info.calcEltSize(); const byte *startElt=(const byte*)(this+1)+start*lElt;
-	if (fVarKey) {
-		if (prefLen>info.lPrefix) {
-			if (info.fmt.isVarKeyOnly()) 
-				page->store((byte*)(this+1)+*(ushort*)startElt,prefLen-info.lPrefix,*(PagePtr*)&page->info.prefix);
-			else
-				page->store((byte*)this+((PagePtr*)startElt)->offset,prefLen-info.lPrefix,*(PagePtr*)&page->info.prefix);
-		}
+	uint16_t lElt=info.calcEltSize(); const byte *startElt=(const byte*)(this+1)+start*lElt;
+	if (fVarKey && !info.fmt.isKeyOnly()) {
+		if (prefLen>info.lPrefix) page->store((byte*)this+((PagePtr*)startElt)->offset,prefLen-info.lPrefix,*(PagePtr*)&page->info.prefix);
 		page->store((byte*)this+((PagePtr*)&info.prefix)->offset,min(info.lPrefix,prefLen),*(PagePtr*)&page->info.prefix);
 		((PagePtr*)&page->info.prefix)->len=prefLen;
 	} else if (info.fmt.isPrefNumKey()) {
 		uint64_t v=info.lPrefix>0?info.prefix:0;
 		switch (sizeof(uint64_t)-info.lPrefix) {
+		default: assert(0);
 		case 0: v=info.prefix; break;
-		case sizeof(uint8_t): v|=*(uint8_t*)startElt; break;
 		case sizeof(uint16_t): v|=*(uint16_t*)startElt; break;
 		case sizeof(uint32_t): v|=*(uint32_t*)startElt; break;
 		case sizeof(uint64_t): v=*(uint64_t*)startElt; break;
@@ -3001,62 +2614,60 @@ void TreePageMgr::TreePage::copyEntries(TreePage *page,ushort prefLen,ushort sta
 		if (prefLen>info.lPrefix) memcpy((byte*)&page->info.prefix+info.lPrefix,startElt,prefLen-info.lPrefix);
 	}
 
-	byte *pref=NULL; ushort delta=0;
+	byte *pref=NULL; uint16_t delta=0;
 	if (info.lPrefix<prefLen) delta=prefLen-info.lPrefix;
 	else if (info.lPrefix>prefLen && !info.fmt.isPrefNumKey()) {
 		assert(!info.fmt.isNumKey()); delta=info.lPrefix-prefLen;
 		pref=fVarKey?(byte*)this+((PagePtr*)&info.prefix)->offset+prefLen:(byte*)&info.prefix+prefLen;
 	}
 	bool fVarData=!info.fmt.isFixedLenData();
-	if (fVarKey) {
-		if (info.fmt.isVarKeyOnly()) {
-			const ushort *from=(ushort*)startElt; ushort *to=(ushort*)(page+1);
-			ushort sht=(info.nEntries-start+1)*L_SHT; page->info.freeSpaceLength-=sht;
-			for (ushort idx=start; idx<info.nEntries; ++idx,++from,++to) {
-				ushort l=from[1]-from[0]; *to=sht;
-				if (info.lPrefix<=prefLen) {assert(l>=delta); memcpy((byte*)(page+1)+sht,(byte*)(this+1)+from[0]+delta,l-=delta);}
-				else {memcpy((byte*)(page+1)+sht,pref,delta); memcpy((byte*)(page+1)+sht+delta,(byte*)(this+1)+from[0],l); l+=delta;}
-				assert(l<=page->info.freeSpaceLength); page->info.freeSpaceLength-=l; sht+=l;
+	if (info.fmt.isKeyOnly()) {
+		page->info.freeSpaceLength-=(info.nEntries-start)*L_SHT;
+		for (uint16_t i=start; i<info.nEntries; ) {
+			uint16_t beg=uint16_t(~0u),end,s=i;
+			do {
+				uint16_t sht=((uint16_t*)(this+1))[i],ll;
+				if (sht!=0) {ll=PINRef::len((byte*)(this+1)+sht); if (beg==uint16_t(~0u)) end=(beg=sht)+ll; else if (sht==end) end+=ll; else if (sht+ll==beg) beg=sht; else break;}
+			} while (++i<info.nEntries);
+			int dl=(int)page->store((byte*)(this+1)+beg,end-beg)-(int)beg; assert(s<i);
+			do {uint16_t sht=((uint16_t*)(this+1))[s]; ((uint16_t*)(page+1))[s-start]=sht!=0?uint16_t((int)sht+dl):0;} while (++s<i);
+		}
+	} else if (fVarKey) {
+		const PagePtr *from=(PagePtr*)startElt; PagePtr *to=(PagePtr*)(page+1); 
+		uint16_t lMove=(info.nEntries-start)*lElt; memcpy(to,from,lMove); page->info.freeSpaceLength-=lMove;
+		for (uint16_t idx=start; idx<info.nEntries; idx++) {
+			if (info.lPrefix<prefLen) {
+				assert(from->len>=delta); page->store((byte*)this+from->offset+delta,from->len-delta,*to);
+			} else {
+				page->store((byte*)this+from->offset,from->len,*to); 
+				if (info.lPrefix>prefLen) {page->store(pref,delta,*to); to->len=from->len+delta;}
 			}
-			*to=sht;
-		} else {
-			const PagePtr *from=(PagePtr*)startElt; PagePtr *to=(PagePtr*)(page+1); 
-			ushort lMove=(info.nEntries-start)*lElt; memcpy(to,from,lMove); page->info.freeSpaceLength-=lMove;
-			for (ushort idx=start; idx<info.nEntries; idx++) {
-				if (info.lPrefix<prefLen) {
-					assert(from->len>=delta); page->store((byte*)this+from->offset+delta,from->len-delta,*to);
-				} else {
-					page->store((byte*)this+from->offset,from->len,*to); 
-					if (info.lPrefix>prefLen) {page->store(pref,delta,*to); to->len=from->len+delta;}
-				}
-				if (fVarData && idx<info.nSearchKeys) {
-					page->store((byte*)this+from[1].offset,from[1].len,to[1]);
-					if (isSubTree(to[1])) page->moveExtTree(this,from[1],to[1]);
-				}
-				from=(PagePtr*)((byte*)from+lElt); to=(PagePtr*)((byte*)to+lElt);
+			if (fVarData && idx<info.nSearchKeys) {
+				page->store((byte*)this+from[1].offset,from[1].len,to[1]);
+				if ((to[1].len&TRO_MANY)!=0) page->moveMulti(this,from[1],to[1]);
 			}
+			from=(PagePtr*)((byte*)from+lElt); to=(PagePtr*)((byte*)to+lElt);
 		}
 	} else {
 		if (!fVarData) {
-			ushort lMove=(info.nEntries-start)*info.fmt.dataLength(); 
+			uint16_t lMove=(info.nEntries-start)*info.fmt.dataLength(); 
 			assert(lMove<page->info.freeSpaceLength && info.scatteredFreeSpace==0);
 			page->info.freeSpace-=lMove; page->info.freeSpaceLength-=lMove;
 			memcpy((byte*)page+page->info.freeSpace,(byte*)this+info.freeSpace,lMove);
 		}
-		ushort lkey=info.fmt.keyLength(),lEltTo=page->info.calcEltSize(); assert(lkey>=info.lPrefix && lkey>=prefLen);
-		ushort lkOld=lkey-info.lPrefix,lkNew=lkey-prefLen; uint64_t mask=0;
+		uint16_t lkey=info.fmt.keyLength(),lEltTo=page->info.calcEltSize(); assert(lkey>=info.lPrefix && lkey>=prefLen);
+		uint16_t lkOld=lkey-info.lPrefix,lkNew=lkey-prefLen; uint64_t mask=0;
 		if (info.lPrefix>prefLen && info.fmt.isPrefNumKey())		
 			mask=info.prefix<<(sizeof(uint64_t)-lkNew)>>(sizeof(uint64_t)-lkNew+lkOld)<<lkOld;
-		ushort sht=(ushort)ceil(lkOld,sizeof(short)),shtTo=(ushort)ceil(lkNew,sizeof(short));
+		uint16_t sht=(uint16_t)ceil(lkOld,sizeof(short)),shtTo=(uint16_t)ceil(lkNew,sizeof(short));
 		assert(lEltTo*(info.nEntries-start)<=page->info.freeSpaceLength);
 		page->info.freeSpaceLength-=lEltTo*(info.nEntries-start);
 		const byte *from=startElt; byte *to=(byte*)(page+1); 
-		for (ushort idx=start; idx<info.nEntries; ++idx,from+=lElt,to+=lEltTo) {
+		for (uint16_t idx=start; idx<info.nEntries; ++idx,from+=lElt,to+=lEltTo) {
 			if (info.fmt.isPrefNumKey()) {
 				uint64_t ukey=0;
 				switch (lkOld) {
 				case 0: assert(info.nEntries<=1); ukey=mask; break;
-				case sizeof(uint8_t): if (!fVarData) {ukey=*(uint8_t*)from|mask; break;}
 				case sizeof(uint16_t): ukey=*(uint16_t*)from|mask; break;
 				case sizeof(uint32_t): ukey=*(uint32_t*)from|mask; break;
 				case sizeof(uint64_t): ukey=*(uint64_t*)from|mask; break;
@@ -3064,7 +2675,6 @@ void TreePageMgr::TreePage::copyEntries(TreePage *page,ushort prefLen,ushort sta
 				}
 				switch (lkNew) {
 				case 0: assert(page->info.nEntries<=1); break;
-				case sizeof(uint8_t): if (!fVarData) {*(uint8_t*)to=uint8_t(ukey); break;}
 				case sizeof(uint16_t): *(uint16_t*)to=uint16_t(ukey); break;
 				case sizeof(uint32_t): *(uint32_t*)to=uint32_t(ukey); break;
 				case sizeof(uint64_t): *(uint64_t*)to=ukey; break;
@@ -3074,26 +2684,40 @@ void TreePageMgr::TreePage::copyEntries(TreePage *page,ushort prefLen,ushort sta
 			else {if (delta>0) memcpy(to,pref,delta); memcpy(to+delta,from,lkOld);}
 			if (fVarData && idx<info.nSearchKeys) {
 				page->store((byte*)this+((PagePtr*)(from+sht))->offset,((PagePtr*)(from+sht))->len,*((PagePtr*)(to+shtTo)));
-				if (isSubTree(*((PagePtr*)(to+shtTo)))) page->moveExtTree(this,*(PagePtr*)(from+sht),*(PagePtr*)(to+shtTo));
+				if ((((PagePtr*)(to+shtTo))->len&TRO_MANY)!=0) page->moveMulti(this,*(PagePtr*)(from+sht),*(PagePtr*)(to+shtTo));
 			}
 		}
 	}
 }
 
-ushort TreePageMgr::TreePage::calcPrefixSize(const SearchKey &key,unsigned idx,bool fExt,const SearchKey *pk) const
+RC TreePageMgr::TreePage::prefixFromKey(const void *pk,uint16_t prefSize)
 {
-	if (info.nEntries!=0) idx=min(idx,unsigned(info.nEntries-1));
+	const byte *key=(const byte *)pk;
 	if (info.fmt.isPrefNumKey()) {
-		uint64_t u=0;
-		if (info.nEntries==0) {if (pk!=0) u=pk->v.u; else return 0;}
-		else {
-			const byte *ptr=(const byte*)(this+1)+info.calcEltSize()*idx; if (info.lPrefix!=0) u=info.prefix;
+		memcpy(&info.prefix,key+1,sizeof(uint64_t)); info.lPrefix=min(prefSize,(uint16_t)sizeof(uint64_t));
+		if (prefSize<sizeof(uint64_t)) info.prefix&=~0ULL<<(sizeof(uint64_t)-prefSize)*8;
+	} else if (info.fmt.keyType()==KT_VAR) {
+		//???
+	} else if (!info.fmt.isNumKey() && info.fmt.keyType()!=KT_REF) {
+		if (*key<KT_BIN) return RC_CORRUPTED; uint16_t lk=min(SearchKey::keyLenP(key),prefSize);
+		if (info.freeSpaceLength<lk) {compact(); if (info.freeSpaceLength<lk) return RC_CORRUPTED;}
+		if (!info.fmt.isFixedLenKey()) {store(key,lk,*(PagePtr*)&info.prefix); info.lPrefix=lk;}
+		else memcpy(&info.prefix,key,info.lPrefix=min(lk,(uint16_t)sizeof(info.prefix)));
+	}
+	return RC_OK;
+}
+
+uint16_t TreePageMgr::TreePage::calcPrefixSize(const SearchKey &key,unsigned idx,bool fExt,const SearchKey *pk) const
+{
+	if (info.fmt.isPrefNumKey()) {
+		uint64_t u=pk!=NULL?pk->v.u:key.v.u;
+		if (info.nEntries!=0) {
+			const byte *ptr=(const byte*)(this+1)+info.calcEltSize()*min(idx,unsigned(info.nEntries-1)); 
 			switch (info.lPrefix) {
 			default: assert(0);
-			case sizeof(uint64_t): break;
-			case sizeof(uint32_t)+sizeof(uint16_t)+sizeof(uint8_t): assert(info.fmt.isFixedLenData()); break;
-			case sizeof(uint32_t)+sizeof(uint16_t): u|=*(uint16_t*)ptr; break;
-			case sizeof(uint32_t): u|=*(uint32_t*)ptr; break;
+			case sizeof(uint64_t): u=info.prefix; break;
+			case sizeof(uint32_t)+sizeof(uint16_t): u=*(uint16_t*)ptr|info.prefix; break;
+			case sizeof(uint32_t): u=*(uint32_t*)ptr|info.prefix; break;
 			case 0: u=*(uint64_t*)ptr; break;
 			}
 		}
@@ -3101,107 +2725,82 @@ ushort TreePageMgr::TreePage::calcPrefixSize(const SearchKey &key,unsigned idx,b
 		if (key.type==KT_INT) {
 			//...
 		}
-		return uint32_t(u>>32)!=0?0:(uint32_t(u)&0xFFFF0000)!=0?sizeof(uint32_t):!info.fmt.isFixedLenData()||(uint16_t(u)&0xFF00)!=0?sizeof(uint32_t)+sizeof(uint16_t):sizeof(uint32_t)+sizeof(uint16_t)+sizeof(uint8_t);
+		return uint32_t(u>>32)!=0?0:(uint32_t(u)&0xFFFF0000)!=0?sizeof(uint32_t):sizeof(uint32_t)+sizeof(uint16_t);
 	}
-	if (info.fmt.isNumKey()) return 0;
-	const byte *pkey=(const byte*)key.getPtr2(); ushort lCmp;
-	if (info.fmt.isRefKeyOnly() || info.fmt.keyType()==KT_REF) {
-		// ???
-		return 0;
-	}
-	if (info.fmt.keyType()==KT_VAR) {
-		// ???
-		return 0;
-	}
+	if (info.fmt.isNumKey()||info.fmt.keyType()>=KT_REF||info.fmt.isKeyOnly()) return 0;
+	const byte *pkey=(const byte*)key.getPtr2(); uint16_t lCmp;
 	if (info.nEntries==0) {
 		if (pk==NULL) return 0;
 		const byte *pkey2=pk->getPtr2(); lCmp=min(key.v.ptr.l,pk->v.ptr.l);
-		for (ushort i=0; i<lCmp; i++) if (*pkey++!=*pkey2++) return i;
+		for (uint16_t i=0; i<lCmp; i++) if (*pkey++!=*pkey2++) return i;
 		return lCmp;
 	}
 	if (info.lPrefix>0) {
 		const byte *p=info.fmt.isFixedLenKey()?(const byte*)&info.prefix:(const byte*)this+((PagePtr*)&info.prefix)->offset;
-		ushort l=min(info.lPrefix,key.v.ptr.l); for (ushort i=0; i<l; i++) if (*pkey++!=*p++) {l=i; break;}
+		uint16_t l=min(info.lPrefix,key.v.ptr.l); for (uint16_t i=0; i<l; i++) if (*pkey++!=*p++) {l=i; break;}
 		if (!fExt||l<info.lPrefix) return l;
 	}
-	const byte *ptr=(const byte*)(this+1)+info.calcEltSize()*idx;
+	const byte *ptr=(const byte*)(this+1)+info.calcEltSize()*min(idx,unsigned(info.nEntries-1));
 	if (info.fmt.isFixedLenKey()) {
 		lCmp=info.fmt.keyLength()-info.lPrefix; assert(info.lPrefix<=sizeof(info.prefix));
 		if (size_t(lCmp+info.lPrefix)>sizeof(info.prefix) && (lCmp=sizeof(info.prefix)-info.lPrefix)==0) return info.lPrefix;
-	} else if (info.fmt.isVarKeyOnly()) {
-		lCmp=min(int(lenK(ptr,0)),int(key.v.ptr.l-info.lPrefix)); ptr=(*this)[ptr];
 	} else {
-		lCmp=min(((PagePtr*)ptr)->len,ushort(key.v.ptr.l-info.lPrefix));
+		lCmp=min(((PagePtr*)ptr)->len,uint16_t(key.v.ptr.l-info.lPrefix));
 		ptr=(const byte*)this+((PagePtr*)ptr)->offset;
 	}
-	for (ushort i=0; i<lCmp; i++) if (*ptr++!=*pkey++) {lCmp=i; break;}
+	for (uint16_t i=0; i<lCmp; i++) if (*ptr++!=*pkey++) {lCmp=i; break;}
 	return lCmp+info.lPrefix;
 }
 
-ushort TreePageMgr::TreePage::calcPrefixSize(unsigned start,unsigned end) const
+uint16_t TreePageMgr::TreePage::calcPrefixSize(unsigned start,unsigned end) const
 {
-	if (info.fmt.isNumKey()&&!info.fmt.isPrefNumKey()) return 0;
-	if (info.fmt.isRefKeyOnly() || info.fmt.keyType()==KT_REF) {
-		// ???
-		return 0;
-	}
-	if (info.fmt.keyType()==KT_VAR) {
-		// ???
-		return 0;
-	}
+	if (info.fmt.keyType()>=KT_REF||info.fmt.isKeyOnly()||info.fmt.isNumKey()&&!info.fmt.isPrefNumKey()) return 0;
 	if (start+1>=end) {
-		ushort l=getKeySize(ushort(start));
+		uint16_t l=getKeySize(uint16_t(start));
 		return info.fmt.isFixedLenKey() && l>sizeof(info.prefix)?sizeof(info.prefix):l;
 	}
-	ushort lElt=info.calcEltSize(),lCmp; assert(start<end);
+	uint16_t lElt=info.calcEltSize(),lCmp; assert(start<end);
 	const byte *p1=(byte*)(this+1)+start*lElt,*p2=(byte*)(this+1)+(end-1)*lElt;
 	if (info.fmt.isPrefNumKey()) switch (info.lPrefix) {
 	default: assert(0);
 	case sizeof(uint64_t): //????
-	case sizeof(uint32_t)+sizeof(uint16_t)+sizeof(uint8_t): assert(info.fmt.isFixedLenData()); return info.lPrefix;
-	case sizeof(uint32_t)+sizeof(uint16_t): return !info.fmt.isFixedLenData()||((*(uint16_t*)p1^*(uint16_t*)p2)&0xFF00)!=0?info.lPrefix:info.lPrefix+sizeof(uint8_t);
+	case sizeof(uint32_t)+sizeof(uint16_t): return info.lPrefix;
 	case sizeof(uint32_t):
-		{uint32_t t=*(uint32_t*)p1^*(uint32_t*)p2;
-		return (t&0xFFFF0000)!=0?info.lPrefix:!info.fmt.isFixedLenData()||(t&0xFF00)!=0?info.lPrefix+sizeof(uint16_t):info.lPrefix+sizeof(uint16_t)+sizeof(uint8_t);}
+		{uint32_t t=*(uint32_t*)p1^*(uint32_t*)p2; return (t&0xFFFF0000)!=0?info.lPrefix:info.lPrefix+sizeof(uint16_t);}
 	case 0:
 		assert(info.lPrefix==0);
-		{uint64_t t=*(uint64_t*)p1^*(uint64_t*)p2;
-		return uint32_t(t>>32)!=0?0:(uint32_t(t)&0xFFFF0000)!=0?sizeof(uint32_t):
-				!info.fmt.isFixedLenData()||(uint32_t(t)&0xFF00)!=0?sizeof(uint32_t)+sizeof(uint16_t):sizeof(uint32_t)+sizeof(uint16_t)+sizeof(uint8_t);}
+		{uint64_t t=*(uint64_t*)p1^*(uint64_t*)p2; return uint32_t(t>>32)!=0?0:(uint32_t(t)&0xFFFF0000)!=0?sizeof(uint32_t):sizeof(uint32_t)+sizeof(uint16_t);}
 	}
 	if (info.fmt.isFixedLenKey()) {
 		lCmp=info.fmt.keyLength()-info.lPrefix; assert(info.lPrefix<=sizeof(info.prefix));
 		if (size_t(lCmp+info.lPrefix)>sizeof(info.prefix) && (lCmp=sizeof(info.prefix)-info.lPrefix)==0) return info.lPrefix;
-	} else if (info.fmt.isVarKeyOnly()) {
-		lCmp=min(lenK(p1,0),lenK(p2,0)); p1=(*this)[p1]; p2=(*this)[p2];
 	} else {
 		lCmp=min(((PagePtr*)p1)->len,((PagePtr*)p2)->len);
 		p1=(const byte*)this+((PagePtr*)p1)->offset; p2=(const byte*)this+((PagePtr*)p2)->offset;
 	}
-	for (ushort i=0; i<lCmp; ++p1,i++) if (*p1!=*p2++) {lCmp=i; break;}
+	for (uint16_t i=0; i<lCmp; ++p1,i++) if (*p1!=*p2++) {lCmp=i; break;}
 	return lCmp+info.lPrefix;
 }
 
-ushort TreePageMgr::TreePage::getKeySize(ushort idx) const
+uint16_t TreePageMgr::TreePage::getKeySize(uint16_t idx) const
 {
-	if (info.nEntries==0) return 0; if (idx==ushort(~0u)) idx=info.nEntries-1; assert(idx<info.nEntries);
-	return info.fmt.isVarKeyOnly() ? lenPK(idx)+info.lPrefix : info.fmt.isSeq() ? 0 : info.fmt.isFixedLenKey() ? info.fmt.keyLength() : 
-		((PagePtr*)((byte*)(this+1)+idx*(sizeof(PagePtr)+(info.fmt.isFixedLenData()? (ushort)ceil(info.fmt.dataLength(),sizeof(ushort)):sizeof(PagePtr)))))->len+info.lPrefix;
+	if (info.nEntries==0) return 0; if (idx==uint16_t(~0u)) idx=info.nEntries-1; assert(idx<info.nEntries);
+	return info.fmt.isKeyOnly() ? PINRef::len((*this)[idx]) : info.fmt.isSeq() ? 0 : info.fmt.isFixedLenKey() ? info.fmt.keyLength() : 
+		((PagePtr*)((byte*)(this+1)+idx*(sizeof(PagePtr)+(info.fmt.isFixedLenData()? (uint16_t)ceil(info.fmt.dataLength(),sizeof(uint16_t)):sizeof(PagePtr)))))->len+info.lPrefix;
 }
 
-void TreePageMgr::TreePage::getKey(ushort idx,SearchKey& key) const
+void TreePageMgr::TreePage::getKey(uint16_t idx,SearchKey& key) const
 {
 	key.loc=SearchKey::PLC_EMB;
-	if (info.fmt.isSeq()) {key.v.u=info.prefix+(idx==ushort(~0u)?info.nEntries:idx); key.type=KT_UINT; return;}
-	if (idx==ushort(~0u)) {if (info.nEntries==0) {key.type=KT_ALL; return;} else idx=info.nEntries-1;} assert(idx<info.nEntries);
-	const byte *p=(const byte*)(this+1)+idx*info.calcEltSize(); bool fFixed; ushort lkey;
+	if (info.fmt.isSeq()) {key.v.u=info.prefix+(idx==uint16_t(~0u)?info.nEntries:idx); key.type=KT_UINT; return;}
+	if (idx==uint16_t(~0u)) {if (info.nEntries==0) {key.type=KT_ALL; return;} else idx=info.nEntries-1;} assert(idx<info.nEntries);
+	const byte *p=(const byte*)(this+1)+idx*info.calcEltSize(); bool fFixed; uint16_t lkey;
 	switch (key.type=info.fmt.keyType()) {
 	case KT_UINT: case KT_INT:
 		switch (info.lPrefix) {
 		case 0: key.v.u=*(uint64_t*)p; break;
 		case sizeof(uint32_t): key.v.u=*(uint32_t*)p|info.prefix; break;
 		case sizeof(uint32_t)+sizeof(uint16_t): key.v.u=*(uint16_t*)p|info.prefix; break;
-		case sizeof(uint32_t)+sizeof(uint16_t)+sizeof(uint8_t): key.v.u=*(uint8_t*)p|info.prefix; break;
 		case sizeof(uint64_t): key.v.u=info.prefix; break;
 		}
 		break;
@@ -3211,98 +2810,62 @@ void TreePageMgr::TreePage::getKey(ushort idx,SearchKey& key) const
 		fFixed=info.fmt.isFixedLenKey(); assert(!info.fmt.isNumKey());
 		if (info.lPrefix>0) memcpy((byte*)(&key+1),fFixed?(const byte*)&info.prefix:(const byte*)this+((PagePtr*)&info.prefix)->offset,info.lPrefix);
 		if (fFixed) lkey=info.fmt.keyLength()-info.lPrefix;
-		else if (info.fmt.isVarKeyOnly()) {lkey=lenK(p,0); p=(*this)[p];}
+		else if (info.fmt.isKeyOnly()) p=getK(p,lkey);
 		else {lkey=((PagePtr*)p)->len; p=(const byte*)this+((PagePtr*)p)->offset;}
 		memcpy((byte*)(&key+1)+info.lPrefix,p,lkey); key.v.ptr.p=NULL; key.v.ptr.l=info.lPrefix+lkey; key.loc=SearchKey::PLC_SPTR;
 	}
 }
 
-void TreePageMgr::TreePage::serializeKey(ushort idx,void *buf) const
+void TreePageMgr::TreePage::serializeKey(uint16_t idx,void *buf) const
 {
 	byte *pb=(byte*)buf; uint64_t u64;
-	if (info.fmt.isSeq()) {u64=info.prefix+(idx==ushort(~0u)?info.nEntries:idx); *pb=KT_UINT; memcpy(pb+1,&u64,sizeof(uint64_t)); return;}
-	if (idx==ushort(~0u)) {if (info.nEntries==0) {*pb=KT_ALL; return;} else idx=info.nEntries-1;}
+	if (info.fmt.isSeq()) {u64=info.prefix+(idx==uint16_t(~0u)?info.nEntries:idx); *pb=KT_UINT; memcpy(pb+1,&u64,sizeof(uint64_t)); return;}
+	if (idx==uint16_t(~0u)) {if (info.nEntries==0) {*pb=KT_ALL; return;} else idx=info.nEntries-1;}
 	assert(idx<info.nEntries); *pb=info.fmt.keyType();
 	const byte *p=(const byte*)(this+1)+idx*info.calcEltSize();
 	if (info.fmt.isPrefNumKey() && info.lPrefix!=0) {
 		switch (info.lPrefix) {
 		default: assert(0);
 		case sizeof(uint64_t): u64=info.prefix; break;
-		case sizeof(uint32_t)+sizeof(uint16_t)+sizeof(uint8_t): u64=*(uint8_t*)p|info.prefix; break;
 		case sizeof(uint32_t)+sizeof(uint16_t): u64=*(uint16_t*)p|info.prefix; break;
 		case sizeof(uint32_t): u64=*(uint32_t*)p|info.prefix; break;
 		}
 		memcpy(pb+1,&u64,sizeof(uint64_t)); return;
 	}
 	if (*pb<KT_BIN) {memcpy(pb+1,p,SearchKey::extKeyLen[*pb]); return;}
-	const bool fFixed=info.fmt.isFixedLenKey(); ushort lkey; assert(!info.fmt.isNumKey()); 
+	const bool fFixed=info.fmt.isFixedLenKey(); uint16_t lkey; assert(!info.fmt.isNumKey()); 
 	if (fFixed) lkey=info.fmt.keyLength()-info.lPrefix;
-	else if (info.fmt.isVarKeyOnly()) {lkey=lenK(p,0); p=(*this)[p];}
+	else if (info.fmt.isKeyOnly()) p=getK(p,lkey);
 	else {lkey=((PagePtr*)p)->len; p=(const byte*)this+((PagePtr*)p)->offset;}
-	ushort l=lkey+info.lPrefix; if (l<128) pb[1]=byte(l); else {*++pb=byte(l|0x80); pb[1]=byte(l>>7);}
+	uint16_t l=lkey+info.lPrefix; if (l<128) pb[1]=byte(l); else {*++pb=byte(l|0x80); pb[1]=byte(l>>7);}
 	if (info.lPrefix>0) memcpy(pb+2,fFixed?(const byte*)&info.prefix:(const byte*)this+((PagePtr*)&info.prefix)->offset,info.lPrefix);
 	memcpy(pb+2+info.lPrefix,p,lkey);
 }
 
-uint32_t TreePageMgr::TreePage::getKeyU32(ushort idx) const {
+uint32_t TreePageMgr::TreePage::getKeyU32(uint16_t idx) const {
 	assert(idx<info.nEntries && info.fmt.keyType()==KT_UINT);
 	const byte *p=(const byte*)(this+1)+idx*info.calcEltSize();
 	switch (info.lPrefix) {
 	default: assert(0); return ~0u;
 	case sizeof(uint64_t): return (uint32_t)info.prefix;
-	case sizeof(uint32_t)+sizeof(uint16_t)+sizeof(uint8_t): return (uint32_t)(*(uint8_t*)p|(uint32_t)info.prefix);
 	case sizeof(uint32_t)+sizeof(uint16_t): return (uint32_t)(*(uint16_t*)p|(uint32_t)info.prefix);
 	case sizeof(uint32_t): return *(uint32_t*)p;
 	case 0: return (uint32_t)*(uint64_t*)p;
 	}
 }
 
-RC TreePageMgr::TreePage::prefixFromKey(const void *pk,ushort prefSize)
-{
-	const byte *key=(const byte *)pk;
-	if (info.fmt.isPrefNumKey()) {
-		memcpy(&info.prefix,key+1,sizeof(uint64_t)); info.lPrefix=min(prefSize,(ushort)sizeof(uint64_t));
-		if (prefSize<sizeof(uint64_t)) info.prefix&=~0ULL<<(sizeof(uint64_t)-prefSize)*8;
-	} else if (!info.fmt.isNumKey()) {
-		if (info.fmt.isRefKeyOnly() || info.fmt.keyType()==KT_REF) {
-			//???
-		} else if (info.fmt.keyType()==KT_VAR) {
-			//???
-		} else {
-			if (*key<KT_BIN) return RC_CORRUPTED; ushort lk=min(SearchKey::keyLenP(key),prefSize);
-			if (info.freeSpaceLength<lk) {compact(); if (info.freeSpaceLength<lk) return RC_CORRUPTED;}
-			if (!info.fmt.isFixedLenKey()) {store(key,lk,*(PagePtr*)&info.prefix); info.lPrefix=lk;}
-			else memcpy(&info.prefix,key,info.lPrefix=min(lk,(ushort)sizeof(info.prefix)));
-		}
-	}
-	return RC_OK;
-}
-
 void TreePageMgr::TreePage::storeKey(const void *pk,void *ptr)
 {
-	const byte *key=(const byte*)pk; ushort lk,lkey; uint64_t u;
+	const byte *key=(const byte*)pk; uint16_t lk,lkey; uint64_t u;
 	switch (*key) {
 	default:
 		lk=SearchKey::keyLenP(key); lkey=lk-info.lPrefix; assert(lk>=info.lPrefix);
-		if (!info.fmt.isVarKeyOnly()) {
-			if (info.fmt.isFixedLenKey()) memcpy(ptr,key+info.lPrefix,lkey);
+		if (info.fmt.isFixedLenKey()) memcpy(ptr,key+info.lPrefix,lkey);
+		else {
+			if (lkey>info.freeSpaceLength) {compact(); assert(lkey<=info.freeSpaceLength);}
+			if (info.fmt.isKeyOnly()) *(uint16_t*)ptr=store(key,lkey);
 			else if (lkey==0) ((PagePtr*)ptr)->len=((PagePtr*)ptr)->offset=0;
-			else {
-				if (lkey>info.freeSpaceLength) {compact(); assert(lkey<=info.freeSpaceLength);}
-				store(key+info.lPrefix,lkey,*(PagePtr*)ptr);
-			}
-		} else if (info.nEntries==0) {
-			((ushort*)ptr)[0]=2*L_SHT; ((ushort*)ptr)[1]=2*L_SHT+lkey;
-			if (lkey!=0) memcpy((byte*)ptr+2*L_SHT,key+info.lPrefix,lkey);
-			info.freeSpaceLength-=lkey+L_SHT; assert(ptr==this+1);
-		} else {
-			assert(lkey+L_SHT<=info.freeSpaceLength); ushort *p=(ushort*)(this+1);
-			unsigned sht=*(ushort*)ptr,lh=p[0],l=p[lh/L_SHT-1]; int off=int((ushort*)ptr-p);
-			if (sht<l) memmove((byte*)p+sht+lkey,(byte*)p+sht,l-sht);
-			memcpy((byte*)p+sht,key+info.lPrefix,lkey);
-			memmove((ushort*)ptr+1,ptr,l-off*L_SHT+lkey); info.freeSpaceLength-=lkey;
-			int j=lh/L_SHT+1; lkey+=L_SHT;
-			while (--j>off) p[j]+=lkey; do p[j]+=L_SHT; while (--j>=0);
+			else store(key+info.lPrefix,lkey,*(PagePtr*)ptr);
 		}
 		break;
 	case KT_UINT: case KT_INT:
@@ -3312,7 +2875,6 @@ void TreePageMgr::TreePage::storeKey(const void *pk,void *ptr)
 		case 0: *(uint64_t*)ptr=u; break;
 		case sizeof(uint32_t): *(uint32_t*)ptr=uint32_t(u); break;
 		case sizeof(uint32_t)+sizeof(uint16_t): *(uint16_t*)ptr=uint16_t(u); break;
-		case sizeof(uint32_t)+sizeof(uint16_t)+sizeof(uint8_t): *(uint8_t*)ptr=uint8_t(u); break;
 		case sizeof(uint64_t): break;
 		}
 		break;
@@ -3321,36 +2883,184 @@ void TreePageMgr::TreePage::storeKey(const void *pk,void *ptr)
 	}
 }
 
-ushort TreePageMgr::TreePage::length(const PagePtr& ptr) const
+uint16_t TreePageMgr::TreePage::length(const PagePtr& ptr) const
 {
-	assert(!info.fmt.isVarKeyOnly());
-	if (info.fmt.isUnique()||!isSubTree(ptr)) return ptr.len;
-	ushort l=ptr.len&~TRO_EXT_DATA;
-	assert((l-sizeof(SubTreePage))%sizeof(SubTreePageKey)==0);
-	const byte *p=(byte*)this+ptr.offset+sizeof(SubTreePage);
-	for (int i=(l-sizeof(SubTreePage))/sizeof(SubTreePageKey); --i>=0; p+=sizeof(SubTreePageKey)) 
-		l+=__una_get(((SubTreePageKey*)p)->key.len);
+	assert(!info.fmt.isKeyOnly()&&!info.fmt.isFixedLenData());
+	if ((ptr.len&TRO_MANY)==0) return ptr.len;
+	uint16_t l=ptr.len&~TRO_MANY;
+	if (!isSubTree(ptr)) {
+		assert(l%L_SHT==0);
+		for (const uint16_t *p=(uint16_t*)((byte*)this+ptr.offset),*e=p+l/L_SHT; p<e; p++) l+=PINRef::len((byte*)this+_u16(p));
+	} else {
+		assert((l-sizeof(SubTreePage))%sizeof(SubTreePageKey)==0);
+		const byte *p=(byte*)this+ptr.offset+sizeof(SubTreePage);
+		for (int i=(l-sizeof(SubTreePage))/sizeof(SubTreePageKey); --i>=0; p+=sizeof(SubTreePageKey)) 
+			l+=__una_get(((SubTreePageKey*)p)->key.len);
+	}
 	return l;
 }
 
-void TreePageMgr::TreePage::moveExtTree(const TreePage *src,const PagePtr& from,PagePtr& to)
+void TreePageMgr::TreePage::moveMulti(const TreePage *src,const PagePtr& from,PagePtr& to)
 {
-	ushort l=from.len&~TRO_EXT_DATA;
-	assert(isSubTree(from) && to.len>=from.len && (l-sizeof(SubTreePage))%sizeof(SubTreePageKey)==0);
-	if (l>sizeof(SubTreePage)) {
-		const byte *pf=(const byte*)src+from.offset+sizeof(SubTreePage);
-		byte *pt=(byte*)this+to.offset+sizeof(SubTreePage); PagePtr ppf,ppt; 
-		for (int i=(l-sizeof(SubTreePage))/sizeof(SubTreePageKey); --i>=0; pf+=sizeof(SubTreePageKey),pt+=sizeof(SubTreePageKey)) {
-			ppf=__una_get(((SubTreePageKey*)pf)->key); store((const byte*)src+ppf.offset,ppf.len,ppt); __una_set(((SubTreePageKey*)pt)->key,ppt);
+	uint16_t l=from.len&~TRO_MANY;
+	if (src->isSubTree(from)) {
+		assert((to.len&~TRO_MANY)>=l && (l-sizeof(SubTreePage))%sizeof(SubTreePageKey)==0);
+		if (l>sizeof(SubTreePage)) {
+			const byte *pf=(const byte*)src+from.offset+sizeof(SubTreePage);
+			byte *pt=(byte*)this+to.offset+sizeof(SubTreePage); PagePtr ppf,ppt; 
+			for (int i=(l-sizeof(SubTreePage))/sizeof(SubTreePageKey); --i>=0; pf+=sizeof(SubTreePageKey),pt+=sizeof(SubTreePageKey)) {
+				ppf=__una_get(((SubTreePageKey*)pf)->key); store((const byte*)src+ppf.offset,ppf.len,ppt); __una_set(((SubTreePageKey*)pt)->key,ppt);
+			}
+		}
+	} else if ((from.len&TRO_MANY)!=0) {
+		assert(l%L_SHT==0 && !info.fmt.isFixedLenData());
+		for (uint16_t i=0; i<l; ) {
+			uint16_t beg=uint16_t(~0u),end,s=i;
+			do {
+				uint16_t sht=_u16((byte*)src+from.offset+i),ll;
+				if (sht!=0) {ll=PINRef::len((byte*)src+sht); if (beg==uint16_t(~0u)) end=(beg=sht)+ll; else if (sht==end) end+=ll; else if (sht+ll==beg) beg=sht; else break;}
+			} while ((i+=L_SHT)<l);
+			PagePtr pp; store((byte*)src+beg,end-beg,pp); assert(s<i); int dl=(int)pp.offset-(int)beg;
+			do {uint16_t sht=_u16((byte*)src+from.offset+s); if (sht!=0) _set_u16((byte*)this+to.offset+s,uint16_t((int)sht+dl));} while ((s+=L_SHT)<i);
 		}
 	}
 }
 
-bool IndexFormat::isValid(size_t lPage,ushort level) const
+bool IndexFormat::isValid(size_t lPage,uint16_t level) const
 {
-	if (isFixedLenKey()) {ushort lKey=keyLength(); if (lKey==0 && !isSeq() || lKey>lPage/4) return false;}
+	if (isFixedLenKey()) {uint16_t lKey=keyLength(); if (lKey==0 && !isSeq() || lKey>lPage/4) return false;}
 	if (level>0) {if (!isFixedLenData() || dataLength()!=sizeof(PageID)) return false;}
-	else if (isFixedLenData()) {ushort lData=dataLength(); if (lData>lPage/4) return false;}
+	else if (isFixedLenData()) {uint16_t lData=dataLength(); if (lData>lPage/4) return false;}
 	// ...
 	return true;
+}
+
+//-----------------------------------------------------------------------------------------------------------------------------------------------
+
+SubTreeInit::~SubTreeInit()
+{
+	while (depth--!=0) stack[depth]->release(QMGR_UFORCE);
+	if (buf!=NULL) ma->free(buf);
+}
+
+RC SubTreeInit::insert(Session *ses,const byte *key)
+{
+	uint16_t l=PINRef::len(key); PageID pg=INVALID_PAGEID,npg; StoreCtx *ctx=ses->getStore(); RC rc; PBlock *pb;
+	if (depth==0) {
+		if (buf==NULL) {
+			assert(nKeys==0);
+			freeSpace=freeSpaceLength=lbuf=uint16_t(ctx->bufMgr->getPageSize()/4);		// #define param
+			if ((buf=(byte*)ma->malloc(lbuf))==NULL) return RC_NORESOURCES;
+		}
+		if (L_SHT+l<=freeSpaceLength) {
+			((uint16_t*)buf)[nKeys++]=freeSpace-=l;
+			memcpy(buf+freeSpace,key,l);
+			freeSpaceLength-=L_SHT+l;
+			return RC_OK;
+		}
+		if ((rc=ctx->fsMgr->allocPages(1,&pg))!=RC_OK) return rc;
+		if ((stack[depth++]=pb=ctx->bufMgr->newPage(pg,ses->getStore()->trpgMgr,NULL,0,ses))==NULL) return RC_NORESOURCES;
+		TreePageMgr::TreePage *tp=(TreePageMgr::TreePage*)pb->getPageBuf(); tp->info.fmt=IndexFormat(KT_REF,KT_VARKEY,0);
+		memcpy(tp+1,buf,nKeys*L_SHT); tp->info.nEntries=tp->info.nSearchKeys=nKeys; tp->info.freeSpaceLength-=nKeys*L_SHT;
+		ushort ld=lbuf-freeSpaceLength-nKeys*L_SHT; assert(ld<=tp->info.freeSpaceLength); 
+		tp->info.freeSpace-=ld; tp->info.freeSpaceLength-=ld; memcpy((byte*)tp+tp->info.freeSpace,buf+freeSpace,ld);
+		int dl=(int)tp->info.freeSpace-(int)freeSpace-sizeof(TreePageMgr::TreePage);
+		if (dl!=0) for (unsigned i=0; i<nKeys; i++) ((uint16_t*)(tp+1))[i]+=(uint16_t)dl;
+#ifdef _DEBUG
+		tp->compact(true);
+#endif
+		TreePageMgr::SubTreePage *sp=(TreePageMgr::SubTreePage*)buf;
+		sp->fSubPage=0xFFFF; sp->anchor=sp->leftMost=pg; sp->counter=nKeys; sp->level=0;
+		freeSpace=lbuf; freeSpaceLength=lbuf-sizeof(TreePageMgr::SubTreePage); nKeys=0;
+	}
+	for (unsigned didx=depth-1;;didx--) {
+		TreePageMgr::TreePage *tp=(TreePageMgr::TreePage*)stack[didx]->getPageBuf();
+		ushort lElt=tp->info.fmt.isKeyOnly()?L_SHT:sizeof(PagePtr)+sizeof(PageID);
+		if (lElt+l<=tp->info.freeSpaceLength) {				// leave extra space (%%)
+			byte *ptr=(byte*)(tp+1)+tp->info.nEntries*lElt; assert(PINRef::len(key)==l);
+			if (!tp->info.fmt.isKeyOnly()) {tp->store(key,l,*(PagePtr*)ptr); *(PageID*)(ptr+sizeof(PagePtr))=pg;}
+			else {*(uint16_t*)ptr=tp->store(key,l); ((TreePageMgr::SubTreePage*)buf)->counter++;}
+			tp->info.nEntries++; tp->info.nSearchKeys++; tp->info.freeSpaceLength-=lElt;
+			assert(!tp->info.fmt.isKeyOnly() || PINRef::cmpPIDs((*tp)[tp->info.nEntries-2],(*tp)[tp->info.nEntries-1])<0);
+			break;
+		}
+		if ((rc=ctx->fsMgr->allocPages(1,&npg))!=RC_OK) return rc;
+		if ((pb=ctx->bufMgr->newPage(npg,ses->getStore()->trpgMgr,NULL,0,ses))==NULL) return RC_NORESOURCES;
+		tp->info.sibling=npg; tp->info.nSearchKeys--;
+		TreePageMgr::TreePage *tp2=(TreePageMgr::TreePage*)pb->getPageBuf(); tp2->info.fmt=tp->info.fmt; tp2->info.level=tp->info.level;
+		if (tp->info.fmt.isKeyOnly()) {
+			ushort ld; const byte *dkey=tp->getK(tp->info.nEntries-1,ld);
+			dkey=(byte*)(tp2+1)+(((uint16_t*)(tp2+1))[0]=tp2->store(dkey,ld));
+			((uint16_t*)(tp2+1))[1]=tp2->store(key,l); tp2->info.freeSpaceLength-=L_SHT*2;
+			((TreePageMgr::SubTreePage*)buf)->counter++; key=dkey; l=ld; pg=npg;
+		} else {
+			TreePageMgr::VarKey *vk=&((TreePageMgr::VarKey*)(tp+1))[tp->info.nEntries-1],*vk2=(TreePageMgr::VarKey*)(tp2+1);
+			tp2->store((byte*)(tp+1)+vk->ptr.offset,vk->ptr.len,vk2->ptr); vk2->pageID=vk->pageID; tp2->store(key,l,vk2[1].ptr); vk2[1].pageID=pg;
+			tp2->info.freeSpaceLength-=sizeof(TreePageMgr::VarKey)*2; key=(byte*)(tp2+1)+vk2->ptr.offset; l=vk2->ptr.len; pg=npg;
+		}
+#ifdef _DEBUG
+		tp->compact(true);
+#endif
+		tp2->info.nSearchKeys=tp2->info.nEntries=2;
+		if (ctx->memory!=NULL) stack[didx]->resetNewPage();
+		else {
+			// rec, lrec
+			ctx->logMgr->insert(ses,LR_CREATE,(MO_PAGEINIT<<TRO_SHIFT|TRO_MULTI)<<PGID_SHIFT|ctx->trpgMgr->getPGID(),stack[didx]->getPageID(),NULL,NULL,0,LRC_LUNDO,stack[didx]);
+		}
+		stack[didx]->release(QMGR_UFORCE); stack[didx]=pb;
+		if (didx==0) {
+			if (sizeof(TreePageMgr::SubTreePageKey)+l<=freeSpaceLength) {
+				TreePageMgr::SubTreePageKey *pk=&((TreePageMgr::SubTreePageKey*)(buf+sizeof(TreePageMgr::SubTreePage)))[nKeys++];
+				pk->key.offset=freeSpace-=l; pk->key.len=l; pk->pageID=pg; memcpy(buf+freeSpace,key,l);
+				freeSpaceLength-=sizeof(TreePageMgr::SubTreePageKey)+l; break;
+			}
+			if (depth>=TREE_MAX_DEPTH/2-1) return RC_NORESOURCES;
+			if ((rc=ctx->fsMgr->allocPages(1,&npg))!=RC_OK) return rc;
+			if ((pb=ctx->bufMgr->newPage(npg,ses->getStore()->trpgMgr,NULL,0,ses))==NULL) return RC_NORESOURCES;
+			memmove(&stack[1],&stack[0],depth*sizeof(PBlock*)); stack[0]=pb; depth++;
+			TreePageMgr::TreePage *tp=(TreePageMgr::TreePage*)pb->getPageBuf();
+			tp->info.fmt=IndexFormat(KT_REF,KT_VARKEY,sizeof(PageID)); tp->info.level=depth-1;
+			TreePageMgr::VarKey *vk=(TreePageMgr::VarKey*)(tp+1);
+			TreePageMgr::SubTreePage *sp=(TreePageMgr::SubTreePage*)buf;
+			TreePageMgr::SubTreePageKey *pk=(TreePageMgr::SubTreePageKey*)(sp+1);
+			tp->info.freeSpaceLength-=nKeys*sizeof(TreePageMgr::VarKey); tp->info.nEntries=tp->info.nSearchKeys=nKeys;
+			for (unsigned i=0; i<nKeys; i++,pk++,vk++) {tp->store(buf+pk->key.offset,pk->key.len,vk->ptr); vk->pageID=pk->pageID;}
+			tp->info.leftMost=sp->leftMost; sp->leftMost=npg; sp->level++;
+			freeSpace=lbuf; freeSpaceLength=lbuf-sizeof(TreePageMgr::SubTreePage); nKeys=0; didx++;
+#ifdef _DEBUG
+			tp->compact(true);
+#endif
+		}
+	}
+	return RC_OK;
+}
+
+RC SubTreeInit::flush(Session *ses)
+{
+	RC rc=RC_OK;
+	if (depth!=0) {
+		StoreCtx *ctx=ses->getStore();
+		for (unsigned i=depth; i--!=0; ) {
+			PBlock *pb=stack[i];
+			if (ctx->memory!=NULL) pb->resetNewPage();
+			else {
+				// rec, lrec
+				ctx->logMgr->insert(ses,LR_CREATE,(MO_PAGEINIT<<TRO_SHIFT|TRO_MULTI)<<PGID_SHIFT|ctx->trpgMgr->getPGID(),pb->getPageID(),NULL,NULL,0,LRC_LUNDO,pb);
+			}
+#ifdef _DEBUG
+			((TreePageMgr::TreePage*)pb->getPageBuf())->compact(true);
+#endif
+			pb->release(QMGR_UFORCE);
+		}
+	}
+	if (freeSpaceLength!=0) {
+		if (nKeys==0) {assert(freeSpaceLength+(depth==0?0:sizeof(TreePageMgr::SubTreePage))==lbuf);}
+		else if (depth==0) {
+			memmove(buf+nKeys*L_SHT,buf+freeSpace,lbuf-freeSpace); for (unsigned i=0; i<nKeys; i++) ((uint16_t*)buf)[i]-=freeSpaceLength;
+		} else {
+			memmove(buf+sizeof(TreePageMgr::SubTreePage)+nKeys*sizeof(TreePageMgr::SubTreePageKey),buf+freeSpace,lbuf-freeSpace);
+			for (unsigned i=0; i<nKeys; i++) ((TreePageMgr::SubTreePageKey*)(buf+sizeof(TreePageMgr::SubTreePage)))[i].key.offset-=freeSpaceLength;
+		}
+	}
+	return rc;
 }

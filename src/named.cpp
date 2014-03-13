@@ -1,6 +1,6 @@
 /**************************************************************************************
 
-Copyright © 2004-2013 GoPivotal, Inc. All rights reserved.
+Copyright © 2004-2014 GoPivotal, Inc. All rights reserved.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -37,8 +37,8 @@ NamedMgr::NamedMgr(StoreCtx *ct)
 const BuiltinURI NamedMgr::builtinURIs[] = {
 	{S_L("Classes"),		CLASS_OF_CLASSES},
 	{S_L("Timers"),			CLASS_OF_TIMERS},
-	{S_L("Loaders"),		CLASS_OF_LOADERS},
 	{S_L("Listeners"),		CLASS_OF_LISTENERS},
+	{S_L("Loaders"),		CLASS_OF_LOADERS},
 	{S_L("Packages"),		CLASS_OF_PACKAGES},
 	{S_L("NamedObjects"),	CLASS_OF_NAMED},
 	{S_L("Enumerations"),	CLASS_OF_ENUMS},
@@ -190,31 +190,34 @@ RC NamedMgr::restoreXPropID(Session *ses)
 	return RC_OK;
 }
 
-RC NamedMgr::loadObjects(Session *ses)
+RC NamedMgr::loadObjects(Session *ses,bool fSafe)
 {
 	RC rc=RC_OK;
 	if (!fInit) {
 		MutexP lck(&lock);
 		if (!fInit) {
 			PINx cb(ses),*pcb=&cb;
-			{QCtx qc(ses); qc.ref(); ClassScan cs(&qc,CLASS_OF_CLASSES,QO_HIDDEN); cs.connect(&pcb);
-			while ((rc=cs.next())==RC_OK && (rc=ctx->queryMgr->getBody(cb))==RC_OK && (rc=ClassCreate::loadClass(cb))==RC_OK);}
+			{QCtx qc(ses); qc.ref(); ClassScan cs(&qc,CLASS_OF_LOADERS,QO_HIDDEN); cs.connect(&pcb);
+			while ((rc=cs.next())==RC_OK && (rc=ctx->queryMgr->getBody(cb))==RC_OK && (rc=LoadService::loadLoader(cb))==RC_OK);}
 
 			if (rc==RC_OK || rc==RC_EOF) {
-				QCtx qc(ses); qc.ref(); ClassScan cs(&qc,CLASS_OF_LOADERS,QO_HIDDEN); cs.connect(&pcb);
-				while ((rc=cs.next())==RC_OK && (rc=ctx->queryMgr->getBody(cb))==RC_OK && (rc=LoadService::loadLoader(cb))==RC_OK);
+				QCtx qc(ses); qc.ref(); ClassScan cs(&qc,CLASS_OF_CLASSES,QO_HIDDEN); cs.connect(&pcb);
+				while ((rc=cs.next())==RC_OK && (rc=ctx->queryMgr->getBody(cb))==RC_OK && (rc=ClassCreate::loadClass(cb,fSafe))==RC_OK);
 			}
-			if (rc==RC_OK || rc==RC_EOF) {
-				QCtx qc(ses); qc.ref(); ClassScan cs(&qc,CLASS_OF_FSMCTX,QO_HIDDEN); cs.connect(&pcb);
-				while ((rc=cs.next())==RC_OK && (rc=ctx->queryMgr->getBody(cb))==RC_OK && (rc=StartFSM::loadFSM(cb))==RC_OK);
-			}
-			if (rc==RC_OK || rc==RC_EOF) {
-				QCtx qc(ses); qc.ref(); ClassScan cs(&qc,CLASS_OF_LISTENERS,QO_HIDDEN); cs.connect(&pcb);
-				while ((rc=cs.next())==RC_OK && (rc=ctx->queryMgr->getBody(cb))==RC_OK && (rc=StartListener::loadListener(cb))==RC_OK);
-			}
-			if (rc==RC_OK || rc==RC_EOF) {
-				QCtx qc(ses); qc.ref(); ClassScan cs(&qc,CLASS_OF_TIMERS,QO_HIDDEN); cs.connect(&pcb);
-				while ((rc=cs.next())==RC_OK && (rc=ctx->queryMgr->getBody(cb))==RC_OK && (rc=ctx->tqMgr->loadTimer(cb))==RC_OK);
+
+			if (!fSafe) {
+				if (rc==RC_OK || rc==RC_EOF) {
+					QCtx qc(ses); qc.ref(); ClassScan cs(&qc,CLASS_OF_FSMCTX,QO_HIDDEN); cs.connect(&pcb);
+					while ((rc=cs.next())==RC_OK && (rc=ctx->queryMgr->getBody(cb))==RC_OK && (rc=StartFSM::loadFSM(cb))==RC_OK);
+				}
+				if (rc==RC_OK || rc==RC_EOF) {
+					QCtx qc(ses); qc.ref(); ClassScan cs(&qc,CLASS_OF_LISTENERS,QO_HIDDEN); cs.connect(&pcb);
+					while ((rc=cs.next())==RC_OK && (rc=ctx->queryMgr->getBody(cb))==RC_OK && (rc=StartListener::loadListener(cb))==RC_OK);
+				}
+				if (rc==RC_OK || rc==RC_EOF) {
+					QCtx qc(ses); qc.ref(); ClassScan cs(&qc,CLASS_OF_TIMERS,QO_HIDDEN); cs.connect(&pcb);
+					while ((rc=cs.next())==RC_OK && (rc=ctx->queryMgr->getBody(cb))==RC_OK && (rc=ctx->tqMgr->loadTimer(cb))==RC_OK);
+				}
 			}
 			fInit=true; if (rc==RC_EOF) rc=RC_OK;
 		}
@@ -256,7 +259,7 @@ bool NamedMgr::exists(URIID uid)
 RC NamedMgr::getNamedPID(URIID uid,PID& id)
 {
 	SearchKey key((uint64_t)uid); byte buf[XPINREFSIZE]; size_t l=sizeof(buf);
-	RC rc=find(key,buf,l); if (rc==RC_OK) {PINRef pr(ctx->storeID,buf,l); id=pr.id;}
+	RC rc=find(key,buf,l); if (rc==RC_OK) {PINRef pr(ctx->storeID,buf); id=pr.id;}
 	return rc;
 }
 
@@ -264,12 +267,20 @@ RC NamedMgr::getNamed(URIID uid,PINx& cb,bool fUpdate)
 {
 	SearchKey key((uint64_t)uid); byte buf[XPINREFSIZE]; size_t l=sizeof(buf);
 	RC rc=find(key,buf,l); if (rc!=RC_OK) return rc;
-	PINRef pr(ctx->storeID,buf,l); cb=pr.id; if ((pr.def&PR_ADDR)!=0) cb=pr.addr;
+	PINRef pr(ctx->storeID,buf); cb=pr.id; if ((pr.def&PR_ADDR)!=0) cb=pr.addr;
 	return ctx->queryMgr->getBody(cb,fUpdate?TVO_UPD:TVO_READ);
 }
 
 RC NamedMgr::update(URIID id,PINRef& pr,uint16_t meta,bool fInsert)
 {
 	SearchKey key((uint64_t)id); byte buf[XPINREFSIZE]; pr.u1=meta; pr.def|=PR_U1;
-	return fInsert?insert(key,buf,pr.enc(buf)):TreeGlobalRoot::update(key,NULL,0,buf,pr.enc(buf));
+	return fInsert?insert(key,buf,pr.enc(buf),0,true):TreeGlobalRoot::update(key,NULL,0,buf,pr.enc(buf));
+}
+
+const char *NamedMgr::getTraceName(URI *uri,size_t& l) const
+{
+	const StrLen *nm=uri!=NULL?uri->getName():NULL; if (nm==NULL) {l=3; return "???";}
+	const char *p=nm->str; l=nm->len;
+	if (l>lStorePrefix && memcmp(p,storePrefix,lStorePrefix)==0) {p+=lStorePrefix; l-=lStorePrefix;}
+	return p;
 }

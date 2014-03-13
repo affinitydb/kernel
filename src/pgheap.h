@@ -1,6 +1,6 @@
 /**************************************************************************************
 
-Copyright © 2004-2013 GoPivotal, Inc. All rights reserved.
+Copyright © 2004-2014 GoPivotal, Inc. All rights reserved.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -71,7 +71,7 @@ namespace AfyKernel
 {
 
 enum HeapObjType	{HO_PIN,HO_BLOB,HO_SSVALUE,HO_FORWARD,HO_ALL};
-enum HPOP			{HPOP_INSERT,HPOP_EDIT,HPOP_DELETE,HPOP_PURGE,HPOP_PINOP,HPOP_MIGRATE,HPOP_SETFLAG,HPOP_ALL};
+enum HPOP			{HPOP_INSERT,HPOP_EDIT,HPOP_DELETE,HPOP_PURGE,HPOP_PINOP,HPOP_MIGRATE,HPOP_ALL};
 enum HeapDataFmt	{HDF_COMPACT,HDF_SHORT,HDF_NORMAL,HDF_LONG};
 
 struct HType
@@ -82,8 +82,9 @@ struct HType
 	ValueType	getType() const {return ValueType(type&0x3f);}
 	HeapDataFmt	getFormat() const {return HeapDataFmt(type>>6);}
 	bool		isCompact() const {return (type&0xC0)==(HDF_COMPACT<<6);}
-	bool		isCollection() const {return (type&0x3f)==VT_ARRAY;}
-	bool		isCompound() const {return (unsigned)((type&0x3f)-VT_ARRAY)<=(unsigned)(VT_MAP-VT_ARRAY);}
+	bool		isCompound() const {return (unsigned)((type&0x3f)-VT_COLLECTION)<=(unsigned)(VT_MAP-VT_COLLECTION);}
+	bool		isCollection() const {return (type&0x3f)==VT_COLLECTION;}
+	bool		isArray() const {return (type&0x3f)==VT_ARRAY;}
 	bool		isString() const {return (type&0x3f)==VT_STRING;}
 	bool		isLOB() const {return (type&0x3f)==VT_STREAM;}
 	bool		canBeSSV() const {byte ty=type&0x3f; return ty>=VT_STRING && ty<=VT_URL || ty==VT_STMT || ty==VT_EXPR;}
@@ -200,6 +201,18 @@ protected:
 		HeapExtMapPage	pages[1];
 		HeapExtMap() : nElements(0),anchor(INVALID_PAGEID),leftmost(INVALID_PAGEID),level(0),nPages(0) {pages[0].key=0; pages[0].page=INVALID_PAGEID;}
 	};
+	struct HeapArray {
+		uint16_t		xdim;
+		uint16_t		ydim;
+		uint16_t		start;
+		uint8_t			type;
+		uint8_t			flags;
+		uint16_t		lelt;
+		uint16_t		nelts;
+		ushort			length() const {return sizeof(HeapArray)+xdim*ydim*lelt+(flags&6);}
+		void			*data() const {return (byte*)(this+1)+((flags&0x38)>>3);}
+		void			setAlign(uint8_t align) {flags=(flags&~0x38)|(align&6)<<3;}
+	};
 	struct HeapLOB {
 		HeapObjHeader	hdr;
 		byte			prev[PageAddrSize];
@@ -219,8 +232,9 @@ protected:
 		TypedPtr		oldData;
 	};
 	struct HeapPINMod {
-		uint16_t		nops;
+		uint32_t		nops;
 		uint16_t		descr;
+		uint16_t		odscr;
 		HeapPropMod		ops[1];
 	};
 	struct HeapSetFlag {
@@ -268,18 +282,16 @@ protected:
 		PageOff			getOffset(PageIdx idx) const {PageOff off=checkIdx(idx)?(*this)[idx]:0; return off;}
 		HeapObjHeader	*getObject(PageOff off) const {return off==0||(off&1)!=0?NULL:(HeapObjHeader*)((char*)this+off);}
 		PageOff&		operator[](PageIdx idx) const {return ((PageOff*)((byte*)this+hdr.length()-FOOTERSIZE))[-idx-1];}
-		unsigned			countRefs(const HeapV *hprop) const;
+		unsigned		countRefs(const HeapV *hprop) const;
 		void			getRefs(const HeapV *hprop,PID *pids,unsigned xPids) const;
 		void			getRef(PID& id,HeapDataFmt fmt,PageOff offs) const;
 	};
 #pragma pack()
-	static const struct HeapTypeInfo {
-		ushort			length;
-		ushort			align;
-	}					typeInfo[];
 	static const ushort	refLength[4];
+	static	void	alignArray(byte *frame,HeapV *hprop);
 	static	ushort	adjustCompound(byte *frame,HeapV *hprop,ushort sht,StoreCtx *ctx=NULL);
 	static	ushort	moveCompound(HType vt,byte *dest,PageOff doff,const byte *src,PageOff soff);
+	static	ushort	moveArray(HType vt,byte *dest,PageOff doff,const byte *src,PageOff soff,bool fAlign);
 	static	ushort	moveData(byte *dest,const byte *src,HType vt) {assert(!vt.isCompound()); ushort size=dataLength(vt,src); memcpy(dest,src,size); return size;}
 	static	ushort	collDescrSize(const HeapExtCollection *bc) {return bc==NULL?0:sizeof(HeapExtCollection)+ushort(bc->nPages>0?(bc->nPages-1)*sizeof(HeapExtCollPage):0);}
 	static	HeapExtCollection *copyDescr(const HeapExtCollection *c,MemAlloc *ma) {size_t len=collDescrSize(c); byte *p=(byte*)ma->malloc(len); if (p!=NULL) memcpy(p,c,len); return (HeapExtCollection*)p;}
@@ -296,12 +308,12 @@ protected:
 		};
 		HashTab<HeapPageSpace,PageID,&HeapPageSpace::list>	spaceTab;
 		HeapPageSpace										**pageTab;
-		unsigned												nPages;
+		unsigned											nPages;
 		Mutex												lock;
 	public:
 		HeapSpace(MemAlloc *ma) : spaceTab(SPACE_HASH_SIZE,ma),pageTab(NULL),nPages(0) {}
-		RC		set(StoreCtx *ctx,PageID,size_t,bool fAdd=true);
-		RC		getPage(size_t size,class PBlock*& pb,HeapPageMgr *mgr);
+		RC			set(StoreCtx *ctx,PageID,size_t,bool fAdd=true);
+		RC			getPage(size_t size,class PBlock*& pb,HeapPageMgr *mgr);
 		unsigned	find(const HeapPageSpace *hps) const {
 			assert(hps!=NULL); unsigned i=0;
 			if (pageTab!=NULL) for (unsigned n=nPages; n>0; ) {
@@ -314,8 +326,8 @@ protected:
 	} freeSpace;
 
 public:
-	static	size_t	contentSize(size_t lPage) {return lPage - sizeof(HeapPage) - FOOTERSIZE;}
-	static	ushort	dataLength(HType vt,const byte *pData,const byte *frame=NULL,unsigned *idxMask=NULL);
+	static	size_t		contentSize(size_t lPage) {return lPage - sizeof(HeapPage) - FOOTERSIZE;}
+	static	ushort		dataLength(HType vt,const byte *pData,const byte *frame=NULL,unsigned *idxMask=NULL);
 	static	unsigned	getPrefix(const PID& id);
 public:
 	HeapPageMgr(StoreCtx*,PGID);
