@@ -14,7 +14,7 @@ WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the
 License for the specific language governing permissions and limitations
 under the License.
 
-Written by Adam Back and Mark Venguerov 2004-2013
+Written by Adam Back and Mark Venguerov 2004-2014
 
 **************************************************************************************/
 
@@ -69,7 +69,7 @@ const static char b64dt[256] =
 RC AfyKernel::base64enc(const byte *buf,size_t lbuf,char *str,size_t& lstr)
 {
 	if (str==NULL || lstr==0 || buf==NULL || lbuf==0) return RC_INVPARAM;
-	size_t l=((lbuf+2)/3)*4; if (l>lstr) return RC_NORESOURCES;
+	size_t l=((lbuf+2)/3)*4; if (l>lstr) return RC_NOMEM;
 	const byte *bend3=buf+lbuf/3*3; lstr=l;
     while (buf<bend3) {
         uint32_t u=(uint32_t)buf[0]<<16|(uint32_t)buf[1]<<8|buf[2]; buf+=3;
@@ -88,7 +88,7 @@ RC AfyKernel::base64dec(const char *str,size_t lstr,byte *buf,size_t& lbuf)
 	if (str==NULL || lstr==0 || lstr%4!=0 || buf==NULL || lbuf==0) return RC_INVPARAM;
 	byte *bend=buf+lbuf,*buf0=buf;
 	for (const char *end=str+lstr; str<end; str+=4,buf+=3) {
-		if (buf+3>bend) return RC_NORESOURCES;
+		if (buf+3>bend) return RC_NOMEM;
 		int a0=b64dt[(byte)str[0]],a1=b64dt[(byte)str[1]],a2=b64dt[(byte)str[2]],a3=b64dt[(byte)str[3]];
 		if ((a0|a1|a2|a3)<0) return RC_CORRUPTED;
 		buf[0]=a0<<2|a1>>4; buf[1]=a1<<4|a2>>2; buf[2]=a2<<6|a3;
@@ -579,7 +579,7 @@ RC CryptService::create(IServiceCtx *ctx,uint32_t& dscr,IService::Processor *&re
 	const byte *key=NULL; unsigned lkey=0; uint32_t d=dscr&ISRV_PROC_MASK;
 	if (d!=ISRV_READ && d!=ISRV_WRITE) return RC_INVOP;
 	// get key, lkey from ctx
-	if ((ret=new(ctx) CryptProcessor(key,lkey,d==ISRV_READ))==NULL) return RC_NORESOURCES;
+	if ((ret=new(ctx) CryptProcessor(key,lkey,d==ISRV_READ))==NULL) return RC_NOMEM;
 	if (d==ISRV_WRITE) dscr|=ISRV_ENVELOPE;
 	return RC_OK;
 }

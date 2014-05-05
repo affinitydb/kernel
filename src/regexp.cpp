@@ -14,7 +14,7 @@ WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the
 License for the specific language governing permissions and limitations
 under the License.
 
-Written by Mark Venguerov 2004-2012
+Written by Mark Venguerov 2004-2014
 
 **************************************************************************************/
 
@@ -717,6 +717,7 @@ RC RegexService::RegexProcessor::invoke(IServiceCtx *ctx,const Value& inp,Value&
 	Session *ses=(Session*)ctx->getSession(); RExpCtx rctx(ses); // continue, flush?
 	RC rc=MatchCtx::match(inp.str,inp.length,re,rctx,flags);
 	if (rc==RC_TRUE) {EvalCtx ctx(ses); ctx.rctx=&rctx; rc=ses->getStore()->queryMgr->eval(&render,ctx,&out);} else if (rc==RC_FALSE) rc=RC_OK;
+	mode|=ISRV_EOM;		// if /g -> stream with EOS
 	return rc;
 }
 
@@ -734,7 +735,7 @@ RC RegexService::create(IServiceCtx *ctx,uint32_t& dscr,Processor *&ret)
 //		break;
 	case VT_BSTR:
 		if (ptrn->fcalc==0) return RC_INVPARAM;
-		if ((re=(byte*)ctx->malloc(ptrn->length))==NULL) return RC_NORESOURCES;
+		if ((re=(byte*)ctx->malloc(ptrn->length))==NULL) return RC_NOMEM;
 		memcpy(re,ptrn->bstr,ptrn->length); break;
 	}
 	Value rnd; rnd.setError(); RC rc=RC_OK;
@@ -744,7 +745,7 @@ RC RegexService::create(IServiceCtx *ctx,uint32_t& dscr,Processor *&ret)
 	case VT_STRUCT: case VT_REF: case VT_EXPR: case VT_COLLECTION: 
 		if (prot->fcalc==0) rc=RC_INVPARAM; break;
 	}
-	if (rc==RC_OK && (rc=copyV(*prot,rnd,(ServiceCtx*)ctx))==RC_OK && (ret=new(ctx) RegexProcessor(re,rnd,flg))==NULL) rc=RC_NORESOURCES;
+	if (rc==RC_OK && (rc=copyV(*prot,rnd,(ServiceCtx*)ctx))==RC_OK && (ret=new(ctx) RegexProcessor(re,rnd,flg))==NULL) rc=RC_NOMEM;
 	if (rc!=RC_OK) {ctx->free(re); freeV(rnd);}
 	return rc;
 }

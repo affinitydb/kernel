@@ -14,7 +14,7 @@ WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the
 License for the specific language governing permissions and limitations
 under the License.
 
-Written by Mark Venguerov 2004-2012
+Written by Mark Venguerov 2004-2014
 
 **************************************************************************************/
 
@@ -51,7 +51,7 @@ FSMgr::~FSMgr()
 
 void *FSMgr::operator new(size_t s,StoreCtx *ctx)
 {
-	void *p=ctx->malloc(s); if (p==NULL) throw RC_NORESOURCES; return p;
+	void *p=ctx->malloc(s); if (p==NULL) throw RC_NOMEM; return p;
 }
 
 RC FSMgr::init(FileID fid)
@@ -66,7 +66,7 @@ RC FSMgr::init(FileID fid)
 	lExtentTable = unsigned(ctx->theCB->nDirPages*lPage/sizeof(ExtentDirPage::DirSlot));
 	if (lExtentTable<20) lExtentTable = 20;
 	extentTable = (ExtentInfo**)ctx->malloc(lExtentTable*sizeof(ExtentInfo*));
-	if (extentTable==NULL) {lock.unlock(); return RC_NORESOURCES;}
+	if (extentTable==NULL) {lock.unlock(); return RC_NOMEM;}
 	if (ctx->theCB->nDirPages>2) ctx->bufMgr->prefetch(ctx->theCB->dirPages,ctx->theCB->nDirPages,&extentDirPage);
 	for (unsigned i=0; i<ctx->theCB->nDirPages; i++) {
 		pb=ctx->bufMgr->getPage((PageID)ctx->theCB->dirPages[i],&extentDirPage,0,pb);
@@ -78,10 +78,10 @@ RC FSMgr::init(FileID fid)
 				if (nExtents>=lExtentTable) {
 					lExtentTable += lExtentTable/4;
 					extentTable = (ExtentInfo**)ctx->realloc(extentTable,lExtentTable*sizeof(ExtentInfo*));
-					if (extentTable==NULL) {pb->release(); lock.unlock(); return RC_NORESOURCES;}
+					if (extentTable==NULL) {pb->release(); lock.unlock(); return RC_NOMEM;}
 				}
 				ExtentInfo *ext = extentTable[nExtents++] = new(ctx) ExtentInfo;
-				if (ext==NULL) {pb->release(); lock.unlock(); return RC_NORESOURCES;}
+				if (ext==NULL) {pb->release(); lock.unlock(); return RC_NOMEM;}
 				ext->extentStart = ds->extentStart;
 				ext->nPages = ds->nPages&~FREEPAGEFLAG;
 				ext->dirPage = pb->getPageID();
@@ -110,7 +110,7 @@ RC FSMgr::create(FileID fid)
 	lExtentTable = 20;
 	extentTable = (ExtentInfo**)ctx->malloc(lExtentTable*sizeof(ExtentInfo*));
 	lock.unlock();
-	if (extentTable==NULL) return RC_NORESOURCES;
+	if (extentTable==NULL) return RC_NOMEM;
 	ExtentInfo *ext=NULL; PBlock *pb=NULL;  
 	RC rc = allocNewExtent(ext,pb);
 	if (rc==RC_OK) pb->release();
@@ -182,7 +182,7 @@ RC FSMgr::allocPages(unsigned nPages,PageID *buf,PBlock **pAllocPage)
 	if (!ses->inWriteTx() && pAllocPage==NULL) return RC_READTX;
 	if (ses!=NULL && (unsigned)ses->tx.defFree!=0) while ((buf[nAlloc]=ses->tx.defFree.pop())!=INVALID_PAGEID)
 		if (++nAlloc==nPages) {if (pAllocPage!=NULL) *pAllocPage=NULL; return RC_OK;}
-	uint32_t *rec=(uint32_t*)alloca(nPages*2*sizeof(uint32_t)); if (rec==NULL) return RC_NORESOURCES;
+	uint32_t *rec=(uint32_t*)alloca(nPages*2*sizeof(uint32_t)); if (rec==NULL) return RC_NOMEM;
 	RWLockP lck(&txLock,RW_S_LOCK);
 	for (PBlock *pb=NULL;;) {
 		lock.lock(RW_S_LOCK); ExtentInfo *ext=extentList.getFirst(); lock.unlock();
@@ -268,7 +268,7 @@ RC FSMgr::allocNewExtent(ExtentInfo*& ext,PBlock*& pb,bool fForce)
 	} else {
 		if (slotsLeft==0) {
 			if (ctx->theCB->nDirPages>=MAXDIRPAGES) {
-				report(MSG_CRIT,"FSMgr: Too many directory pages\n"); return RC_NORESOURCES;
+				report(MSG_CRIT,"FSMgr: Too many directory pages\n"); return RC_NOMEM;
 			}
 			// can be in master file?
 			dir.newPage(PageIDFromPageNum(dataFile,unsigned(addr/lPage)),&extentDirPage);
@@ -276,15 +276,15 @@ RC FSMgr::allocNewExtent(ExtentInfo*& ext,PBlock*& pb,bool fForce)
 		}
 		PageID pid=PageIDFromPageNum(dataFile,unsigned(addr/lPage));
 		if ((pb=ctx->bufMgr->newPage(pid,&extentMapPage,pb))==NULL) {
-			report(MSG_CRIT,"FSMgr: Cannot allocate directory page\n"); return RC_NORESOURCES;
+			report(MSG_CRIT,"FSMgr: Cannot allocate directory page\n"); return RC_NOMEM;
 		}
 		if (nExtents>=lExtentTable) {
 			lExtentTable += lExtentTable/4;
 			extentTable=(ExtentInfo**)ctx->realloc(extentTable,lExtentTable*sizeof(ExtentInfo*));
-			if (extentTable==NULL) {pb->release(); pb=NULL; return RC_NORESOURCES;}
+			if (extentTable==NULL) {pb->release(); pb=NULL; return RC_NOMEM;}
 		}
 		ext=extentTable[nExtents++]=new(ctx) ExtentInfo; fNewExtent=true;
-		if (ext==NULL) {pb->release(); pb=NULL; return RC_NORESOURCES;}
+		if (ext==NULL) {pb->release(); pb=NULL; return RC_NOMEM;}
 		ext->extentStart=pid;
 		ext->nPages=nNewPages - 1;
 		ext->nFreePages=nNewPages - 1;
@@ -335,7 +335,7 @@ RC FSMgr::freePage(PageID pid)
 {
 	Session *ses=Session::getSession();
 	if (ses!=NULL && ses->getTxState()==TX_ACTIVE) {
-		// check max size, if > -> return RC_NORESOURCES;
+		// check max size, if > -> return RC_NOMEM;
 		assert(!ses->tx.defFree[pid]); return ses->tx.defFree+=pid;
 	}
 	if (ctx->bufMgr->exists(pid)) ctx->bufMgr->drop(pid);	// in case somebody ressurected it
@@ -379,22 +379,29 @@ bool FSMgr::isFreePage(PageID pid)
 	return rc;
 }
 
-RC FSMgr::reservePage(PageID pid)
+RC FSMgr::reservePages(const uint32_t *pages,unsigned nPages)
 {
-	if (Session::getSession()->inReadTx()) return RC_READTX;
-	ExtentInfo *ext=findExtent(pid,true); PBlock *pb=NULL; RC rc=RC_OK;
-	if (ext==NULL) for (;;) {
-		rc=allocNewExtent(ext,pb,true); if (rc!=RC_OK) return rc;
-		assert(ext!=NULL && pb!=NULL);
-		if (pid==ext->extentStart) return RC_CORRUPTED;
-		if (pid>ext->extentStart && pid<ext->extentStart+ext->nPages) break;
-	} else if ((pb=getExtentMapPage(ext,NULL))==NULL) return RC_CORRUPTED;
-	const ExtentMapPage::ExtentMapHeader *ep=(const ExtentMapPage::ExtentMapHeader*)pb->getPageBuf();
-	if (extentMapPage.isFree(ep,pid-ext->extentStart-1)) {
-		rc=ctx->txMgr->update(pb,&extentMapPage,pid-ext->extentStart-1); ext->state|=EXTMAP_MODIFIED;
-		if (--ext->nFreePages==0) {lock.lock(RW_X_LOCK); ext->list.remove(); lock.unlock();}
+	RC rc=RC_OK;
+	if (Session::getSession()->inReadTx()) rc=RC_READTX;
+	else if (pages!=NULL && nPages!=0) {
+		ExtentInfo *ext=NULL; PBlock *pb=NULL;
+		for (unsigned i=0; i<nPages; i++) {
+			PageID pid=(PageID)pages[i];
+			if (ext!=NULL && (pid<=ext->extentStart || pid>=ext->extentStart+ext->nPages))
+				{ext=NULL; if (pb!=NULL) {pb->release(); pb=NULL;}}
+			if (ext==NULL && (ext=findExtent(pid,true))==NULL) for (;;) {
+				if ((rc=allocNewExtent(ext,pb,true))!=RC_OK) return rc; assert(ext!=NULL && pb!=NULL);
+				if (pid==ext->extentStart) return RC_CORRUPTED;
+				if (pid>ext->extentStart && pid<ext->extentStart+ext->nPages) break;
+			} else if (pb==NULL && (pb=getExtentMapPage(ext,NULL))==NULL) return RC_CORRUPTED;
+			const ExtentMapPage::ExtentMapHeader *ep=(const ExtentMapPage::ExtentMapHeader*)pb->getPageBuf();
+			if (extentMapPage.isFree(ep,pid-ext->extentStart-1)) {
+				rc=ctx->txMgr->update(pb,&extentMapPage,pid-ext->extentStart-1); ext->state|=EXTMAP_MODIFIED;		// all pages in one update!
+				if (--ext->nFreePages==0) {lock.lock(RW_X_LOCK); ext->list.remove(); lock.unlock();}
+			}
+		}
+		if (pb!=NULL) pb->release();
 	}
-	pb->release();
 	return rc;
 }
 

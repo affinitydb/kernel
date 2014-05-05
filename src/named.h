@@ -77,7 +77,7 @@ public:
 	static	const char	*getBuiltinName(URIID uid,size_t& lname);
 	static	URIID		getBuiltinURIID(const char *name,size_t lname,bool fSrv);
 	static	uint16_t	getMeta(ClassID cid);
-	static	const		SpecPINProps specPINProps[9];
+	static	const		SpecPINProps specPINProps[11];
 private:
 	static	const		BuiltinURI	builtinURIs[];
 	static	const		unsigned	classMeta[MAX_BUILTIN_CLASSID+1];

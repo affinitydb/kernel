@@ -14,7 +14,7 @@ WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the
 License for the specific language governing permissions and limitations
 under the License.
 
-Written by Mark Venguerov 2004-2012
+Written by Mark Venguerov 2004-2014
 
 **************************************************************************************/
 
@@ -35,7 +35,7 @@ RC StoreCB::open(StoreCtx *ctx,const char *fname,const char *pwd,unsigned mode)
 	if (ctx->fileMgr==NULL) {
 		theCB=ctx->theCB=(StoreCB*)ctx->memory; assert(ctx->memory!=NULL && ctx->lMemory>sizeof(StoreCB));
 		if (theCB->totalMemUsed>ctx->lMemory) return RC_CORRUPTED;
-	} else if ((theCB=ctx->theCB=(StoreCB*)allocAligned(ctx->bufSize,lPage))==NULL) return RC_NORESOURCES;
+	} else if ((theCB=ctx->theCB=(StoreCB*)allocAligned(ctx->bufSize,lPage))==NULL) return RC_NOMEM;
 	else if ((rc=ctx->fileMgr->open(fid,fname))!=RC_OK || (rc=ctx->fileMgr->io(FIO_READ,PageIDFromPageNum(fid,0),theCB,ctx->bufSize))!=RC_OK) return rc;
 	if (pwd!=NULL && *pwd!='\0' || (theCB->flags&STORE_CREATE_PAGE_INTEGRITY)!=0) {
 		const char *key=pwd!=NULL&&*pwd!='\0'?pwd:DEFAULTHMACKEY;
@@ -52,7 +52,7 @@ RC StoreCB::open(StoreCtx *ctx,const char *fname,const char *pwd,unsigned mode)
 			memcpy(ctx->encKey0,crypt2.encrypted()+sizeof(uint32_t)+PWD_LSALT,ENC_KEY_SIZE);
 			AES aes(ctx->encKey0,ENC_KEY_SIZE,true);
 			aes.decrypt((byte*)theCB+sizeof(CryptInfo),STORECBSIZE-sizeof(CryptInfo),(uint32_t*)theCB->hdr.salt1+1);
-			if ((ctx->theCBEnc=(StoreCB*)allocAligned(ctx->bufSize,lPage))==NULL) {close(ctx); return RC_NORESOURCES;}
+			if ((ctx->theCBEnc=(StoreCB*)allocAligned(ctx->bufSize,lPage))==NULL) {close(ctx); return RC_NOMEM;}
 		}
 		if (theCB->magic!=STORECBMAGIC) rc=RC_CORRUPTED;
 		else if (theCB->version/100!=STORE_VERSION/100 || theCB->version%100>STORE_VERSION%100) rc=RC_VERSION;
@@ -79,7 +79,7 @@ RC StoreCB::create(StoreCtx *ctx,const char *fname,const StoreCreationParameters
 	assert(ctx!=NULL&&ctx->cryptoMgr!=NULL&&(fname!=NULL||ctx->fileMgr==NULL)); assert(sizeof(StoreCB)<=STORECBSIZE);
 	RC rc=RC_OK; FileID fid=0; off64_t addr; StoreCB *theCB=NULL; ctx->bufSize=(uint32_t)ceil(STORECBSIZE,cpar.pageSize);
 	if (ctx->fileMgr==NULL) {theCB=ctx->theCB=(StoreCB*)ctx->memory; assert(ctx->memory!=NULL && ctx->lMemory>sizeof(StoreCB));}
-	else if ((theCB=ctx->theCB=(StoreCB*)allocAligned(ctx->bufSize,cpar.pageSize))==NULL) return RC_NORESOURCES;
+	else if ((theCB=ctx->theCB=(StoreCB*)allocAligned(ctx->bufSize,cpar.pageSize))==NULL) return RC_NOMEM;
 	else {
 		if ((rc=ctx->fileMgr->open(fid,fname,FIO_CREATE|FIO_NEW))!=RC_OK) {
 			if (rc!=RC_ALREADYEXISTS) return rc;
@@ -115,7 +115,7 @@ RC StoreCB::create(StoreCtx *ctx,const char *fname,const StoreCreationParameters
 		memcpy(theCB->hdr.salt1,crypt.encrypted(),sizeof(uint32_t)+PWD_LSALT);
 		memcpy(ctx->HMACKey0,crypt.encrypted()+sizeof(uint32_t)+PWD_LSALT,HMAC_KEY_SIZE);
 		if (cpar.password!=NULL && *cpar.password!='\0') {
-			if ((ctx->theCBEnc=(StoreCB*)allocAligned(ctx->bufSize,cpar.pageSize))==NULL) rc=RC_NORESOURCES;
+			if ((ctx->theCBEnc=(StoreCB*)allocAligned(ctx->bufSize,cpar.pageSize))==NULL) rc=RC_NOMEM;
 			else {
 				PWD_ENCRYPT crypt2((byte*)cpar.password,strlen(cpar.password));
 				memcpy(theCB->hdr.salt2,crypt2.encrypted(),sizeof(uint32_t)+PWD_LSALT);
@@ -179,7 +179,7 @@ RC StoreCB::changePassword(class StoreCtx *ctx,const char *pwd)
 	if (pwd==NULL || *pwd=='\0') {
 		if (ctx->theCBEnc!=NULL) {freeAligned(ctx->theCBEnc); ctx->theCBEnc=NULL;}
 	} else if (ctx->theCBEnc==NULL && (ctx->theCBEnc=(StoreCB*)allocAligned(ctx->bufSize,ctx->bufMgr->getPageSize()))==NULL) 
-		return RC_NORESOURCES;
+		return RC_NOMEM;
 	else {
 		PWD_ENCRYPT crypt2((byte*)pwd,strlen(pwd));
 		memcpy(ctx->theCB->hdr.salt2,crypt2.encrypted(),sizeof(uint32_t)+PWD_LSALT);

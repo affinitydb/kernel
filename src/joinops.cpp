@@ -14,7 +14,7 @@ WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the
 License for the specific language governing permissions and limitations
 under the License.
 
-Written by Mark Venguerov 2004-2012
+Written by Mark Venguerov 2004-2014
 
 **************************************************************************************/
 
@@ -110,7 +110,7 @@ RC MergeIDs::loadData(PINx& qr,Value *pv,unsigned nv,ElementID eid,bool fSort,Me
 			// idxData?
 		}
 	}
-	return RC_NOTFOUND;
+	return rc;
 }
 
 void MergeIDs::print(SOutCtx& buf,int level) const
@@ -121,15 +121,15 @@ void MergeIDs::print(SOutCtx& buf,int level) const
 
 //------------------------------------------------------------------------------------------------
 
-MergeOp::MergeOp(QueryOp *qop1,QueryOp *qop2,const CondEJ *ce,unsigned ne,QUERY_SETOP qo,const Expr *const *cn,unsigned ncn,unsigned qf)
-	: QueryOp(qop1,qf|QO_JOIN|QO_UNIQUE),queryOp2(qop2),op(qo),ej(ce),nej(ne),conds(cn),nConds(ncn),didx(0),pexR(qx->ses),pR(&pexR),pids(NULL),
+MergeOp::MergeOp(QueryOp *qop1,QueryOp *qop2,const CondEJ *ce,unsigned ne,QUERY_SETOP qo,const Expr *cn,unsigned qf)
+	: QueryOp(qop1,qf|QO_JOIN|QO_UNIQUE),queryOp2(qop2),op(qo),ej(ce),nej(ne),cond(cn),didx(0),pexR(qx->ses),pR(&pexR),pids(NULL),
 	index1(NULL),index2(NULL),rvals((MemAlloc*)qop1->getQCtx()->ses),rvbuf(qop1->getQCtx()->ses),nRp(0),iRp(0),pV1(vls),pV2(vls+ne)
 {
 	const unsigned qf1=qop1->getQFlags(); qflags|=qf1&QO_IDSORT; nOuts+=qop2->getNOuts();
 	if ((qf1&qop2->getQFlags()&QO_UNIQUE)!=0 && ce->propID2==PROP_SPEC_PINID) qflags|=QO_UNIQUE;
 	sort=qop1->getSort(nSegs); props1.props=props2.props=NULL; props1.nProps=props2.nProps=0; props1.fFree=props2.fFree=false;
 	if (ne>1) {
-		if ((props1.props=(unsigned*)qx->ses->malloc(ne*(sizeof(unsigned)*2+sizeof(PropertyID)*2)))==NULL) throw RC_NORESOURCES;
+		if ((props1.props=(unsigned*)qx->ses->malloc(ne*(sizeof(unsigned)*2+sizeof(PropertyID)*2)))==NULL) throw RC_NOMEM;
 		props2.props=props1.props+ne; index1=(unsigned*)(props2.props+ne); index2=index1+ne; props1.fFree=true;
 		for (unsigned n=0; ce!=NULL; ce=ce->next,++n) {
 			PropertyID *ins,*pi=(PropertyID*)BIN<PropertyID>::find(ce->propID1,props1.props,props1.nProps,&ins);
@@ -140,11 +140,7 @@ MergeOp::MergeOp(QueryOp *qop1,QueryOp *qop2,const CondEJ *ce,unsigned ne,QUERY_
 			index2[n]=(unsigned)(pi-props2.props);
 		}
 	}
-	if ((qf&QO_VCOPIED)!=0 && cn!=NULL && ncn!=0) {
-		Expr **pex; if ((conds=pex=new(qx->ses) Expr*[ncn])==NULL) throw RC_NORESOURCES;
-		memset(pex,0,ncn*sizeof(Expr));
-		for (unsigned i=0; i<ncn; i++) if ((pex[i]=Expr::clone(cn[i],qx->ses))==NULL) throw RC_NORESOURCES;
-	}
+	if ((qf&QO_VCOPIED)!=0 && cn!=NULL && (cn=Expr::clone(cn,qx->ses))==NULL) throw RC_NOMEM;
 	for (unsigned i=0; i<ne; i++) {pV1[i].setError(); pV2[i].setError();}
 }
 
@@ -154,11 +150,7 @@ MergeOp::~MergeOp()
 	if (props1.props!=NULL) qx->ses->free(props1.props);
 	cleanup(pV1); cleanup(pV2);
 	if ((qflags&QO_VCOPIED)!=0) {
-		qx->ses->free((void*)ej);
-		if (nConds!=0) {
-			for (unsigned i=0; i<nConds; i++) if (conds[i]!=NULL) ((Expr*)conds[i])->destroy();
-			qx->ses->free((void*)conds);
-		}
+		qx->ses->free((void*)ej); if (cond!=NULL) ((Expr*)cond)->destroy();
 	}
 	delete queryOp2;
 }
@@ -243,10 +235,10 @@ RC MergeOp::advance(const PINx *skip)
 #endif
 		if (c>0) {
 			if ((state&QOS_STR)!=0) {
-				EncPINRef **pep=&rvals.add(); if (pep==NULL) {state|=QOS_EOF1|QOS_EOF2; return RC_NORESOURCES;}
+				EncPINRef **pep=&rvals.add(); if (pep==NULL) {state|=QOS_EOF1|QOS_EOF2; return RC_NOMEM;}
 				if (nej/*+nExtraV*/>1 || ej->propID1!=PROP_SPEC_PINID || !storeEPR(pep,*res)) {
 					EncPINRef *ep=*pep=storeValues(*res,nej/*+nExtraV*/,rvbuf);
-					if (ep==NULL) {state|=QOS_EOF1|QOS_EOF2; return RC_NORESOURCES;}
+					if (ep==NULL) {state|=QOS_EOF1|QOS_EOF2; return RC_NOMEM;}
 					if (nej/*+nExtraV*/>1 || ej->propID1!=PROP_SPEC_PINID)
 						memcpy((Value*)getStoredValues(ep),pV1,nej/*+nExtraV*/*sizeof(Value));
 				}
@@ -267,7 +259,7 @@ RC MergeOp::advance(const PINx *skip)
 				state|=(qflags&(QO_UNI1|QO_UNI2))==(QO_UNI1|QO_UNI2)?QOS_ADV1|QOS_ADV2:QOS_ADV1;
 				if (res->epr.buf[0]!=0 && PINRef::isColl(res->epr.buf) && (qflags&QO_UNIQUE)!=0) {
 					if (pids!=NULL) {if ((*pids)[*res]) continue;}
-					else if ((pids=new(qx->ses) PIDStore(qx->ses))==NULL) return RC_NORESOURCES;
+					else if ((pids=new(qx->ses) PIDStore(qx->ses))==NULL) return RC_NOMEM;
 					if ((rc=((*pids)+=*res))!=RC_OK) return rc;
 					PINRef::changeFColl(res->epr.buf,false);
 				}
@@ -277,10 +269,10 @@ RC MergeOp::advance(const PINx *skip)
 			case QO_UNI2: state|=QOS_ADV1; break;
 			case 0: 
 				if ((state&QOS_STR)!=0 || nRp==0) {
-					EncPINRef **pep=&rvals.add(); if (pep==NULL) {state|=QOS_EOF1|QOS_EOF2; return RC_NORESOURCES;}
+					EncPINRef **pep=&rvals.add(); if (pep==NULL) {state|=QOS_EOF1|QOS_EOF2; return RC_NOMEM;}
 					if (/*nExtraV!=0 ||*/!storeEPR(pep,*res)) {
 						EncPINRef *ep=*pep=storeValues(*res,0,rvbuf);
-						if (ep==NULL) {state|=QOS_EOF1|QOS_EOF2; return RC_NORESOURCES;}
+						if (ep==NULL) {state|=QOS_EOF1|QOS_EOF2; return RC_NOMEM;}
 						//if (nExtraV!=0) memcpy((Value*)getStoredValues(ep),pV1,nExtraV*sizeof(Value));
 					}
 					state|=QOS_ADV1|QOS_STR; nRp++;
@@ -290,9 +282,9 @@ RC MergeOp::advance(const PINx *skip)
 				}
 				break;
 			}
-			if (conds!=NULL) {
+			if (cond!=NULL) {
 				PIN *pp[2]={res,pR};
-				if (!Expr::condSatisfied(conds,nConds,EvalCtx(qx->ses,NULL,0,pp,2,qx->vals,QV_ALL,qx->ectx,qx->ses,(qflags&QO_CLASS)!=0?ECT_CLASS:ECT_QUERY))) continue;
+				if (!cond->condSatisfied(EvalCtx(qx->ses,NULL,0,pp,2,qx->vals,QV_ALL,qx->ectx,qx->ses,(qflags&QO_CLASS)!=0?ECT_CLASS:ECT_QUERY))) continue;
 			}
 			res->fReload=pR->fReload=1; return RC_OK;
 		}
@@ -354,7 +346,7 @@ RC HashOp::init()
 	if (queryOp2!=NULL) {
 		PINx qr(qx->ses),*pqr=&qr; queryOp2->connect(&pqr);
 		for (PINx qr2(qx->ses); (rc=queryOp2->next())==RC_OK; ) {
-			if (pids==NULL && (pids=new(qx->ses) PIDStore(qx->ses))==NULL) return RC_NORESOURCES;
+			if (pids==NULL && (pids=new(qx->ses) PIDStore(qx->ses))==NULL) return RC_NOMEM;
 			(*pids)+=qr;
 		}
 	}
@@ -380,14 +372,7 @@ void HashOp::print(SOutCtx& buf,int level) const
 
 NestedLoop::~NestedLoop()
 {
-	delete queryOp2;
-	if (conds!=NULL) {
-		if (nConds==1) cond->destroy();
-		else {
-			for (unsigned i=0; i<nConds; i++) conds[i]->destroy();
-			qx->ses->free(conds);
-		}
-	}
+	delete queryOp2; if (cond!=NULL) cond->destroy();
 }
 
 void NestedLoop::connect(PINx **results,unsigned nRes)
@@ -429,7 +414,7 @@ RC NestedLoop::advance(const PINx *skip)
 				//rc=getData()
 			}
 			if (rc!=RC_OK) {state|=QST_EOF; return rc;} PIN *pp[2]={res,pR}; 
-			if (conds==NULL || Expr::condSatisfied((const Expr* const*)(nConds>1?conds:&cond),nConds,EvalCtx(qx->ses,NULL,0,pp,2))) return RC_OK;
+			if (cond->condSatisfied(EvalCtx(qx->ses,NULL,0,pp,2))) return RC_OK;
 		}
 	}
 }

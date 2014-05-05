@@ -14,7 +14,7 @@ WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the
 License for the specific language governing permissions and limitations
 under the License.
 
-Written by Mark Venguerov 2004-2012
+Written by Mark Venguerov 2004-2014
 
 **************************************************************************************/
 
@@ -456,11 +456,11 @@ RC LogMgr::checkpoint()
 	LogDirtyPages *ldp=ctx->bufMgr->getDirtyPageInfo(maxLSN<logSegSize?LSN(0):maxLSN-logSegSize,
 								start,asyncPages,nAsyncPages,sizeof(asyncPages)/sizeof(asyncPages[0]));
 	LogActiveTransactions *lat=ctx->txMgr->getActiveTx(start);
-	if (ldp==NULL || lat==NULL) {bufferLock.unlock(); return RC_NORESOURCES;}
+	if (ldp==NULL || lat==NULL) {bufferLock.unlock(); return RC_NOMEM;}
 	assert(!fRecovery || lat->nTransactions==0);
 	size_t lAt=(size_t)lat->nTransactions*sizeof(LogActiveTransactions::LogActiveTx),lDp=(size_t)ldp->nPages*sizeof(LogDirtyPages::LogDirtyPage);
 	size_t lChkp=sizeof(uint64_t)+lAt+sizeof(uint64_t)+lDp; byte *pData=(byte*)ctx->malloc(lChkp);
-	if (pData==NULL) {rc=RC_NORESOURCES; bufferLock.unlock();}
+	if (pData==NULL) {rc=RC_NOMEM; bufferLock.unlock();}
 	else {
 		memcpy(pData,lat,+sizeof(uint64_t)+lAt);
 		memcpy(pData+sizeof(uint64_t)+lAt,ldp,sizeof(uint64_t)+lDp);

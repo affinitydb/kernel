@@ -14,7 +14,7 @@ WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the
 License for the specific language governing permissions and limitations
 under the License.
 
-Written by Mark Venguerov 2004-2012
+Written by Mark Venguerov 2004-2014
 
 **************************************************************************************/
 
@@ -35,7 +35,6 @@ namespace AfyKernel
 #define	ISRV_DELAYED		0x40000000
 #define	ISRV_RESUME			0x20000000
 #define	ISRV_INVOKE			0x10000000
-#define	ISRV_EOF			0x08000000
 
 #define	SCTX_DEFAULT_SIZE		0x300
 #define SCTX_DEFAULT_BUFSIZE	0x4000
@@ -57,6 +56,7 @@ class ServiceCtx : public IServiceCtx, public StackAlloc, public DLList
 		size_t		l;
 	};
 	struct ProcDscr {
+		IService			*srv;
 		IService::Processor	*proc;
 		URIID				sid;
 		uint32_t			dscr;
@@ -77,7 +77,7 @@ class ServiceCtx : public IServiceCtx, public StackAlloc, public DLList
 		BatchInsert	*batch;
 		ResAlloc(ServiceCtx *sct) : StackAlloc(sct->ses),sctx(sct),batch(NULL) {}
 		Value	*createValues(uint32_t nValues);
-		RC		createPIN(Value& result,const PID& id,Value *values,unsigned nValues,unsigned mode=0);
+		RC		createPIN(Value& result,Value *values,unsigned nValues,const PID *id=NULL,unsigned mode=0);
 		void	*malloc(size_t);
 		void	*realloc(void *,size_t,size_t=0);
 		void	free(void *);
@@ -88,7 +88,9 @@ public:
 	HChain<ServiceCtx>	list;
 	PID					id;
 	Value				action;
+	bool				fKeepalive;
 	const	bool		fWrite;
+	bool				fConnect;
 	IListener			*lst;
 	CommStackType		cst;
 	unsigned			sstate;
@@ -104,22 +106,28 @@ public:
 	PIN					*ctxPIN;
 	PINx				*pR;
 	BufCache			*bufCache;
-	uint64_t			msgLength;
 	StackAlloc::SubMark	cmark;
 	class	Cursor		*crs;
+	ServiceErrorType	set;
+	RC					srvrc;
+	const Value			*errInfo;
 private:
 	RC					build(const Value *vals,unsigned nVals);
 	RC					getProcessor(ProcDscr *prc,const Value *vals,unsigned nVals);
 	void				fill(ProcDscr *prc,IService *isrv,const Value *vals,unsigned nVals);
+	void				nextFlush() {for (;;) if (++flushIdx>=nProcs) {flushIdx=~0u; break;} else if ((procs[flushIdx].dscr&(ISRV_NEEDFLUSH|ISRV_DELAYED))!=0) break;}
 	ProcDscr			*flush(Value& inp) {
-		ProcDscr *prc=&procs[cur=flushIdx]; assert(flushIdx<nProcs && (prc->dscr&(ISRV_FLUSH|ISRV_DELAYED))!=0);
-		if ((prc->dscr&ISRV_FLUSH)!=0) {prc->dscr&=~ISRV_FLUSH; sstate|=ISRV_FLUSH; inp.setEmpty();}
+		ProcDscr *prc=&procs[cur=flushIdx]; assert(flushIdx<nProcs && (prc->dscr&(ISRV_NEEDFLUSH|ISRV_DELAYED))!=0); sstate|=ISRV_EOM;
+		if ((prc->dscr&ISRV_NEEDFLUSH)!=0) {prc->dscr&=~ISRV_NEEDFLUSH; inp.setEmpty();}
 		else {prc->dscr&=~ISRV_DELAYED; inp.set(prc->buf+prc->lHeader,(uint32_t)prc->lBuffer-prc->oleft); prc++; cur++;}
 		if (cst==CST_SERVER) sstate=(sstate&~ISRV_PROC_MASK)|(cur<=toggleIdx?ISRV_READ:ISRV_WRITE);
-		for (;;) if (++flushIdx>=nProcs) {flushIdx=~0u; break;} else if ((procs[flushIdx].dscr&(ISRV_FLUSH|ISRV_DELAYED))!=0) break;
-		return prc;
+		nextFlush(); return prc;
 	}
-	RC					createPIN(Value& result,const PID& id,Value *values,unsigned nValues,unsigned mode,ResAlloc *ra);
+	ProcDscr			*toggle() {
+		ProcDscr *prc=&procs[cur=resume=toggleIdx]; prc->prevIdx=resume; if ((prc->meta&META_PROP_ASYNC)==0) prc->dscr|=ISRV_WAIT; 
+		sstate=(sstate&~(ISRV_PROC_MASK|ISRV_EOM))|ISRV_READ; return prc;
+	}
+	RC					createPIN(Value& result,Value *values,unsigned nValues,const PID *id,unsigned mode,ResAlloc *ra);
 	RC					server(ProcDscr *prc,Value& inp,Value& out,unsigned& mode);
 	RC					commitPINs();
 	void				cleanup(bool fDestroy);
@@ -130,16 +138,19 @@ public:
 	void				*operator new(size_t s,MemAlloc *ma) {assert(s<SCTX_DEFAULT_SIZE); return ma->malloc(SCTX_DEFAULT_SIZE);}
 	RC					invoke(const Value *vals,unsigned nVals,PINx *pRes) {pR=pRes; return invoke(vals,nVals);}
 	RC					invoke(const Value *vals,unsigned nVals,Value *res=NULL);
+	void				error(ServiceErrorType etype,RC rc,const Value *info=NULL);
 	const PID&			getKey() const {return id;}
 	ISession			*getSession() const;
-	URIID				getServiceID() const;
 	const	Value		*getParameter(URIID prop) const;
 	void				getParameters(Value *vals,unsigned nVals) const;
 	IResAlloc			*getResAlloc();
 	RC					expandBuffer(Value&,size_t extra=0);
 	void				releaseBuffer(void *buf,size_t lbuf);
-	uint64_t			getMsgLength() const;
-	void				setMsgLength(uint64_t lMsg);
+	void				setReadMode(bool fWait);
+	void				getSocketDefaults(int& protocol,uint16_t& port) const;
+	void				setKeepalive(bool fSet=true);
+	bool				isKeepalive() const {return fKeepalive;}
+	URIID				getEndpointID(bool fOut=false) const;
 	IPIN				*getCtxPIN();
 	RC					getOSError() const;
 	void				destroy();

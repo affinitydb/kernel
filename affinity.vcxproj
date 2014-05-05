@@ -351,11 +351,11 @@
     <ClInclude Include="src\classifier.h" />
     <ClInclude Include="src\dlalloc.h" />
     <ClInclude Include="src\ecc.h" />
+    <ClInclude Include="src\event.h" />
     <ClInclude Include="src\fio.h" />
     <ClInclude Include="src\fiolinux.h" />
     <ClInclude Include="src\fioosx.h" />
     <ClInclude Include="src\fiowin.h" />
-    <ClInclude Include="src\fsm.h" />
     <ClInclude Include="src\fsmgr.h" />
     <ClInclude Include="src\ftindex.h" />
     <ClInclude Include="src\idxcache.h" />
@@ -406,11 +406,11 @@
     <ClCompile Include="src\ecc.cpp" />
     <ClCompile Include="src\errors.cpp" />
     <ClCompile Include="src\eval.cpp" />
+    <ClCompile Include="src\event.cpp" />
     <ClCompile Include="src\fio.cpp" />
     <ClCompile Include="src\fiolinux.cpp" />
     <ClCompile Include="src\fioosx.cpp" />
     <ClCompile Include="src\fiowin.cpp" />
-    <ClCompile Include="src\fsm.cpp" />
     <ClCompile Include="src\fsmgr.cpp" />
     <ClCompile Include="src\ftindex.cpp" />
     <ClCompile Include="src\ftproceng.cpp" />

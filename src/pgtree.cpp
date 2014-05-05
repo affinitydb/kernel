@@ -14,7 +14,7 @@ WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the
 License for the specific language governing permissions and limitations
 under the License.
 
-Written by Mark Venguerov 2004-2012
+Written by Mark Venguerov 2004-2014
 
 **************************************************************************************/
 
@@ -318,7 +318,7 @@ RC TreePageMgr::update(PBlock *pb,size_t len,unsigned info,const byte *rec,size_
 				report(MSG_ERROR,"TreePageMgr::update EDIT: insufficient space, requested %d, page %08X\n",lElt,tp->hdr.pageID);
 				return RC_PAGEFULL;
 			}
-			byte *p=new(SES_HEAP) byte[l]; if (p==NULL) return RC_NORESOURCES;
+			byte *p=new(SES_HEAP) byte[l]; if (p==NULL) return RC_NOMEM;
 			memcpy(p,ptr,l); fFree=true; ptr=p; vp->len=0; tp->info.scatteredFreeSpace+=l; 
 			if (tp->info.fmt.isFixedLenData()) tp->compact(false,idx); else {vp->len=0; tp->compact(false);}
 			tp->findData(idx,ll,(const PagePtr**)&vp); assert(unsigned(l+lElt)<=tp->info.freeSpaceLength);
@@ -365,7 +365,7 @@ RC TreePageMgr::update(PBlock *pb,size_t len,unsigned info,const byte *rec,size_
 				report(MSG_ERROR,"TreePageMgr::update MERGE: cannot recover old log format, page %08X\n",tp->hdr.pageID);
 				return RC_INTERNAL;
 			}
-			if ((tp2=(TreePage*)alloca(tp->hdr.length()))==NULL) return RC_NORESOURCES;
+			if ((tp2=(TreePage*)alloca(tp->hdr.length()))==NULL) return RC_NOMEM;
 			memcpy(tp2,tp,sizeof(TreePage)); tp2->hdr.pageID=tps->newSibling;
 			memcpy(&tp2->info,p1+=l,sizeof(TreePageInfo)); ll=tp2->info.nEntries*tp2->info.calcEltSize(); memcpy(tp2+1,p1+sizeof(TreePageInfo),ll);
 			memcpy((byte*)tp2+tp2->info.freeSpace,p1+sizeof(TreePageInfo)+ll,lrec-sizeof(TreePageSplit)-l-sizeof(TreePageInfo)-ll);
@@ -379,7 +379,7 @@ RC TreePageMgr::update(PBlock *pb,size_t len,unsigned info,const byte *rec,size_
 				assert((flags&(TXMGR_RECV|TXMGR_UNDO))!=0);
 				newp=ctx->logMgr->setNewPage((flags&TXMGR_UNDO)==0?ctx->bufMgr->newPage(tps->newSibling,this):
 														ctx->bufMgr->getPage(tps->newSibling,this,PGCTL_XLOCK));
-				if (newp==NULL) return RC_NORESOURCES;
+				if (newp==NULL) return RC_NOMEM;
 			}
 			tp2=(TreePage*)newp->getPageBuf(); assert(newp->getPageID()==tps->newSibling);
 		}
@@ -532,7 +532,7 @@ RC TreePageMgr::update(PBlock *pb,size_t len,unsigned info,const byte *rec,size_
 		assert(vp!=NULL);
 		if (newp==NULL) {
 			assert((flags&(TXMGR_RECV|TXMGR_UNDO))!=0);
-			if ((newp=ctx->logMgr->setNewPage(ctx->bufMgr->newPage(tpa->root,this)))==NULL) return RC_NORESOURCES;
+			if ((newp=ctx->logMgr->setNewPage(ctx->bufMgr->newPage(tpa->root,this)))==NULL) return RC_NOMEM;
 		}
 		assert(newp->getPageID()==tpa->root);
 		tp2=(TreePage*)newp->getPageBuf(); tp2->info.fmt=tpa->fmt;
@@ -617,7 +617,7 @@ RC TreePageMgr::update(PBlock *pb,size_t len,unsigned info,const byte *rec,size_
 		}
 		if (newp==NULL) {
 			assert((flags&(TXMGR_RECV|TXMGR_UNDO))!=0);
-			if ((newp=ctx->logMgr->setNewPage(ctx->bufMgr->newPage(tpa->root,this)/*,true*/))==NULL) return RC_NORESOURCES;
+			if ((newp=ctx->logMgr->setNewPage(ctx->bufMgr->newPage(tpa->root,this)/*,true*/))==NULL) return RC_NOMEM;
 		}
 
 		tp2=(TreePage*)newp->getPageBuf();
@@ -1159,7 +1159,7 @@ RC TreePageMgr::undo(unsigned info,const byte *rec,size_t lrec,PageID pid)
 RC TreePageMgr::initPage(PBlock *pb,IndexFormat ifmt,uint16_t level,const SearchKey* key,PageID pid0,PageID pid1)
 {
 	unsigned lrec=sizeof(TreePageInit)+(key!=NULL?key->extLength():0); 
-	TreePageInit *tpi=(TreePageInit*)alloca(lrec); if (tpi==NULL) return RC_NORESOURCES;
+	TreePageInit *tpi=(TreePageInit*)alloca(lrec); if (tpi==NULL) return RC_NOMEM;
 	tpi->fmt=ifmt; tpi->level=level;
 	if (key==NULL) {assert(level==0); tpi->left=tpi->right=INVALID_PAGEID;}
 	else {
@@ -1229,18 +1229,18 @@ RC TreePageMgr::split(TreeCtx& tctx,const SearchKey *key,unsigned& idx,uint16_t 
 			if (splitIdx==idx && !fInsR && key!=NULL) {uint16_t lk=tp->calcPrefixSize(*key,splitIdx,true)+1; if (lk>lTrunc) lTrunc=lk;}
 			assert(lTrunc<=lkey);
 			if (lTrunc<lkey) {
-				SearchKey *sk=(SearchKey*)alloca(sizeof(SearchKey)+lkey); if (sk==NULL) return RC_NORESOURCES;
+				SearchKey *sk=(SearchKey*)alloca(sizeof(SearchKey)+lkey); if (sk==NULL) return RC_NOMEM;
 				if (fDKey) *sk=*key; else {fDKey=true; tp->getKey(splitIdx,*sk);} sk->v.ptr.l=lTrunc; key=sk;
 			}
 		}
 	}
 	if (!fDKey) {
 		SearchKey *sk=(SearchKey*)alloca(sizeof(SearchKey)+tp->getKeyExtra(splitIdx));
-		if (sk==NULL) return RC_NORESOURCES; tp->getKey(splitIdx,*sk); key=sk;
+		if (sk==NULL) return RC_NOMEM; tp->getKey(splitIdx,*sk); key=sk;
 	}
 	unsigned lsib=sizeof(TreePageSplit)+key->extLength();
 
-	TreePageSplit *tps=(TreePageSplit*)alloca(lsib); if (tps==NULL) return RC_NORESOURCES;
+	TreePageSplit *tps=(TreePageSplit*)alloca(lsib); if (tps==NULL) return RC_NOMEM;
 	tps->nEntriesLeft=splitIdx; tps->oldPrefSize=tp->info.lPrefix; key->serialize(tps+1);
 	if (fInsR) {assert(idx>=splitIdx); idx-=splitIdx;}
 	assert(idx<=unsigned(fInsR?tp->info.nEntries-splitIdx:splitIdx));
@@ -1248,7 +1248,7 @@ RC TreePageMgr::split(TreeCtx& tctx,const SearchKey *key,unsigned& idx,uint16_t 
 	MiniTx tx(Session::getSession(),(tctx.tree->mode&TF_SPLITINTX)!=0?MTX_SKIP:0); PBlock *pbn; RC rc;
 	if ((rc=ctx->fsMgr->allocPages(1,&tps->newSibling))!=RC_OK) return rc;
 	assert(tps->newSibling!=INVALID_PAGEID);
-	if ((pbn=ctx->bufMgr->newPage(tps->newSibling,this))==NULL) return RC_NORESOURCES;
+	if ((pbn=ctx->bufMgr->newPage(tps->newSibling,this))==NULL) return RC_NOMEM;
 	tctx.pb->checkDepth();
 
 	if ((rc=ctx->txMgr->update(tctx.pb,this,TRO_SPLIT,(byte*)tps,lsib,0,pbn))!=RC_OK)
@@ -1333,13 +1333,13 @@ RC TreePageMgr::spawn(TreeCtx& tctx,size_t lInsert,unsigned idx)
 			lInsert-unsigned(tp->info.freeSpaceLength+tp->info.scatteredFreeSpace)>xLen-sizeof(SubTreePage)) return RC_TOOBIG;
 	}
 	unsigned ls=sizeof(TreePageSpawn)+tp->getSerKeySize(uint16_t(idx));
-	TreePageSpawn *tpm=(TreePageSpawn*)alloca(ls); if (tpm==NULL) return RC_NORESOURCES;
+	TreePageSpawn *tpm=(TreePageSpawn*)alloca(ls); if (tpm==NULL) return RC_NOMEM;
 	IndexFormat ifmt(tp->info.fmt.isPinRef()?KT_REF:KT_BIN,KT_VARKEY,0);
 	tpm->fmt=ifmt; tp->serializeKey(uint16_t(idx),tpm+1); 
 	MiniTx tx(Session::getSession(),0); PBlock *pbn;
 	if ((rc=ctx->fsMgr->allocPages(1,&tpm->root))!=RC_OK) return rc;
 	assert(tpm->root!=INVALID_PAGEID);
-	if ((pbn=ctx->bufMgr->newPage(tpm->root,this))==NULL) return RC_NORESOURCES;
+	if ((pbn=ctx->bufMgr->newPage(tpm->root,this))==NULL) return RC_NOMEM;
 	tctx.pb->checkDepth();
 	if ((rc=ctx->txMgr->update(tctx.pb,this,idx<<TRO_SHIFT|TRO_SPAWN,(byte*)tpm,ls,0,pbn))!=RC_OK)
 		pbn->release(PGCTL_DISCARD|QMGR_UFORCE); else {pbn->release(); tx.ok();}
@@ -1359,7 +1359,7 @@ RC TreePageMgr::modSubTree(TreeCtx& tctx,const SearchKey& key,unsigned kidx,cons
 	if (oldV==NULL||tpe.counter>=end-start) {
 		unsigned lrec=sizeof(int64_t)+key.extLength();
 		TreeFactory *tf=tctx.tree->getFactory(); uint16_t lFact=tf!=NULL?tf->getParamLength()+2:0;
-		int64_t *rec=(int64_t*)alloca(lrec+lFact); if (rec==NULL) return RC_NORESOURCES;
+		int64_t *rec=(int64_t*)alloca(lrec+lFact); if (rec==NULL) return RC_NOMEM;
 		*rec=fIns?(int64_t)end-start:(int64_t)start-end; key.serialize(rec+1);
 		if (tf!=NULL) {byte *p=(byte*)rec+lrec+lFact; tf->getParams(p-lFact,*tctx.tree); p[-2]=byte(lFact); p[-1]=tf->getID();}
 		if ((rc=ctx->txMgr->update(tctx.parent,this,kidx<<TRO_SHIFT|TRO_COUNTER,(byte*)rec,lrec+lFact,tf!=NULL?LRC_LUNDO:0))!=RC_OK) return rc;
@@ -1431,7 +1431,7 @@ RC TreePageMgr::modSubTree(TreeCtx& tctx,const SearchKey& key,unsigned kidx,cons
 				unsigned lChunk=(to-from+1)*L_SHT+((uint16_t*)pv)[to]-sht;		//??????????????????????????????????????????????????????
 				TreeFactory *tf=tctx.tree->getFactory(); if (tf==NULL) {rc=RC_INTERNAL; break;}
 				uint16_t lk=mkey.extLength(),lFact=lk+tf->getParamLength()+4; unsigned xbuf=lChunk+sizeof(TreePageMulti)+lFact; 
-				byte *buf=(byte*)malloc(xbuf,SES_HEAP); if (buf==NULL) {rc=RC_NORESOURCES; break;}
+				byte *buf=(byte*)malloc(xbuf,SES_HEAP); if (buf==NULL) {rc=RC_NOMEM; break;}
 				uint16_t lData=packMulti(buf,pv,from,to);
 				((TreePageMulti*)buf)->fmt=tp->info.fmt; ((TreePageMulti*)buf)->sibling=sib;
 				((TreePageMulti*)buf)->fLastR=0; ((TreePageMulti*)buf)->nKeys=to-from; ((TreePageMulti*)buf)->lData=lData;
@@ -1471,7 +1471,7 @@ RC TreePageMgr::modSubTree(TreeCtx& tctx,const SearchKey& key,unsigned kidx,cons
 					TreeFactory *tf=tctx.tree->getFactory(); uint16_t lk=key.extLength(),lFact=tf!=NULL?tf->getParamLength()+lk+4:0;
 					if (fRepl) {
 						uint16_t l=sizeof(uint16_t)+lOld+lNew; byte *buf=(byte*)alloca(l+lFact);
-						if (buf==NULL) rc=RC_NORESOURCES;
+						if (buf==NULL) rc=RC_NOMEM;
 						else {
 							((uint16_t*)buf)[0]=lOld; memcpy(buf+sizeof(uint16_t),oldV,lOld); memcpy(buf+sizeof(uint16_t)+lOld,newV,lNew);
 							if (tf!=NULL) {byte *p=buf+l+lFact; tf->getParams(p-lFact+lk,*tctx.tree); key.serialize(p-lFact); p[-4]=byte(lFact>>8); p[-3]=byte(lFact); p[-2]=tf->getID(); p[-1]=0xFF;}
@@ -1480,7 +1480,7 @@ RC TreePageMgr::modSubTree(TreeCtx& tctx,const SearchKey& key,unsigned kidx,cons
 						newV=NULL; lNew=0;
 					} else {
 						unsigned lrec=sizeof(TreePageModify)+SearchKey::extLength(lOld); TreePageModify *tpm=(TreePageModify*)alloca(lrec+lFact);
-						if (tpm==NULL) rc=RC_NORESOURCES;
+						if (tpm==NULL) rc=RC_NOMEM;
 						else {
 							memset(tpm,0,sizeof(TreePageModify)); tpm->newPrefSize=0; SearchKey::serialize(tpm+1,fPR?KT_REF:KT_BIN,oldV,lOld);
 							if (tf!=NULL) {byte *p=(byte*)tpm+lrec+lFact; tf->getParams(p-lFact+lk,*tctx.tree); key.serialize(p-lFact); p[-4]=byte(lFact>>8); p[-3]=byte(lFact); p[-2]=tf->getID(); p[-1]=0xFF;}
@@ -1515,7 +1515,7 @@ RC TreePageMgr::insertSubTree(TreeCtx &tctx,const void *value,IndexFormat ifmt,u
 		if ((sibling=tp->info.sibling)!=INVALID_PAGEID) lLast=tp->getKeyExtra(uint16_t(~0u))+L_SHT;
 	}
 	for (unsigned idx=start,i2; idx<end; idx=i2) {
-		if (pageCnt>=XSUBPAGES) return RC_NORESOURCES;
+		if (pageCnt>=XSUBPAGES) return RC_NOMEM;
 		for (unsigned b2=idx+(pageCnt>=nOldPages?1:0),e2=i2=end; ;) {
 			size_t dl=calcChunkSize((const byte*)value,idx,i2==end?i2:i2+1),lb=dl,xS=xSz;
 			if (pageCnt!=0) {if (i2==end) lb=dl+=lLast;}
@@ -1538,14 +1538,14 @@ RC TreePageMgr::insertSubTree(TreeCtx &tctx,const void *value,IndexFormat ifmt,u
 	if (pageCnt<=nOldPages) {assert(lLast==0 || tp->cmpKeys((byte*)value,end-1,tp->info.nEntries-1)<=0); lLast=0;}
 	TreeFactory *tf=tctx.tree->getFactory(); uint16_t lFact=tf!=NULL?tf->getParamLength()+2:0,lk=0; assert(tctx.mainKey!=NULL);
 	if (tf!=NULL) lFact+=(lk=tctx.mainKey->extLength())+2; xbuf+=lFact;
-	byte *buf=(byte*)malloc(xbuf,SES_HEAP); if (buf==NULL) return RC_NORESOURCES;
+	byte *buf=(byte*)malloc(xbuf,SES_HEAP); if (buf==NULL) return RC_NOMEM;
 	TreePageMulti *tpm=(TreePageMulti*)buf; IndexFormat subfmt(ifmt.isPinRef()?KT_REF:KT_BIN,KT_VARKEY,0);
 	if (pageCnt==nOldPages || (rc=ctx->fsMgr->allocPages(pageCnt-nOldPages,pages+nOldPages))==RC_OK) for (unsigned i=pageCnt; i--!=0; sibling=pages[i],lLast=0) {
 		uint16_t strt=i==0?(uint16_t)start:indcs[i-1],end=indcs[i]+(i+1==pageCnt?0:1);
 		uint16_t lData=packMulti(buf+sizeof(TreePageMulti),value,strt,end,lLast!=0?(TreePage*)tctx.pb->getPageBuf():(TreePage*)0);
 		unsigned op=MO_INSERT<<TRO_SHIFT|TRO_MULTI; assert(sizeof(TreePageMulti)+lData+lFact<=xbuf); double prev=0.;
 		tpm->fmt=subfmt; tpm->sibling=sibling; tpm->fLastR=0; tpm->lData=lData; tpm->nKeys=end-strt;
-		if (i>=nOldPages) {op=MO_INIT<<TRO_SHIFT|TRO_MULTI; if (pb.newPage(pages[i],this)==NULL) {rc=RC_NORESOURCES; break;}}
+		if (i>=nOldPages) {op=MO_INIT<<TRO_SHIFT|TRO_MULTI; if (pb.newPage(pages[i],this)==NULL) {rc=RC_NOMEM; break;}}
 		else {pb.release(); pb=(PBlock*)tctx.pb; pb.set(PGCTL_NOREL); tpm->fLastR=tp->hasSibling()&&pageCnt>nOldPages; prev=double(xSize-tp->info.freeSpaceLength)*100./xSize;}
 		if (tf!=NULL) {
 			byte *p=(byte*)buf+sizeof(TreePageMulti)+lData+lFact; tf->getParams(p-lFact+lk,*tctx.tree);
@@ -1734,7 +1734,7 @@ RC TreePageMgr::insert(TreeCtx& tctx,const SearchKey& key0,const void *value,uin
 			if (rc!=RC_OK) return rc; assert(pageCnt>0);
 			if (pageCnt>1) for (unsigned i=1; i<pageCnt; i++) {uint16_t ll; getK(value,indcs[i-1],ll); lkeys+=ll;}
 			unsigned lstp=sizeof(SubTreePage)+int(pageCnt-1)*sizeof(SubTreePageKey)+lkeys;
-			SubTreePage *stp=(SubTreePage*)alloca(lstp); if (stp==NULL) return RC_NORESOURCES;
+			SubTreePage *stp=(SubTreePage*)alloca(lstp); if (stp==NULL) return RC_NOMEM;
 			stp->fSubPage=0xFFFF; stp->level=0; stp->counter=n; stp->leftMost=stp->anchor=pages[0]; unsigned shtkey=lkeys;
 			for (unsigned i=pageCnt; --i>0;) {
 				SubTreePageKey &spk=((SubTreePageKey*)(stp+1))[i-1]; spk.pageID=pages[i]; const byte *pkey; uint16_t lk;
@@ -1761,7 +1761,7 @@ RC TreePageMgr::insert(TreeCtx& tctx,const SearchKey& key0,const void *value,uin
 						TreeFactory *tf=tctx.tree->getFactory(); uint16_t lFact=tf!=NULL?tf->getParamLength()+2:0; unsigned nk=2;
 						lrec=sizeof(TreePageAppend)+2*sizeof(TreePageAppendElt)+key->extLength()+lValue+pkey->extLength()+lVal+lFact; size_t lbuf=max(lrec,size_t(0x2000));
 						TreePageAppend *tpa=(TreePageAppend*)alloca(lbuf); Session *ses=NULL;
-						if (tpa==NULL && ((ses=Session::getSession())==NULL || (tpa=(TreePageAppend*)ses->malloc(lbuf))==NULL)) return RC_NORESOURCES;
+						if (tpa==NULL && ((ses=Session::getSession())==NULL || (tpa=(TreePageAppend*)ses->malloc(lbuf))==NULL)) return RC_NOMEM;
 						TreePageAppendElt *tae=(TreePageAppendElt*)(tpa+1);
 						tae->ndata=(uint16_t)n; tae->lkey=key->extLength(); tae->ldata=lValue; tae->idx=(uint16_t)idx; key->serialize(tae+1); memcpy((byte*)(tae+1)+tae->lkey,value,lValue);
 						tae=(TreePageAppendElt*)((byte*)(tae+1)+tae->lkey+tae->ldata); tae->ndata=(uint16_t)multi2; tae->idx=(uint16_t)idx2+1;
@@ -1779,7 +1779,7 @@ RC TreePageMgr::insert(TreeCtx& tctx,const SearchKey& key0,const void *value,uin
 								if (ses==NULL) {
 									void *p; if ((ses=Session::getSession())==NULL || (p=ses->malloc(nlbuf))==NULL) break;
 									memcpy(p,tpa,lrec); tpa=(TreePageAppend*)p;
-								} else if ((tpa=(TreePageAppend*)ses->realloc(tpa,nlbuf,lbuf))==NULL) return RC_NORESOURCES;
+								} else if ((tpa=(TreePageAppend*)ses->realloc(tpa,nlbuf,lbuf))==NULL) return RC_NOMEM;
 								lbuf=nlbuf; tae=(TreePageAppendElt*)((byte*)tpa+sht);
 							}
 							tae=(TreePageAppendElt*)((byte*)(tae+1)+tae->lkey+tae->ldata); tae->ndata=(uint16_t)multi2; tae->idx=(uint16_t)(idx2+nk);
@@ -1836,7 +1836,7 @@ RC TreePageMgr::insert(TreeCtx& tctx,const SearchKey& key0,const void *value,uin
 
 	TreeFactory *tf=tctx.tree->getFactory(); uint16_t lFact=tf!=NULL?tf->getParamLength()+2:0,lk=0;
 	if (tctx.mainKey!=NULL && tf!=NULL) lFact+=(lk=tctx.mainKey->extLength())+2;
-	TreePageModify *tpm=(TreePageModify*)alloca(lrec+lValue+lFact); if (tpm==NULL) return RC_NORESOURCES;
+	TreePageModify *tpm=(TreePageModify*)alloca(lrec+lValue+lFact); if (tpm==NULL) return RC_NOMEM;
 	key->serialize(tpm+1); tpm->newPrefSize=prefixSize<tp->info.lPrefix?prefixSize:tp->info.lPrefix;
 	tpm->newData.offset=uint16_t(lrec); tpm->newData.len=lValue; tpm->oldData.len=0; tpm->oldData.offset=n;
 	if (start==0) memcpy((byte*)tpm+tpm->newData.offset,value,lValue);
@@ -1879,7 +1879,7 @@ RC TreePageMgr::update(TreeCtx& tctx,const SearchKey& key,const void *oldValue,u
 	if (fExt) return modSubTree(tctx,key,idx,vp,newValue,lNewValue,oldValue,lOldValue);
 	unsigned lrec=sizeof(TreePageModify)+key.extLength(); tctx.parent.release(); assert(tctx.mainKey==NULL);
 	TreeFactory *tf=tctx.tree->getFactory(); uint16_t lFact=tf!=NULL?tf->getParamLength()+2:0;
-	TreePageModify *tpm=(TreePageModify*)alloca(lrec+lOld+lNewValue+lFact); if (tpm==NULL) return RC_NORESOURCES;
+	TreePageModify *tpm=(TreePageModify*)alloca(lrec+lOld+lNewValue+lFact); if (tpm==NULL) return RC_NOMEM;
 	key.serialize(tpm+1); tpm->newPrefSize=tp->info.lPrefix;
 	tpm->oldData.len=lOld; tpm->oldData.offset=PageOff(lrec); memcpy((byte*)tpm+lrec,pOld,lOld);
 	tpm->newData.len=lNewValue; tpm->newData.offset=PageOff(lrec+lOld); memcpy((byte*)tpm+lrec+lOld,newValue,lNewValue);
@@ -1902,7 +1902,7 @@ RC TreePageMgr::edit(TreeCtx& tctx,const SearchKey& key,const void *newValue,uin
 	}
 	unsigned lrec=(unsigned)ceil(sizeof(TreePageEdit)+key.extLength(),sizeof(uint16_t)); tctx.parent.release();
 	TreeFactory *tf=tctx.tree->getFactory(); uint16_t lFact=tf!=NULL?tf->getParamLength()+2:0;
-	TreePageEdit *tpe=(TreePageEdit*)alloca(lrec+lOldPart+lNewPart+lFact); if (tpe==NULL) return RC_NORESOURCES;
+	TreePageEdit *tpe=(TreePageEdit*)alloca(lrec+lOldPart+lNewPart+lFact); if (tpe==NULL) return RC_NOMEM;
 	key.serialize(tpe+1); tpe->shift=sht; assert(tctx.mainKey==NULL);
 	tpe->oldData.len=lOldPart; tpe->oldData.offset=PageOff(lrec); memcpy((byte*)tpe+lrec,(const byte*)pOld+sht,lOldPart);
 	tpe->newData.len=lNewPart; tpe->newData.offset=PageOff(lrec+lOldPart); 
@@ -1944,7 +1944,7 @@ RC TreePageMgr::remove(TreeCtx& tctx,const SearchKey& key,const void *value,uint
 
 	unsigned lrec=sizeof(TreePageModify)+key.extLength(); assert(tctx.mainKey==NULL);
 	TreeFactory *tf=tctx.tree->getFactory(); uint16_t lFact=tf!=NULL?tf->getParamLength()+2:0;
-	TreePageModify *tpm=(TreePageModify*)alloca(lrec+lOld+lFact); if (tpm==NULL) return RC_NORESOURCES;
+	TreePageModify *tpm=(TreePageModify*)alloca(lrec+lOld+lFact); if (tpm==NULL) return RC_NOMEM;
 	if (pOld!=NULL && lOld!=0) {
 		if (vp==NULL || (vp->len&TRO_MANY)==0 || (n&~0x8000)==0) memcpy((byte*)tpm+lrec,pOld,lOld);
 		else if (value!=NULL && lValue!=0) {
@@ -2016,7 +2016,7 @@ RC TreePageMgr::merge(PBlock *left,PBlock *right,PBlock *par,Tree& tr,const Sear
 		if (rtp->info.lPrefix>0) {
 			uint16_t lkey=rtp->getKeySize(rtp->info.nEntries-1);
 			SearchKey *key=(SearchKey*)alloca(sizeof(SearchKey)+lkey);
-			if (key==NULL) return RC_NORESOURCES;
+			if (key==NULL) return RC_NOMEM;
 			rtp->getKey(rtp->info.nEntries-1,*key);
 			lPrefix=ltp->calcPrefixSize(*key,0);
 			if (lPrefix<rtp->info.lPrefix) {
@@ -2039,7 +2039,7 @@ RC TreePageMgr::merge(PBlock *left,PBlock *right,PBlock *par,Tree& tr,const Sear
 	size_t lrec=sizeof(TreePageSplit)+lKey+sizeof(TreePageInfo);
 	if (rtp->info.nEntries>0) lrec+=xSize-(rtp->info.freeSpaceLength+rtp->info.scatteredFreeSpace);
 	TreePageModify *tpm=(TreePageModify*)alloca(max(lrec,size_t(sizeof(TreePageModify)+lKey+sizeof(PageID))));
-	if (tpm==NULL) return RC_NORESOURCES;
+	if (tpm==NULL) return RC_NOMEM;
 	MiniTx mtx(NULL,(tr.mode&TF_SPLITINTX)!=0?MTX_SKIP:0); RC rc=RC_OK;
 	if (idx!=~0u) {
 #ifdef _DEBUG
@@ -2047,7 +2047,7 @@ RC TreePageMgr::merge(PBlock *left,PBlock *right,PBlock *par,Tree& tr,const Sear
 #endif
 		key.serialize(tpm+1); tpm->newPrefSize=ptp->info.lPrefix; tpm->newData.len=0; tpm->newData.offset=0;
 		tpm->oldData.len=sizeof(PageID); tpm->oldData.offset=PageOff(sizeof(TreePageModify)+lKey);
-		memcpy((byte*)tpm+tpm->oldData.offset,&rtp->hdr.pageID,sizeof(PageID)); RC rc=RC_OK;
+		memcpy((byte*)tpm+tpm->oldData.offset,&rtp->hdr.pageID,sizeof(PageID));
 		rc=ctx->txMgr->update(par,this,idx<<TRO_SHIFT|TRO_DELETE,(byte*)tpm,sizeof(TreePageModify)+lKey+sizeof(PageID));
 	}
 	if (rc==RC_OK) {
@@ -2086,7 +2086,7 @@ RC TreePageMgr::drop(PBlock* &pb,TreeFreeData *dd)
 			}
 	}
 	size_t lrec=xSize-tp->info.freeSpaceLength+sizeof(TreePageInfo);
-	byte *rec=(byte*)alloca(lrec); if (rec==NULL) return RC_NORESOURCES;
+	byte *rec=(byte*)alloca(lrec); if (rec==NULL) return RC_NOMEM;
 	memcpy(rec,&tp->info,sizeof(TreePageInfo));
 	if (tp->info.nEntries>0) {
 		unsigned ll=tp->info.nEntries*tp->info.calcEltSize(); memcpy(rec+sizeof(TreePageInfo),tp+1,ll);
@@ -2950,7 +2950,7 @@ RC SubTreeInit::insert(Session *ses,const byte *key)
 		if (buf==NULL) {
 			assert(nKeys==0);
 			freeSpace=freeSpaceLength=lbuf=uint16_t(ctx->bufMgr->getPageSize()/4);		// #define param
-			if ((buf=(byte*)ma->malloc(lbuf))==NULL) return RC_NORESOURCES;
+			if ((buf=(byte*)ma->malloc(lbuf))==NULL) return RC_NOMEM;
 		}
 		if (L_SHT+l<=freeSpaceLength) {
 			((uint16_t*)buf)[nKeys++]=freeSpace-=l;
@@ -2959,7 +2959,7 @@ RC SubTreeInit::insert(Session *ses,const byte *key)
 			return RC_OK;
 		}
 		if ((rc=ctx->fsMgr->allocPages(1,&pg))!=RC_OK) return rc;
-		if ((stack[depth++]=pb=ctx->bufMgr->newPage(pg,ses->getStore()->trpgMgr,NULL,0,ses))==NULL) return RC_NORESOURCES;
+		if ((stack[depth++]=pb=ctx->bufMgr->newPage(pg,ses->getStore()->trpgMgr,NULL,0,ses))==NULL) return RC_NOMEM;
 		TreePageMgr::TreePage *tp=(TreePageMgr::TreePage*)pb->getPageBuf(); tp->info.fmt=IndexFormat(KT_REF,KT_VARKEY,0);
 		memcpy(tp+1,buf,nKeys*L_SHT); tp->info.nEntries=tp->info.nSearchKeys=nKeys; tp->info.freeSpaceLength-=nKeys*L_SHT;
 		ushort ld=lbuf-freeSpaceLength-nKeys*L_SHT; assert(ld<=tp->info.freeSpaceLength); 
@@ -2985,7 +2985,7 @@ RC SubTreeInit::insert(Session *ses,const byte *key)
 			break;
 		}
 		if ((rc=ctx->fsMgr->allocPages(1,&npg))!=RC_OK) return rc;
-		if ((pb=ctx->bufMgr->newPage(npg,ses->getStore()->trpgMgr,NULL,0,ses))==NULL) return RC_NORESOURCES;
+		if ((pb=ctx->bufMgr->newPage(npg,ses->getStore()->trpgMgr,NULL,0,ses))==NULL) return RC_NOMEM;
 		tp->info.sibling=npg; tp->info.nSearchKeys--;
 		TreePageMgr::TreePage *tp2=(TreePageMgr::TreePage*)pb->getPageBuf(); tp2->info.fmt=tp->info.fmt; tp2->info.level=tp->info.level;
 		if (tp->info.fmt.isKeyOnly()) {
@@ -3014,9 +3014,9 @@ RC SubTreeInit::insert(Session *ses,const byte *key)
 				pk->key.offset=freeSpace-=l; pk->key.len=l; pk->pageID=pg; memcpy(buf+freeSpace,key,l);
 				freeSpaceLength-=sizeof(TreePageMgr::SubTreePageKey)+l; break;
 			}
-			if (depth>=TREE_MAX_DEPTH/2-1) return RC_NORESOURCES;
+			if (depth>=TREE_MAX_DEPTH/2-1) return RC_NOMEM;
 			if ((rc=ctx->fsMgr->allocPages(1,&npg))!=RC_OK) return rc;
-			if ((pb=ctx->bufMgr->newPage(npg,ses->getStore()->trpgMgr,NULL,0,ses))==NULL) return RC_NORESOURCES;
+			if ((pb=ctx->bufMgr->newPage(npg,ses->getStore()->trpgMgr,NULL,0,ses))==NULL) return RC_NOMEM;
 			memmove(&stack[1],&stack[0],depth*sizeof(PBlock*)); stack[0]=pb; depth++;
 			TreePageMgr::TreePage *tp=(TreePageMgr::TreePage*)pb->getPageBuf();
 			tp->info.fmt=IndexFormat(KT_REF,KT_VARKEY,sizeof(PageID)); tp->info.level=depth-1;

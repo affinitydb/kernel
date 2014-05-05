@@ -14,7 +14,7 @@ WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the
 License for the specific language governing permissions and limitations
 under the License.
 
-Written by Mark Venguerov, Michael Andronov 2004-2012
+Written by Mark Venguerov, Michael Andronov 2004-2014
 
 **************************************************************************************/
 
@@ -46,7 +46,7 @@ namespace AfyKernel
 class FileMgr : public GFileMgr
 {
 #if !defined(STORE_AIO_THREAD) || defined(ANDROID)
-	static	FreeQ		freeIORequests;
+	static	Pool		freeIORequests;
 #endif
 
 public:

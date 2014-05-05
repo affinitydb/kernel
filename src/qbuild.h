@@ -14,7 +14,7 @@ WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the
 License for the specific language governing permissions and limitations
 under the License.
 
-Written by Mark Venguerov 2004-2012
+Written by Mark Venguerov 2004-2014
 
 **************************************************************************************/
 
@@ -33,14 +33,14 @@ using namespace Afy;
 namespace AfyKernel
 {
 /**
- * loadPIN/loadValues/loadV flags
+ * loadPIN/loadV flags
  */
 #define	LOAD_CARDINALITY	0x8000
 #define	LOAD_EXT_ADDR		0x4000
 #define	LOAD_SSV			0x2000
 #define	LOAD_REF			0x1000
 #define	LOAD_COLLECTION		0x0800
-#define	LOAD_ENAV			0x0400
+#define	LOAD_CLIENT			0x0400
 #define	LOAD_RAW			0x0200
 
 /**
@@ -66,8 +66,7 @@ namespace AfyKernel
 /**
  * internal Value::flags flags (maximum 0x40)
  */
-#define VF_PART				0x04
-#define	VF_PREFIX			0x08
+#define VF_PART				0x08
 #define	VF_REF				0x10
 #define	VF_STRING			0x20
 #define	VF_SSV				0x40
@@ -130,14 +129,14 @@ struct PropListP
 /**
  * dynamic array of values
  */
-struct ValueV
+struct Values
 {
 	const Value	*vals;
 	uint16_t	nValues;
 	bool		fFree;
-	ValueV() : vals(NULL),nValues(0),fFree(false) {}
-	ValueV(const ValueV& vv) : vals(vv.vals),nValues(vv.nValues),fFree(false) {}
-	ValueV(const Value *pv,unsigned nv,bool fF=false) : vals(pv),nValues((uint16_t)nv),fFree(fF) {}
+	Values() : vals(NULL),nValues(0),fFree(false) {}
+	Values(const Values& vv) : vals(vv.vals),nValues(vv.nValues),fFree(false) {}
+	Values(const Value *pv,unsigned nv,bool fF=false) : vals(pv),nValues((uint16_t)nv),fFree(fF) {}
 };
 
 /**
@@ -167,7 +166,7 @@ public:
 	QCtx(Session *s,EvalCtx *ect=NULL) : refc(0),ses(s),ectx(ect) {memset(vals,0,sizeof(vals));}
 	Session	*const	ses;
 	const	EvalCtx	*ectx;
-	ValueV	vals[QV_ALL];
+	Values	vals[QV_ALL];
 	void	ref() {refc++;}
 	void	destroy();
 	friend	class	QBuildCtx;
@@ -207,10 +206,10 @@ public:
 private:
 	RC	sort(QueryOp *&qop,const OrderSegQ *os,unsigned no,PropListP *props=NULL,bool fTmp=false);
 	RC	mergeN(QueryOp *&res,QueryOp **o,unsigned no,QUERY_SETOP op);
-	RC	merge2(QueryOp *&res,QueryOp **qs,const CondEJ *cej,QUERY_SETOP qo,const Expr *const *conds=NULL,unsigned nConds=0);
+	RC	merge2(QueryOp *&res,QueryOp **qs,const CondEJ *cej,QUERY_SETOP qo,const Expr *cond=NULL);
 	RC	mergeFT(QueryOp *&res,const CondFT *cft);
-	RC	nested(QueryOp *&res,QueryOp **qs,const Expr **conds,unsigned nConds);
-	RC	filter(QueryOp *&qop,const Expr *const *c,unsigned nConds,const CondIdx *condIdx=NULL,unsigned ncq=0);
+	RC	nested(QueryOp *&res,QueryOp **qs,const Expr *cond);
+	RC	filter(QueryOp *&qop,const Expr *c,const PropertyID *props=NULL,unsigned nProps=0,const CondIdx *condIdx=NULL,unsigned ncq=0);
 	RC	load(QueryOp *&qop,const PropListP& plp);
 	RC	out(QueryOp *&qop,const QVar *qv);
 	static	bool	checkSort(QueryOp *qop,const OrderSegQ *req,unsigned nReq,unsigned& nP);

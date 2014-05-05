@@ -14,7 +14,7 @@ WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the
 License for the specific language governing permissions and limitations
 under the License.
 
-Written by Mark Venguerov 2004-2012
+Written by Mark Venguerov 2004-2014
 
 **************************************************************************************/
 
@@ -27,7 +27,7 @@ Written by Mark Venguerov 2004-2012
 using namespace AfyKernel;
 
 FileMgr::CompletionPort FileMgr::CP;
-FreeQ	FileMgr::freeIODesc;
+Pool	FileMgr::freeIODesc;
 
 struct AsyncWait : public SemData
 {
@@ -58,12 +58,12 @@ RC FileMgr::open(FileID& fid,const char *fname,unsigned flags)
 
 	const char *dir=ctx->getDirectory(); bool fdel=false;
 	if ((flags&FIO_TEMP)!=0) {
-		fname=(char*)malloc(MAX_PATH,STORE_HEAP); if (fname==NULL) return RC_NORESOURCES;
+		fname=(char*)malloc(MAX_PATH,STORE_HEAP); if (fname==NULL) return RC_NOMEM;
 		if (GetTempFileName(dir!=NULL?dir:".",STOREPREFIX,0,(char*)fname)==0)
 			{rc=convCode(GetLastError()); free((char*)fname,STORE_HEAP); return rc;}
 		fdel=true;
 	} else if (dir!=NULL && !strchr(fname,'/') && !strchr(fname,'\\') && !strchr(fname,':')) {
-		char *p=(char*)malloc(strlen(dir)+strlen(fname)+1,STORE_HEAP); if (p==NULL) return RC_NORESOURCES;
+		char *p=(char*)malloc(strlen(dir)+strlen(fname)+1,STORE_HEAP); if (p==NULL) return RC_NOMEM;
 		strcpy(p,dir); strcat(p,fname); fname=p; fdel=true;
 	}
 
@@ -73,7 +73,7 @@ RC FileMgr::open(FileID& fid,const char *fname,unsigned flags)
 			if (!slotTab[fid].isOpen()) break;
 		}
 	}
-	if (fid>=xSlotTab) {lock.unlock(); return RC_NORESOURCES;}
+	if (fid>=xSlotTab) {lock.unlock(); return RC_NOMEM;}
 	if (slotTab[fid].isOpen()) { 
 		if ((flags&FIO_REPLACE)==0)	{lock.unlock(); return RC_ALREADYEXISTS;}
 		slotTab[fid].close();
@@ -82,8 +82,8 @@ RC FileMgr::open(FileID& fid,const char *fname,unsigned flags)
 	char fullbuf[_MAX_PATH],*p;
 	fd = CreateFile(fname,GENERIC_READ|GENERIC_WRITE,flags&FIO_TEMP?0:FILE_SHARE_READ,NULL,
 		flags&FIO_CREATE?flags&FIO_NEW?CREATE_NEW:OPEN_ALWAYS:OPEN_EXISTING,
-		(flags&FIO_TEMP?FILE_ATTRIBUTE_TEMPORARY|FILE_FLAG_DELETE_ON_CLOSE:FILE_FLAG_NO_BUFFERING)|
-		FILE_ATTRIBUTE_ARCHIVE|FILE_FLAG_OVERLAPPED,NULL);
+		(flags&FIO_TEMP?FILE_ATTRIBUTE_TEMPORARY|FILE_FLAG_DELETE_ON_CLOSE:flags&FIO_LOG?FILE_FLAG_WRITE_THROUGH|FILE_FLAG_SEQUENTIAL_SCAN:
+					FILE_FLAG_RANDOM_ACCESS|FILE_FLAG_WRITE_THROUGH|FILE_FLAG_NO_BUFFERING)|FILE_ATTRIBUTE_ARCHIVE|FILE_FLAG_OVERLAPPED,NULL);
 	if (fd==INVALID_HANDLE_VALUE) rc=convCode(GetLastError());
 	else {
 		CP.completionPort = CreateIoCompletionPort(fd,CP.completionPort,(ULONG_PTR)0,0);
@@ -172,7 +172,7 @@ RC FileMgr::listIO(int mode,int nent,myaio* const* pcbs,bool fSync)
 		for (i=0,i1=nent; i<nent; i++) if (pcbs[i]!=NULL) {
 			myaio &aio = *(pcbs[i]);
 			if (aio.aio_lio_opcode==LIO_NOP) {if (mode!=LIO_WAIT) asyncIOCallback(&aio); continue;}
-			WinIODesc *ov=(WinIODesc*)freeIODesc.alloc(sizeof(WinIODesc)); if (ov==NULL) {i0=i; throw RC_NORESOURCES;}
+			WinIODesc *ov=(WinIODesc*)freeIODesc.alloc(sizeof(WinIODesc)); if (ov==NULL) {i0=i; throw RC_NOMEM;}
 			memset(ov,0,sizeof(WinIODesc)); ov->aio=pcbs[i]; if (mode==LIO_WAIT) {ov->av=&aw; ++aw;}
 			ov->aio_ov.Offset=DWORD(aio.aio_offset); ov->aio_ov.OffsetHigh=DWORD(aio.aio_offset>>32);
 			BOOL fOK = aio.aio_lio_opcode==LIO_WRITE ?
@@ -261,8 +261,9 @@ RC GFileMgr::loadExt(const char *path,size_t l,Session *ses,const Value *pars,un
 
 	RC rc=RC_OK; size_t le=l<5 || !cmpncase(path+l-4,".DLL",4)!=0?4:0;
 	size_t ld=loadDir!=NULL && !memchr(path,'/',l) && !memchr(path,'\\',l)?strlen(loadDir):0;
-	char *p=(char*)ctx->malloc(ld+l+le+1); if (p==NULL) return RC_NORESOURCES;
-	if (ld!=0) memcpy(p,loadDir,ld); memcpy(p+ld,path,l); if (le!=0) memcpy(p+ld+l,".DLL",4); p[ld+l+le]='\0';
+	char *p=(char*)ctx->malloc(ld+l+le+2); if (p==NULL) return RC_NOMEM;
+	if (ld!=0) {memcpy(p,loadDir,ld); if (loadDir[ld-1]!='/'&&loadDir[ld-1]!='\\') p[ld++]='/';}
+	memcpy(p+ld,path,l); if (le!=0) memcpy(p+ld+l,".DLL",4); p[ld+l+le]='\0';
 
 	report(MSG_INFO,"Loading %s...\n",p);
 

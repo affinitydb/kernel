@@ -15,7 +15,7 @@ WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the
 License for the specific language governing permissions and limitations
 under the License.
 
-Written by Mark Venguerov, Max Windish, Michael Andronov 2004-2012
+Written by Mark Venguerov, Max Windish, Michael Andronov 2004-2014
 
 **************************************************************************************/
 
@@ -33,7 +33,7 @@ using namespace Afy;
 
 #ifdef WIN32
 	#ifndef _WIN32_WINNT
-		#define _WIN32_WINNT 0x0600
+		#define _WIN32_WINNT _WIN32_WINNT_VISTA
 	#endif
 	#ifndef WIN32_LEAN_AND_MEAN
 		#define WIN32_LEAN_AND_MEAN
@@ -47,6 +47,11 @@ using namespace Afy;
 	#define THREAD_SIGNATURE DWORD WINAPI
 	#define	WAIT_SPIN_COUNT	18					/**< threshold between spin count and wait queue */
 	#define	SPIN_COUNT		1000				/**< number of cycles before testing for lock in spin mode */
+	extern "C" AFY_EXP RC	convCode(DWORD);
+	inline	RC				createThread(LPTHREAD_START_ROUTINE pRoutine,LPVOID pParam,HANDLE& thread)
+				{thread = ::CreateThread(NULL,0,pRoutine,pParam,0,NULL); return thread==NULL?convCode(GetLastError()):RC_OK;}
+	#define	TS_DELTA		TIMESTAMP(0)
+	inline	void			getTimestamp(TIMESTAMP& ts) {FILETIME ft; GetSystemTimeAsFileTime(&ft); ULARGE_INTEGER li={ft.dwLowDateTime,ft.dwHighDateTime}; ts=li.QuadPart/10+TS_DELTA;}
 #else
 	#include <pthread.h>
 	#include <semaphore.h>
@@ -68,6 +73,14 @@ using namespace Afy;
 	#define THREAD_SIGNATURE void *
 	#define	WAIT_SPIN_COUNT	18					/**< threshold between spin count and wait queue */
 	#define	SPIN_COUNT		1000				/**< number of cycles before testing for lock in spin mode */
+	extern	"C" RC			convCode(int);
+	inline	RC				createThread(void *(*pRoutine)(void*),void *pParam,pthread_t& thread) {return convCode(pthread_create(&thread,NULL,pRoutine,pParam));}
+	#define	TS_DELTA		TIMESTAMP(0x00295e9648864000ULL)
+	#ifndef __APPLE__
+		inline	void		getTimestamp(TIMESTAMP& ts) {timespec tsp; clock_gettime(CLOCK_REALTIME,&tsp); ts=uint64_t(tsp.tv_sec)*1000000+tsp.tv_nsec/1000+TS_DELTA;}
+	#else
+		inline	void		getTimestamp(TIMESTAMP& ts) {timeval tv; gettimeofday(&tv,NULL); ts=uint64_t(tv.tv_sec)*1000000+tv.tv_usec+TS_DELTA;}
+	#endif
 #endif
 
 #if defined __arm__ && !defined __llvm__
@@ -137,13 +150,13 @@ inline void threadYield()
 /**
  * platform dependent sleep() function
  */
-inline void threadSleep(long pMilli)
+inline void threadSleep(long pMilli,bool fAlert=false)
 {
 	#ifdef WIN32
-		::Sleep(pMilli);
+		::SleepEx(pMilli,fAlert?TRUE:FALSE);
 	#else
 		struct timespec tm={pMilli/1000,(pMilli%1000)*1000000},rtm={0,0};
-		while (::nanosleep(&tm, &rtm)<0 && errno==EINTR) tm=rtm;
+		while (::nanosleep(&tm, &rtm)<0 && errno==EINTR && !fAlert) tm=rtm;
 	#endif
 }
 
@@ -306,18 +319,20 @@ public:
 };
 
 /**
- * Event object used to signal certain event to multiple threads
+ * WaitEvent object used to signal certain event to multiple threads
  * supports waits with timeouts
  * platform-dependent implementation
  */
-class AFY_EXP Event
+class AFY_EXP WaitEvent
 {
 #ifdef WIN32
 	HANDLE			event;
 public:
-	Event() {event=CreateEvent(NULL,TRUE,FALSE,NULL);}
-	~Event() {if (event!=NULL) CloseHandle(event);}
-	void wait(Mutex& lock,unsigned timeout) {lock.unlock(); /* ??? */ WaitForSingleObject(event,timeout==0?INFINITE:timeout); lock.lock();}
+	WaitEvent() {event=CreateEvent(NULL,TRUE,FALSE,NULL);}
+	~WaitEvent() {if (event!=NULL) CloseHandle(event);}
+	RC wait(Mutex& lock,unsigned timeout) {
+		lock.unlock(); /* ??? */ DWORD res=WaitForSingleObject(event,timeout==0?INFINITE:timeout); lock.lock(); return res==WAIT_TIMEOUT?RC_TIMEOUT:RC_OK;
+	}
 	void signal() {PulseEvent(event);}
 	void signalAll() {SetEvent(event);}
 	void reset() {ResetEvent(event);}
@@ -326,9 +341,10 @@ public:
 	pthread_cond_t	cond;
 	volatile unsigned	nsig;
 public:
-	Event() : nsig(0) {pthread_cond_init(&cond,NULL);}
-	~Event() {pthread_cond_destroy(&cond);}
-	void wait(Mutex& lock,unsigned timeout) {
+	WaitEvent() : nsig(0) {pthread_cond_init(&cond,NULL);}
+	~WaitEvent() {pthread_cond_destroy(&cond);}
+	RC wait(Mutex& lock,unsigned timeout) {
+		int res=0;
 		if (nsig==0) {
 			if (timeout==0) pthread_cond_wait(&cond,lock);
 			else {
@@ -350,11 +366,11 @@ public:
 				}
 #endif
 				ts.tv_sec+=timeout/1000;
-				pthread_cond_timedwait(&cond,lock,&ts);
+				res=pthread_cond_timedwait(&cond,lock,&ts);
 			}
 		}
 		if (nsig!=0) --nsig;
-		
+		return res==ETIMEDOUT?RC_TIMEOUT:RC_OK;
 	}
 	void signal() {++nsig; pthread_cond_signal(&cond);}
 	void signalAll() {++nsig; pthread_cond_broadcast(&cond);}
@@ -828,14 +844,14 @@ public:
 /**
  * template for non-blocking concurrent queue of objects
  */
-class AFY_EXP FreeQ
+class AFY_EXP Pool
 {
 	IMemAlloc	*const	ma;
 	const unsigned		blockSize;
 	SLIST_HEADER		qfree;
 	SLock				lock;
 public:
-	FreeQ(IMemAlloc *m=NULL,unsigned blkSize=0x200) : ma(m),blockSize(blkSize) {InitializeSListHead(&qfree);}
+	Pool(IMemAlloc *m=NULL,unsigned blkSize=0x200) : ma(m),blockSize(blkSize) {InitializeSListHead(&qfree);}
 	void *alloc(size_t s) {
 		SLIST_ENTRY *se=InterlockedPopEntrySList(&qfree); 
 		if (se==NULL) {
@@ -863,6 +879,78 @@ public:
 #else
 };
 #endif
+
+/**
+ * Non-blocking queue implementation
+ */
+template<typename T> class Queue
+{
+#ifndef _NO_DCAS
+	struct QNode;
+	union QPtr {
+#ifdef __x86_64__
+		volatile __uint128_t	dword;
+	    struct {
+			QNode*	volatile	ptr;
+			volatile uint64_t	tag;
+		};
+#else
+		volatile uint64_t		dword;
+		struct {
+			QNode*	volatile	ptr;
+			volatile uint32_t	tag;
+		};
+#endif
+	};
+	struct QNode {QPtr next; T val;};
+	QPtr	head;
+	QPtr	tail;
+	QNode	dummy;
+	Pool	&blocks;
+public:
+	Queue(Pool &bl) : blocks(bl) {dummy.next.dword=0; head.ptr=tail.ptr=&dummy; head.tag=tail.tag=0;}
+	RC enqueue(const T& val) {
+		QNode *node=(QNode*)blocks.alloc(sizeof(QNode));
+		if (node!=NULL) {node->next.dword=0; node->val=val;} else return RC_NOMEM;
+		for (;;) {
+			QPtr ltail=tail,lnext=ltail.ptr->next,newq;
+			if (ltail.dword==tail.dword) {
+				if (lnext.ptr==NULL) {
+					newq.ptr=node; newq.tag=lnext.tag+1;
+					if (cas(&ltail.ptr->next.dword,lnext.dword,newq.dword)) {
+						newq.tag=ltail.tag+1;
+						cas(&tail.dword,ltail.dword,newq.dword);
+						return RC_OK;
+					}
+				} else {
+					newq.ptr=lnext.ptr; newq.tag=ltail.tag+1;
+					cas(&tail.dword,ltail.dword,newq.dword);
+				}
+			}
+		}
+	}
+	bool dequeue(T *ret) {
+		for (;;) {
+			QPtr lhead=head,ltail=tail,lnext=lhead.ptr->next,newq;
+			if (lhead.dword==head.dword) {
+				if (lhead.ptr==ltail.ptr) {
+					if (lnext.ptr==NULL) return false;
+					newq.ptr=lnext.ptr; newq.tag=ltail.tag+1;
+					cas(&tail.dword,ltail.dword,newq.dword);
+				} else {
+					if (ret!=NULL) *ret=lnext.ptr->val;
+					newq.ptr=lnext.ptr; newq.tag=lhead.tag+1;
+					if (cas(&head.dword,lhead.dword,newq.dword)) {
+						blocks.dealloc(lhead.ptr); return true;
+					}
+				}
+			}
+		}
+	}
+#else // blocking implementation
+
+#endif
+};
 
 };
 

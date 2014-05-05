@@ -14,7 +14,7 @@ WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the
 License for the specific language governing permissions and limitations
 under the License.
 
-Written by Mark Venguerov 2004-2012
+Written by Mark Venguerov 2004-2014
 
 **************************************************************************************/
 
@@ -69,7 +69,7 @@ RC LockMgr::lock(LockType lt,PINx& pe,unsigned flags)
 	if (lh==NULL) {
 		RWLockP tlck(&pe.tv->lock,RW_X_LOCK);
 		if ((lh=pe.tv->hdr)!=NULL) ++lh->fixCount;
-		else if ((pe.tv->hdr=lh=new(alloc<LockHdr>(freeHeaders)) LockHdr(pe.tv))==NULL) return RC_NORESOURCES;
+		else if ((pe.tv->hdr=lh=new(alloc<LockHdr>(freeHeaders)) LockHdr(pe.tv))==NULL) return RC_NOMEM;
 	} else {
 		++lh->fixCount; lh->sem.lock(ses->lockReq.sem);
 		fLocked=true; unsigned mask=lockConflictMatrix[lt];
@@ -104,7 +104,7 @@ RC LockMgr::lock(LockType lt,PINx& pe,unsigned flags)
 			}
 		}
 	}
-	if ((gl=alloc<GrantedLock>(freeGranted))==NULL) {rc=RC_NORESOURCES; --lh->fixCount;}
+	if ((gl=alloc<GrantedLock>(freeGranted))==NULL) {rc=RC_NOMEM; --lh->fixCount;}
 	else {
 		gl->header=(LockHdr*)lh; gl->ses=ses; gl->other=og; gl->lt=lt; gl->count=1; // gl->fDel=???
 		gl->txNext=ses->heldLocks; ses->heldLocks=gl; gl->subTxID=ses->tx.subTxID;
@@ -208,7 +208,7 @@ RC LockMgr::getTVers(PINx& pe,TVOp tvo)
 			if (tvo==TVO_READ && !ses->inWriteTx()) return RC_OK;
 			PageVTab::Find findPV(pageVTab,pageID);
 			if ((pv=findPV.findLock(RW_X_LOCK))!=NULL) ++pv->fixCnt;
-			else if ((pv=new(ctx) PageV(pageID,*this))==NULL) return RC_NORESOURCES;
+			else if ((pv=new(ctx) PageV(pageID,*this))==NULL) return RC_NOMEM;
 			else {++pv->fixCnt; pageVTab.insertNoLock(pv); if (!pe.pb.isNull()) pe.pb->setVBlock(pv);}
 		}
 		RWLockP lck(&pv->lock,RW_S_LOCK);
@@ -217,11 +217,11 @@ RC LockMgr::getTVers(PINx& pe,TVOp tvo)
 			lck.set(NULL); lck.set(&pv->lock,RW_X_LOCK); const TVers **ins=NULL;
 			if ((pe.tv=(TVers*)BIN<TVers,PageIdx,TVers::TVersCmp>::find(pe.getAddr().idx,(const TVers**)pv->vArray,pv->nTV,&ins))==NULL) {
 				LockHdr *lh=tvo!=TVO_INS?new(alloc<LockHdr>(freeHeaders)) LockHdr(pe.tv):(LockHdr*)0;
-				if ((pe.tv=new(ctx) TVers(pe.getAddr().idx,lh,NULL,tvo==TVO_INS?TV_INS:TV_UPD,tvo!=TVO_INS))==NULL) return RC_NORESOURCES;
+				if ((pe.tv=new(ctx) TVers(pe.getAddr().idx,lh,NULL,tvo==TVO_INS?TV_INS:TV_UPD,tvo!=TVO_INS))==NULL) return RC_NOMEM;
 				if (pv->vArray==NULL || pv->nTV>=pv->xTV) {
 					ptrdiff_t sht=ins-(const TVers**)pv->vArray;
 					if ((pv->vArray=(TVers**)ctx->realloc(pv->vArray,(pv->xTV+=(pv->xTV==0?10:pv->xTV/2))*sizeof(TVers*)))==NULL) 
-						{pv->nTV=pv->xTV=0; return RC_NORESOURCES;}
+						{pv->nTV=pv->xTV=0; return RC_NOMEM;}
 					ins=(const TVers**)pv->vArray+sht;
 				}
 				if (ins<(const TVers**)&pv->vArray[pv->nTV]) memmove(ins+1,ins,(byte*)&pv->vArray[pv->nTV]-(byte*)ins); *ins=pe.tv; pv->nTV++;

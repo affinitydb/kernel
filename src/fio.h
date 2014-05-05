@@ -14,7 +14,7 @@ WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the
 License for the specific language governing permissions and limitations
 under the License.
 
-Written by Mark Venguerov 2004-2012
+Written by Mark Venguerov 2004-2014
 
 **************************************************************************************/
 
@@ -37,6 +37,7 @@ Written by Mark Venguerov 2004-2012
 #define	FIO_REPLACE			0x0002		/**< Close any existing open file at the specified FileID */
 #define	FIO_NEW				0x0004		/**< Fail if the file already exists */
 #define	FIO_TEMP			0x0008		/**< Filename not specified.  To be deleted when closed */
+#define	FIO_LOG				0x0010		/**< Log file */
 
 #define FIO_MAX_PLUGIN_CHAIN	8		/**< Maximum possible chained i/o objects */
 #define FIO_MAX_OPENFILES		100		/**< Maximum number of open files */

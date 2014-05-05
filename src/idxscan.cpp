@@ -14,7 +14,7 @@ WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the
 License for the specific language governing permissions and limitations
 under the License.
 
-Written by Mark Venguerov 2004-2012
+Written by Mark Venguerov 2004-2014
 
 **************************************************************************************/
 
@@ -249,7 +249,7 @@ public:
 				if ((state&SCAN_PREFIX)!=0 && key==finish && finish->isSet()) {
 					if (finish->type==KT_BIN) {
 						size_t l=finish->v.ptr.l; SearchKey *pk;
-						if ((pk=(SearchKey*)alloca(sizeof(SearchKey)+l))==NULL) return RC_NORESOURCES;
+						if ((pk=(SearchKey*)alloca(sizeof(SearchKey)+l))==NULL) return RC_NOMEM;
 						byte *p=(byte*)(pk+1); memcpy(p,finish->getPtr2(),l); while (l>0 && p[l-1]++==0xFF) l--;
 						if (l==0) key=NULL; else {key=pk; pk->type=KT_BIN; pk->loc=SearchKey::PLC_SPTR; pk->v.ptr.p=NULL; pk->v.ptr.l=(ushort)l;}
 					} else if (finish->type==KT_VAR) {
@@ -283,7 +283,7 @@ public:
 retkey:
 			state|=SC_KEYSET;
 			if (fHyper) {
-				skip=NULL; saveKey(); if (savedKey==NULL) return RC_NORESOURCES;
+				skip=NULL; saveKey(); if (savedKey==NULL) return RC_NOMEM;
 				if (start!=NULL && !checkHyperRect(start->getPtr2(),start->v.ptr.l,savedKey->getPtr2(),savedKey->v.ptr.l,segs,nSegs,true) ||
 					finish!=NULL && !checkHyperRect(savedKey->getPtr2(),savedKey->v.ptr.l,finish->getPtr2(),finish->v.ptr.l,segs,nSegs,false))
 						{op=fF?GO_NEXT:GO_PREVIOUS; continue;}

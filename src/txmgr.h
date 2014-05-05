@@ -14,7 +14,7 @@ WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the
 License for the specific language governing permissions and limitations
 under the License.
 
-Written by Mark Venguerov 2004-2012
+Written by Mark Venguerov 2004-2014
 
 **************************************************************************************/
 
@@ -83,7 +83,7 @@ class TxMgr
 	unsigned							xSS;
 public:
 					TxMgr(StoreCtx *cx,TXID startTXID=0,IStoreNotification *notItf=NULL,unsigned xSnap=DEFAULT_MAX_SS);
-	void *operator	new(size_t s,StoreCtx *ctx) {void *p=ctx->malloc(s); if (p==NULL) throw RC_NORESOURCES; return p;}
+	void *operator	new(size_t s,StoreCtx *ctx) {void *p=ctx->malloc(s); if (p==NULL) throw RC_NOMEM; return p;}
 
 	RC				startTx(Session *ses,unsigned,unsigned);
 	RC				abortTx(Session *ses,AbortType at);

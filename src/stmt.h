@@ -14,7 +14,7 @@ WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the
 License for the specific language governing permissions and limitations
 under the License.
 
-Written by Mark Venguerov 2004-2012
+Written by Mark Venguerov 2004-2014
 
 **************************************************************************************/
 
@@ -130,6 +130,7 @@ enum RenderPart
 #define	QVF_DISTINCT	0x02
 #define	QVF_RAW			0x04
 #define	QVF_FIRST		0x08
+#define	QVF_COND		0x10
 
 /**
  * abstract class describing query variable
@@ -144,17 +145,15 @@ protected:
 	byte			qvf;
 	MemAlloc *const	ma;
 	char			*name;
-	ValueV			*outs;
+	Values			*outs;
 	unsigned		nOuts;
-	union {
-		Expr		*cond;
-		Expr		**conds;
-	};
-	unsigned		nConds;
+	Expr			*cond;
+	PropertyID		*props;
+	unsigned		nProps;
 	Expr			*having;
 	OrderSegQ		*groupBy;
 	unsigned		nGroupBy;
-	ValueV			aggrs;
+	Values			aggrs;
 	bool			fHasParent;
 	QVar(QVarID i,byte ty,MemAlloc *m);
 public:
@@ -175,7 +174,7 @@ public:
 	bool			isMulti() const {return type<QRY_ALL_SETOP;}
 	RC				clone(QVar *cloned) const;
 	byte			*serQV(byte *buf) const;
-	RC				addPropRefs(const PropertyID *props,unsigned nProps);
+	RC				addReqProps(const PropertyID *props,unsigned nProps);
 	friend	class	Stmt;
 	friend	class	SimpleVar;
 	friend	class	Classifier;
@@ -282,11 +281,11 @@ class JoinVar : public QVar
 /**
  * new PIN descriptor for INSERT statements
  */
-struct PINDscr : public ValueV
+struct PINDscr : public Values
 {
 	uint64_t	tpid;
 	PINDscr() : tpid(0) {}
-	PINDscr(const Value *pv,unsigned nv,uint64_t tp=0ULL,bool fF=false) : ValueV(pv,nv,fFree),tpid(tp) {}
+	PINDscr(const Value *pv,unsigned nv,uint64_t tp=0ULL,bool fF=false) : Values(pv,nv,fFree),tpid(tp) {}
 };
 
 /**
@@ -304,7 +303,7 @@ class Stmt : public IStmt
 	unsigned		nVars;		/**< total number of variables */
 	OrderSegQ		*orderBy;	/**< ORDER BY segment descriptors */
 	unsigned		nOrderBy;	/**< number of ORDER BY segments */
-	ValueV			with;		/**< statement parameters values, specified in WITH */
+	Values			with;		/**< statement parameters values, specified in WITH */
 	union {
 		PINDscr	*pins;			/**< new PINs descriptors */
 		Value	*vals;			/**< modifiers for update */
@@ -320,25 +319,25 @@ public:
 	Stmt(unsigned md,MemAlloc *m,STMT_OP sop=STMT_QUERY,TXI_LEVEL tx=TXI_DEFAULT) : op(sop),ma(m),mode(md),txi(tx),top(NULL),nTop(0),vars(NULL),nVars(0),orderBy(NULL),nOrderBy(0)
 			{vals=NULL; nValues=nNested=0; into=NULL; nInto=0; pmode=0; tpid=STORE_INVALID_PID;}
 	virtual	~Stmt();
-	QVarID	addVariable(const SourceSpec *classes=NULL,unsigned nClasses=0,IExprTree *cond=NULL);
-	QVarID	addVariable(const PID& pid,PropertyID propID,IExprTree *cond=NULL);
+	QVarID	addVariable(const SourceSpec *classes=NULL,unsigned nClasses=0,IExprNode *cond=NULL);
+	QVarID	addVariable(const PID& pid,PropertyID propID,IExprNode *cond=NULL);
 	QVarID	addVariable(IStmt *qry);
 	QVarID	setOp(QVarID leftVar,QVarID rightVar,QUERY_SETOP);
 	QVarID	setOp(const QVarID *vars,unsigned nVars,QUERY_SETOP);
-	QVarID	join(QVarID leftVar,QVarID rightVar,IExprTree *cond=NULL,QUERY_SETOP=QRY_SEMIJOIN,PropertyID=STORE_INVALID_URIID);
-	QVarID	join(const QVarID *vars,unsigned nVars,IExprTree *cond=NULL,QUERY_SETOP=QRY_SEMIJOIN,PropertyID=STORE_INVALID_URIID);
+	QVarID	join(QVarID leftVar,QVarID rightVar,IExprNode *cond=NULL,QUERY_SETOP=QRY_SEMIJOIN,PropertyID=STORE_INVALID_URIID);
+	QVarID	join(const QVarID *vars,unsigned nVars,IExprNode *cond=NULL,QUERY_SETOP=QRY_SEMIJOIN,PropertyID=STORE_INVALID_URIID);
 	RC		setName(QVarID var,const char *name);
 	RC		setDistinct(QVarID var,DistinctType dt);
 	RC		addOutput(QVarID var,const Value *dscr,unsigned nDscr);
 	RC		addOutputNoCopy(QVarID var,Value *dscr,unsigned nDscr);
-	RC		addCondition(QVarID var,IExprTree *cond);
+	RC		addCondition(QVarID var,IExprNode *cond);
 	RC		addConditionFT(QVarID var,const char *str,unsigned flags=0,const PropertyID *pids=NULL,unsigned nPids=0);
 	RC		setPIDs(QVarID var,const PID *pids,unsigned nPids);
 	RC		setPath(QVarID var,const PathSeg *segs,unsigned nSegs);
 	RC		setExpr(QVarID var,const Value& exp);
 	RC		setPropCondition(QVarID var,const PropertyID *props,unsigned nProps,bool fOr=false);
 	RC		setJoinProperties(QVarID var,const PropertyID *props,unsigned nProps);
-	RC		setGroup(QVarID,const OrderSeg *order,unsigned nSegs,IExprTree *having=NULL);
+	RC		setGroup(QVarID,const OrderSeg *order,unsigned nSegs,IExprNode *having=NULL);
 	RC		setOrder(const OrderSeg *order,unsigned nSegs);
 	RC		setValues(const Value *values,unsigned nValues,const IntoClass *into=NULL,unsigned nInto=0,uint64_t tid=0ULL);
 	STMT_OP	getOp() const;
@@ -380,9 +379,9 @@ public:
 	static	RC		deserialize(Stmt*&,const byte *&,const byte *const ebuf,MemAlloc*);
 protected:
 	RC		connectVars();
-	RC		processCondition(class ExprTree*,QVar *qv);
-	RC		processHaving(class ExprTree*,QVar *qv);
-	RC		processCond(class ExprTree*,QVar *qv,DynArray<const class ExprTree*> *exprs);
+	RC		processCondition(class ExprNode*,QVar *qv);
+	RC		processHaving(class ExprNode*,QVar *qv);
+	RC		processCond(class ExprNode*,QVar *qv,DynArray<const class ExprNode*> *exprs);
 	QVar	*findVar(QVarID id) const {QVar *qv=vars; while (qv!=NULL&&qv->id!=id) qv=qv->next; return qv;}
 	RC		render(const QVar *qv,SOutCtx& out) const;
 	RC		copyValues(Value *vals,unsigned nVals,unsigned& pn,DynOArrayBuf<uint64_t,uint64_t>& tids,Session *ses=NULL);
@@ -407,7 +406,7 @@ class Cursor : public ICursor
 {
 	friend	class		Stmt;
 	EvalCtx				ectx;
-	ValueV				params;
+	Values				params;
 	QueryOp				*queryOp;
 	const	uint64_t	nReturn;
 	const	Value		*values;

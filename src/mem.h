@@ -14,7 +14,7 @@ WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the
 License for the specific language governing permissions and limitations
 under the License.
 
-Written by Mark Venguerov 2010-2012
+Written by Mark Venguerov 2010-2014
 
 **************************************************************************************/
 
@@ -25,6 +25,7 @@ Written by Mark Venguerov 2010-2012
 #define _MEM_H_
 
 #include "types.h"
+#include "afysync.h"
 
 namespace AfyKernel
 {
@@ -76,6 +77,33 @@ public:
 };
 
 extern SharedAlloc sharedAlloc;
+
+#define	NBLOCK_SHARED_QUEUES	10
+#define	SES_MEM_BLOCK_QUEUES	6
+#define	SES_MEM_BLOCK_MAX		32
+
+class Session;
+
+class BlockAlloc : public MemAlloc
+{
+	const	uint32_t	blockSize	:31;
+	const	uint32_t	fSes		:1;
+	uint32_t			left;
+	BlockAlloc			*ext;
+public:
+	BlockAlloc(uint32_t	sz,bool fS) : blockSize(sz),fSes(fS?1:0),left(sz-sizeof(BlockAlloc)),ext(NULL) {assert((sz-1&sz)==0);}
+	void *malloc(size_t pSize);
+	void *memalign(size_t align,size_t s);
+	void *realloc(void *pPtr, size_t pNewSize, size_t pOldSize=0);
+	void free(void *pPtr);
+	HEAP_TYPE getAType() const;
+	static	BlockAlloc *allocBlock(size_t sz,Session *ses=NULL,bool fSes=false);
+public:
+	struct SharedBlockAlloc {
+		Pool	*queues[NBLOCK_SHARED_QUEUES];
+		SharedBlockAlloc();
+	};
+};
 
 #define	SA_DEFAULT_SIZE	0x200
 #define	SA_MAX_SIZE		0x40000000		//1Gb

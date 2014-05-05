@@ -14,7 +14,7 @@ WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the
 License for the specific language governing permissions and limitations
 under the License.
 
-Written by Mark Venguerov 2004-2012
+Written by Mark Venguerov 2004-2014
 
 **************************************************************************************/
 
@@ -146,7 +146,7 @@ public:
 	MemMap(MapElt *es,unsigned nE,MemAlloc *m) : elts(es),nElts(nE),ma(m),idx(0) {}
 	~MemMap();
 	const	Value	*find(const Value &key);
-	RC				getNext(const Value *&key,const Value *&val,bool fFirst=false);
+	RC				getNext(const Value *&key,const Value *&val,unsigned mode=0);
 	RC				set(const Value& key,const Value& val);
 	IMap			*clone() const;
 	unsigned		count() const;
@@ -245,7 +245,7 @@ public:
 	Map(const PageAddr& addr,PropertyID pid,const HeapPageMgr::HeapExtMap *map,unsigned md,MemAlloc *ma);
 	virtual ~Map();
 	const	Value		*find(const Value &key);
-	RC					getNext(const Value *&key,const Value *&val,bool fFirst=false);
+	RC					getNext(const Value *&key,const Value *&val,unsigned mode=0);
 	IMap				*clone() const;
 	unsigned			count() const;
 	void				destroy();
@@ -423,10 +423,10 @@ class BigMgr
 	friend	class	Navigator;
 	StoreCtx		*const ctx;
 	BlobReadTab		blobReadTab;
-	FreeQ			freeBlob;
+	Pool			freeBlob;
 public:
 	BigMgr(StoreCtx *ct,unsigned blobReadTabSize=DEFAULT_BLOBREADTAB_SIZE);
-	void *operator new(size_t s,StoreCtx *ctx) {void *p=ctx->malloc(s); if (p==NULL) throw RC_NORESOURCES; return p;}
+	void *operator new(size_t s,StoreCtx *ctx) {void *p=ctx->malloc(s); if (p==NULL) throw RC_NOMEM; return p;}
 	bool canBePurged(const PageAddr& addr);
 };
 

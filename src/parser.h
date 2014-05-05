@@ -14,7 +14,7 @@ WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the
 License for the specific language governing permissions and limitations
 under the License.
 
-Written by Mark Venguerov 2010-2012
+Written by Mark Venguerov 2010-2014
 
 **************************************************************************************/
 
@@ -31,6 +31,8 @@ struct StartupParameters;
 
 namespace AfyKernel
 {
+
+#define MIME_JSON	"application/json"
 
 #undef	_F
 #undef	_U
@@ -55,6 +57,7 @@ struct OpDscr {
 	byte		match;		/**< matching paranthesis */
 	byte		lstr;		/**< length of name string */
 	const char	*str;		/**< name (for rendering) */
+	RC			(*func)(ExprOp op,Value& arg,const Value *moreArgs,int nargs,unsigned flags,const EvalCtx& ctx);	/**< processor func */
 	byte		prty[2];	/**< shift-reduce priorities */
 	byte		nOps[2];	/**< minimum and maximum number of operands */
 };
@@ -140,7 +143,7 @@ public:
 /**
  * PathSQL parsing control flags
  */
-#define	SIM_SIMPLE_NAME		0x0001			/**< parse simple names only (no qname) (e.g. in FROM ... AS name) */
+#define	SIM_SIMPLE_NAME		0x0001			/**< parse simple names only (no qname, no keywords) (e.g. in FROM ... AS name) */
 #define	SIM_INT_NUM			0x0002			/**< force parsing integer number (don't treat '.' as a part of number) */
 #define	SIM_SELECT			0x0004			/**< expression is part of SELECT list - special parsing for identifiers */
 #define	SIM_DML_EXPR		0x0008			/**< expression in INSERT or UPDATE statements, can contain nested INSERTs */
@@ -158,12 +161,12 @@ enum Lexem {
 	LX_KEYW=OP_MOVE_BEFORE, LX_LPR=OP_DELETE, LX_RPR=OP_EDIT, LX_COMMA=OP_RENAME,
 		
 	LX_COLON=OP_ALL, LX_LBR, LX_RBR, LX_LCBR, LX_RCBR, LX_PERIOD, LX_QUEST, LX_EXCL,
-	LX_EXPR, LX_QUERY, LX_URSHIFT, LX_PREFIX, LX_IS, LX_BETWEEN, LX_BAND, LX_HASH,
+	LX_EXPR, LX_STMT, LX_URSHIFT, LX_PREFIX, LX_IS, LX_BETWEEN, LX_BAND, LX_HASH,
 	LX_SEMI, LX_CONCAT, LX_FILTER, LX_REPEAT, LX_PATHQ, LX_SELF, LX_SPROP, LX_TPID,
-	LX_RXREF, LX_REF, LX_INLINE, LX_ARROW,
+	LX_RXREF, LX_REF, LX_ARROW,
 		
 	LX_NL, LX_SPACE, LX_DQUOTE, LX_QUOTE, LX_LT, LX_GT, LX_VL, LX_DOLLAR, LX_BSLASH,
-	LX_ERR, LX_UTF8, LX_DIGIT, LX_LETTER, LX_ULETTER, LX_XLETTER,
+	LX_ERR, LX_UTF8, LX_DIGIT, LX_LETTER, LX_XLETTER,
 };
 
 /**
@@ -194,6 +197,7 @@ enum SynErr
 	SY_MISBY, SY_SYNTAX, SY_MISLGC, SY_MISAND, SY_INVTMS, SY_MISQNM, SY_MISQN2, SY_INVEXT,
 	SY_UNBRPR, SY_UNBRBR, SY_UNBRCBR, SY_MISBOOL, SY_MISJOIN, SY_MISNAME, SY_MISAGNS,
 	SY_MISEQ, SY_MISCLN, SY_UNKQPR, SY_INVGRP, SY_INVHAV, SY_MISSLASH, SY_MISIDN,
+	SY_MISLCBR, SY_MISCOLON, SY_MISARROW, SY_MISWHEN, SY_MISAS, SY_MISOF,
 
 	SY_ALL
 };
@@ -240,6 +244,21 @@ public:
 };
 
 /**
+ * FSM node descriptor
+ */
+struct FSMState : public StrLen
+{
+	HChain<FSMState>	list;
+	unsigned			id;
+	MemAlloc	*const	ma;
+	FSMState(const char *nm,size_t l,unsigned i,MemAlloc *m) : StrLen(nm,l),list(this),id(i),ma(m) {}
+	const StrLen& getKey() const {return *this;}
+	void operator delete(void *p) {if (p!=NULL) ((FSMState*)p)->ma->free(p);}
+};
+
+typedef HashTab<FSMState,const StrLen&,&FSMState::list> FSMTable;
+
+/**
  * PathSQL expression of statement parsing context
  * uses top-down LL(1) (mostly) for statement parsing and priority-driven shift-reduce for expression parsing
  * special code introduces various contextual dependencies
@@ -281,7 +300,7 @@ public:
 	QVarID	parseQuery(Stmt*&,bool fNested=true,unsigned *pnp=NULL);								/**< parse a query (i.e. not DML or DDL statement) */
 	void	parseManage(IAffinity *&,const StartupParameters *sp);									/**< parse and execute database management PathSQL */
 	void	parse(Value& res,const union QVarRef *vars=NULL,unsigned nVars=0,unsigned flags=0);		/**< parse PathSQL expression */
-	class	ExprTree *parse(bool fCopy);															/**< parse PathSQL expression, return as an expression tree */
+	class	ExprNode *parse(bool fCopy);															/**< parse PathSQL expression, return as an expression tree */
 	void	checkEnd(bool fSemi=false) {switch (lex()) {case LX_RPR: throw SY_UNBRPR; case LX_RBR: throw SY_UNBRBR; case LX_RCBR: throw SY_UNBRCBR; case LX_SEMI: if (fSemi && lex()==LX_EOE) {case LX_EOE: return;} default: throw SY_SYNTAX;}}	/**< check end of PathSQL string */
 	bool	checkDelimiter(char);																	/**< check statement delimeter */
 	void	getErrorInfo(RC rc,SynErr sy,CompilationError *ce) const {								/** fill CompilationError structure (see affinity.h) */
@@ -298,14 +317,24 @@ private:
 	bool	parseEID(TLx lx,ElementID& eid);														/**< parse ':XXX' eid constant */
 	void	parseMeta(PropertyID pid,uint8_t& meta);												/**< parse META_PROP_*** in insert and VT_STRUCT */
 	void	parseRegExp();																			/**< parse regular expression, return binary string containing 'compiled' form */
+	void	parseEvents(Value& res,FSMTable *ft=NULL,unsigned *id=NULL);							/**< parse event descriptors in FSM or event handler */
 	void	parseCase();																			/**< parse CASE ... WHEN ... END */
+	void	parseInsert(Stmt *&res,DynArray<Value,10>& with);										/**< parse INSERT ... */
+	void	parseUpdate(Stmt *&res,DynArray<Value,10>& with);										/**< parse UPDATE ... */
+	void	parseDelete(Stmt *&res,KW kw,DynArray<Value,10>& with);									/**< parse DELETE..., PURGE..., UNDELETE... */
+	void	parseCreate(Stmt *&res,DynArray<Value,10>& with);										/**< parse CREATE ... */
+	void	parseDrop(Stmt *&res);																	/**< parse DROP ... */
+	void	parseStart(Stmt *&res);																	/**< parse START ... */
+	void	parseFSM(Stmt *&res);																	/**< parse CREATE FSM... */
+	void	parseSet(Stmt *&res);																	/**< parse SET ... */
+	void	parseRule(Stmt *&res);																	/**< parse RULE ... */
 	QVarID	parseSelect(Stmt *res,bool fMod=false);													/**< parse SELECT statement */
 	QVarID	parseFrom(Stmt *stmt);																	/**< parse FROM clause */
 	QVarID	parseSource(Stmt *stmt,TLx lx,bool *pF,bool fSelect=true);								/**< parse a single source variable in FROM or UPDATE */
 	void	parseClasses(DynArray<SourceSpec> &css);												/**< parse a list of classes in FROM */
 	TLx		parseOrderOrGroup(Stmt *stmt,QVarID var,Value *os=NULL,unsigned nO=0);					/**< parse ORDER BY or GROUP BY clause */
-	ExprTree *parseCondition(const union QVarRef *vars,unsigned nVars);								/**< parse condition expresion (either in WHERE or in ON or in HAVING) */
-	RC		splitWhere(Stmt *stmt,QVar *qv,ExprTree *pe);											/**< down-propagate individual variable conditions in join, associate variables in JOIN on or WHERE conditions */
+	ExprNode *parseCondition(const union QVarRef *vars,unsigned nVars);								/**< parse condition expresion (either in WHERE or in ON or in HAVING) */
+	RC		splitWhere(Stmt *stmt,QVar *qv,ExprNode *pe);											/**< down-propagate individual variable conditions in join, associate variables in JOIN on or WHERE conditions */
 	void	resolveVars(QVarRef *qv,Value &vv,Value *par=NULL);										/**< associate SELECT identifiers with FROM variables */
 	RC		replaceGroupExprs(Value& v,const OrderSeg *segs,unsigned nSegs);						/**< GROUP BY expressions are stored separately in variables */
 	QVarID	findVar(const Value& v,const union QVarRef *vars,unsigned nVars) const;					/**< find variable by its name */
@@ -316,7 +345,7 @@ private:
 		T		*ptr;
 		Stack() : ptr(stk) {}
 		~Stack() {while (ptr>stk) fV::free(*--ptr);}
-		void	push(T v) {if (ptr==stk+size) throw RC_NORESOURCES; *ptr++=v;}
+		void	push(T v) {if (ptr==stk+size) throw RC_NOMEM; *ptr++=v;}
 		T*		pop(int n) {return ptr>=stk+n?ptr-=n:(T*)0;}
 		T		pop() {assert(ptr>stk); return *--ptr;}
 		T*		top(int n) const {return ptr>=stk+n?ptr-n:(T*)0;}

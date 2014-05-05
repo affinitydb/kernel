@@ -14,7 +14,7 @@ WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the
 License for the specific language governing permissions and limitations
 under the License.
 
-Written by Mark Venguerov 2004-2012
+Written by Mark Venguerov 2004-2014
 
 **************************************************************************************/
 
@@ -151,7 +151,7 @@ public:
 	class	TxMgr				*txMgr;
 	class	BigMgr				*bigMgr;
 	class	TimerQ				*tqMgr;
-	class	FSMMgr				*fsmMgr;
+	class	EventMgr			*eventMgr;
 
 	StrKey						directory;
 
@@ -184,7 +184,7 @@ public:
 	ServiceProviderTab			*serviceProviderTab;
 	ListenerNotificationHolder	*lstNotif;
 	ExtFuncTab					*extFuncTab;
-	ExtOp						**opTab;
+	ExtOp						**volatile opTab;
 
 	struct	StoreCB				*theCB;
 	struct	StoreCB				*theCBEnc;
@@ -202,7 +202,7 @@ public:
 public:
 	StoreCtx(unsigned md,void *mem,uint64_t lMem) : fLocked(false),bufMgr(NULL),classMgr(NULL),cryptoMgr(NULL),fileMgr(NULL),
 		fsMgr(NULL),ftMgr(NULL),lockMgr(NULL),logMgr(NULL),uriMgr(NULL),identMgr(NULL),namedMgr(NULL),netMgr(NULL),heapMgr(NULL),
-		hdirMgr(NULL),ssvMgr(NULL),trpgMgr(NULL),treeMgr(NULL),queryMgr(NULL),txMgr(NULL),bigMgr(NULL),tqMgr(NULL),fsmMgr(NULL),
+		hdirMgr(NULL),ssvMgr(NULL),trpgMgr(NULL),treeMgr(NULL),queryMgr(NULL),txMgr(NULL),bigMgr(NULL),tqMgr(NULL),eventMgr(NULL),
 		mode(md),memory(lMem!=0?mem:NULL),lMemory(lMem),storeID(0),bufSize(0),keyPrefix(0),list(this),sesCnt(0),defaultService(NULL),
 		serviceProviderTab(NULL),lstNotif(NULL),extFuncTab(NULL),opTab(NULL),theCB(NULL),theCBEnc(NULL),cbLSN(0),state(0),mem(NULL),ref(NULL),traceMode(0),qNames(NULL),nQNames(0) {
 			memset(pageMgrTab,0,sizeof(pageMgrTab)); memset(encKey0,0,sizeof(encKey0)); memset(HMACKey0,0,sizeof(HMACKey0)); memset(encKey,0,sizeof(encKey)); memset(HMACKey,0,sizeof(HMACKey));
@@ -250,7 +250,7 @@ public:
 	RC							unregisterService(URIID serviceID,IService *handler=NULL);
 	void						shutdownServices();
 	RC							registerSocket(IAfySocket *sock);
-	void						unregisterSocket(IAfySocket *sock);
+	void						unregisterSocket(IAfySocket *sock,bool fClose);
 	RC							registerPrefix(const char *qs,size_t lq,const char *str,size_t ls);
 	RC							registerFunction(const char *fname,RC (*func)(Value& arg,const Value *moreArgs,unsigned nargs,unsigned mode,ISession *ses),URIID serviceID);
 	RC							registerFunction(URIID funcID,RC (*func)(Value& arg,const Value *moreArgs,unsigned nargs,unsigned mode,ISession *ses),URIID serviceID);
@@ -297,6 +297,7 @@ enum LockType {LOCK_IS,LOCK_IX,LOCK_SHARED,LOCK_SIX,LOCK_UPDATE,LOCK_EXCLUSIVE,L
 #define	S_REPLICATION	0x00000001		/**< session is a replication input session */
 #define	S_INSERT		0x00000002		/**< inserts are allowed for this identity */
 #define	S_RESTORE		0x00000004		/**< 'restore from logs' mode */
+#define	S_CLIENT		0x00000008		/**< session is created to serve client requests */
 
 #define	CPREFIX_MASK	0xFF000000
 
@@ -410,7 +411,7 @@ struct TxReuse
 };
 
 class	TxIndex;
-typedef	Queue<OnCommit,&OnCommit::next>	OnCommitQ;
+typedef	SimpleQueue<OnCommit,&OnCommit::next> OnCommitQ;
 
 /**
  * subtransaction descriptor
@@ -450,6 +451,12 @@ struct LatchedPage
 	class	Cmp	{public: static int cmp(const LatchedPage& lp,PageID pid);};
 };
 
+struct SesMemCache
+{
+	SesMemCache	*next;
+	unsigned	cnt;
+};
+
 /**
  * main session context descriptor
  * implements ISession interface
@@ -458,6 +465,7 @@ class Session : public MemAlloc, public ISession
 {
 	StoreCtx		*ctx;
 	MemAlloc		*const mem;
+	SesMemCache		**memCache;
 	StackAlloc::SubMark	sm;
 
 	TXID			txid;
@@ -533,12 +541,13 @@ public:
 	unsigned		getIdentity() const {return identity;}
 	const LSN&		getLastLSN() const {return tx.lastLSN;}
 	unsigned		getItf() const {return itf;}
-	void			setIdentity(unsigned iid,bool fMayInsert) {identity=iid; if (fMayInsert) sFlags|=S_INSERT;}
+	void			setIdentity(unsigned iid,bool fMayInsert) {identity=iid; if (fMayInsert) sFlags|=S_INSERT; else sFlags&=~S_INSERT;}
 	void			setReplication(bool fSet) {if (fSet) sFlags|=S_REPLICATION|S_INSERT; else sFlags&=~(S_REPLICATION|S_INSERT);}
-	void			setRestore();
+	void			setRestore() {sFlags|=S_RESTORE|S_INSERT; identity=STORE_OWNER;}
 	bool			isReplication() const {return (sFlags&S_REPLICATION)!=0;}
 	bool			isRestore() const {return (sFlags&S_RESTORE)!=0;}
 	bool			mayInsert() const {return (sFlags&S_INSERT)!=0;}
+	bool			isClient() const {return (sFlags&S_CLIENT)!=0;}
 	void			setExtAddr(const PageAddr& addr) {extAddr=addr;}
 	const PageAddr&	getExtAddr() const {return extAddr;}
 	void			setDefaultExpiration(TIMESTAMP ts) {defExpiration=ts;}
@@ -548,11 +557,12 @@ public:
 	void			abortQ() {fAbort=true;}
 	RC				testAbortQ() const {return fAbort?RC_TIMEOUT:RC_OK;}
 
+	RC				extcall(URIID fname,Value& arg,const Value *moreArgs,unsigned nargs,unsigned mode);
 	RC				listen(Value *vals,unsigned nVals,unsigned mode);
 	RC				prepare(ServiceCtx *&srv,const PID& id,const Value *vals,unsigned nVals,unsigned flags);
 	RC				createServiceCtx(const Value *vals,unsigned nVals,class IServiceCtx *&sctx,bool fWrite=false,class IListener *lctx=NULL);
 	RC				stopListener(URIID lid,bool fSuspend=false);
-	RC				resolve(IServiceCtx *sctx,URIID sid,AddrInfo& ai);
+	RC				resolve(IServiceCtx *sctx,URIID sid,IAddress& ai);
 	void			removeServiceCtx(const PID& id);
 	
 	void			setTrace(ITrace *trc);
@@ -596,7 +606,7 @@ public:
 
 	static	Session *getSession() {return (Session*)sessionTls.get();}
 
-	static	Session	*createSession(StoreCtx *ctx,size_t initMem=0);
+	static	Session	*createSession(StoreCtx *ctx,size_t initMem=0,bool fClient=false);
 	static	void	terminateSession();
 
 	IAffinity		*getAffinity() const;
@@ -630,8 +640,8 @@ public:
 
 	IStmt			*createStmt(STMT_OP=STMT_QUERY,unsigned mode=0);
 	IStmt			*createStmt(const char *queryStr,const URIID *ids=NULL,unsigned nids=0,CompilationError *ce=NULL);
-	IExprTree		*expr(ExprOp op,unsigned nOperands,const Value *operands,unsigned flags=0);
-	IExprTree		*createExprTree(const char *str,const URIID *ids=NULL,unsigned nids=0,CompilationError *ce=NULL);
+	IExprNode		*expr(ExprOp op,unsigned nOperands,const Value *operands,unsigned flags=0);
+	IExprNode		*createExprTree(const char *str,const URIID *ids=NULL,unsigned nids=0,CompilationError *ce=NULL);
 	IExpr			*createExpr(const char *str,const URIID *ids=NULL,unsigned nids=0,CompilationError *ce=NULL);
 	IExpr			*createExtExpr(uint16_t langID,const byte *body,uint32_t lBody,uint16_t flags);
 	RC				getTypeName(ValueType type,char buf[],size_t lbuf);
@@ -652,11 +662,14 @@ public:
 	RC				listWords(const char *query,StringEnum *&sen);
 	RC				getClassInfo(ClassID,IPIN*&);
 	
+	RC				allocPIN(size_t maxSize,unsigned nProps,IPIN *&pin,Value *&values,unsigned mode=0);
+	RC				inject(IPIN *PIN);
+	RC				createEventHandler(const EventSpec evdesc[],unsigned nDesc,RC (*callback)(/*???*/));
+	RC				createEventHandler(const EventSpec evdesc[],unsigned nDesc,ActionDescriptor[]);
+
 	IPIN			*getPIN(const PID& id,unsigned=0);
 	IPIN			*getPIN(const Value& id,unsigned=0);
-	RC				getValues(Value *vals,unsigned nVals,const PID& id);
 	RC				getValue(Value& res,const PID& id,PropertyID,ElementID=STORE_COLLECTION_ID);
-	RC				getValue(Value& res,const PID& id);
 	RC				getPINClasses(ClassID *&clss,unsigned& nclss,const PID& id);
 	bool			isCached(const PID& id);
 	IBatch			*createBatch();
@@ -671,7 +684,7 @@ public:
 	RC				rollback(bool fAll);
 	void			setLimits(unsigned xSyncStack,unsigned xOnCommit);
 
-	RC				reservePage(uint32_t);
+	RC				reservePages(const uint32_t *pages,unsigned nPages);
 
 	RC				createMap(const MapElt *elts,unsigned nElts,IMap *&map,bool fCopy=true);
 	RC				copyValue(const Value& src,Value& dest);
@@ -727,6 +740,7 @@ public:
 	friend	struct	ClassifierHdr;
 	friend	class	IOCtl;
 	friend	class	StoreCtx;
+	friend	class	BlockAlloc;
 };
 
 /**
@@ -778,8 +792,8 @@ extern	bool	testStrNum(const char *s,size_t l,Value& res);																				/*
 extern	RC		convV(const Value& src,Value& dst,ushort type,MemAlloc *ma,unsigned mode=0);												/**< convert Value to another type */
 extern	RC		derefValue(const Value& src,Value& dst,Session *ses);																		/**< deference Value (VT_REFID, VT_REFIDPROP, etc.) */
 extern	void	decoll(Value &v);																											/**< convert 1-element collection to a single value */
-extern	RC		alength(const Value& v,size_t& l);																							/**< calculate storage for an array, set flags and lelt fields in FixedArray */
-extern	RC		convURL(const Value& src,Value& dst,HEAP_TYPE alloc);																		/**< convert URL */
+extern	RC		checkArray(const Value &v);																									/**< check array parameters, set 'flags' */
+extern	size_t	slength(const Value& v);																									/**< calculate storage for an array of VT_STRUCT */
 extern	RC		substitute(Value& v,const Value *pars,unsigned nPars,MemAlloc *ma);															/**< substitute parameters in expr, stmt and compound values */
 extern	void	freeV(Value *v,unsigned nv,MemAlloc*);																						/**< free in array of Value structs */
 extern	void	freeV0(Value& v);																											/**< free data in Value */

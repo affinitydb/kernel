@@ -14,7 +14,7 @@ WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the
 License for the specific language governing permissions and limitations
 under the License.
 
-Written by Mark Venguerov 2004-2012
+Written by Mark Venguerov 2004-2014
 
 **************************************************************************************/
 
@@ -308,10 +308,11 @@ const Value	*MemMap::find(const Value &key)
 	const MapElt *elt=MBIN::find(key,elts,nElts); return elt!=NULL?&elt->val:NULL;
 }
 
-RC MemMap::getNext(const Value *&key,const Value *&val,bool fFirst)
+RC MemMap::getNext(const Value *&key,const Value *&val,unsigned mode)
 {
-	if (fFirst) idx=0; if (idx>=nElts) return RC_EOF;
-	key=&elts[idx].key; val=&elts[idx].val; idx++; return RC_OK;
+	if ((mode&IMAP_FIRST)!=0) idx=(mode&IMAP_REVERSE)!=0?nElts:0; unsigned i=idx;
+	if ((mode&IMAP_REVERSE)!=0) {if (idx==0) return RC_EOF; i=--idx;} else if (idx<nElts) idx++; else return RC_EOF;
+	key=&elts[i].key; val=&elts[i].val; return RC_OK;
 }
 
 RC MemMap::set(const Value& key,const Value& val)
@@ -319,7 +320,7 @@ RC MemMap::set(const Value& key,const Value& val)
 	MapElt *ins=NULL,*elt=(MapElt*)MBIN::find(key,elts,nElts,&ins);
 	if (elt!=NULL) {freeV(elt->val); return copyV(val,elt->val,ma);}
 	unsigned sht=ins!=NULL?unsigned(ins-elts):0u;
-	if ((elts=(MapElt*)ma->realloc(elts,(nElts+1)*sizeof(MapElt),nElts*sizeof(MapElt)))==NULL) return RC_NORESOURCES;
+	if ((elts=(MapElt*)ma->realloc(elts,(nElts+1)*sizeof(MapElt),nElts*sizeof(MapElt)))==NULL) return RC_NOMEM;
 	if (sht<nElts) memmove(elts+sht+1,elts+sht,(nElts-sht)*sizeof(MapElt));
 	ins=elts+sht; ins->key.setEmpty(); ins->val.setEmpty(); nElts++;
 	RC rc=copyV(key,ins->key,ma); return rc==RC_OK?copyV(val,ins->val,ma):rc; 
@@ -546,7 +547,7 @@ Navigator::~Navigator()
 
 const Value *Navigator::navigate(GO_DIR op,ElementID ei)
 {
-	Value w,*res=NULL; bool fRelease=(mode&LOAD_ENAV)!=0;
+	Value w,*res=NULL; bool fRelease=(mode&LOAD_CLIENT)!=0;
 	if (op==GO_FINDBYID && ei==STORE_COLLECTION_ID) fRelease=true;
 	else if (ecb.get(op,op==GO_FINDBYID?ei:STORE_COLLECTION_ID,true)==RC_OK && 
 			ctx->queryMgr->loadS(w,__una_get(ecb.hdr->type),ecb.hdr->type.isCompact()?*(ushort*)((byte*)(ecb.hdr+1)+ecb.hdr->shift):
@@ -942,7 +943,7 @@ RC Collection::addRootPage(const SearchKey& key,PageID& pageID,unsigned level)
 	} else if (coll->nPages<maxPages && allc!=NULL) {
 		if (coll->nPages!=0 && (coll=(HeapPageMgr::HeapExtCollection*)allc->realloc(coll,
 			coll->nPages*sizeof(HeapPageMgr::HeapExtCollPage)+sizeof(HeapPageMgr::HeapExtCollection)))==NULL)
-				rc=RC_NORESOURCES;
+				rc=RC_NOMEM;
 		else {
 			unsigned idx=0,n=coll->nPages;
 			if (n>0) {
@@ -957,7 +958,7 @@ RC Collection::addRootPage(const SearchKey& key,PageID& pageID,unsigned level)
 		}
 	} else if (!(ses=Session::getSession())->inWriteTx()) rc=RC_INTERNAL;
 	else if ((rc=ctx->fsMgr->allocPages(1,&newRoot))==RC_OK) {
-		if ((pb=ctx->bufMgr->newPage(newRoot,ctx->trpgMgr,NULL,0,ses))==NULL) rc=RC_NORESOURCES;
+		if ((pb=ctx->bufMgr->newPage(newRoot,ctx->trpgMgr,NULL,0,ses))==NULL) rc=RC_NOMEM;
 		else {
 			if (coll->nPages>0) {
 				// ???
@@ -1028,7 +1029,7 @@ public:
 		RC rc=RC_OK; PageID newRoot;
 		if (coll.nPages<maxPages) {
 			HeapPageMgr::HeapExtCollPage& pg=coll.pages[coll.nPages++]; pg.key=(uint32_t)key.v.u; pg.page=pageID; rc=RC_TRUE;
-		} else if (tctx.depth==TREE_MAX_DEPTH) rc=RC_NORESOURCES;
+		} else if (tctx.depth==TREE_MAX_DEPTH) rc=RC_NOMEM;
 		else if ((rc=ctx->fsMgr->allocPages(1,&newRoot))==RC_OK) {
 			PBlockP root(ctx->bufMgr->newPage(newRoot,ctx->trpgMgr,NULL,0,ses),QMGR_UFORCE);
 			if (root.isNull()) rc=RC_FULL;
@@ -1083,7 +1084,7 @@ RC Collection::persistElement(Session *ses,const Value& v,ushort& lval,byte *&bu
 	if (fOld && v.type==VT_STREAM) l=(v.flags&VF_SSV)!=0?sizeof(HRefSSV):sizeof(HLOB);
 	else if ((rc=ctx->queryMgr->calcLength(v,len,MODE_PREFIX_READ,threshold,ses))!=RC_OK) return rc;
 	else if ((l=(ushort)ceil(len,HP_ALIGN))==0) l=sizeof(ushort); else if (l>threshold) v.flags|=VF_SSV;
-	if ((buf==NULL||unsigned(lval+l)>lbuf) && (buf=(byte*)ses->realloc(buf,lbuf=lval+l))==NULL) return RC_NORESOURCES;
+	if ((buf==NULL||unsigned(lval+l)>lbuf) && (buf=(byte*)ses->realloc(buf,lbuf=lval+l))==NULL) return RC_NOMEM;
 	ElementDataHdr *hdr=(ElementDataHdr*)buf; hdr->flags=flags; hdr->shift=byte(sht); hdr->type.flags=v.meta;
 	if ((flags&1)!=0) __una_set(((uint32_t*)(hdr+1))[0],prev); if ((flags&2)!=0) __una_set(((uint32_t*)(hdr+1))[flags&1],next);
 	if (fOld && v.type==VT_STREAM) {

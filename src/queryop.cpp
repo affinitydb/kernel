@@ -14,7 +14,7 @@ WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the
 License for the specific language governing permissions and limitations
 under the License.
 
-Written by Mark Venguerov 2004-2012
+Written by Mark Venguerov 2004-2014
 
 **************************************************************************************/
 
@@ -147,7 +147,7 @@ void QueryOp::reverse()
 RC QueryOp::getBody(PINx& pe)
 {
 	RC rc; if ((pe.epr.flags&PINEX_ADDRSET)==0) pe=PageAddr::noAddr;
-	if ((rc=qx->ses->getStore()->queryMgr->getBody(pe,(qflags&QO_FORUPDATE)!=0?TVO_UPD:TVO_READ,0))==RC_OK&&(rc=qx->ses->testAbortQ())==RC_OK) {
+	if ((rc=pe.getBody((qflags&QO_FORUPDATE)!=0?TVO_UPD:TVO_READ,0))==RC_OK&&(rc=qx->ses->testAbortQ())==RC_OK) {
 		assert(pe.getAddr().defined() && (pe.epr.flags&PINEX_ADDRSET)!=0);
 	}
 	return rc;
@@ -157,11 +157,11 @@ RC QueryOp::createCommOp(PINx *pcb,const byte *er,size_t l)
 {
 	assert(extsrc==NULL); PINx cb(qx->ses); RC rc; ServiceCtx *sctx=NULL;
 	if (pcb==NULL) {if (er!=NULL && l!=0) {memcpy(cb.epr.buf,er,l); pcb=&cb;} else if ((pcb=res)==NULL) return RC_INTERNAL;}
-	if (pcb->isPartial() && (pcb->pb.isNull() && (rc=qx->ses->getStore()->queryMgr->getBody(*pcb))!=RC_OK || (rc=pcb->load(LOAD_SSV))!=RC_OK)) return rc;
+	if (pcb->isPartial() && (pcb->pb.isNull() && (rc=pcb->getBody())!=RC_OK || (rc=pcb->load(LOAD_SSV))!=RC_OK)) return rc;
 	if ((pcb->getMetaType()&PMT_COMM)==0) return RC_EOF;
-	ValueV vv(pcb->properties,pcb->nProperties); if (pcb==res) pcb->setProps(NULL,0);
+	Values vv(pcb->properties,pcb->nProperties); if (pcb==res) pcb->setProps(NULL,0);
 	if ((rc=qx->ses->prepare(sctx,pcb->id,vv.vals,vv.nValues,0))!=RC_OK) return rc; assert(sctx!=NULL);	// params ->ISRV_NOCACHE
-	CommOp *co=new(qx->ses) CommOp(qx,sctx,vv,0); if (co==NULL) {sctx->destroy(); return RC_NORESOURCES;}
+	CommOp *co=new(qx->ses) CommOp(qx,sctx,vv,0); if (co==NULL) {sctx->destroy(); return RC_NOMEM;}
 	co->connect(res!=NULL?&res:&pcb); if ((rc=co->advance())==RC_OK) extsrc=co; else delete co;
 	return rc;
 }
@@ -192,7 +192,7 @@ LoadOp::LoadOp(QueryOp *q,const PropList *p,unsigned nP,unsigned qf) : QueryOp(q
 		memcpy(pls,p,nP*sizeof(PropList));
 		for (unsigned i=0; i<nP; i++) if ((qflags&QO_VCOPIED)!=0 && pls[i].props!=NULL && !pls[i].fFree) {
 			PropList& pl=*(PropList*)&pls[i];
-			PropertyID *pp=new(qx->ses) PropertyID[pl.nProps]; if (pp==NULL) throw RC_NORESOURCES;
+			PropertyID *pp=new(qx->ses) PropertyID[pl.nProps]; if (pp==NULL) throw RC_NOMEM;
 			memcpy(pp,pl.props,pl.nProps*sizeof(PropertyID)); pl.props=pp; pl.fFree=true;
 		}
 		props=pls; nProps=nP;
@@ -219,7 +219,7 @@ RC LoadOp::advance(const PINx *skip)
 			if ((rc=getBody(*results[i]))!=RC_OK || (results[i]->mode&PIN_HIDDEN)!=0) 
 				{results[i]->cleanup(); if (rc==RC_OK || rc==RC_NOACCESS || rc==RC_REPEAT || rc==RC_DELETED) {rc=RC_FALSE; break;} else return rc;}	// cleanup all
 			if ((qflags&(QO_RAW|QO_FORUPDATE))==0 && nResults==1 && (results[i]->getMetaType()&PMT_COMM)!=0 && (rc=createCommOp(results[i]))!=RC_EOF) return rc;
-			if ((rc=qx->ses->getStore()->queryMgr->checkLockAndACL(*results[i],(qflags&QO_FORUPDATE)!=0?TVO_UPD:TVO_READ,this))!=RC_OK) break;
+			if ((rc=results[i]->checkLockAndACL((qflags&QO_FORUPDATE)!=0?TVO_UPD:TVO_READ,this))!=RC_OK) break;
 		}
 		if (rc==RC_OK) break;
 	}
@@ -285,7 +285,7 @@ RC PathOp::advance(const PINx *)
 			if (path[0].nPids!=1) {
 				pst->v[0].setError(path[0].nPids!=0?path[0].pids[0]:PROP_SPEC_ANY);	//multiple propID getData() or all props
 			} else pst->v[0].setError(path[0].pid);
-			if ((rc=getData(pex,&pst->v[0],1,NULL,path[0].eid))!=RC_OK) {state|=QST_EOF; return rc;}
+			if ((rc=getData(pex,&pst->v[0],1,NULL,path[0].eid.eid))!=RC_OK) {state|=QST_EOF; return rc;}
 			pst->state=2; pst->vidx=0; if (fThrough) {if (res!=NULL) {pex.moveTo(*res); save();} return RC_OK;}
 		}
 		switch (pst->state) {
@@ -299,13 +299,13 @@ RC PathOp::advance(const PINx *)
 			pst->state=2; //res->getID(id); printf("%*s(%d,%d):" _LX_FM "\n",(pst->idx-1+pst->rcnt-1)*2,"",pst->idx,pst->rcnt,id.pid);
 			if ((rc=getBody(*res))!=RC_OK || (res->getFlags()&PIN_HIDDEN)!=0 || (rc=res->getID(id))!=RC_OK)
 				{res->cleanup(); if (rc==RC_OK || rc==RC_NOACCESS || rc==RC_REPEAT || rc==RC_DELETED) {pop(); continue;} else {state|=QST_EOF; return rc;}}
-			fOK=path[pst->idx-1].filter==NULL || Expr::condSatisfied((const Expr* const*)&path[pst->idx-1].filter,1,EvalCtx(qx->ses,NULL,0,(PIN**)&res,1,qx->vals,QV_ALL));
+			fOK=((Expr*)path[pst->idx-1].filter)->condSatisfied(EvalCtx(qx->ses,NULL,0,(PIN**)&res,1,qx->vals,QV_ALL));
 			if (!fOK && !path[pst->idx-1].fLast) {res->cleanup(); pop(); continue;}
 			if (pst->rcnt<path[pst->idx-1].rmax||path[pst->idx-1].rmax==0xFFFF) {
 				if (path[pst->idx-1].nPids!=1) {
 					//????
 					return RC_INTERNAL;
-				} else if ((rc=qx->ses->getStore()->queryMgr->loadV(pst->v[1],path[pst->idx-1].pid,*res,LOAD_SSV|LOAD_REF,qx->ses,&path[pst->idx-1].eid))==RC_OK) {
+				} else if ((rc=res->getV(path[pst->idx-1].pid,pst->v[1],LOAD_SSV|LOAD_REF,path[pst->idx-1].eid,qx->ses))==RC_OK) {
 					if (!pst->v[1].isEmpty()) pst->vidx=1;
 				} else if (rc!=RC_NOTFOUND) {res->cleanup(); state|=QST_EOF; return rc;}
 			}
@@ -317,7 +317,7 @@ RC PathOp::advance(const PINx *)
 						if (path[pst->idx].nPids!=1) {
 							//????
 							return RC_INTERNAL;
-						} else if ((rc=qx->ses->getStore()->queryMgr->loadV(pst->v[0],path[pst->idx].pid,*res,LOAD_SSV|LOAD_REF,qx->ses,&path[pst->idx].eid))!=RC_OK && rc!=RC_NOTFOUND)
+						} else if ((rc=res->getV(path[pst->idx].pid,pst->v[0],LOAD_SSV|LOAD_REF,path[pst->idx].eid,qx->ses))!=RC_OK && rc!=RC_NOTFOUND)
 							{res->cleanup(); state|=QST_EOF; return rc;}
 						if (rc==RC_OK && !pst->v[0].isEmpty()) {pst->vidx=0; break;}
 						if (path[pst->idx].rmin!=0) break; if (pst->idx+1>=nPathSeg) {save(); return RC_OK;}
@@ -373,7 +373,7 @@ void PathOp::print(SOutCtx& buf,int level) const
 //------------------------------------------------------------------------------------------------
 
 Filter::Filter(QueryOp *qop,unsigned nqs,unsigned qf)
-	: QueryOp(qop,qf|qop->getQFlags()),conds(NULL),nConds(0),condIdx(NULL),nCondIdx(0),queries(NULL),nQueries(nqs)
+	: QueryOp(qop,qf|qop->getQFlags()),cond(NULL),rprops(NULL),nrProps(0),condIdx(NULL),nCondIdx(0),queries(NULL),nQueries(nqs)
 {
 	sort=qop->getSort(nSegs); props=qop->getProps(nProps);
 }
@@ -385,10 +385,7 @@ Filter::~Filter()
 		qx->ses->free(queries);
 	}
 	if ((qflags&QO_VCOPIED)!=0) {
-		if (conds!=NULL) {
-			for (unsigned i=0; i<nConds; i++) ((Expr*)conds[i])->destroy(); 
-			qx->ses->free((void*)conds);
-		}
+		if (cond!=NULL) ((Expr*)cond)->destroy(); if (rprops!=NULL) qx->ses->free(rprops);
 		for (CondIdx *ci=condIdx,*ci2; ci!=NULL; ci=ci2) {ci2=ci->next; ci->~CondIdx(); qx->ses->free(ci);}
 	}
 }
@@ -404,7 +401,7 @@ RC Filter::advance(const PINx *skip)
 	EvalCtx ectx(qx->ses,qx->ectx!=NULL?qx->ectx->env:NULL,qx->ectx!=NULL?qx->ectx->nEnv:0,(PIN**)results,nResults,qx->vals,QV_ALL,qx->ectx,NULL,(qflags&QO_CLASS)!=0?ECT_CLASS:ECT_QUERY);		// move to FilterOp
 	for (; (rc=queryOp->next(skip))==RC_OK; skip=NULL) {
 		if ((qflags&QO_NODATA)==0 && (rc=queryOp->getData(*results[0],NULL,0))!=RC_OK) break;		// other vars ???
-		if (conds==NULL || Expr::condSatisfied(conds,nConds,ectx)) {
+		if ((rprops==NULL || nrProps==0 || results[0]->checkProps(rprops,nrProps)) && (cond==NULL || cond->condSatisfied(ectx))) {
 			if ((qflags&QO_CLASS)==0) {
 				bool fOK=true;
 				for (CondIdx *ci=condIdx; ci!=NULL; ci=ci->next) {
@@ -420,10 +417,10 @@ RC Filter::advance(const PINx *skip)
 				}
 				if (!fOK) continue;
 			}
-			if (queries!=NULL && nQueries>0) {
+			if (queries!=NULL && nQueries!=0) {
 				bool fOK=true;
 				for (unsigned i=0; i<nQueries; i++) {
-					ValueV vv(queries[i].params,queries[i].nParams); 
+					Values vv(queries[i].params,queries[i].nParams); 
 					if (!queries[i].qry->checkConditions(EvalCtx(ectx.ses,ectx.env,ectx.nEnv,ectx.vars,ectx.nVars,&vv,1,ectx.stack,NULL,ectx.ect)))
 						{fOK=false; break;}
 				}

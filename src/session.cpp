@@ -14,7 +14,7 @@ WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the
 License for the specific language governing permissions and limitations
 under the License.
 
-Written by Mark Venguerov 2004-2012
+Written by Mark Venguerov 2004-2014
 
 **************************************************************************************/
 
@@ -133,7 +133,7 @@ ISession *StoreCtx::startSession(const char *ident,const char *pwd,size_t initMe
 {
 	try {
 		if (inShutdown()||theCB->state==SST_RESTORE) return NULL;
-		Session *s=Session::createSession(this,initMem); if (s==NULL) return NULL;
+		Session *s=Session::createSession(this,initMem,true); if (s==NULL) return NULL;
 		if (!namedMgr->isInit()) {s->setIdentity(STORE_OWNER,true); namedMgr->loadObjects(s,false); s->setIdentity(STORE_INVALID_IDENTITY,false);}
 		if (!s->login(ident,pwd)) {s->terminate(); s=NULL;}
 		return s;
@@ -141,7 +141,7 @@ ISession *StoreCtx::startSession(const char *ident,const char *pwd,size_t initMe
 	return NULL;
 }
 
-Session	*Session::createSession(StoreCtx *ctx,size_t initMem)
+Session	*Session::createSession(StoreCtx *ctx,size_t initMem,bool fClient)
 {
 	if (ctx!=NULL) for (long sc=ctx->sesCnt; ;sc=ctx->sesCnt)
 		if (sc!=0 && (ctx->mode&STARTUP_RT)!=0) return NULL;
@@ -149,8 +149,15 @@ Session	*Session::createSession(StoreCtx *ctx,size_t initMem)
 	Session *ses=NULL; MemAlloc *ma=initMem==0?createMemAlloc(SESSION_START_MEM,false):new(ctx) StackAlloc(ctx,initMem);
 	if (ma!=NULL) {
 		if (ctx!=NULL) ctx->set(); 
-		if ((ses=new(ma) Session(ctx,ma))!=NULL)
-			{sessionTls.set(ses); if (ctx!=NULL) ses->traceMode=ctx->traceMode; if (initMem!=0) ((StackAlloc*)ma)->mark(ses->sm);}
+		if ((ses=new(ma) Session(ctx,ma))!=NULL) {
+			if (ctx!=NULL) ses->traceMode=ctx->traceMode; if (initMem!=0) ((StackAlloc*)ma)->mark(ses->sm);
+			if (fClient) ses->sFlags|=S_CLIENT;
+			else {
+				ses->identity=STORE_OWNER; ses->sFlags|=S_INSERT;
+				if ((ses->memCache=new(ma) SesMemCache*[SES_MEM_BLOCK_QUEUES])!=NULL) memset(ses->memCache,0,SES_MEM_BLOCK_QUEUES*sizeof(void*));
+			}
+			sessionTls.set(ses);
+		}
 	}
 	return ses;
 }
@@ -222,7 +229,7 @@ void Session::cleanup()
 		if (reuse.ssvPages!=NULL) for (unsigned i=0; i<reuse.nSSVPages; i++)
 			ctx->ssvMgr->HeapPageMgr::reuse(reuse.ssvPages[i].pid,reuse.ssvPages[i].space,ctx);
 		reuse.cleanup();
-		xSyncStack=ctx->theCB->xSyncStack; xOnCommit=ctx->theCB->xOnCommit; xSesObjects=ctx->theCB->xSesObjects;
+		if (ctx->theCB!=NULL) {xSyncStack=ctx->theCB->xSyncStack; xOnCommit=ctx->theCB->xOnCommit; xSesObjects=ctx->theCB->xSesObjects;}
 	}
 }
 
@@ -234,11 +241,6 @@ void Session::set(StoreCtx *ct)
 	//...
 }
 
-void Session::setRestore()
-{
-	sFlags|=S_RESTORE; identity=STORE_OWNER;
-}
-
 int LatchedPage::Cmp::cmp(const LatchedPage& lp,PageID pid)
 {
 	return cmp3(lp.pb->getPageID(),pid);
@@ -246,7 +248,7 @@ int LatchedPage::Cmp::cmp(const LatchedPage& lp,PageID pid)
 
 RC Session::latch(PBlock *pb,unsigned mode)
 {
-	if (nLatched>=xLatched && (latched=(LatchedPage*)mem->realloc(latched,(xLatched+=xLatched==0?INITLATCHED:xLatched)*sizeof(LatchedPage)))==NULL) return RC_NORESOURCES;
+	if (nLatched>=xLatched && (latched=(LatchedPage*)mem->realloc(latched,(xLatched+=xLatched==0?INITLATCHED:xLatched)*sizeof(LatchedPage)))==NULL) return RC_NOMEM;
 	LatchedPage *ins=latched;
 	if (BIN<LatchedPage,PageID,LatchedPage::Cmp>::find(pb->getPageID(),latched,nLatched,&ins)!=NULL) return RC_INTERNAL;
 	if (ins<&latched[nLatched]) memmove(ins+1,ins,(byte*)&latched[nLatched]-(byte*)ins);
@@ -382,13 +384,13 @@ RC Session::mapURIs(unsigned nURIs,URIMap URIs[],const char *base,bool fObj)
 			if (!Session::hasPrefix(URIName,lName)) {
 				if (lURIBase!=0) {
 					if (lURIBase+lName>lURIBaseBuf) {
-						if ((URIBase=(char*)realloc(URIBase,lURIBase+lName,lURIBaseBuf))==NULL) return RC_NORESOURCES;
+						if ((URIBase=(char*)realloc(URIBase,lURIBase+lName,lURIBaseBuf))==NULL) return RC_NOMEM;
 						if (lURIBaseBuf==0) memcpy(URIBase,base,lURIBase); lURIBaseBuf=lURIBase+lName;
 					}
 					memcpy(URIBase+lURIBase,URIName,lName); URIName=URIBase; lName+=lURIBase;
 				} else if (fObj && (pref=ctx->namedMgr->getStorePrefix(lPref))!=NULL) {
 					if (lPref+lName>lURIBaseBuf) {
-						if ((URIBase=(char*)realloc(URIBase,lPref+lName,lURIBaseBuf))==NULL) return RC_NORESOURCES;
+						if ((URIBase=(char*)realloc(URIBase,lPref+lName,lURIBaseBuf))==NULL) return RC_NOMEM;
 						if (lURIBaseBuf==0) memcpy(URIBase,pref,lPref); lURIBaseBuf=lPref+lName;
 					}
 					memcpy(URIBase+lPref,URIName,lName); URIName=URIBase; lName+=lPref;
@@ -404,9 +406,8 @@ RC Session::mapURIs(unsigned nURIs,URIMap URIs[],const char *base,bool fObj)
 
 void Session::setInterfaceMode(unsigned md)
 {
-	try {
-		itf=md; if (getIdentity()==STORE_OWNER) setReplication((md&ITF_REPLICATION)!=0);
-	} catch (RC) {} catch (...) {report(MSG_ERROR,"Exception in ISession::setInterfaceMode(...)\n");}
+	try {itf=md; if (identity==STORE_OWNER) setReplication((md&ITF_REPLICATION)!=0);}
+	catch (RC) {} catch (...) {report(MSG_ERROR,"Exception in ISession::setInterfaceMode(...)\n");}
 }
 
 unsigned Session::getInterfaceMode() const
@@ -545,7 +546,7 @@ RC Session::modifyPIN(const PID& id,const Value *values,unsigned nValues,unsigne
 	try {
 		PageAddr addr; if (ctx->inShutdown()) return RC_SHUTDOWN; if (ctx->isServerLocked()) return RC_READONLY;
 		if (!isRemote(id) && addr.convert(id.pid)) setExtAddr(addr); 
-		ValueV vv(params,nParams); EvalCtx ectx(this,NULL,0,NULL,0,&vv,1,NULL,NULL,ECT_INSERT); TxGuard txg(this);
+		Values vv(params,nParams); EvalCtx ectx(this,NULL,0,NULL,0,&vv,1,NULL,NULL,ECT_INSERT); TxGuard txg(this);
 		RC rc=ctx->queryMgr->modifyPIN(ectx,id,values,nValues,NULL,NULL,md|MODE_CHECKBI,eids,pNFailed);
 		setExtAddr(PageAddr::noAddr); return rc;
 	} catch (RC rc) {return rc;} catch (...) {report(MSG_ERROR,"Exception in ISession::modifyPIN(...)\n"); return RC_INTERNAL;}
@@ -555,7 +556,7 @@ RC Session::deletePINs(IPIN **pins,unsigned nPins,unsigned md)
 {
 	try {
 		if (ctx->inShutdown()) return RC_SHUTDOWN; if (ctx->isServerLocked()) return RC_READONLY;
-		PID *pids=(PID*)alloca(nPins*sizeof(PID)); if (pids==NULL) return RC_NORESOURCES;
+		PID *pids=(PID*)alloca(nPins*sizeof(PID)); if (pids==NULL) return RC_NOMEM;
 		for (unsigned j=0; j<nPins; j++) pids[j]=pins[j]->getPID();
 		TxGuard txg(this); RC rc=ctx->queryMgr->deletePINs(EvalCtx(this),(PIN**)pins,pids,nPins,md|MODE_CLASS);
 		if (rc==RC_OK) for (unsigned i=0; i<nPins; i++) {pins[i]->destroy(); pins[i]=NULL;}
@@ -642,27 +643,16 @@ RC Session::getURI(URIID id,char *buf,size_t& lbuf,bool fFull)
 
 IPIN *Session::getPIN(const PID& id,unsigned md) 
 {
-	try {return !ctx->inShutdown()?PIN::getPIN(id,STORE_CURRENT_VERSION,this,md|LOAD_EXT_ADDR|LOAD_ENAV):NULL;}
+	try {return !ctx->inShutdown()?PIN::getPIN(id,STORE_CURRENT_VERSION,this,md|LOAD_EXT_ADDR|LOAD_CLIENT):NULL;}
 	catch (RC) {} catch (...) {report(MSG_ERROR,"Exception in ISession::getPIN(PID=" _LX_FM ",IdentityID=%08X)\n",id.pid,id.ident);}
 	return NULL;
 }
 
 IPIN *Session::getPIN(const Value& v,unsigned md) 
 {
-	try {return !ctx->inShutdown()&&v.type==VT_REFID?PIN::getPIN(v.id,/*(v.meta&META_PROP_FIXEDVERSION)!=0?v.vpid.vid:*/STORE_CURRENT_VERSION,this,md|LOAD_EXT_ADDR|LOAD_ENAV):NULL;}
+	try {return !ctx->inShutdown()&&v.type==VT_REFID?PIN::getPIN(v.id,/*(v.meta&META_PROP_FIXEDVERSION)!=0?v.vpid.vid:*/STORE_CURRENT_VERSION,this,md|LOAD_EXT_ADDR|LOAD_CLIENT):NULL;}
 	catch (RC) {} catch (...) {report(MSG_ERROR,"Exception in ISession::getPIN(Value&)\n");}
 	return NULL;
-}
-
-RC Session::getValues(Value *pv,unsigned nv,const PID& id)
-{
-	try {
-		if (!id.isPID()) return RC_INVPARAM; if (ctx->inShutdown()) return RC_SHUTDOWN;
-		TxGuard txg(this); PageAddr addr; if (addr.convert(uint64_t(id.pid))) setExtAddr(addr);
-		RC rc=ctx->queryMgr->loadValues(pv,nv,id,this,LOAD_EXT_ADDR|LOAD_ENAV);
-		setExtAddr(PageAddr::noAddr); return rc;
-	} catch (RC rc) {return rc;} 
-	catch (...) {report(MSG_ERROR,"Exception in ISession::getValues(PID=" _LX_FM ",IdentityID=%08X)\n",id.pid,id.ident); return RC_INTERNAL;}
 }
 
 RC Session::getValue(Value& res,const PID& id,PropertyID pid,ElementID eid)
@@ -670,21 +660,10 @@ RC Session::getValue(Value& res,const PID& id,PropertyID pid,ElementID eid)
 	try {
 		if (!id.isPID()) return RC_INVPARAM; if (ctx->inShutdown()) return RC_SHUTDOWN;
 		TxGuard txg(this); PageAddr addr; if (addr.convert(uint64_t(id.pid))) setExtAddr(addr);
-		RC rc=ctx->queryMgr->loadValue(this,id,pid,eid,res,LOAD_EXT_ADDR|LOAD_ENAV);
+		RC rc=ctx->queryMgr->loadValue(this,id,pid,eid,res,LOAD_EXT_ADDR|LOAD_CLIENT);
 		setExtAddr(PageAddr::noAddr); return rc;
 	} catch (RC rc) {return rc;}
 	catch (...) {report(MSG_ERROR,"Exception in ISession::getValue(PID=" _LX_FM ",IdentityID=%08X,PropID=%08X)\n",id.pid,id.ident,pid); return RC_INTERNAL;}
-}
-
-RC Session::getValue(Value& res,const PID& id)
-{
-	try {
-		if (!id.isPID()) return RC_INVPARAM; if (ctx->inShutdown()) return RC_SHUTDOWN;
-		TxGuard txg(this); PageAddr addr; if (addr.convert(uint64_t(id.pid))) setExtAddr(addr);
-		RC rc=ctx->queryMgr->getPINValue(id,res,LOAD_EXT_ADDR|LOAD_ENAV,this);
-		setExtAddr(PageAddr::noAddr); return rc;
-	} catch (RC rc) {return rc;}
-	catch (...) {report(MSG_ERROR,"Exception in ISession::getValue(PID=" _LX_FM ",IdentityID=%08X)\n",id.pid,id.ident); return RC_INTERNAL;}
 }
 
 RC Session::getPINClasses(ClassID *&clss,unsigned& nclss,const PID& id)
@@ -693,9 +672,9 @@ RC Session::getPINClasses(ClassID *&clss,unsigned& nclss,const PID& id)
 		clss=NULL; nclss=0;
 		if (!id.isPID()) return RC_INVPARAM; if (ctx->inShutdown()) return RC_SHUTDOWN;
 		TxGuard txg(this); ClassResult clr(this,ctx); PINx pex(this,id); pex.epr.flags|=PINEX_EXTPID; RC rc;
-		if ((rc=ctx->queryMgr->getBody(pex))==RC_OK && (pex.mode&PIN_HIDDEN)==0)
+		if ((rc=pex.getBody())==RC_OK && (pex.mode&PIN_HIDDEN)==0)
 			if ((rc=ctx->classMgr->classify(&pex,clr,this))==RC_OK && clr.nClasses!=0) {
-				if ((clss=new(this) ClassID[clr.nClasses])==NULL) rc=RC_NORESOURCES;
+				if ((clss=new(this) ClassID[clr.nClasses])==NULL) rc=RC_NOMEM;
 				else {nclss=clr.nClasses; for (unsigned i=0; i<clr.nClasses; i++) clss[i]=clr.classes[i]->cid;}
 			}
 		return rc;
@@ -730,7 +709,7 @@ RC Session::getClassID(const char *className,ClassID& cid)
 		if (className==NULL) return RC_INVPARAM; if (ctx->inShutdown()) return RC_SHUTDOWN;
 		size_t ln=strlen(className),lPref; const char *pref;
 		if (!hasPrefix(className,ln) && (pref=ctx->namedMgr->getStorePrefix(lPref))!=NULL) {
-			char *p=(char*)alloca(lPref+ln+1); if (p==NULL) return RC_NORESOURCES;
+			char *p=(char*)alloca(lPref+ln+1); if (p==NULL) return RC_NOMEM;
 			memcpy(p,pref,lPref); memcpy(p+lPref,className,ln+1); className=p; ln+=lPref;
 		}
 		URI *uri=(URI*)ctx->uriMgr->find(className,ln); if (uri==NULL) return RC_NOTFOUND; cid=uri->getID(); uri->release();
@@ -772,7 +751,7 @@ RC Session::createIndexNav(ClassID cid,IndexNav *&nav)
 		Class *cls=ctx->classMgr->getClass(cid); if (cls==NULL) return RC_NOTFOUND;
 		ClassIndex *cidx=cls->getIndex(); RC rc=RC_OK;
 		if (cidx!=NULL /*&& !qry->vars[0].condIdx->isExpr() && (qry->vars[0].condIdx->pid==pid || pid==STORE_INVALID_URIID)*/) {
-			if ((nav=new(cidx->getNSegs(),this) IndexNavImpl(this,cidx))==NULL) rc=RC_NORESOURCES;
+			if ((nav=new(cidx->getNSegs(),this) IndexNavImpl(this,cidx))==NULL) rc=RC_NOMEM;
 		} else {
 		//...
 			rc=RC_INVPARAM;
@@ -789,7 +768,7 @@ RC Session::listValues(ClassID cid,PropertyID pid,IndexNav *&ven)
 		Class *cls=ctx->classMgr->getClass(cid); if (cls==NULL) return RC_NOTFOUND;
 		ClassIndex *cidx=cls->getIndex(); RC rc=RC_OK;
 		if (cidx!=NULL /*&& !qry->vars[0].condIdx->isExpr() && (qry->vars[0].condIdx->pid==pid || pid==STORE_INVALID_URIID)*/) {
-			if ((ven=new(cidx->getNSegs(),this) IndexNavImpl(this,cidx,/*qry->vars[0].condIdx->*/pid))==NULL) rc=RC_NORESOURCES;
+			if ((ven=new(cidx->getNSegs(),this) IndexNavImpl(this,cidx,/*qry->vars[0].condIdx->*/pid))==NULL) rc=RC_NOMEM;
 		} else {
 		//...
 			rc=RC_INVPARAM;
@@ -813,7 +792,7 @@ RC Session::getClassInfo(ClassID cid,IPIN *&ret)
 		ret=NULL; if (ctx->inShutdown()) return RC_SHUTDOWN;
 		Class *cls=ctx->classMgr->getClass(cid); if (cls==NULL) return RC_NOTFOUND;
 		PID id=cls->getPID(); PINx cb(this,id); cb=cls->getAddr(); cls->release(); PIN *pin=NULL;
-		RC rc=ctx->queryMgr->loadPIN(this,id,pin,LOAD_ENAV,&cb); if (rc==RC_OK) rc=ctx->queryMgr->getClassInfo(this,pin);
+		RC rc=cb.loadPIN(pin,LOAD_CLIENT); if (rc==RC_OK) rc=ctx->queryMgr->getClassInfo(this,pin);
 		ret=pin; return rc;
 	} catch (RC rc) {return rc;} catch (...) {report(MSG_ERROR,"Exception in ISession::getClassInfo()\n"); return RC_INTERNAL;}
 }
@@ -829,7 +808,7 @@ RC Session::createMap(const MapElt *elts,unsigned nElts,IMap *&map,bool fCopy)
 		map=NULL; if (elts==0 || nElts==0) return RC_INVPARAM;
 		bool fSort=false; MapElt *me=NULL; RC rc;
 		if (fCopy) {
-			if ((me=new(this) MapElt[nElts])==NULL) return RC_NORESOURCES;
+			if ((me=new(this) MapElt[nElts])==NULL) return RC_NOMEM;
 			memset(me,0,nElts*sizeof(MapElt));
 			for (unsigned i=0; i<nElts; i++) {
 				if ((rc=copyV(elts[i].key,me[i].key,this))!=RC_OK || (rc=copyV(elts[i].val,me[i].val,this))!=RC_OK)
@@ -842,7 +821,7 @@ RC Session::createMap(const MapElt *elts,unsigned nElts,IMap *&map,bool fCopy)
 				{int c=MapCmp::cmp(elts[i-1],elts[i].key); if (c==0) return RC_ALREADYEXISTS; if (c>0) {fSort=true; break;}}
 		}
 		if (fSort) qsort(me,nElts,sizeof(MapElt),cmpMapElts);
-		return (map=new(this) MemMap(me,nElts,this))!=NULL?RC_OK:RC_NORESOURCES;
+		return (map=new(this) MemMap(me,nElts,this))!=NULL?RC_OK:RC_NOMEM;
 	} catch (RC rc) {return rc;} catch (...) {report(MSG_ERROR,"Exception in ISession::createMap()\n"); return RC_INTERNAL;}
 }
 
@@ -887,10 +866,10 @@ void Session::setTimeZone(int64_t tzShift)
 	catch (...) {report(MSG_ERROR,"Exception in ISession::setTimeZone()");}
 }
 
-RC Session::reservePage(uint32_t pageID)
+RC Session::reservePages(const uint32_t *pages,unsigned nPages)
 {
-	try {return isRestore()?ctx->fsMgr->reservePage((PageID)pageID):RC_NOACCESS;}
-	catch (RC rc) {return rc;} catch (...) {report(MSG_ERROR,"Exception in ISession::reservePage(%08X)\n",pageID); return RC_INTERNAL;}
+	try {return isRestore()?ctx->fsMgr->reservePages(pages,nPages):RC_NOACCESS;}
+	catch (RC rc) {return rc;} catch (...) {report(MSG_ERROR,"Exception in ISession::reservePages()\n"); return RC_INTERNAL;}
 }
 
 bool Session::login(const char *id,const char *pwd)
@@ -921,7 +900,7 @@ ISession *Session::clone(const char *id) const
 			if (iid!=STORE_OWNER || (ident=(Identity*)ctx->identMgr->find(id,strlen(id)))==NULL) return NULL;
 			iid=ident->getID(); fInsert=ident->mayInsert(); ident->release();
 		}
-		Session *ns=Session::createSession(ctx); if (ns!=NULL) ns->setIdentity(iid,fInsert);
+		Session *ns=Session::createSession(ctx,0,true); if (ns!=NULL) ns->setIdentity(iid,fInsert);
 		return ns;
 	} catch (RC) {} catch (...) {report(MSG_ERROR,"Exception in ISession::clone()\n");}
 	return NULL;
@@ -944,12 +923,12 @@ RC Session::detachFromCurrentThread()
 }
 
 RC Session::addOnCommit(OnCommit *oc) {
-	if (tx.onCommit.count+1>xOnCommit && xOnCommit!=0) return RC_NORESOURCES; assert(oc!=NULL);
+	if (tx.onCommit.count+1>xOnCommit && xOnCommit!=0) return RC_NOMEM; assert(oc!=NULL);
 	tx.onCommit+=oc; return RC_OK;
 }
 
 RC Session::addOnCommit(OnCommitQ& oq) {
-	if (tx.onCommit.count+oq.count>xOnCommit && xOnCommit!=0) return RC_NORESOURCES;
+	if (tx.onCommit.count+oq.count>xOnCommit && xOnCommit!=0) return RC_NOMEM;
 	tx.onCommit+=oq; oq.reset(); return RC_OK;
 }
 
@@ -960,7 +939,7 @@ uint64_t Session::getCodeTrace()
 
 SyncCall::SyncCall(Session *s) : ses(s)
 {
-	if (s!=NULL && ++s->nSyncStack>s->xSyncStack) {--s->nSyncStack; throw RC_NORESOURCES;}
+	if (s!=NULL && ++s->nSyncStack>s->xSyncStack) {--s->nSyncStack; throw RC_NOMEM;}
 }
 
 SyncCall::~SyncCall()

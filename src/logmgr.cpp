@@ -14,7 +14,7 @@ WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the
 License for the specific language governing permissions and limitations
 under the License.
 
-Written by Mark Venguerov 2004-2012
+Written by Mark Venguerov 2004-2014
 
 **************************************************************************************/
 
@@ -103,7 +103,7 @@ void LogMgr::deleteLogs()
 RC LogMgr::createLogFile(LSN lsn,off64_t& fSize)
 {
 	size_t lD=logDirectory!=NULL?strlen(logDirectory):0; fSize=0;
-	char *buf=(char*)ctx->malloc(lD+100); if (buf==NULL) return RC_NORESOURCES;
+	char *buf=(char*)ctx->malloc(lD+100); if (buf==NULL) return RC_NOMEM;
 	unsigned fileN=LSNToFileN(lsn); MutexP lck(&openFile); RC rc=RC_OK; bool fFound=false;
 	for (int i=0; i<nReadLogSegs; i++) if (readLogSegs[i].fid==logFile) {fFound=true; break;}
 	if (!fFound && fReadFromCurrent) {ctx->bufMgr->close(logFile); logFile=INVALID_FILEID; fReadFromCurrent=false;}
@@ -111,7 +111,7 @@ RC LogMgr::createLogFile(LSN lsn,off64_t& fSize)
 //		fSize=ctx->fileMgr->getFileSize(logFile); size_t offset=LSNToFileOffset(lsn);
 //		if (fSize<(off64_t)offset || fSize>(off64_t)offset && (fSize!=logSegSize || (ctx->mode&STARTUP_LOG_PREALLOC)==0))
 //			rc=ctx->fileMgr->growFile(logFile,ceil(offset,lPage));
-	} else if ((rc=ctx->fileMgr->open(logFile,getLogFileName(fileN,buf),fFound?(logFile=INVALID_FILEID,FIO_CREATE):FIO_REPLACE|FIO_CREATE))==RC_OK) {
+	} else if ((rc=ctx->fileMgr->open(logFile,getLogFileName(fileN,buf),fFound?(logFile=INVALID_FILEID,FIO_CREATE|FIO_LOG):FIO_REPLACE|FIO_CREATE|FIO_LOG))==RC_OK) {
 		fSize=ctx->fileMgr->getFileSize(logFile); size_t offset=LSNToFileOffset(lsn);
 		if (fSize<(off64_t)offset || fSize>(off64_t)offset && (fSize!=logSegSize || (ctx->mode&STARTUP_LOG_PREALLOC)==0))
 			rc=ctx->fileMgr->growFile(logFile,ceil(offset,lPage));
@@ -125,11 +125,11 @@ RC LogMgr::createLogFile(LSN lsn,off64_t& fSize)
 RC LogMgr::openLogFile(LSN lsn)
 {
 	size_t lD=logDirectory!=NULL?strlen(logDirectory):0;
-	char *buf=(char*)ctx->malloc(lD+100); if (buf==NULL) return RC_NORESOURCES;
+	char *buf=(char*)ctx->malloc(lD+100); if (buf==NULL) return RC_NOMEM;
 	unsigned fileN=LSNToFileN(lsn); MutexP lck(&openFile); RC rc=RC_OK; bool fFound=false;
 	for (int i=0; i<nReadLogSegs; i++) if (readLogSegs[i].fid==logFile) {fFound=true; break;}
 	if (!fFound && fReadFromCurrent) {ctx->bufMgr->close(logFile); logFile=INVALID_FILEID; fReadFromCurrent=false;}
-	unsigned flags=fFound?(logFile=INVALID_FILEID,0):FIO_REPLACE;
+	unsigned flags=fFound?(logFile=INVALID_FILEID,FIO_LOG):FIO_REPLACE|FIO_LOG;
 	if (ctx->fileMgr==NULL) {
 		//???
 	} else if ((rc=ctx->fileMgr->open(logFile,getLogFileName(fileN,buf),flags))==RC_OK) nLogOpen++;
@@ -143,14 +143,14 @@ RC LogMgr::allocLogFile(unsigned fileN,char *buf)
 	if (currentLogFile>=fileN && currentLogFile!=~0u) 
 		{if (currentLogFile>maxAllocated) maxAllocated=currentLogFile; return RC_OK;}
 	bool fDel=false; size_t lD=logDirectory!=NULL?strlen(logDirectory):0;
-	if (buf==NULL) {buf=(char*)ctx->malloc(lD+100); fDel=true; if (buf==NULL) return RC_NORESOURCES;}
+	if (buf==NULL) {buf=(char*)ctx->malloc(lD+100); fDel=true; if (buf==NULL) return RC_NOMEM;}
 	size_t bufSize=sectorSize*0x100,nBufs=logSegSize/bufSize;
 	byte *zeroBuf=(byte*)allocAligned(bufSize,sectorSize);
 	memset(zeroBuf,0,bufSize); RC rc=RC_OK;
 	getLogFileName(fileN,buf); FileID fid=INVALID_FILEID;
 	if (ctx->fileMgr==NULL) {
 		//????
-	} else if ((rc=ctx->fileMgr->open(fid,buf,FIO_CREATE))==RC_OK) {
+	} else if ((rc=ctx->fileMgr->open(fid,buf,FIO_CREATE|FIO_LOG))==RC_OK) {
 		for (size_t k=0; k<nBufs; k++)
 			if ((rc=ctx->fileMgr->io(FIO_WRITE,PageIDFromPageNum(fid,(unsigned)(bufSize*k/lPage)),zeroBuf,(unsigned)bufSize))!=RC_OK) break;
 		ctx->fileMgr->close(fid);
@@ -461,7 +461,7 @@ RC LogReadCtx::readChunk(LSN lsn,void *buf,size_t l)
 							fid=logMgr->logFile; logMgr->fReadFromCurrent=true;
 						} else {
 							char fname[100]; fid=INVALID_FILEID; RC rc=RC_OK;
-							if (logMgr->ctx->fileMgr!=NULL) rc=logMgr->ctx->fileMgr->open(fid,logMgr->getLogFileName(logSeg,fname));
+							if (logMgr->ctx->fileMgr!=NULL) rc=logMgr->ctx->fileMgr->open(fid,logMgr->getLogFileName(logSeg,fname),FIO_LOG);
 							else {
 								//????
 							}
@@ -507,7 +507,7 @@ RC LogReadCtx::read(LSN& lsn)
 	if (rc==RC_OK && lbuf!=0) {
 		if (lbuf+logMgr->LRsize>MAXLOGRECSIZE) rc=RC_CORRUPTED;
 		else if (lbuf>xlrec) {
-			if ((rbuf=(byte*)ses->realloc(rbuf,lbuf))==NULL) rc=RC_NORESOURCES; else xlrec=lbuf;
+			if ((rbuf=(byte*)ses->realloc(rbuf,lbuf))==NULL) rc=RC_NOMEM; else xlrec=lbuf;
 		}
 		if (rc==RC_OK) rc=readChunk(lsn+logMgr->LRsize,rbuf,lbuf);
 	}

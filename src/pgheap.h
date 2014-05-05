@@ -14,7 +14,7 @@ WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the
 License for the specific language governing permissions and limitations
 under the License.
 
-Written by Mark Venguerov 2004-2012
+Written by Mark Venguerov 2004-2014
 
 **************************************************************************************/
 
@@ -42,18 +42,19 @@ Written by Mark Venguerov 2004-2012
 
 #define HOH_TYPEMASK		0x0003
 
-#define	HOH_TEMP_ID			0x0010
-#define	HOH_SSVS			0x0020
-#define	HOH_IMMUTABLE		0x0040
-#define	HOH_PARTS			0x0080
-#define	HOH_REPLICATED		0x0100
-#define	HOH_NOTIFICATION	0x0200
-#define	HOH_MULTIPART		0x0400
-#define	HOH_COMPACTREF		0x0800
-#define	HOH_NOREPLICATION	0x1000
-#define	HOH_HIDDEN			0x2000
-#define	HOH_FT				0x4000
-#define HOH_DELETED			0x8000
+#define	HOH_COMPOUND		0x0008		// PIN has compound properties (i.e. VT_COLLECTION, VT_MAP, VT_STRUCT)
+#define	HOH_TEMP_ID			0x0010		// page slot to be re-used, when PIN is purged
+#define	HOH_SSVS			0x0020		// PIN has SSVs(separately stored values)
+#define	HOH_IMMUTABLE		0x0040		// PIN is immutable
+#define	HOH_PARTS			0x0080		// PIN contains references to parts
+#define	HOH_REPLICATED		0x0100		// PIN is or can be replicated
+#define	HOH_NOTIFICATION	0x0200		// PIN modifications generate notifications
+#define	HOH_MULTIPART		0x0400		// is not contiguous on page
+#define	HOH_COMPACTREF		0x0800		// contains compressed refs to other PINs on this page
+#define	HOH_NOREPLICATION	0x1000		// PIN is not replicated
+#define	HOH_HIDDEN			0x2000		// hidden PIN
+#define	HOH_FT				0x4000		// some properties are FT indexed
+#define HOH_DELETED			0x8000		// PIN is soft-deleted
 
 /**
  * Indexing flags
@@ -82,12 +83,12 @@ struct HType
 	ValueType	getType() const {return ValueType(type&0x3f);}
 	HeapDataFmt	getFormat() const {return HeapDataFmt(type>>6);}
 	bool		isCompact() const {return (type&0xC0)==(HDF_COMPACT<<6);}
-	bool		isCompound() const {return (unsigned)((type&0x3f)-VT_COLLECTION)<=(unsigned)(VT_MAP-VT_COLLECTION);}
+	bool		isCompound() const {return (unsigned)((type&0x3f)-VT_COLLECTION)<=(unsigned)(VT_RANGE-VT_COLLECTION);}
 	bool		isCollection() const {return (type&0x3f)==VT_COLLECTION;}
 	bool		isArray() const {return (type&0x3f)==VT_ARRAY;}
 	bool		isString() const {return (type&0x3f)==VT_STRING;}
 	bool		isLOB() const {return (type&0x3f)==VT_STREAM;}
-	bool		canBeSSV() const {byte ty=type&0x3f; return ty>=VT_STRING && ty<=VT_URL || ty==VT_STMT || ty==VT_EXPR;}
+	bool		canBeSSV() const {byte ty=type&0x3f; return ty>=VT_STRING && ty<=VT_BSTR || ty==VT_STMT || ty==VT_EXPR;}
 	bool		operator==(const HType& rhs) const {return type==rhs.type;}
 	bool		operator!=(const HType& rhs) const {return type!=rhs.type;}
 	void		setType(ValueType vt,HeapDataFmt fmt) {assert(((fmt&~3)|(vt&0xC0))==0); type=byte(fmt<<6|vt);}
@@ -209,6 +210,7 @@ protected:
 		uint8_t			flags;
 		uint16_t		lelt;
 		uint16_t		nelts;
+		uint16_t		units;
 		ushort			length() const {return sizeof(HeapArray)+xdim*ydim*lelt+(flags&6);}
 		void			*data() const {return (byte*)(this+1)+((flags&0x38)>>3);}
 		void			setAlign(uint8_t align) {flags=(flags&~0x38)|(align&6)<<3;}
@@ -390,6 +392,7 @@ public:
 	PageID	multiPage(unsigned info,const byte *rec,size_t lrec,bool& fMerge);
 	PGID	getPGID() const;
 
+	RC		getReserved(uint32_t& nPages,PageID& nextDirPage,byte *&buf,size_t& lbuf,MemAlloc *ma);
 //	void	getMax(PageID& pid,PageIdx& idx) {dirLock.lock(RW_S_LOCK); pid=maxPage; idx=maxIdx; dirLock.unlock();}
 //	void	unlock() {dirLock.unlock(true);}
 	void	lock(class PBlock*);

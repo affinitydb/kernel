@@ -14,7 +14,7 @@ WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the
 License for the specific language governing permissions and limitations
 under the License.
 
-Written by Mark Venguerov, Michael Andronov 2004-2012
+Written by Mark Venguerov, Michael Andronov 2004-2014
 
 **************************************************************************************/
 
@@ -99,7 +99,7 @@ struct AioCnt
 class AsyncReqQ
 {
 public: 
-	static  FreeQ	lioReqs;
+	static  Pool	lioReqs;
 	mutable	RWLock	lock;
 	AIOElt * q;
 
@@ -126,8 +126,8 @@ class FileMgr : public GFileMgr
 {
 public:
 #ifndef STORE_AIO_THREAD
-	static	FreeQ	freeIORequests;
-	static  FreeQ	asyncReqs;
+	static	Pool	freeIORequests;
+	static  Pool	asyncReqs;
 #endif
 	FileMgr(class StoreCtx *ct,int maxOpenFiles,const char *ldDir);
 	RC		open(FileID& fid,const char *fname,unsigned flags=0);

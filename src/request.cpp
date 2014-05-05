@@ -14,7 +14,7 @@ WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the
 License for the specific language governing permissions and limitations
 under the License.
 
-Written by Mark Venguerov 2004-2012
+Written by Mark Venguerov 2004-2014
 
 **************************************************************************************/
 
@@ -51,7 +51,7 @@ public:
 	void *realloc(void*,size_t,size_t) {return NULL;}
 	void free(void *) {}
 } rq_Alloc;
-FreeQ ThreadGroup::freeQE(&rq_Alloc,512);
+Pool ThreadGroup::freeQE(&rq_Alloc,512);
 static void *callProcessRequests(void *param) {((ThreadGroup*)param)->processRequests(); return NULL;}
 static sigset_t sigSIO,sigAIO;
 #endif
@@ -99,7 +99,7 @@ void RequestQueue::stopThreads()
 
 RC RequestQueue::addStore(StoreCtx& ctx)
 {
-	return (ctx.ref=new(::malloc(sizeof(StoreRef))) StoreRef(ctx))!=NULL?RC_OK:RC_NORESOURCES;
+	return (ctx.ref=new(::malloc(sizeof(StoreRef))) StoreRef(ctx))!=NULL?RC_OK:RC_NOMEM;
 }
 
 volatile static long nPendingHW = 0;

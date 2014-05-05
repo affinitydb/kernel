@@ -14,7 +14,7 @@ WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the
 License for the specific language governing permissions and limitations
 under the License.
 
-Written by Mark Venguerov 2004-2013
+Written by Mark Venguerov 2004-2014
 
 **************************************************************************************/
 
@@ -28,23 +28,17 @@ namespace Afy
 {
 
 /**
- * Next Power of 2 (H. Warren, Hacker's Delight, 2003, p.48)
+ * Next Power of 2
  */
-__forceinline unsigned nextP2(unsigned x)
+__forceinline unsigned nextP2(uint32_t x)
 {
-	x = x - 1;
-	x = x | x >> 1;
-	x = x | x >> 2;
-	x = x | x >> 4;
-	x = x | x >> 8;
-	x = x | x >> 16;
-	return x + 1;
+	--x; x|=x>>1; x|=x>>2; x|=x>>4; x|=x>>8; return (x|x>>16)+1;
 }
 
 /**
- * Number of 1-bits in 32-bit number (H. Warren, Hacker's Delight, 2003, p.66)
+ * Number of 1-bits in 32-bit number
  */
-__forceinline int pop(unsigned x)
+__forceinline unsigned pop(uint32_t x)
 {
 	x = x - (x >> 1 & 0x55555555);
 	x = (x & 0x33333333) + (x >> 2 & 0x33333333);
@@ -55,7 +49,7 @@ __forceinline int pop(unsigned x)
 /**
  * Number of 1-bits in 16-bit number
  */
-__forceinline int pop16(unsigned short x)
+__forceinline unsigned pop16(uint16_t x)
 {
 	x = x - (x >> 1 & 0x5555);
 	x = (x & 0x3333) + (x >> 2 & 0x3333);
@@ -64,9 +58,9 @@ __forceinline int pop16(unsigned short x)
 }
 
 /**
- * Number of 1-bits in 16-bit number
+ * Number of 1-bits in 8-bit number
  */
-__forceinline int pop8(unsigned char x)
+__forceinline unsigned pop8(uint8_t x)
 {
 	x = x - (x >> 1 & 0x55);
 	x = (x & 0x33) + (x >> 2 & 0x33);
@@ -74,23 +68,59 @@ __forceinline int pop8(unsigned char x)
 }
 
 /**
- * Number of leading zeros in 32-bit number (H. Warren, Hacker's Delight, 2003)
+ * Log2 of 32-bit number
  */
-__forceinline int nlz(unsigned x)
+__forceinline unsigned log2(uint32_t x)
+{
+	x|=x>>1; x|=x>>2; x|=x>>4; x|=x>>8; return pop((x|x>>16)-1);
+}
+
+/**
+ * Number of leading zeros in 32-bit number
+ */
+__forceinline unsigned nlz(uint32_t x)
 {
 	x|=x>>1; x|=x>>2; x|=x>>4; x|=x>>8; return pop(~(x|x>>16));
 }
 
 /**
- * Number of trailing zeros in 32-bit number (H. Warren, Hacker's Delight, 2003)
+ * Number of trailing zeros in 32-bit number
  */
-__forceinline int ntz(unsigned x)
+__forceinline unsigned ntz(uint32_t x)
 {
 	return pop(~x&x-1);
 }
 
 /**
- * 3-way comparison, returns -1,0,1 (H. Warren, Hacker's Delight, 2003)
+ * swap bytes in 16-bit number
+ */
+__forceinline uint16_t swap16(uint16_t x)
+{
+#ifdef _MSC_VER
+	return _byteswap_ushort(x);
+#elif defined(__llvm) || defined(__GNUC__) && __GNUC__>=4 && __GNUC_MINOR__>=8
+	return __builtin_bswap16(x);
+#else
+	return uint16_t(x>>8|x<<8);
+#endif
+}
+
+/**
+ * swap bytes in 32-bit number
+ */
+__forceinline uint32_t swap32(uint32_t x)
+{
+#ifdef _MSC_VER
+	return _byteswap_ulong(x);
+#elif defined(__llvm) || defined(__GNUC__) && __GNUC__>=4 && __GNUC_MINOR__>=2
+	return __builtin_bswap32(x);
+#else
+	return x>>8&0xFF00|x<<8&0x00FF0000|x>>24|x<<24;
+#endif
+}
+
+/**
+ * 3-way comparison, returns -1,0,1
  */
 template<typename T> __forceinline int cmp3(T x,T y)
 {
@@ -98,11 +128,19 @@ template<typename T> __forceinline int cmp3(T x,T y)
 }
 
 /**
- * sign function, returns -1,0,1 (H. Warren, Hacker's Delight, 2003)
+ * sign function, returns -1,0,1
  */
 template<typename T> __forceinline int sign(T x)
 {
 	return (x>0)-(x<0);
+}
+
+/**
+ * abs function, returns |x|
+ */
+template<typename T> __forceinline T abs(T x)
+{
+	T y=x>>(sizeof(T)*8-1); return (x^y)-y;
 }
 
 /**
@@ -161,7 +199,7 @@ public:
 		T *ins=NULL; if (find(key,(const T*)arr,n,&ins)!=NULL) return RC_OK;
 		if ((arr==NULL || xn==NULL || n>=*xn) && ma!=NULL) {
 			ptrdiff_t sht=ins-arr; size_t old=(xn==NULL?n:*xn)*sizeof(T);
-			if ((arr=(T*)ma->realloc(arr,(xn==NULL?n+1:*xn+=(*xn==0?10:*xn/2))*sizeof(T),old))==NULL) return RC_NORESOURCES;
+			if ((arr=(T*)ma->realloc(arr,(xn==NULL?n+1:*xn+=(*xn==0?10:*xn/2))*sizeof(T),old))==NULL) return RC_NOMEM;
 			ins=arr+sht;
 		}
 		if (ins<&arr[n]) memmove(ins+1,ins,(uint8_t*)&arr[n]-(uint8_t*)ins); *ins=newElt; n++; 
@@ -239,18 +277,20 @@ protected:
 public:
 	DynArray(IMemAlloc *m) : ma(m),ts(tbuf),nTs(0),xTs(initSize) {}
 	~DynArray() {if (ts!=tbuf) ma->free(ts);}
-	RC operator+=(T t) {return nTs>=xTs && !expand() ? RC_NORESOURCES : (ts[nTs++]=t,RC_OK);}
+	RC operator+=(T t) {return nTs>=xTs && !expand() ? RC_NOMEM : (ts[nTs++]=t,RC_OK);}
 	RC operator-=(unsigned idx) {if (idx>=nTs) return RC_INVPARAM; if (idx+1<nTs) memmove(ts+idx,ts+idx+1,(nTs-idx-1)*sizeof(T)); --nTs; return RC_OK;}
 	void operator=(DynArray<T,initSize,factor>& rhs) {clear(); if ((nTs=rhs.nTs)!=0) {if (rhs.ts==rhs.tbuf) memcpy(ts=tbuf,rhs.tbuf,nTs*sizeof(T)); else {ts=rhs.ts; rhs.ts=rhs.tbuf; rhs.nTs=0;}} xTs=rhs.xTs;}
 	void sort() {if (nTs>1) qsort(ts,nTs,sizeof(T),T::compare);}
 	T* pop() {return nTs!=0?&ts[--nTs]:NULL;}
 	T& add() {return nTs>=xTs && !expand() ? *(T*)0 : ts[nTs++];}
 	T* get(uint32_t& n) {T *pt=NULL; if ((n=nTs)!=0) {if ((pt=ts)!=tbuf) ts=tbuf; else if ((pt=new(ma) T[nTs])!=NULL) memcpy(pt,ts,nTs*sizeof(T)); nTs=0;} return pt;}
-	operator const T* () const {return ts;}
+	const T& operator[](unsigned idx) const {assert(idx<nTs); return ts[idx];}
+	T& operator[](unsigned idx) {assert(idx<nTs); return ts[idx];}
 	operator unsigned () const {return nTs;}
 	void clear() {if (ts!=tbuf) {ma->free(ts); ts=tbuf;} nTs=0; xTs=initSize;}
 	RC trunc(unsigned n) {if (n>nTs) return RC_INVPARAM; nTs=n; return RC_OK;}
-	RC set(unsigned idx,T val) {while (idx>=xTs) if (!expand()) return RC_NORESOURCES; if (nTs<=idx) nTs=idx+1; ts[idx]=val; return RC_OK;}
+	RC set(unsigned idx,T val) {while (idx>=xTs) if (!expand()) return RC_NOMEM; if (nTs<=idx) nTs=idx+1; ts[idx]=val; return RC_OK;}
+	RC add(unsigned idx,T val) {assert(idx<=nTs); while (nTs>=xTs) if (!expand()) return RC_NOMEM; if (idx<nTs) memmove(&ts[idx+1],&ts[idx],(nTs-idx)*sizeof(T)); ts[idx]=val; nTs++; return RC_OK;}
 	IMemAlloc *getmem() const {return ma;}
 private:
 	bool expand() {
@@ -281,14 +321,14 @@ public:
 	RC add(T t,T **ret=NULL) {
 		T *p,*ins=NULL;
 		if ((p=(T*)BIN<T,Key,C>::find((Key)t,(const T*)ts,nTs,&ins))!=NULL) {if (ret!=NULL) *ret=p; return RC_FALSE;}
-		if (nTs>=xTs) {ptrdiff_t sht=ins-ts; size_t old=xTs*sizeof(T); if ((ts=(T*)ma->realloc(ts,(xTs+=xTs==0?initX:xTs/factor)*sizeof(T),old))==NULL) return RC_NORESOURCES; ins=ts+sht;}
+		if (nTs>=xTs) {ptrdiff_t sht=ins-ts; size_t old=xTs*sizeof(T); if ((ts=(T*)ma->realloc(ts,(xTs+=xTs==0?initX:xTs/factor)*sizeof(T),old))==NULL) return RC_NOMEM; ins=ts+sht;}
 		if (ins<&ts[nTs]) memmove(ins+1,ins,(uint8_t*)&ts[nTs]-(uint8_t*)ins); *ins=t; nTs++; if (ret!=NULL) *ret=ins; return RC_OK;
 	}
 	RC remove(unsigned i) {if (i>=nTs) return RC_FALSE; if (i<--nTs) memmove(&ts[i],&ts[i+1],(nTs-i)*sizeof(T)); return RC_OK;}
 	void moveTo(DynOArray<T,Key,C,initX,factor>& to) {if (to.ts!=NULL) to.ma->free(to.ts); to.ts=ts; to.nTs=nTs; to.xTs=xTs; ts=NULL; nTs=xTs=0;}
 	const T* find(Key key) const {return BIN<T,Key,C>::find(key,(const T*)ts,nTs);}
 	T* get(uint32_t& n) {T *pt=NULL; if ((n=nTs)!=0) {pt=ts; ts=NULL; xTs=nTs=0;} return pt;}
-	operator const T* () const {return ts;}
+	const T& operator[](unsigned idx) const {assert(idx<nTs); return ts[idx];}
 	operator unsigned () const {return nTs;}
 	void clear() {if (ts!=NULL) {ma->free(ts); ts=NULL;} nTs=xTs=0;}
 };
@@ -316,14 +356,14 @@ public:
 	RC add(T t,T **ret=NULL) {
 		T *p,*ins=NULL;
 		if ((p=(T*)BIN<T,Key,C>::find((Key)t,(const T*)ts,nTs,&ins))!=NULL) {if (ret!=NULL) *ret=p; return RC_FALSE;}
-		if (nTs>=xTs) {ptrdiff_t sht=ins-ts; if (!expand()) return RC_NORESOURCES; ins=ts+sht;}
+		if (nTs>=xTs) {ptrdiff_t sht=ins-ts; if (!expand()) return RC_NOMEM; ins=ts+sht;}
 		if (ins<&ts[nTs]) memmove(ins+1,ins,(uint8_t*)&ts[nTs]-(uint8_t*)ins); *ins=t; nTs++; if (ret!=NULL) *ret=ins; return RC_OK;
 	}
 	RC remove(unsigned i) {if (i>=nTs) return RC_FALSE; if (i<--nTs) memmove(&ts[i],&ts[i+1],(nTs-i)*sizeof(T)); return RC_OK;}
 	void moveTo(DynOArrayBuf<T,Key,C,initSize,factor>& to) {if (to.ts!=to.tbuf) to.ma->free(to.ts); if (ts==tbuf) memcpy(to.ts=to.tbuf,tbuf,sizeof(tbuf)); else to.ts=ts; to.nTs=nTs; to.xTs=xTs; ts=tbuf; nTs=0; xTs=initSize;}
 	const T* find(Key key) const {return BIN<T,Key,C>::find(key,(const T*)ts,nTs);}
 	T* get(uint32_t& n) {T *pt=NULL; if ((n=nTs)!=0) {if ((pt=ts)!=tbuf) ts=tbuf; else if ((pt=new(ma) T[nTs])!=NULL) memcpy(pt,ts,nTs*sizeof(T));} return pt;}
-	operator const T* () const {return ts;}
+	const T& operator[](unsigned idx) const {assert(idx<nTs); return ts[idx];}
 	operator unsigned () const {return nTs;}
 	void clear() {if (ts!=tbuf) {ma->free(ts); ts=tbuf;} nTs=0; xTs=initSize;}
 private:
@@ -341,7 +381,7 @@ private:
 template<typename T,typename Key=T,class C=DefCmp<Key>,int initSize=16,unsigned factor=1> class DynOArrayBufV
 {
 protected:
-	IMemAlloc	*const ma;
+	IMemAlloc	*const		ma;
 	T			tbuf[initSize];
 	T*			volatile	ts;
 	volatile	unsigned	nTs;
@@ -352,7 +392,7 @@ public:
 	RC add(T t,unsigned *idx=NULL) {
 		T *p,*ins=NULL;
 		if ((p=(T*)BIN<T,Key,C>::find((Key)t,(const T*)ts,nTs,&ins))!=NULL) {if (idx!=NULL) *idx=unsigned(p-(T*)ts); return RC_FALSE;}
-		if (nTs>=xTs) {ptrdiff_t sht=ins-(T*)ts; if (!expand()) return RC_NORESOURCES; ins=(T*)ts+sht;}
+		if (nTs>=xTs) {ptrdiff_t sht=ins-(T*)ts; if (!expand()) return RC_NOMEM; ins=(T*)ts+sht;}
 		if (ins<(T*)&ts[nTs]) memmove(ins+1,ins,(uint8_t*)&ts[nTs]-(uint8_t*)ins); *ins=t; nTs++; if (idx!=NULL) *idx=unsigned(ins-(T*)ts); return RC_OK;
 	}
 	RC remove(T t,unsigned *idx=NULL) {
@@ -361,7 +401,9 @@ public:
 	}
 	RC remove(unsigned i) {if (i>=nTs) return RC_FALSE; if (i<--nTs) memmove((T*)&ts[i],(T*)&ts[i+1],(nTs-i)*sizeof(T)); return RC_OK;}
 	const T* find(Key key) const {return BIN<T,Key,C>::find(key,(const T*)ts,nTs);}
-	operator const T*() const {return (const T*)ts;}
+	unsigned findIdx(Key key) const {const T *t=BIN<T,Key,C>::find(key,(const T*)ts,nTs); return t!=NULL?unsigned(t-ts):~0u;}
+	const T& operator[](unsigned idx) const {assert(idx<nTs); return ts[idx];}
+	T& operator[](unsigned idx) {assert(idx<nTs); return ts[idx];}
 	operator unsigned () const {return nTs;}
 	void clear() {if (ts!=tbuf) {ma->free(ts); ts=tbuf;} nTs=0; xTs=initSize;}
 private:
@@ -398,14 +440,14 @@ public:
 /**
  * simple single-linked list with counter
  */
-template<typename T,T *T::*pList> struct Queue
+template<typename T,T *T::*pList> struct SimpleQueue
 {
 	T			*head;
 	T			*tail;
 	uint32_t	count;
-	Queue() : head(NULL),tail(NULL),count(0) {}
+	SimpleQueue() : head(NULL),tail(NULL),count(0) {}
 	void		operator+=(T *t) {if (tail==NULL) head=t; else tail->*pList=t; tail=t; t->*pList=NULL; count++;}
-	void		operator+=(Queue<T,pList>& q) {if (q.head!=NULL) {if (tail==NULL) head=q.head; else tail->*pList=q.head; tail=q.tail; count+=q.count;}}
+	void		operator+=(SimpleQueue<T,pList>& q) {if (q.head!=NULL) {if (tail==NULL) head=q.head; else tail->*pList=q.head; tail=q.tail; count+=q.count;}}
 	void		reset() {head=tail=NULL; count=0;}
 };
 

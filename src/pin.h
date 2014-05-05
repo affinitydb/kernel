@@ -14,7 +14,7 @@ WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the
 License for the specific language governing permissions and limitations
 under the License.
 
-Written by Mark Venguerov 2004-2012
+Written by Mark Venguerov 2004-2014
 
 **************************************************************************************/
 
@@ -77,7 +77,7 @@ protected:
 	RC push(const PID& id) {
 		PathState *ps;
 		if (pst!=NULL && pst->vidx!=0) for (ps=pst; ps!=NULL && ps->idx==pst->idx; ps=ps->next) if (ps->id==id) {if (pst->state==2) pst->vidx++; return RC_OK;}
-		if ((ps=freePst)!=NULL) freePst=ps->next; else if ((ps=new(ma) PathState)==NULL) return RC_NORESOURCES;
+		if ((ps=freePst)!=NULL) freePst=ps->next; else if ((ps=new(ma) PathState)==NULL) return RC_NOMEM;
 		if (pst==NULL) ps->idx=0,ps->rcnt=1; else if (pst->vidx==0) ps->idx=pst->idx+1,ps->rcnt=1; else ps->idx=pst->idx,ps->rcnt=pst->rcnt+1;
 		ps->state=0; ps->vidx=2; ps->cidx=0; ps->id=id; ps->v[0].setEmpty(); ps->v[1].setEmpty(); ps->next=pst; pst=ps; return RC_OK;
 	}
@@ -100,7 +100,7 @@ protected:
 	mutable	PageAddr	addr;				/**< page address of PIN */
 	uint16_t			meta;				/**< PIN metatype flags (PMT_*) */
 	uint16_t			fPINx		:1;		/**< this is PINx class */
-	uint16_t			fNoFree		:1;		/**< don't free properties in destructor (as it cannot be used in protobuf definition) */
+	uint16_t			fNoFree		:1;		/**< don't free properties in destructor */
 	uint16_t			fReload		:1;		/**< load PIN properties if PINs page is being force-unlatched */
 	uint16_t			fPartial	:1;		/**< pin is a result of a projection of a stored pin or pin is not completely loaded from page */
 	uint16_t			fSSV		:1;		/**< pin has SSV properties and they're not loaded yet */
@@ -109,7 +109,7 @@ protected:
 public:
 	PIN(MemAlloc *m,unsigned md=0,Value *vals=NULL,unsigned nvals=0,bool fNF=false)
 		: ma(m),id(noPID),properties(vals),nProperties(nvals),mode(md),addr(PageAddr::noAddr),meta(0),
-		fPINx(0),fNoFree(fNF?1:0),fReload(0),fPartial(0),fSSV(0) {length=0;}
+		fPINx(0),fNoFree(fNF?1:0),fReload(0),fPartial(0),fSSV(0),length(0) {}
 	virtual		~PIN();
 
 	// interface implementation
@@ -122,6 +122,7 @@ public:
 	const Value	*getValue(PropertyID pid) const;
 	RC			getPINValue(Value& res) const;
 	RC			getPINValue(Value& res,Session *ses) const;
+	virtual	bool defined(const PropertyID *pids,unsigned nProps) const;
 	bool		testClassMembership(ClassID,const Value *params=NULL,unsigned nParams=0) const;
 	RC			isMemberOf(ClassID *&clss,unsigned& nclss);
 	IPIN		*clone(const Value *overwriteValues=NULL,unsigned nOverwriteValues=0,unsigned mode=0);
@@ -134,9 +135,11 @@ public:
 	RC			deletePIN();
 	RC			undelete();
 	RC			refresh(bool);
+	IMemAlloc	*getAlloc() const;
+	RC			allocSubPIN(unsigned nProps,IPIN *&pin,Value *&values,unsigned mode=0) const;
 	void		destroy();
 
-	virtual	bool	defined(const PropertyID *pids,unsigned nProps) const;
+	virtual	bool	checkProps(const PropertyID *pids,unsigned nProps);
 	virtual	RC		load(unsigned mode=0,const PropertyID *pids=NULL,unsigned nPids=0);
 	virtual	const	Value	*loadProperty(PropertyID);
 	virtual	const	void	*getPropTab(unsigned& nProps) const;
@@ -148,7 +151,8 @@ public:
 	void		operator delete(void *p) {if (((PIN*)p)->ma!=NULL) ((PIN*)p)->ma->free(p);}
 	void		operator=(const PID& pid) const {id=pid;}
 	void		operator=(const PageAddr& ad) const {addr=ad;}
-	RC			getV(PropertyID pid,Value& v,unsigned mode,MemAlloc *ma,ElementID=STORE_COLLECTION_ID);
+	RC			getV(PropertyID pid,Value& v,unsigned mode=0,MemAlloc *ma=NULL,ElementID eid=STORE_COLLECTION_ID);
+	RC			getV(PropertyID pid,Value& v,unsigned mode,const Value& idx,MemAlloc *ma=NULL);
 	RC			getV(PropertyID pid,const Value *&pv);
 	RC			modify(const Value *pv,unsigned epos,unsigned eid,unsigned flags);
 	void		setProps(const Value *pv,unsigned nv) {properties=(Value*)pv; nProperties=nv;}
@@ -186,7 +190,7 @@ public:
 	friend	class	Classifier;
 	friend	class	ClassPropIndex;
 	friend	struct	ClassResult;
-	friend	class	FSMMgr;
+	friend	class	EventMgr;
 	friend	class	NamedMgr;
 	friend	class	NetMgr;
 	friend	class	RPIN;

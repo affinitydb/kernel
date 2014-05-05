@@ -14,7 +14,7 @@ WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the
 License for the specific language governing permissions and limitations
 under the License.
 
-Written by Mark Venguerov 2004-2012
+Written by Mark Venguerov 2004-2014
 
 **************************************************************************************/
 
@@ -124,7 +124,7 @@ PGID PageMgr::getPGID() const
 
 void *PageMgr::operator new(size_t s,StoreCtx *ctx)
 {
-	void *p=ctx->malloc(s); if (p==NULL) throw RC_NORESOURCES; return p;
+	void *p=ctx->malloc(s); if (p==NULL) throw RC_NOMEM; return p;
 }
 
 //----------------------------------------------------------------------------------------------

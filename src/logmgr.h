@@ -14,7 +14,7 @@ WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the
 License for the specific language governing permissions and limitations
 under the License.
 
-Written by Mark Venguerov 2004-2012
+Written by Mark Venguerov 2004-2014
 
 **************************************************************************************/
 
@@ -134,9 +134,9 @@ class LogMgr
 	bool				fRecovery;
 	bool				fAnalizing;
 	size_t				recFileSize;
-	unsigned				maxAllocated;
-	unsigned				prevTruncate;
-	unsigned				nRecordsSinceCheckpoint;
+	unsigned			maxAllocated;
+	unsigned			prevTruncate;
+	unsigned			nRecordsSinceCheckpoint;
 	SharedCounter		nOverflow;
 	SharedCounter		nWrites;
 	
@@ -145,11 +145,11 @@ class LogMgr
 	PBlock				*newPage;
 
 	mutable	Mutex		openFile;
-	unsigned				currentLogFile;
+	unsigned			currentLogFile;
 	FileID				logFile;
 	PrevLogSeg			readLogSegs[MAXPREVLOGSEGS];
 	int					nReadLogSegs;
-	Event				waitLogSeg;
+	WaitEvent			waitLogSeg;
 
 	myaio				aio;
 	myaio				*pcb;
@@ -181,7 +181,7 @@ class LogMgr
 public:
 						LogMgr(class StoreCtx*,size_t logBufS,bool fArchiveLogs=false,const char *logDir=NULL);
 						~LogMgr();
-	void *operator		new(size_t s,StoreCtx *ctx) {void *p=ctx->malloc(s); if (p==NULL) throw RC_NORESOURCES; return p;}
+	void *operator		new(size_t s,StoreCtx *ctx) {void *p=ctx->malloc(s); if (p==NULL) throw RC_NOMEM; return p;}
 	void				deleteLogs();
 	RC					init();
 	RC					allocLogFile(unsigned fileN,char* buf=NULL);
@@ -197,7 +197,7 @@ public:
 	RC					recover(Session *ses,bool fRollforward);
 	RC					close();
 private:
-	RC					initLogBuf() {return logBufBeg!=NULL?RC_OK:(ptrInsert=ptrWrite=logBufBeg=(byte*)allocAligned(bufLen,lPage))==NULL?RC_NORESOURCES:(ptrRead=logBufEnd=logBufBeg+bufLen,RC_OK);}
+	RC					initLogBuf() {return logBufBeg!=NULL?RC_OK:(ptrInsert=ptrWrite=logBufBeg=(byte*)allocAligned(bufLen,lPage))==NULL?RC_NOMEM:(ptrRead=logBufEnd=logBufBeg+bufLen,RC_OK);}
 	RC					createLogFile(LSN fileStart,off64_t& fSize);
 	RC					openLogFile(LSN fileStart);
 	RC					write();

@@ -14,7 +14,7 @@ WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the
 License for the specific language governing permissions and limitations
 under the License.
 
-Written by Mark Venguerov 2004-2012
+Written by Mark Venguerov 2004-2014
 
 **************************************************************************************/
 
@@ -85,17 +85,17 @@ RC CachedObject::load(PageID pid,unsigned flags)
 			ushort lData=0;
 			const byte *p=(const byte*)((TreePageMgr::TreePage*)pb->getPageBuf())->getValue(key,lData);
 			if (p!=NULL) {
-				if ((buf=(byte*)alloca(lData))==NULL) {pb->release(); return RC_NORESOURCES;}
+				if ((buf=(byte*)alloca(lData))==NULL) {pb->release(); return RC_NOMEM;}
 				memcpy(buf,p,size=lData); fFound=true;
 			}
 			pb->release();
 		}
 	}
 	if (!fFound) {
-		if ((buf=(byte*)alloca(size))==NULL) return RC_NORESOURCES;
+		if ((buf=(byte*)alloca(size))==NULL) return RC_NOMEM;
 		if ((rc=mgr.map.find(key,buf,size))!=RC_OK) return rc;
 		if (size>s0) {
-			buf=(byte*)alloca(size-s0); if (buf==NULL) return RC_NORESOURCES;
+			buf=(byte*)alloca(size-s0); if (buf==NULL) return RC_NOMEM;
 			mgr.map.find(key,buf,size);
 		}
 	}
@@ -103,13 +103,13 @@ RC CachedObject::load(PageID pid,unsigned flags)
 		if ((lName=buf[0]<<8|buf[1])+2>size) return RC_CORRUPTED;
 		if ((flags&COBJ_NONAME)==0) {
 			char *str=(char*)mgr.ctx->malloc(lName+1);
-			if (str==NULL) return RC_NORESOURCES;
+			if (str==NULL) return RC_NOMEM;
 			memcpy(str,buf+2,lName); str[lName]=0;
 			NamedObjMgr::NameHash::Find findObj(((NamedObjMgr*)&mgr)->nameHash,str);
 			ObjName *on=findObj.findLock(RW_X_LOCK);
 			if (on==NULL) {
 				if ((on=new(mgr.ctx) ObjName(str,lName,ID,*(NamedObjMgr*)&mgr,false))==NULL)
-					{mgr.ctx->free(str); return RC_NORESOURCES;}
+					{mgr.ctx->free(str); return RC_NOMEM;}
 				((NamedObjMgr*)&mgr)->nameHash.insertNoLock(on,findObj.getIdx());
 			} else if (on->ID==~0u) on->ID=ID; else if (on->ID!=ID) return RC_ALREADYEXISTS;	// ???
 			name=on;
@@ -124,7 +124,7 @@ const IndexFormat ObjMgr::objIndexFmt(KT_UINT,0,KT_VARDATA);
 ObjMgr::ObjMgr(StoreCtx *ct,MapAnchor ma,int hashSize,int xO)
  : ObjHash(*new(ct) ObjHash::QueueCtrl(xO,ct),hashSize,ct),ctx(ct),xObj(xO),map(ma,objIndexFmt,ct)
 {
-	if (&ctrl==NULL) throw RC_NORESOURCES;
+	if (&ctrl==NULL) throw RC_NOMEM;
 }
 
 ObjMgr::~ObjMgr()
@@ -241,7 +241,7 @@ RC NamedObjMgr::rename(unsigned id,const char *name,size_t ln)
 	if (name==NULL||ln==0||id==~0u) return RC_INVPARAM;
 	CachedObject *obj=NULL; NameHash::Find findObj(nameHash,StrLen(name,ln));
 	if (findObj.findLock(RW_X_LOCK)!=NULL) return RC_ALREADYEXISTS;
-	ObjName *on=new(ctx) ObjName(name,ln,id,*this); if (on==NULL) return RC_NORESOURCES;
+	ObjName *on=new(ctx) ObjName(name,ln,id,*this); if (on==NULL) return RC_NOMEM;
 	RC rc=get(obj,id,INVALID_PAGEID,RW_X_LOCK); if (rc!=RC_OK) return rc;
 	on->lock.lock(RW_X_LOCK); nameHash.insertNoLock(on,findObj.getIdx()); findObj.unlock();
 	ushort lName=(ushort)strlen(name); SearchKey key(name,lName); 
@@ -254,7 +254,7 @@ RC NamedObjMgr::rename(unsigned id,const char *name,size_t ln)
 		ushort lOldName=(ushort)strlen(obj->name->name); size=sizeof(NamedObjPtr);
 		SearchKey oldKey((const char*)obj->name->name,lOldName); byte *buf;
 		if (nameMap.find(oldKey,&objPtr,size)!=RC_OK||objPtr.ID!=id) rc=RC_NOTFOUND;
-		else if ((buf=(byte*)alloca(lName+2))==NULL) rc=RC_NORESOURCES;
+		else if ((buf=(byte*)alloca(lName+2))==NULL) rc=RC_NOMEM;
 		else {
 			MiniTx tx(Session::getSession()); SearchKey kid((uint64_t)id);
 			buf[0]=byte(lName>>8); buf[1]=byte(lName); memcpy(buf+2,name,lName);

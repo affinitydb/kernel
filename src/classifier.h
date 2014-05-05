@@ -14,7 +14,7 @@ WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the
 License for the specific language governing permissions and limitations
 under the License.
 
-Written by Mark Venguerov 2004-2013
+Written by Mark Venguerov 2004-2014
 
 **************************************************************************************/
 
@@ -196,15 +196,12 @@ struct ClassRef
  */
 struct ClassRefT : public ClassRef
 {
-	const	ushort		nConds;
 	ushort				refCnt;
 	ClassPropIndex		*sub;
-	union {
-		Expr			*cond;
-		Expr			**conds;
-	};
-	PropertyID			indexProps[1];
-	ClassRefT(ClassID id,const PID& pd,ushort np,ushort nc,ushort nots,unsigned flg,ClassActs *ac,ClassWindow *w) : ClassRef(id,pd,np,nots,flg,ac,w),nConds(nc),refCnt(0),sub(NULL) {cond=NULL;}
+	Expr				*cond;
+	unsigned			nrProps;
+	PropertyID			props[1];
+	ClassRefT(ClassID id,const PID& pd,ushort np,ushort nots,unsigned flg,ClassActs *ac,ClassWindow *w) : ClassRef(id,pd,np,nots,flg,ac,w),refCnt(0),sub(NULL),cond(NULL),nrProps(0) {}
 	void				*operator new(size_t s,unsigned np,MemAlloc *ma) {return ma->malloc(s+int(np-1)*sizeof(PropertyID));}
 	class ClassRefCmp	{public: __forceinline static int cmp(const ClassRef *cr,ClassID ci) {return cmp3(cr->cid,ci);}};
 };

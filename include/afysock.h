@@ -1,6 +1,6 @@
 /**************************************************************************************
 
-Copyright © 2004-2014 GoPivotal, Inc. All rights reserved.
+Copyright ï¿½ 2004-2014 GoPivotal, Inc. All rights reserved.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -22,15 +22,17 @@ Written by Mark Venguerov 2013
 #define _AFYSOCK_H_
 
 #ifdef WIN32
+#ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
+#endif
 #ifndef _WIN32_WINNT
-#define _WIN32_WINNT 0x0600
+#define _WIN32_WINNT _WIN32_WINNT_VISTA
 #endif
 #include <winsock2.h>
 #include <ws2tcpip.h>
 #include <dbt.h>
 #pragma comment(lib, "Ws2_32.lib")
-#define	isSOK(a)	((a)!=INVALID_SOCKET)
+#define	isSOK(a)			((a)!=INVALID_SOCKET)
 #define	sockaddr_storage	SOCKADDR_STORAGE
 #else
 #include <signal.h>
@@ -55,16 +57,25 @@ namespace Afy
 #define W_BIT		0x02
 #define E_BIT		0x04
 
-struct AFY_EXP AddrInfo
+#ifndef DEFAULT_READ_TIMEOUT
+#define DEFAULT_READ_TIMEOUT	120000	// in ms
+#endif
+
+struct AFY_EXP SockAddr : public IAddress
 {
-	int					family;
-	int					protocol;
-	int					socktype;
-	size_t				laddr;
 	sockaddr_storage	saddr;
-	bool				fUDP;
-	AddrInfo() : family(0),protocol(0),socktype(SOCK_STREAM),laddr(0),fUDP(false) {memset(&saddr,0,sizeof(saddr));}
-	RC					resolve(const Value *addr,bool fListener);
+	size_t				laddr;
+	int					socktype;
+#ifndef ANDROID
+	int					protocol;
+	SockAddr() : protocol(IPPROTO_TCP),socktype(SOCK_STREAM),laddr(0) {memset(&saddr,0,sizeof(saddr));}
+#else
+	SockAddr() : socktype(SOCK_STREAM),laddr(0) {memset(&saddr,0,sizeof(saddr));}
+#endif
+	RC					resolve(const Value *addr,IServiceCtx *sctx=NULL);		// sctx==NULL -> listener
+	bool				operator==(const IAddress&) const;
+	int					cmp(const IAddress&) const;
+	operator			uint32_t() const;
 	static	RC			getAddr(const sockaddr_storage *ss,socklen_t ls,Value& addr,IMemAlloc *ma,bool fPort=false);
 };
 

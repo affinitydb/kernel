@@ -14,7 +14,7 @@ WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the
 License for the specific language governing permissions and limitations
 under the License.
 
-Written by Mark Venguerov 2004-2012
+Written by Mark Venguerov 2004-2014
 
 **************************************************************************************/
 
@@ -410,7 +410,7 @@ public:
 		for (i=1; ;i++) if (i>=xHeight || rand()*factor>=RAND_MAX) {
 			if (i>level) for (assert(i<=xHeight); level<i; level++) update[level]=&node0;
 			if (freeNodes!=NULL) {void *p=freeNodes; freeNodes=freeNodes->ptrs[0]; node=new(p) Node(prty,obj);}
-			else if ((node=new(&alloc) Node(prty,obj))==NULL) return RC_NORESOURCES;
+			else if ((node=new(&alloc) Node(prty,obj))==NULL) return RC_NOMEM;
 			while (--i>=0) {node->ptrs[i]=update[i]->ptrs[i]; update[i]->ptrs[i]=node;}
 			count++; return node0.ptrs[0]==node?RC_TRUE:RC_OK;
 		}
@@ -536,7 +536,7 @@ public:
 		if (src.nTs==0) return RC_OK; if (this->nTs==0) {src.moveTo(*this); return RC_OK;}
 		if (this->xTs-this->nTs<src.nTs) {
 			if (src.xTs-src.nTs>=this->nTs) {T *tt=src.ts; unsigned tn=src.nTs,tx=src.xTs; src.ts=this->ts; src.nTs=this->nTs; src.xTs=this->xTs; this->ts=tt; this->nTs=tn; this->xTs=tx;}
-			else {size_t old=this->xTs*sizeof(T); if ((this->ts=(T*)mma->realloc(this->ts,(this->xTs+=src.nTs)*sizeof(T),old))==NULL) return RC_NORESOURCES;}
+			else {size_t old=this->xTs*sizeof(T); if ((this->ts=(T*)mma->realloc(this->ts,(this->xTs+=src.nTs)*sizeof(T),old))==NULL) return RC_NOMEM;}
 		}
 		T *p=this->ts,*from=src.ts,*const end=from+src.nTs; unsigned n=this->nTs; RC rc;
 		do {

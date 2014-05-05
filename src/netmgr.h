@@ -14,7 +14,7 @@ WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the
 License for the specific language governing permissions and limitations
 under the License.
 
-Written by Mark Venguerov 2004-2012
+Written by Mark Venguerov 2004-2014
 
 **************************************************************************************/
 
@@ -87,11 +87,11 @@ class NetMgr : public RPINHashTab, public PageMgr
 	long			xPINs;
 	TIMESTAMP		defExpiration;
 	TreeGlobalRoot	map;
-	FreeQ			freeRPINs;
+	Pool			freeRPINs;
 public:
 	NetMgr(StoreCtx *ct,int hashSize=DEFAULT_RPINHASH_SIZE,int cacheSize=DEFAULT_CACHED_RPINS,TIMESTAMP dExp=DEFAULT_EXPIRATION);
 	virtual			~NetMgr();
-	void *operator	new(size_t s,StoreCtx *ctx) {void *p=ctx->malloc(s); if (p==NULL) throw RC_NORESOURCES; return p;}
+	void *operator	new(size_t s,StoreCtx *ctx) {void *p=ctx->malloc(s); if (p==NULL) throw RC_NOMEM; return p;}
 	void			close();
 	RC				insert(PIN *pin);
 	RC				updateAddr(const PID& id,const PageAddr& addr);

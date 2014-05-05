@@ -63,10 +63,10 @@ struct TimerQStore : public SLIST_ENTRY
 struct TimerQHdr
 {
 	SLIST_HEADER stores;
-	FreeQ		freeLS;
+	Pool		freeLS;
 	volatile	HTHREAD		timerThread;
 	Mutex		lock;
-	Event		sleep;
+	WaitEvent		sleep;
 	TimerQHdr() : timerThread(0) {InitializeSListHead(&stores);}
 	void		timerDaemon();
 };

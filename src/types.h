@@ -14,7 +14,7 @@ WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the
 License for the specific language governing permissions and limitations
 under the License.
 
-Written by Mark Venguerov 2004-2012
+Written by Mark Venguerov 2004-2014
 
 **************************************************************************************/
 
@@ -42,7 +42,7 @@ using namespace Afy;
 #include <malloc.h>
 #include <stdio.h>
 #ifndef _WIN32_WINNT
-#define _WIN32_WINNT 0x0600
+#define _WIN32_WINNT _WIN32_WINNT_VISTA
 #endif
 #ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
@@ -55,7 +55,6 @@ using namespace Afy;
 typedef unsigned char		byte;
 typedef unsigned short		ushort;
 typedef	unsigned __int64	off64_t;
-extern "C" _declspec(dllexport) RC convCode(DWORD);
 extern "C" void				reportError(DWORD);
 inline	size_t	getPageSize() {SYSTEM_INFO si; GetSystemInfo(&si); return si.dwPageSize;}
 inline	size_t	getSectorSize() {
@@ -65,11 +64,6 @@ inline	size_t	getSectorSize() {
 }
 inline	void	*allocAligned(size_t sz,size_t) {return VirtualAlloc(NULL,sz,MEM_COMMIT,PAGE_READWRITE);}
 inline	void	freeAligned(void* p) {VirtualFree(p,0,MEM_RELEASE);}
-inline	RC		createThread(LPTHREAD_START_ROUTINE pRoutine,LPVOID pParam,HANDLE& thread)
-					{thread = ::CreateThread(NULL,0,pRoutine,pParam,0,NULL); return thread==NULL?convCode(GetLastError()):RC_OK;}
-
-#define	TS_DELTA	TIMESTAMP(0)
-inline	void		getTimestamp(TIMESTAMP& ts) {FILETIME ft; GetSystemTimeAsFileTime(&ft); ULARGE_INTEGER li={ft.dwLowDateTime,ft.dwHighDateTime}; ts=li.QuadPart/10+TS_DELTA;}
 
 #define	stricmp		_stricmp
 #define	strnicmp	_strnicmp
@@ -135,7 +129,6 @@ typedef uint8_t		byte;
 typedef uint16_t	ushort;
 typedef	int			HANDLE;
 #define	INVALID_HANDLE_VALUE	(-1)
-extern	"C" RC		convCode(int);
 extern	"C" void	reportError(int);
 inline	size_t		getPageSize() {return (size_t)sysconf(_SC_PAGESIZE);}
 inline	size_t		getSectorSize() {return 0x200;}		// ????
@@ -152,16 +145,6 @@ void * tmp;
 #endif
 
 inline	void		freeAligned(void *p) {free(p);}
-inline	RC			createThread(void *(*pRoutine)(void*),void *pParam,pthread_t& thread)
-									{return convCode(pthread_create(&thread,NULL,pRoutine,pParam));}
-
-#define	TS_DELTA	TIMESTAMP(0x00295e9648864000ULL)
-
-#ifndef __APPLE__
-inline	void		getTimestamp(TIMESTAMP& ts) {timespec tsp; clock_gettime(CLOCK_REALTIME,&tsp); ts=uint64_t(tsp.tv_sec)*1000000+tsp.tv_nsec/1000+TS_DELTA;}
-#else
-inline	void		getTimestamp(TIMESTAMP& ts) {timeval tv; gettimeofday(&tv,NULL); ts=uint64_t(tv.tv_sec)*1000000+tv.tv_usec+TS_DELTA;}
-#endif
 
 #ifdef __APPLE__
 #define _DARWIN_USE_64_BIT_INODE

@@ -14,7 +14,7 @@ WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the
 License for the specific language governing permissions and limitations
 under the License.
 
-Written by Mark Venguerov 2004-2012
+Written by Mark Venguerov 2004-2014
 
 **************************************************************************************/
 
@@ -195,7 +195,7 @@ RC HeapPageMgr::update(PBlock *pb,size_t len,unsigned info,const byte *rec,size_
 						hp->hdr.pageID,newl-hdr->getLength(),hp->totalFree());
 					return RC_PAGEFULL;
 				}
-				p=(byte*)alloca(l); if (p==NULL) return RC_NORESOURCES; memcpy(p,pData,l);
+				p=(byte*)alloca(l); if (p==NULL) return RC_NOMEM; memcpy(p,pData,l);
 				ushort dscr=hdr->descr; (*hp)[idx]=0; hp->scatteredFreeSpace+=hdr->getLength();
 				hp->compact(); assert(newl<=hp->contFree());
 				(*hp)[idx]=hp->freeSpace; hdr=(HeapObjHeader*)(frame+hp->freeSpace);
@@ -534,7 +534,7 @@ RC HeapPageMgr::update(PBlock *pb,size_t len,unsigned info,const byte *rec,size_
 			} else {
 				byte *p=pData+sht; ushort len=l;
 				if (delta>0 && (!f || pData+ceil(x+newl,HP_ALIGN)>frame+hp->freeSpace+hp->contFree())) {
-					p=(byte*)alloca(len); if (p==NULL) PINOP_ERROR(RC_NORESOURCES);
+					p=(byte*)alloca(len); if (p==NULL) PINOP_ERROR(RC_NOMEM);
 					memcpy(p,pData+sht,len); pType->setType(ty,HDF_COMPACT);
 					len=(ushort)ceil(len+sht,HP_ALIGN); hpin->hdr.length-=len; hp->scatteredFreeSpace+=len; hpin->hdr.descr|=HOH_MULTIPART;
 					hp->compact(false,idx); off=hp->getOffset(idx); assert(off!=0);
@@ -606,7 +606,7 @@ ushort HeapPageMgr::dataLength(HType vt,const byte *pData,const byte *frame,unsi
 	default: break;
 	case VT_STRING:
 		if (idxMask!=NULL) *idxMask|=IX_OFT;
-	case VT_BSTR: case VT_URL:
+	case VT_BSTR:
 		return fmt==HDF_SHORT?pData[0]+1:(pData[0]<<8|pData[1])+2;
 	case VT_FLOAT:
 		return fmt==HDF_LONG?sizeof(float)+sizeof(uint16_t):sizeof(float);
@@ -633,9 +633,10 @@ ushort HeapPageMgr::dataLength(HType vt,const byte *pData,const byte *frame,unsi
 	case VT_COLLECTION:
 	case VT_STRUCT:
 	case VT_MAP:
+	case VT_RANGE:
 		if (fmt==HDF_LONG) {
 			if (idxMask!=NULL) *idxMask|=IX_OFT;
-			len=ty==VT_MAP?0:ty==VT_STRUCT?sizeof(HRefSSV):collDescrSize((HeapExtCollection*)pData); // VT_MAP?		???
+			len=ty==VT_MAP?0:ty==VT_COLLECTION?collDescrSize((HeapExtCollection*)pData):sizeof(HRefSSV); // VT_MAP?		???
 		} else {
 			const HeapVV *comp=(const HeapVV*)pData; len=0; assert(frame!=NULL);
 			for (l=comp->cnt; l!=0; ) {
@@ -653,7 +654,7 @@ ushort HeapPageMgr::dataLength(HType vt,const byte *pData,const byte *frame,unsi
 
 ushort HeapPageMgr::moveArray(HType vt,byte *dest,PageOff doff,const byte *src,PageOff soff,bool fAlign)
 {
-	ushort ldata; assert(vt.isCompound());
+	ushort ldata; assert(vt.isArray());
 	if (vt.getFormat()==HDF_LONG) memcpy(dest+doff,src+soff,ldata=sizeof(HRefSSV));
 	else {
 		const HeapArray *ha=(const HeapArray*)(src+soff); ldata=ha->length();
@@ -851,7 +852,7 @@ RC HeapPageMgr::HeapPIN::serialize(byte *&buf,size_t& lbuf,const HeapPageMgr::He
 	const bool fMultipart=fExpand||(hdr.descr&HOH_MULTIPART)!=0;
 	ushort ldata=fMultipart?headerLength():hdr.length,off=ushort((const byte*)this-(const byte*)hp);
 	size_t lrec=len!=0?len:hdr.getLength(); if (lrec<sizeof(HeapPIN)) return RC_CORRUPTED;
-	if ((buf==NULL||lbuf<lrec) && (buf=(byte*)ma->realloc(buf,lrec,lbuf))==NULL) return RC_NORESOURCES;
+	if ((buf==NULL||lbuf<lrec) && (buf=(byte*)ma->realloc(buf,lrec,lbuf))==NULL) return RC_NOMEM;
 	memcpy(buf,this,ldata); lbuf=lrec;
 	if (off!=0 || fMultipart) {
 		HeapV *hprop=((HeapPIN*)buf)->getPropTab();
@@ -999,7 +1000,7 @@ RC PINPageMgr::addPagesToMap(const PageSet& ps,Session *ses,bool fCl)
 	}
 	unsigned lrec=sizeof(HeapDirMgr::HeapDirUpdate)+((unsigned(ps)>xSlots?xSlots:unsigned(ps))-1)*sizeof(PageID);
 	HeapDirMgr::HeapDirUpdate hu0,*hu=unsigned(ps)==1?&hu0:(HeapDirMgr::HeapDirUpdate*)ses->malloc(lrec); 
-	if (hu==NULL) return RC_NORESOURCES;
+	if (hu==NULL) return RC_NOMEM;
 
 	PageSet::it it(ps);
 	if (nSlots>0) {
@@ -1009,11 +1010,11 @@ RC PINPageMgr::addPagesToMap(const PageSet& ps,Session *ses,bool fCl)
 	}
 	if (rc==RC_OK && nSlots<unsigned(ps)) {
 		unsigned nDirPages=(unsigned(ps)-nSlots+xSlots-1)/xSlots; PageID dpgs[6],*dPages=dpgs; PBlockP pb2;
-		if (nDirPages>6 && (dPages=(PageID*)ses->malloc(nDirPages*sizeof(PageID)))==NULL) rc=RC_NORESOURCES;
+		if (nDirPages>6 && (dPages=(PageID*)ses->malloc(nDirPages*sizeof(PageID)))==NULL) rc=RC_NOMEM;
 		else {
 			{MiniTx mtx(ses); MapAnchorUpdate anchorUpdate;
 			if ((rc=ctx->fsMgr->allocPages(nDirPages,dPages))==RC_OK) {
-				if (pb2.newPage(dPages[0],ctx->hdirMgr,0,ses)==NULL) rc=RC_NORESOURCES;
+				if (pb2.newPage(dPages[0],ctx->hdirMgr,0,ses)==NULL) rc=RC_NOMEM;
 				else {
 					if (!pb.isNull()) {
 						pb->checkDepth(); rc=ctx->txMgr->update(pb,ctx->hdirMgr,HDU_NEXT,(byte*)&dPages[0],sizeof(PageID),0,pb2);
@@ -1029,7 +1030,7 @@ RC PINPageMgr::addPagesToMap(const PageSet& ps,Session *ses,bool fCl)
 					if (rc==RC_OK) {
 						for (unsigned i=1; i<nDirPages; i++) {
 							PBlock *next=ctx->bufMgr->newPage(dPages[i],ctx->hdirMgr,NULL,0,ses);
-							if (next==NULL) {rc=RC_NORESOURCES; break;}
+							if (next==NULL) {rc=RC_NOMEM; break;}
 							pb2->checkDepth(); rc=ctx->txMgr->update(pb2,ctx->hdirMgr,HDU_NEXT,(byte*)&dPages[i],sizeof(PageID),0,next);
 							pb2.release(ses); pb2=next; pb2.set(QMGR_UFORCE); if (rc!=RC_OK) break;
 						}
@@ -1045,7 +1046,7 @@ RC PINPageMgr::addPagesToMap(const PageSet& ps,Session *ses,bool fCl)
 			}
 			for (unsigned i=0; rc==RC_OK && i<nDirPages; i++) {
 				if (i+1==nDirPages) pb2.moveTo(pb); else pb.getPage(dPages[i],ctx->hdirMgr,PGCTL_XLOCK,ses);
-				if (pb.isNull()) rc=RC_NORESOURCES;
+				if (pb.isNull()) rc=RC_NOMEM;
 				else {
 					unsigned n=unsigned(ps)-nSlots; assert(n>0); if (n>xSlots) n=xSlots; hu->nHeapPages=n; nSlots+=n;
 					for (unsigned i=0; i<n; i++) {hu->heapPages[i]=++it; assert(hu->heapPages[i]!=INVALID_PAGEID);}
@@ -1132,10 +1133,10 @@ RC HeapPageMgr::HeapSpace::set(StoreCtx *ctx,PageID pid,size_t size,bool fAdd)
 	if (!fAdd || nPages>=SPACE_TAB_SIZE && size<=pageTab[nPages-1]->space) 
 		{if (hps!=NULL) spaceTab.remove(hps,true); return RC_OK;}
 	if (hps!=NULL) hps->space=size;
-	else if ((hps=new(ctx) HeapPageSpace(pid,size))==NULL) return RC_NORESOURCES;
+	else if ((hps=new(ctx) HeapPageSpace(pid,size))==NULL) return RC_NOMEM;
 	else {spaceTab.insert(hps); if (nPages>=SPACE_TAB_SIZE) spaceTab.remove(pageTab[--nPages],true);}
 	if (pageTab!=NULL) idx=find(hps);
-	else if ((pageTab=new(ctx) HeapPageSpace*[SPACE_TAB_SIZE])==NULL) return RC_NORESOURCES;
+	else if ((pageTab=new(ctx) HeapPageSpace*[SPACE_TAB_SIZE])==NULL) return RC_NOMEM;
 	else idx=0;
 	assert(idx<=nPages && nPages<SPACE_TAB_SIZE);
 	if (idx<nPages) memmove(&pageTab[idx+1],&pageTab[idx],(nPages-idx)*sizeof(HeapPageSpace*));
@@ -1225,7 +1226,7 @@ RC HeapDirMgr::update(PBlock *pb,size_t len,unsigned info,const byte *rec,size_t
 			assert(hp->next==INVALID_PAGEID&&lrec==sizeof(PageID));
 			assert((flags&TXMGR_RECV)!=0 || newp!=NULL);
 			PBlock *pb2=newp==NULL?ctx->logMgr->setNewPage(ctx->bufMgr->newPage(*(PageID*)rec,this)):newp;
-			if (pb2==NULL) return RC_NORESOURCES; assert(pb2->getPageID()==*(PageID*)rec);
+			if (pb2==NULL) return RC_NOMEM; assert(pb2->getPageID()==*(PageID*)rec);
 			hp->next=*(PageID*)rec; pb->setDependency(pb2);
 		}
 		break;
@@ -1275,6 +1276,22 @@ bool HeapDirMgr::beforeFlush(byte *frame,size_t len,PageID pid)
 PGID HeapDirMgr::getPGID() const
 {
 	return PGID_HEAPDIR;
+}
+
+RC HeapDirMgr::getReserved(uint32_t& nPages,PageID& nextDirPage,byte *&buf,size_t& lbuf,MemAlloc *ma)
+{
+	for (PBlock *pb=NULL;;) {
+		if (nextDirPage==INVALID_PAGEID) return RC_EOF;
+		if ((pb=ctx->bufMgr->getPage(nextDirPage,this,0,pb))==NULL) return RC_EOF;	//???
+		HeapDirPage *hd=(HeapDirPage*)pb->getPageBuf(); nextDirPage=hd->next; 
+		if ((nPages=hd->nSlots)!=0) {
+			if (lbuf<hd->nSlots*sizeof(PageID)) {
+				if ((buf=(byte*)ma->realloc(buf,hd->nSlots*sizeof(PageID),lbuf))==NULL) {pb->release(); return RC_NOMEM;}
+				lbuf=hd->nSlots*sizeof(PageID);
+			}
+			memcpy(buf,hd+1,hd->nSlots*sizeof(PageID)); pb->release(); return RC_OK;
+		}
+	}
 }
 
 void HeapDirMgr::lock(PBlock *pb)

@@ -14,7 +14,7 @@ WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the
 License for the specific language governing permissions and limitations
 under the License.
 
-Written by Mark Venguerov 2004-2012
+Written by Mark Venguerov 2004-2014
 
 **************************************************************************************/
 
@@ -30,7 +30,7 @@ static const IndexFormat ftIndexFmt(KT_BIN,KT_VARKEY,KT_PINREFS);
 FTIndexMgr::FTIndexMgr(StoreCtx *ct) : ctx(ct),indexFT(MA_FTINDEX,ftIndexFmt,ct,TF_WITHDEL),localeTable(LOCALE_TABLE_SIZE,(MemAlloc*)ct)
 {
 	FTLocaleInfo *loc = new(ct) FTLocaleInfo(ct,0,"'_",DEFAULT_MINSIZE,new(ct) PorterStemmer,defaultEnglishStopWords,defaultEnglishStopWordsLen());
-	if (loc==NULL || loc->stemmer==NULL) throw RC_NORESOURCES;
+	if (loc==NULL || loc->stemmer==NULL) throw RC_NOMEM;
 	localeTable.insert(loc); defaultLocale=loc;
 }
 
@@ -129,21 +129,21 @@ RC FTIndexMgr::index(ChangeInfo& inf,FTList *ftl,unsigned flags,unsigned mode,Me
 
 RC FTIndexMgr::index(const ChangeInfo& ft,FTList *ftl,unsigned mode,MemAlloc *ma)
 {
-	Tokenizer *oT=NULL,*nT=NULL; ValueType oType=VT_ERROR,nType=VT_ERROR;
+	Tokenizer *oT=NULL,*nT=NULL;
 	if (ft.oldV!=NULL) switch (ft.oldV->type) {
 	case VT_STRING:
-		if (ft.oldV->length>0) {oT=new(alloca(sizeof(StringTokenizer))) StringTokenizer(ft.oldV->str,ft.oldV->length,(mode&FTMODE_SAVE_WORDS)!=0); oType=VT_STRING;}
+		if (ft.oldV->length>0) {oT=new(alloca(sizeof(StringTokenizer))) StringTokenizer(ft.oldV->str,ft.oldV->length,(mode&FTMODE_SAVE_WORDS)!=0);}
 		break;
 	case VT_STREAM:
-		if (ft.oldV->stream.is!=NULL) {oT=(Tokenizer*)new(alloca(sizeof(StreamTokenizer))) StreamTokenizer(ft.oldV->stream.is); oType=VT_STREAM;}
+		if (ft.oldV->stream.is!=NULL) {oT=(Tokenizer*)new(alloca(sizeof(StreamTokenizer))) StreamTokenizer(ft.oldV->stream.is);}
 		break;
 	}
 	if (ft.newV!=NULL) switch (ft.newV->type) {
 	case VT_STRING:
-		if (ft.newV->length>0) {nT=new(alloca(sizeof(StringTokenizer))) StringTokenizer(ft.newV->str,ft.newV->length,(mode&FTMODE_SAVE_WORDS)!=0); nType=VT_STRING;}
+		if (ft.newV->length>0) {nT=new(alloca(sizeof(StringTokenizer))) StringTokenizer(ft.newV->str,ft.newV->length,(mode&FTMODE_SAVE_WORDS)!=0);}
 		break;
 	case VT_STREAM:
-		if (ft.newV->stream.is!=NULL) {nT=(Tokenizer*)new(alloca(sizeof(StreamTokenizer))) StreamTokenizer(ft.newV->stream.is); nType=VT_STREAM;}
+		if (ft.newV->stream.is!=NULL) {nT=(Tokenizer*)new(alloca(sizeof(StreamTokenizer))) StreamTokenizer(ft.newV->stream.is);}
 		break;
 	}
 
@@ -181,7 +181,7 @@ RC FTIndexMgr::index(const ChangeInfo& ft,FTList *ftl,unsigned mode,MemAlloc *ma
 					if (rc!=RC_NOTFOUND) break;		//????????
 				}
 			} else if (/*(char*)pW!=wbuf && !oT->saveCopy() || */(pW=(const char*)ftl->store(pW,lW))!=NULL) {
-				fti.op=OP_DELETE; fti.word=pW; fti.lw=lW; fti.propID=ft.propID; if (ftl->add(fti)==SLO_ERROR) {rc=RC_NORESOURCES; break;}
+				fti.op=OP_DELETE; fti.word=pW; fti.lw=lW; fti.propID=ft.propID; if (ftl->add(fti)==SLO_ERROR) {rc=RC_NOMEM; break;}
 			}
 		}
 	if (nT!=NULL) while ((pW=nT->nextToken(lW,loc,wbuf,FTBUFSIZE))!=NULL)
@@ -195,7 +195,7 @@ RC FTIndexMgr::index(const ChangeInfo& ft,FTList *ftl,unsigned mode,MemAlloc *ma
 					break;
 				}
 			} else if (/*(char*)pW!=wbuf && !nT->saveCopy() ||*/ (pW=(const char*)ftl->store(pW,lW))!=NULL) {
-				fti.op=OP_ADD; fti.word=pW; fti.lw=lW; fti.propID=ft.propID; if (ftl->add(fti)==SLO_ERROR) {rc=RC_NORESOURCES; break;}
+				fti.op=OP_ADD; fti.word=pW; fti.lw=lW; fti.propID=ft.propID; if (ftl->add(fti)==SLO_ERROR) {rc=RC_NOMEM; break;}
 			}
 		}
 	return rc;
@@ -243,11 +243,11 @@ RC FTIndexMgr::rebuildIndex(Session *ses)
 		while ((rc=fs.next())==RC_OK) {
 #if 0
 			assert(!qr.pb.isNull() && qr.hpin!=NULL);
-			StackAlloc sa(ses); FTList ftl(sa); Value v; ctx->queryMgr->loadV(v,PROP_SPEC_DOCUMENT,qr,0,ses);
+			StackAlloc sa(ses); FTList ftl(sa); Value v; qr.getV(PROP_SPEC_DOCUMENT,v,0,ses);
 			ChangeInfo inf={qr.id,v.type==VT_REFID?v.id:PIN::noPID,NULL,&v,STORE_INVALID_URIID,STORE_COLLECTION_ID};
 			const HeapPageMgr::HeapV *hprop=qr.hpin->getPropTab();
 			for (unsigned k=0; k<qr.hpin->nProps; ++k,++hprop) if ((hprop->type.flags&META_PROP_FTINDEX)!=0) {
-				if ((rc=ctx->queryMgr->loadVH(v,hprop,qr,LOAD_SSV,NULL))!=RC_OK) break;
+				if ((rc=qr.loadVH(v,hprop,qr,LOAD_SSV,NULL))!=RC_OK) break;
 				inf.propID=v.property;
 				rc=ctx->ftMgr->index(inf,&ftl,IX_NFT,(hprop->type.flags&META_PROP_STOPWORDS)!=0?FTMODE_STOPWORDS:0,ses);
 				freeV(v); if (rc!=RC_OK) break;
@@ -263,8 +263,8 @@ RC FTIndexMgr::rebuildIndex(Session *ses)
 RC FTIndexMgr::listWords(Session *ses,const char *q,StringEnum *&sen)
 {
 	size_t l=0; char *s=NULL;
-	if (q!=NULL && *q!='\0') {if ((s=(char*)malloc(l=strlen(q),SES_HEAP))!=NULL) memcpy(s,q,l); else return RC_NORESOURCES;}
-	sen=new(ses) StringEnumFTScan(ses,s,l,getLocale()); return sen!=NULL?RC_OK:RC_NORESOURCES;
+	if (q!=NULL && *q!='\0') {if ((s=(char*)malloc(l=strlen(q),SES_HEAP))!=NULL) memcpy(s,q,l); else return RC_NOMEM;}
+	sen=new(ses) StringEnumFTScan(ses,s,l,getLocale()); return sen!=NULL?RC_OK:RC_NOMEM;
 }
 
 StringEnumFTScan::~StringEnumFTScan()

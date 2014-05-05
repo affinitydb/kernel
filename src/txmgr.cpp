@@ -14,7 +14,7 @@ WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the
 License for the specific language governing permissions and limitations
 under the License.
 
-Written by Mark Venguerov 2004-2012
+Written by Mark Venguerov 2004-2014
 
 **************************************************************************************/
 
@@ -364,7 +364,7 @@ ClassCreate *OnCommit::getClass()
 
 RC Session::pushTx()
 {
-	SubTx *st=new(this) SubTx(this); if (st==NULL) return RC_NORESOURCES;
+	SubTx *st=new(this) SubTx(this); if (st==NULL) return RC_NOMEM;
 	memcpy(st,&tx,sizeof(SubTx)); new(&tx) SubTx(this); 
 	tx.next=st; tx.lastLSN=st->lastLSN; tx.subTxID=++subTxCnt;
 	if (repl!=NULL) repl->mark(tx.rmark);
@@ -435,23 +435,23 @@ RC SubTx::queueForPurge(const PageAddr& addr,PurgeType pt,const void *data)
 		ushort idx=addr.idx/(sizeof(uint32_t)*8),l=tp->range>>16&0x3fff; assert(tp->bmp!=NULL);
 		if (idx<ushort(tp->range)) {
 			ushort d=ushort(tp->range)-idx;
-			if ((tp->bmp=(uint32_t*)ses->realloc(tp->bmp,(l+d)*sizeof(uint32_t)))==NULL) return RC_NORESOURCES;
+			if ((tp->bmp=(uint32_t*)ses->realloc(tp->bmp,(l+d)*sizeof(uint32_t)))==NULL) return RC_NOMEM;
 			memmove(tp->bmp+d,tp->bmp,l*sizeof(uint32_t)); if (d==1) tp->bmp[0]=0; else memset(tp->bmp,0,d*sizeof(uint32_t));
 			tp->range=(tp->range&0x80000000)+(uint32_t(l+d)<<16)+idx;
 		} else if (idx>=ushort(tp->range)+l) {
 			ushort d=idx+1-ushort(tp->range)-l;
-			if ((tp->bmp=(uint32_t*)ses->realloc(tp->bmp,(l+d)*sizeof(uint32_t)))==NULL) return RC_NORESOURCES;
+			if ((tp->bmp=(uint32_t*)ses->realloc(tp->bmp,(l+d)*sizeof(uint32_t)))==NULL) return RC_NOMEM;
 			if (d==1) tp->bmp[l]=0; else memset(tp->bmp+l,0,d*sizeof(uint32_t)); tp->range+=uint32_t(d)<<16;
 		}
 		tp->bmp[idx-ushort(tp->range)]|=1<<addr.idx%(sizeof(uint32_t)*8); rc=RC_OK;
 	} else if (rc==RC_OK) {
 		if (data!=NULL) {
 			ushort l=HeapPageMgr::collDescrSize((HeapPageMgr::HeapExtCollection*)data);
-			if ((tp->bmp=(uint32_t*)ses->malloc(l))==NULL) return RC_NORESOURCES;
+			if ((tp->bmp=(uint32_t*)ses->malloc(l))==NULL) return RC_NOMEM;
 			memcpy(tp->bmp,data,l); tp->range=uint32_t(~0u);
 		} else {
 			tp->range=(addr.idx/(sizeof(uint32_t)*8))|flg|0x00010000;
-			if ((tp->bmp=new(ses) uint32_t)==NULL) return RC_NORESOURCES;
+			if ((tp->bmp=new(ses) uint32_t)==NULL) return RC_NOMEM;
 			tp->bmp[0]=1<<addr.idx%(sizeof(uint32_t)*8);
 		}
 	}

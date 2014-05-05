@@ -21,7 +21,7 @@ Written by Mark Venguerov 2013
 #include "named.h"
 #include "queryprc.h"
 #include "maps.h"
-#include "fsm.h"
+#include "event.h"
 #include "service.h"
 
 using namespace AfyKernel;
@@ -44,7 +44,9 @@ const BuiltinURI NamedMgr::builtinURIs[] = {
 	{S_L("Enumerations"),	CLASS_OF_ENUMS},
 	{S_L("Stores"),			CLASS_OF_STORES},
 	{S_L("Services"),		CLASS_OF_SERVICES},
-	{S_L("FSMs"),			CLASS_OF_FSMCTX},
+	{S_L("FSMCtx"),			CLASS_OF_FSMCTX},
+	{S_L("FSMs"),			CLASS_OF_FSMS},
+	{S_L("EventHandlers"),	CLASS_OF_HANDLERS},
 	
 	{S_L("pinID"),			PROP_SPEC_PINID},
 	{S_L("document"),		PROP_SPEC_DOCUMENT},
@@ -66,36 +68,40 @@ const BuiltinURI NamedMgr::builtinURIs[] = {
 	{S_L("onEnter"),		PROP_SPEC_ONENTER},
 	{S_L("onUpdate"),		PROP_SPEC_ONUPDATE},
 	{S_L("onLeave"),		PROP_SPEC_ONLEAVE},
-	{S_L("namespace"),		PROP_SPEC_NAMESPACE},
+	{S_L("window"),			PROP_SPEC_WINDOW},
+	{S_L("transition"),		PROP_SPEC_TRANSITION},
+	{S_L("event"),			PROP_SPEC_EVENT},
+	{S_L("condition"),		PROP_SPEC_CONDITION},
+	{S_L("action"),			PROP_SPEC_ACTION},
 	{S_L("ref"),			PROP_SPEC_REF},
+	{S_L("state"),			PROP_SPEC_STATE},
+	{S_L("timerInterval"),	PROP_SPEC_INTERVAL},
+	{S_L("load"),			PROP_SPEC_LOAD},
 	{S_L("service"),		PROP_SPEC_SERVICE},
+	{S_L("listen"),			PROP_SPEC_LISTEN},
+	{S_L("address"),		PROP_SPEC_ADDRESS},
+	{S_L("resolve"),		PROP_SPEC_RESOLVE},
+	{S_L("position"),		PROP_SPEC_POSITION},
+	{S_L("request"),		PROP_SPEC_REQUEST},
+	{S_L("content"),		PROP_SPEC_CONTENT},
+	{S_L("bufferSize"),		PROP_SPEC_BUFSIZE},
+	{S_L("exception"),		PROP_SPEC_EXCEPTION},
 	{S_L("version"),		PROP_SPEC_VERSION},
 	{S_L("weight"),			PROP_SPEC_WEIGHT},
 	{S_L("self"),			PROP_SPEC_SELF},
+	{S_L("pattern"),		PROP_SPEC_PATTERN},
 	{S_L("prototype"),		PROP_SPEC_PROTOTYPE},
-	{S_L("window"),			PROP_SPEC_WINDOW},
-	{S_L("timerInterval"),	PROP_SPEC_INTERVAL},
-	{S_L("action"),			PROP_SPEC_ACTION},
-	{S_L("address"),		PROP_SPEC_ADDRESS},
-	{S_L("command"),		PROP_SPEC_COMMAND},
 	{S_L("undo"),			PROP_SPEC_UNDO},
-	{S_L("listen"),			PROP_SPEC_LISTEN},
-	{S_L("condition"),		PROP_SPEC_CONDITION},
+	{S_L("namespace"),		PROP_SPEC_NAMESPACE},
 	{S_L("subpackage"),		PROP_SPEC_SUBPACKAGE},
 	{S_L("enum"),			PROP_SPEC_ENUM},
-	{S_L("bufferSize"),		PROP_SPEC_BUFSIZE},
-	{S_L("pattern"),		PROP_SPEC_PATTERN},
-	{S_L("exception"),		PROP_SPEC_EXCEPTION},
 	{S_L("identity"),		PROP_SPEC_IDENTITY},
-	{S_L("request"),		PROP_SPEC_REQUEST},
-	{S_L("content"),		PROP_SPEC_CONTENT},
-	{S_L("position"),		PROP_SPEC_POSITION},
-	{S_L("load"),			PROP_SPEC_LOAD},
-	{S_L("resolve"),		PROP_SPEC_RESOLVE},
-	{S_L("transition"),		PROP_SPEC_TRANSITION},
-	{S_L("state"),			PROP_SPEC_STATE},
+	{S_L("contentType"),	PROP_SPEC_CONTENTTYPE},
+	{S_L("contentLength"),	PROP_SPEC_CONTENTLENGTH},
+	{S_L("accept"),			PROP_SPEC_ACCEPT},
+	{S_L("token"),			PROP_SPEC_TOKEN},
 	
-	{S_L("encryption"),		SERVICE_ENCRYPTION},
+	{S_L("encryption"),		SERVICE_ENCRYPTION},	// AES ???
 	{S_L("serial"),			SERVICE_SERIAL},
 	{S_L("bridge"),			SERVICE_BRIDGE},
 	{S_L("affinity"),		SERVICE_AFFINITY},
@@ -109,7 +115,7 @@ const BuiltinURI NamedMgr::builtinURIs[] = {
 	{S_L("replication"),	SERVICE_REPLICATION},
 };
 
-const SpecPINProps NamedMgr::specPINProps[9] = {
+const SpecPINProps NamedMgr::specPINProps[11] = {
 	{{1ULL<<PROP_SPEC_OBJID|1ULL<<PROP_SPEC_PREDICATE,0,0,0},								PMT_CLASS},
 	{{1ULL<<PROP_SPEC_OBJID|1ULL<<PROP_SPEC_INTERVAL|1ULL<<PROP_SPEC_ACTION,0,0,0},			PMT_TIMER},
 	{{1ULL<<PROP_SPEC_OBJID|1ULL<<PROP_SPEC_LISTEN,0,0,0},									PMT_LISTENER},
@@ -118,10 +124,12 @@ const SpecPINProps NamedMgr::specPINProps[9] = {
 	{{1ULL<<PROP_SPEC_SERVICE,0,0,0},														PMT_COMM},
 	{{1ULL<<PROP_SPEC_OBJID|1ULL<<PROP_SPEC_ENUM,0,0,0},									PMT_ENUM},
 	{{1ULL<<PROP_SPEC_OBJID,0,0,0},															PMT_NAMED},
-	{{0,1ULL<<(PROP_SPEC_STATE-64),0,0},													PMT_FSMCTX},
+	{{1ULL<<PROP_SPEC_STATE,0,0,0},															PMT_FSMCTX},
+	{{1ULL<<PROP_SPEC_OBJID|1ULL<<PROP_SPEC_TRANSITION,0,0},								PMT_FSM},
+	{{1ULL<<PROP_SPEC_OBJID|1ULL<<PROP_SPEC_EVENT,0,0},										PMT_HANDLER},
 };
 
-const unsigned NamedMgr::classMeta[MAX_BUILTIN_CLASSID+1] = {PMT_CLASS,PMT_TIMER,PMT_LISTENER,PMT_LOADER,PMT_PACKAGE,PMT_NAMED,PMT_ENUM,0,0,PMT_FSMCTX};
+const unsigned NamedMgr::classMeta[MAX_BUILTIN_CLASSID+1] = {PMT_CLASS,PMT_TIMER,PMT_LISTENER,PMT_LOADER,PMT_PACKAGE,PMT_NAMED,PMT_ENUM,0,0,PMT_FSMCTX,PMT_FSM,PMT_HANDLER};
 
 const char *NamedMgr::getBuiltinName(URIID uid,size_t& lname)
 {
@@ -154,12 +162,12 @@ RC NamedMgr::createBuiltinObjects(Session *ses)
 	for (unsigned i=0; i<sizeof(builtinURIs)/sizeof(builtinURIs[0]); i++,idx++) {
 		for (; idx<builtinURIs[i].uid; idx++) {
 			size_t l=sprintf(namebuf+sizeof(AFFINITY_STD_URI_PREFIX)-1,"reserved%u",(unsigned)idx);
-			if ((uri=(URI*)ctx->uriMgr->insert(namebuf,sizeof(AFFINITY_STD_URI_PREFIX)-1+l))==NULL) return RC_NORESOURCES;
+			if ((uri=(URI*)ctx->uriMgr->insert(namebuf,sizeof(AFFINITY_STD_URI_PREFIX)-1+l))==NULL) return RC_NOMEM;
 			uid=uri->getID(); uri->release(); if (uid!=idx) return RC_INTERNAL;
 		}
 		if (builtinURIs[i].name==NULL) return RC_INTERNAL;
 		memcpy(namebuf+sizeof(AFFINITY_STD_URI_PREFIX)-1,builtinURIs[i].name,builtinURIs[i].lname);
-		if ((uri=(URI*)ctx->uriMgr->insert(namebuf,sizeof(AFFINITY_STD_URI_PREFIX)-1+builtinURIs[i].lname))==NULL) return RC_NORESOURCES;
+		if ((uri=(URI*)ctx->uriMgr->insert(namebuf,sizeof(AFFINITY_STD_URI_PREFIX)-1+builtinURIs[i].lname))==NULL) return RC_NOMEM;
 		uid=uri->getID(); uri->release(); if (uid!=idx) return RC_INTERNAL;
 	}
 	PIN *classPINs[MAX_BUILTIN_CLASSID+1]; unsigned nClasses=0;
@@ -184,7 +192,7 @@ RC NamedMgr::restoreXPropID(Session *ses)
 {
 	if (ses==NULL) return RC_NOSESSION; assert(ctx->theCB!=NULL);
 	if (ctx->theCB->mapRoots[MA_URIID]!=INVALID_PAGEID) {
-		TreeScan *scan=ctx->uriMgr->scan(ses); if (scan==NULL) return RC_NORESOURCES;
+		TreeScan *scan=ctx->uriMgr->scan(ses); if (scan==NULL) return RC_NOMEM;
 		if (scan->nextKey(GO_LAST)==RC_OK) {const SearchKey &key=scan->getKey(); if (key.type==KT_UINT) xPropID=(long)key.v.u;}
 	}
 	return RC_OK;
@@ -198,25 +206,25 @@ RC NamedMgr::loadObjects(Session *ses,bool fSafe)
 		if (!fInit) {
 			PINx cb(ses),*pcb=&cb;
 			{QCtx qc(ses); qc.ref(); ClassScan cs(&qc,CLASS_OF_LOADERS,QO_HIDDEN); cs.connect(&pcb);
-			while ((rc=cs.next())==RC_OK && (rc=ctx->queryMgr->getBody(cb))==RC_OK && (rc=LoadService::loadLoader(cb))==RC_OK);}
+			while ((rc=cs.next())==RC_OK && (rc=cb.getBody())==RC_OK && (rc=LoadService::loadLoader(cb))==RC_OK);}
 
 			if (rc==RC_OK || rc==RC_EOF) {
 				QCtx qc(ses); qc.ref(); ClassScan cs(&qc,CLASS_OF_CLASSES,QO_HIDDEN); cs.connect(&pcb);
-				while ((rc=cs.next())==RC_OK && (rc=ctx->queryMgr->getBody(cb))==RC_OK && (rc=ClassCreate::loadClass(cb,fSafe))==RC_OK);
+				while ((rc=cs.next())==RC_OK && (rc=cb.getBody())==RC_OK && (rc=ClassCreate::loadClass(cb,fSafe))==RC_OK);
 			}
 
 			if (!fSafe) {
 				if (rc==RC_OK || rc==RC_EOF) {
 					QCtx qc(ses); qc.ref(); ClassScan cs(&qc,CLASS_OF_FSMCTX,QO_HIDDEN); cs.connect(&pcb);
-					while ((rc=cs.next())==RC_OK && (rc=ctx->queryMgr->getBody(cb))==RC_OK && (rc=StartFSM::loadFSM(cb))==RC_OK);
+					while ((rc=cs.next())==RC_OK && (rc=cb.getBody())==RC_OK && (rc=StartFSM::loadFSM(cb))==RC_OK);
 				}
 				if (rc==RC_OK || rc==RC_EOF) {
 					QCtx qc(ses); qc.ref(); ClassScan cs(&qc,CLASS_OF_LISTENERS,QO_HIDDEN); cs.connect(&pcb);
-					while ((rc=cs.next())==RC_OK && (rc=ctx->queryMgr->getBody(cb))==RC_OK && (rc=StartListener::loadListener(cb))==RC_OK);
+					while ((rc=cs.next())==RC_OK && (rc=cb.getBody())==RC_OK && (rc=StartListener::loadListener(cb))==RC_OK);
 				}
 				if (rc==RC_OK || rc==RC_EOF) {
 					QCtx qc(ses); qc.ref(); ClassScan cs(&qc,CLASS_OF_TIMERS,QO_HIDDEN); cs.connect(&pcb);
-					while ((rc=cs.next())==RC_OK && (rc=ctx->queryMgr->getBody(cb))==RC_OK && (rc=ctx->tqMgr->loadTimer(cb))==RC_OK);
+					while ((rc=cs.next())==RC_OK && (rc=cb.getBody())==RC_OK && (rc=ctx->tqMgr->loadTimer(cb))==RC_OK);
 				}
 			}
 			fInit=true; if (rc==RC_EOF) rc=RC_OK;
@@ -240,7 +248,7 @@ RC NamedMgr::initStorePrefix(Identity *ident)
 	const StrLen *idstr=ident->getName();
 	if (idstr!=NULL) {
 		storePrefix=new(ctx) char[idstr->len*3+sizeof(AFY_PROTOCOL)+20];
-		if (storePrefix==NULL) rc=RC_NORESOURCES;
+		if (storePrefix==NULL) rc=RC_NOMEM;
 		else {
 			memcpy((char*)storePrefix,AFY_PROTOCOL,lStorePrefix=sizeof(AFY_PROTOCOL)-1);
 			memcpy((char*)storePrefix+lStorePrefix,idstr->str,idstr->len); lStorePrefix+=idstr->len; // check and convert to %xx
@@ -268,7 +276,7 @@ RC NamedMgr::getNamed(URIID uid,PINx& cb,bool fUpdate)
 	SearchKey key((uint64_t)uid); byte buf[XPINREFSIZE]; size_t l=sizeof(buf);
 	RC rc=find(key,buf,l); if (rc!=RC_OK) return rc;
 	PINRef pr(ctx->storeID,buf); cb=pr.id; if ((pr.def&PR_ADDR)!=0) cb=pr.addr;
-	return ctx->queryMgr->getBody(cb,fUpdate?TVO_UPD:TVO_READ);
+	return cb.getBody(fUpdate?TVO_UPD:TVO_READ);
 }
 
 RC NamedMgr::update(URIID id,PINRef& pr,uint16_t meta,bool fInsert)

@@ -28,6 +28,8 @@ Written by Mark Venguerov 2010 - 2012
 using namespace Afy;
 
 namespace AfyKernel {
+
+#define	MIME_PROTOBUF	"application/x-protobuf"
 	
 /**
  * various types of protobuf streams
@@ -62,7 +64,7 @@ enum RTTYPE
 enum SType
 {
 	ST_PBSTREAM, ST_STRMAP, ST_PIN, ST_VALUE, ST_VARRAY, ST_MAP, ST_PID, ST_REF, ST_STREDIT, ST_STREAM,
-	ST_STMT, ST_UID, ST_RESULT, ST_COMPOUND, ST_STATUS, ST_RESPAGES, ST_ENUM, ST_FLUSH, ST_TX
+	ST_STMT, ST_UID, ST_RESULT, ST_COMPOUND, ST_STATUS, ST_RESPAGES, ST_ENUM, ST_FLUSH, ST_TX, ST_EOS
 };
 
 struct Result
@@ -76,7 +78,7 @@ class EncodePB
 {
 protected:
 	Session	*const	ses;
-	unsigned	mode;
+	const	bool	fDump;
 	uint64_t	cid;
 	RTTYPE		rtt;
 	struct	OState {
@@ -94,6 +96,7 @@ protected:
 			const	Result	*res;
 			IStream			*str;
 			const	Stmt	*stmt;
+			PageID			nextDirPage;
 		};
 	}	os,stateStack[STACK_DEPTH];
 	uint32_t	sidx;
@@ -135,7 +138,7 @@ private:
 	static const byte tags[VT_ALL];
 	static const byte types[VT_ALL];
 public:
-	EncodePB(Session *s,unsigned md=0) : ses(s),mode(md),cid(0),rtt(RTT_DEFAULT),sidx(0),cache(s),propCache(&cache,100,30),identCache(&cache,10,5),
+	EncodePB(Session *s,bool fD=false) : ses(s),fDump(fD),cid(0),rtt(RTT_DEFAULT),sidx(0),cache(s),propCache(&cache,100,30),identCache(&cache,10,5),
 		lRes(0),pRes(NULL),lRes2(0),pRes2(0),copied(NULL),lCopied(0),xCopied(0),code(0),fDone(false) {os.type=ST_PBSTREAM; os.fCid=false; os.fArray=false; os.state=0; os.idx=0; os.obj=NULL;}
 	~EncodePB() {}
 	RC encode(unsigned char *buf,size_t& lbuf);
@@ -145,6 +148,7 @@ public:
 	void set(const Result *r,uint64_t ci=0,bool fC=false) {assert(sidx==0); os.type=ST_RESULT; os.res=r; os.state=0; cid=ci; os.fCid=fC;}
 	void set(const Value *pv,uint64_t ci=0,bool fC=false) {assert(sidx==0); os.type=ST_VALUE; os.pv=pv; os.state=0; cid=ci; os.fCid=fC;}
 	void set(const Stmt *st,uint64_t ci=0,bool fC=false) {assert(sidx==0); os.type=ST_STMT; os.stmt=st; os.state=0; cid=ci; os.fCid=fC;}
+	void setEOS() {assert(sidx==0); os.type=ST_EOS; os.state=0;}
 	// compound, status
 };
 
@@ -296,8 +300,7 @@ class ProtoBufStreamOut : public IStreamOut
 	Result				result;
 	bool				fRes;
 public:
-	ProtoBufStreamOut(Session *s,Cursor *pr=NULL,unsigned md=0) : ses(s),enc(s,md),ic(pr),fRes(false)
-		{result.rc=RC_OK; result.cnt=0; result.op=MODOP_QUERY;}
+	ProtoBufStreamOut(Session *s,Cursor *pr=NULL) : ses(s),enc(s),ic(pr),fRes(false) {result.rc=RC_OK; result.cnt=0; result.op=MODOP_QUERY;}
 	~ProtoBufStreamOut() {if (ic!=NULL) ic->destroy();}
 	RC next(unsigned char *buf,size_t& lbuf);
 	void destroy() {try {this->~ProtoBufStreamOut(); ses->free(this);} catch (...) {}}
@@ -327,9 +330,9 @@ private:
 	RC commitPINs();
 public:
 	ProcessStream(Session *s,IStreamIn *o=NULL,size_t lo=0,StreamInType st=SITY_NORMAL) : StackAlloc(s),DecodePB(s->getStore(),this,st),
-				ses(s),outStr(o),enc(s,0),lobuf(lo==0?DEFAULT_OBUF_SIZE:lo),obuf(NULL),obleft(0),pins(s),oi((MemAlloc*)s),txLevel(0)
+				ses(s),outStr(o),enc(s),lobuf(lo==0?DEFAULT_OBUF_SIZE:lo),obuf(NULL),obleft(0),pins(s),oi((MemAlloc*)s),txLevel(0)
 	{
-		if (o!=NULL && (obuf=(byte*)StackAlloc::malloc(lobuf))==NULL) throw RC_NORESOURCES; obleft=lobuf;
+		if (o!=NULL && (obuf=(byte*)StackAlloc::malloc(lobuf))==NULL) throw RC_NOMEM; obleft=lobuf;
 	}
 	void	operator delete(void *p) {if (p!=NULL) ((ProcessStream*)p)->ses->free(p);}
 	RC		next(const unsigned char *in,size_t lbuf);
@@ -339,7 +342,7 @@ public:
 class ServiceEncodePB : public IService::Processor, public EncodePB
 {
 public:
-	ServiceEncodePB(Session *s,unsigned md) : EncodePB(s,md) {}
+	ServiceEncodePB(Session *s,bool fDump) : EncodePB(s,fDump) {}
 	RC		invoke(IServiceCtx *ctx,const Value& inp,Value& out,unsigned& mode);
 	void	cleanup(IServiceCtx *ctx,bool fDestroying);
 };

@@ -14,7 +14,7 @@ WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the
 License for the specific language governing permissions and limitations
 under the License.
 
-Written by Mark Venguerov 2004-2012
+Written by Mark Venguerov 2004-2014
 
 **************************************************************************************/
 
@@ -36,7 +36,7 @@ volatile long BufMgr::nStores = 0;
 namespace AfyKernel
 {
 BufQMgr::QueueCtrl bufCtrl(0);
-FreeQ asyncWriteReqs;
+Pool asyncWriteReqs;
 };
 
 BufMgr::BufMgr(StoreCtx *ct,int initNumberOfBlocks,size_t lpage) 
@@ -57,7 +57,7 @@ BufMgr::~BufMgr()
 
 void *BufMgr::operator new(size_t s,StoreCtx *ctx)
 {
-	void *p=ctx->malloc(s); if (p==NULL) throw RC_NORESOURCES; return p;
+	void *p=ctx->malloc(s); if (p==NULL) throw RC_NOMEM; return p;
 }
 
 RC BufMgr::init()
@@ -92,7 +92,7 @@ RC BufMgr::init()
 			if (nBuffers>nBufOld) report(MSG_INFO,"Number of allocated buffers: %u\n",nBuffers-nBufOld);
 		}
 	}
-	return nBuffers==0?RC_NORESOURCES:RC_OK;
+	return nBuffers==0?RC_NOMEM:RC_OK;
 }
 
 #ifdef _DEBUG
@@ -190,7 +190,7 @@ RC BufMgr::flushAll(uint64_t timeout)
 	if (fInMem||ctx->theCB->state==SST_NO_SHUTDOWN) return RC_OK; flushLock.lock(RW_X_LOCK);
 	myaio **pcbs; RC rc=RC_OK; int cnt,ncbs; TIMESTAMP start,current; getTimestamp(start);
 	if (dirtyCount!=0) {
-		if ((pcbs=(myaio**)ctx->malloc((ncbs=dirtyCount)*sizeof(myaio*)))==NULL) {flushLock.unlock(); return RC_NORESOURCES;}
+		if ((pcbs=(myaio**)ctx->malloc((ncbs=dirtyCount)*sizeof(myaio*)))==NULL) {flushLock.unlock(); return RC_NOMEM;}
 		do {
 			LSN flushLSN(0); cnt=0; pageQLock.lock(RW_S_LOCK); PBlock *pb;
 			for (HChain<PBlock>::it it(&pageList); cnt<ncbs && rc==RC_OK && ++it;)

@@ -14,7 +14,7 @@ WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the
 License for the specific language governing permissions and limitations
 under the License.
 
-Written by Mark Venguerov 2004-2012
+Written by Mark Venguerov 2004-2014
 
 **************************************************************************************/
 
@@ -271,4 +271,72 @@ void StackAlloc::truncate(TruncMode tm,const void *mrk)
 	} else {
 		ptr=(byte*)(extents+1); extentLeft=extents->size-sizeof(SubExt); total=extents->size;
 	}
+}
+
+//------------------------------------------------------------------------------------------------------
+
+static BlockAlloc::SharedBlockAlloc sharedBlocks;
+
+BlockAlloc::SharedBlockAlloc::SharedBlockAlloc()
+{
+	for (unsigned i=0; i<NBLOCK_SHARED_QUEUES; i++) {
+		if ((queues[i]=::new Pool(NULL,0x400>>i))==NULL) throw RC_NOMEM;	//???
+	}
+}
+
+BlockAlloc *BlockAlloc::allocBlock(size_t s,Session *ses,bool fSes)
+{
+	void *p=NULL; uint32_t sz=max(nextP2((uint32_t)s),128u);
+	if (fSes) {assert(ses!=NULL); p=ses->malloc(sz);}
+	else {
+		unsigned idx=pop(sz-1)-7;
+		if (ses!=NULL && idx<SES_MEM_BLOCK_QUEUES && ses->memCache!=NULL && (p=ses->memCache[idx])!=NULL)
+			ses->memCache[idx]=((SesMemCache*)p)->next; 
+		else 
+			p=idx<NBLOCK_SHARED_QUEUES?sharedBlocks.queues[idx]->alloc(sz):NULL;
+	}
+	return p!=NULL?new(p) BlockAlloc(sz,fSes):NULL;
+}
+
+void *BlockAlloc::malloc(size_t sz)
+{
+	byte *ptr=(byte*)this+blockSize-left; size_t align=ceil(ptr,DEFAULT_ALIGN)-ptr;
+	if (sz+align<=left) {left-=uint32_t(sz+align); return ptr+align;}
+	// extend ???
+	return NULL;
+}
+
+void *BlockAlloc::memalign(size_t align,size_t s)
+{
+	return NULL; //???
+}
+
+void *BlockAlloc::realloc(void *p, size_t s, size_t old)
+{
+	if (p!=NULL) {
+		byte *ptr=(byte*)this+blockSize-left;
+		if ((byte*)p<ptr && size_t(ptr-(byte*)p)==old) {
+			if (old>=s) {left+=uint32_t(old-s); return p;}
+			if (s-old<=left) {left-=uint32_t(s-old); return p;}
+		}
+	}
+	void *pp=malloc(s); if (pp!=NULL && old!=0) memcpy(pp,p,old); return pp;
+}
+
+void BlockAlloc::free(void *p)
+{
+	if (p==(byte*)this+sizeof(BlockAlloc)) {
+		unsigned idx=pop(blockSize-1)-7; assert(idx<NBLOCK_SHARED_QUEUES); Session *ses;
+		if ((fSes || idx<SES_MEM_BLOCK_QUEUES) && (ses=Session::getSession())!=NULL) {
+			if (fSes) {ses->free(this); return;}
+			if (ses->memCache!=NULL && (ses->memCache[idx]==NULL || ses->memCache[idx]->cnt<SES_MEM_BLOCK_MAX))
+				{SesMemCache *sm=(SesMemCache*)p; sm->next=ses->memCache[idx]; sm->cnt=sm->next!=NULL?sm->next->cnt+1:1; return;}
+		}
+		if (!fSes) sharedBlocks.queues[idx]->dealloc(this);
+	}
+}
+
+HEAP_TYPE BlockAlloc::getAType() const
+{
+	return NO_HEAP;
 }

@@ -14,7 +14,7 @@ WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the
 License for the specific language governing permissions and limitations
 under the License.
 
-Written by Mark Venguerov 2004-2012
+Written by Mark Venguerov 2004-2014
 
 **************************************************************************************/
 
@@ -162,7 +162,7 @@ private:
 	byte	*alloc(size_t s) {
 		if (s>left) {
 			size_t delta=lblock==0?0x100:lblock/2; if (delta+left<s) delta+=s;
-			if ((mem=(byte*)ma->realloc(mem,lblock+delta,lblock))==NULL) throw RC_NORESOURCES;
+			if ((mem=(byte*)ma->realloc(mem,lblock+delta,lblock))==NULL) throw RC_NOMEM;
 			left+=delta; lblock+=delta;
 		}
 		byte *p=mem+lblock-left; left-=s; return p;

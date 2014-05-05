@@ -14,7 +14,7 @@ WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the
 License for the specific language governing permissions and limitations
 under the License.
 
-Written by Mark Venguerov 2004-2012
+Written by Mark Venguerov 2004-2014
 
 **************************************************************************************/
 
@@ -54,9 +54,8 @@ STMT_OP Stmt::getOp() const
 
 QVar::QVar(QVarID i,byte ty,MemAlloc *m)
 	: next(NULL),id(i),type(ty),stype(SEL_PINSET),qvf(0),ma(m),name(NULL),
-	outs(NULL),nOuts(0),nConds(0),groupBy(NULL),nGroupBy(0),fHasParent(false)
+	outs(NULL),nOuts(0),cond(NULL),props(NULL),nProps(0),having(NULL),groupBy(NULL),nGroupBy(0),fHasParent(false)
 {
-	cond=having=NULL;
 }
 
 QVar::~QVar()
@@ -66,16 +65,13 @@ QVar::~QVar()
 		for (unsigned i=0; i<nOuts; i++) if (outs[i].vals!=NULL && outs[i].fFree) freeV((Value*)outs[i].vals,outs[i].nValues,ma);
 		ma->free(outs);
 	}
-	if (nConds==1) ma->free(cond);
-	else if (conds!=NULL) {
-		for (unsigned i=0; i<nConds; i++) ma->free(conds[i]);
-		ma->free(conds);
-	}
+	if (cond!=NULL) ma->free(cond);
+	if (props!=NULL) ma->free(props);
+	if (having!=NULL) ma->free(having);
 	if (groupBy!=NULL) {
 		for (unsigned i=0; i<nGroupBy; i++) if ((groupBy[i].flags&ORDER_EXPR)!=0) ma->free(groupBy[i].expr);
 		ma->free(groupBy);
 	}
-	if (having!=NULL) ma->free(having);
 	if (aggrs.vals!=NULL && aggrs.fFree) freeV((Value*)aggrs.vals,aggrs.nValues,ma);
 }
 
@@ -99,7 +95,7 @@ JoinVar::~JoinVar()
 	for (CondEJ *cej=condEJ,*cej2; cej!=NULL; cej=cej2) {cej2=cej->next; ma->free(cej);}
 }
 
-QVarID Stmt::addVariable(const SourceSpec *classes,unsigned nClasses,IExprTree *cond)
+QVarID Stmt::addVariable(const SourceSpec *classes,unsigned nClasses,IExprNode *cond)
 {
 	try {
 		// shutdown ???
@@ -122,22 +118,22 @@ QVarID Stmt::addVariable(const SourceSpec *classes,unsigned nClasses,IExprTree *
 				}
 			}
 		}
-		if (cond!=NULL && processCondition((ExprTree*)cond,var)!=RC_OK) {delete var; return INVALID_QVAR_ID;}
+		if (cond!=NULL && processCondition((ExprNode*)cond,var)!=RC_OK) {delete var; return INVALID_QVAR_ID;}
 		var->next=vars; vars=var; nVars++; top=++nTop==1?var:(QVar*)0; return byte(var->id);
 	} catch (RC) {} catch (...) {report(MSG_ERROR,"Exception in IStmt::addVariable()\n");}
 	return INVALID_QVAR_ID;
 }
 
-QVarID Stmt::addVariable(const PID& pid,PropertyID propID,IExprTree *cond)
+QVarID Stmt::addVariable(const PID& pid,PropertyID propID,IExprNode *cond)
 {
 	try {
 		// shutdown ???
 		SimpleVar *var; if (nVars>=255 || (var=new(ma) SimpleVar((QVarID)nVars,ma))==NULL) return INVALID_QVAR_ID;
-		var->expr.set(pid); if ((var->path=new(ma) PathSeg)==NULL) return RC_NORESOURCES;
+		var->expr.set(pid); if ((var->path=new(ma) PathSeg)==NULL) return RC_NOMEM;
 		memset(var->path,0,sizeof(PathSeg)); var->path[0].pid=propID; var->path[0].nPids=1;
 		var->path[0].eid.setEmpty(); var->path[0].cid=STORE_INVALID_URIID;
 		var->path[0].rmin=var->path[0].rmax=1; var->nPathSeg=1;
-		if (cond!=NULL && processCondition((ExprTree*)cond,var)!=RC_OK) {delete var; return INVALID_QVAR_ID;}
+		if (cond!=NULL && processCondition((ExprNode*)cond,var)!=RC_OK) {delete var; return INVALID_QVAR_ID;}
 		var->next=vars; vars=var; nVars++; top=++nTop==1?var:(QVar*)0; return byte(var->id);
 	} catch (RC) {} catch (...) {report(MSG_ERROR,"Exception in IStmt::addVariable(collection)\n");}
 	return INVALID_QVAR_ID;
@@ -186,7 +182,7 @@ QVarID Stmt::setOp(const QVarID *varids,unsigned nv,QUERY_SETOP op)
 	return INVALID_QVAR_ID;
 }
 
-QVarID Stmt::join(QVarID leftVar,QVarID rightVar,IExprTree *cond,QUERY_SETOP op,PropertyID vPropID)
+QVarID Stmt::join(QVarID leftVar,QVarID rightVar,IExprNode *cond,QUERY_SETOP op,PropertyID vPropID)
 {
 	try {
 		// shutdown ???
@@ -196,7 +192,7 @@ QVarID Stmt::join(QVarID leftVar,QVarID rightVar,IExprTree *cond,QUERY_SETOP op,
 		if (var->vars[0].var==NULL || var->vars[0].var->fHasParent || var->vars[1].var==NULL || var->vars[1].var->fHasParent)
 			{delete var; return INVALID_QVAR_ID;}
 		if (cond!=NULL) {
-			if (processCondition((ExprTree*)cond,var)!=RC_OK) {delete var; return INVALID_QVAR_ID;}
+			if (processCondition((ExprNode*)cond,var)!=RC_OK) {delete var; return INVALID_QVAR_ID;}
 			// save vPropID too ???
 		}
 		var->next=vars; vars=var; nVars++; var->vars[0].var->fHasParent=var->vars[1].var->fHasParent=true;
@@ -205,7 +201,7 @@ QVarID Stmt::join(QVarID leftVar,QVarID rightVar,IExprTree *cond,QUERY_SETOP op,
 	return INVALID_QVAR_ID;
 }
 
-QVarID Stmt::join(const QVarID *varids,unsigned nv,IExprTree *cond,QUERY_SETOP op,PropertyID vPropID)
+QVarID Stmt::join(const QVarID *varids,unsigned nv,IExprNode *cond,QUERY_SETOP op,PropertyID vPropID)
 {
 	try {
 		// shutdown ???
@@ -216,7 +212,7 @@ QVarID Stmt::join(const QVarID *varids,unsigned nv,IExprTree *cond,QUERY_SETOP o
 			if (v==NULL || v->fHasParent) {delete var; return INVALID_QVAR_ID;}
 		}
 		if (cond!=NULL) {
-			if (processCondition((ExprTree*)cond,var)!=RC_OK) {delete var; return INVALID_QVAR_ID;}
+			if (processCondition((ExprNode*)cond,var)!=RC_OK) {delete var; return INVALID_QVAR_ID;}
 			// save vPropID too ???
 		}
 		var->next=vars; vars=var; nVars++;
@@ -232,7 +228,7 @@ RC Stmt::setName(QVarID var,const char *name)
 		// shutdown?
 		QVar *qv=findVar(var); if (qv==NULL) return RC_NOTFOUND;
 		if (qv->name!=NULL) {ma->free(qv->name); qv->name=NULL;}
-		return name==NULL || *name=='\0' || (qv->name=strdup(name,ma))!=NULL?RC_OK:RC_NORESOURCES;
+		return name==NULL || *name=='\0' || (qv->name=strdup(name,ma))!=NULL?RC_OK:RC_NOMEM;
 	} catch (RC rc) {return rc;} catch (...) {report(MSG_ERROR,"Exception in IStmt::setName()\n"); return RC_INTERNAL;}
 }
 
@@ -268,24 +264,24 @@ RC Stmt::addOutputNoCopy(QVarID var,Value *os,unsigned nO)
 {
 	QVar *qv=findVar(var); if (qv==NULL) return RC_NOTFOUND;
 	if (os==NULL || nO==0 || qv->nOuts>=255) return RC_INVPARAM;
-	qv->outs=(ValueV*)ma->realloc(qv->outs,(qv->nOuts+1)*sizeof(ValueV),qv->nOuts*sizeof(ValueV));
-	if (qv->outs==NULL) {qv->nOuts=0; return RC_NORESOURCES;}
+	qv->outs=(Values*)ma->realloc(qv->outs,(qv->nOuts+1)*sizeof(Values),qv->nOuts*sizeof(Values));
+	if (qv->outs==NULL) {qv->nOuts=0; return RC_NOMEM;}
 	const bool fGroup=qv->groupBy!=NULL && qv->nGroupBy!=0,f1=(qv->qvf&QVF_FIRST)!=0;
 	if (!fGroup && qv->nOuts==0 && nO==1) {
-		if (os[0].type==VT_EXPRTREE && ((ExprTree*)os[0].exprt)->op==OP_COUNT && ((ExprTree*)os[0].exprt)->operands[0].type==VT_ANY) {qv->stype=SEL_COUNT; freeV(os[0]); return RC_OK;}
+		if (os[0].type==VT_EXPRTREE && ((ExprNode*)os[0].exprt)->op==OP_COUNT && ((ExprNode*)os[0].exprt)->operands[0].type==VT_ANY) {qv->stype=SEL_COUNT; freeV(os[0]); return RC_OK;}
 		if (os[0].type==VT_VARREF && (os[0].length==0 && (os[0].refV.flags&VAR_TYPE_MASK)==VAR_CTX && os[0].refV.refN==0 || os[0].length!=0 && os[0].refV.id==PROP_SPEC_SELF && (os[0].refV.flags&VAR_TYPE_MASK)==0)) {freeV(os[0]); return RC_OK;}
 	}
 	unsigned nConst=0; StoreCtx *ctx=NULL; bool fSelf=false,fPID=false,fPIN=false;
 	for (unsigned i=0; i<nO; i++) {
 		Value &vv=os[i]; RC rc; assert(vv.type!=VT_VARREF || vv.refV.flags!=0xFFFF);
 		if (vv.type==VT_EXPRTREE) {
-			ExprTree *et=(ExprTree*)vv.exprt; Expr *exp; if (et->op==OP_PIN) fPIN=true;
+			ExprNode *et=(ExprNode*)vv.exprt; Expr *exp; if (et->op==OP_PIN) fPIN=true;
 			if (et->op==OP_CAST && et->operands[0].type==VT_VARREF) {vv=et->operands[0]; vv.refV.type=(ushort)et->operands[1].ui; ma->free(et);}
 			else if (et->nops==1 && et->op<OP_ALL && (SInCtx::opDscr[et->op].flags&_A)!=0 && qv->aggrs.nValues<256) {
-				if ((qv->aggrs.vals=(Value*)ma->realloc((Value*)qv->aggrs.vals,(qv->aggrs.nValues+1)*sizeof(Value)))==NULL) return RC_NORESOURCES;
+				if ((qv->aggrs.vals=(Value*)ma->realloc((Value*)qv->aggrs.vals,(qv->aggrs.nValues+1)*sizeof(Value)))==NULL) return RC_NOMEM;
 				Value &to=((Value*)qv->aggrs.vals)[qv->aggrs.nValues];
 				if (et->operands[0].type==VT_EXPRTREE) {
-					Expr *ag; if ((rc=Expr::compile((ExprTree*)et->operands[0].exprt,ag,ma,false))==RC_OK) to.set(ag,1); else return rc;
+					Expr *ag; if ((rc=Expr::compile((ExprNode*)et->operands[0].exprt,ag,ma,false))==RC_OK) to.set(ag,1); else return rc;
 				} else if ((rc=copyV(et->operands[0],to,ma))!=RC_OK) return rc;
 				to.op=et->op; //if ((et->flags&DISTINCT_OP)!=0) -> META_PROP_DISTINCT
 				et->destroy(); vv.setVarRef(byte(qv->aggrs.nValues)); vv.refV.flags=VAR_AGGS;
@@ -321,13 +317,13 @@ RC Stmt::addOutputNoCopy(QVarID var,Value *os,unsigned nO)
 	return RC_OK;
 }
 
-RC Stmt::addCondition(QVarID var,IExprTree *cond)
+RC Stmt::addCondition(QVarID var,IExprNode *cond)
 {
 	try {
 		// shutdown ???
 		QVar *qv=findVar(var); if (qv==NULL) return RC_NOTFOUND;
-		return cond!=NULL && (isBool(((ExprTree*)cond)->op) || ((ExprTree*)cond)->op==OP_CON && ((ExprTree*)cond)->operands[0].type==VT_BOOL) ?
-			processCondition((ExprTree*)cond,qv) : RC_INVPARAM;
+		return cond!=NULL && (isBool(((ExprNode*)cond)->op) || ((ExprNode*)cond)->op==OP_CON && ((ExprNode*)cond)->operands[0].type==VT_BOOL) ?
+			processCondition((ExprNode*)cond,qv) : RC_INVPARAM;
 	} catch (RC rc) {return rc;} catch (...) {report(MSG_ERROR,"Exception in IStmt::addCondition()\n"); return RC_INTERNAL;}
 }
 
@@ -361,7 +357,7 @@ RC Stmt::setExpr(QVarID var,const Value& v)
 		if (qv==NULL) return RC_NOTFOUND; if (qv->type!=QRY_SIMPLE) return RC_INVOP;
 		freeV(qv->expr);
 		if (v.type==VT_EXPRTREE) {
-			Expr *exp=NULL; if ((rc=Expr::compile((ExprTree*)v.exprt,exp,ma,false))!=RC_OK) return rc;
+			Expr *exp=NULL; if ((rc=Expr::compile((ExprNode*)v.exprt,exp,ma,false))!=RC_OK) return rc;
 			qv->expr.set(exp,1);
 		} else if ((rc=copyV(v,qv->expr,ma))!=RC_OK) return rc;
 		if (v.type==VT_RANGE || v.type==VT_EXPRTREE && v.exprt->getOp()==OP_RANGE) qv->stype=SEL_DERIVEDSET;
@@ -386,7 +382,7 @@ RC Stmt::setPIDs(QVarID var,const PID *pids,unsigned nPids)
 		if (qv==NULL) return RC_NOTFOUND; if (qv->type!=QRY_SIMPLE) return RC_INVOP;
 		if (nPids==1) {freeV(qv->expr); qv->expr.set(*pids);}
 		else {
-			Value *pv=new(ma) Value[nPids]; if (pv==NULL) return RC_NORESOURCES;
+			Value *pv=new(ma) Value[nPids]; if (pv==NULL) return RC_NOMEM;
 			for (unsigned i=0; i<nPids; i++) pv[i].set(pids[i]);
 			qsort(pv,nPids,sizeof(Value),cmpIDs);
 			for (unsigned i=1; i<nPids;)
@@ -424,7 +420,7 @@ RC Stmt::addConditionFT(QVarID var,const char *str,unsigned flags,const Property
 		if (str==NULL) return RC_INVPARAM;
 		SimpleVar *qv=(SimpleVar*)findVar(var); if (qv==NULL) return RC_NOTFOUND; if (qv->type!=QRY_SIMPLE) return RC_INVOP;
 		CondFT *ftcond=new(nPids,ma) CondFT(qv->condFT,strdup(str,ma),flags,pids,nPids);
-		if (ftcond==NULL) return RC_NORESOURCES; qv->condFT=ftcond; return RC_OK;
+		if (ftcond==NULL) return RC_NOMEM; qv->condFT=ftcond; return RC_OK;
 	} catch (RC rc) {return rc;} catch (...) {report(MSG_ERROR,"Exception in IStmt::addConditionFT()\n"); return RC_INTERNAL;}
 }
 
@@ -441,10 +437,10 @@ RC Stmt::setPropCondition(QVarID var,const PropertyID *props,unsigned nProps,boo
 		SimpleVar *qv=(SimpleVar*)findVar(var);
 		if (qv==NULL) return RC_NOTFOUND; if (qv->type!=QRY_SIMPLE) return RC_INVOP;
 		if (nProps>1) {
-			PropertyID *buf=(PropertyID*)alloca(nProps*sizeof(PropertyID)); if (buf==NULL) return RC_NORESOURCES;
+			PropertyID *buf=(PropertyID*)alloca(nProps*sizeof(PropertyID)); if (buf==NULL) return RC_NOMEM;
 			memcpy(buf,props,nProps*sizeof(PropertyID)); qsort(buf,nProps,sizeof(PropertyID),cmpProps); props=buf;
 		}
-		return qv->addPropRefs(props,nProps);
+		return qv->addReqProps(props,nProps);
 	} catch (RC rc) {return rc;} catch (...) {report(MSG_ERROR,"Exception in IStmt::setPropCondition()\n"); return RC_INTERNAL;}
 }
 
@@ -455,7 +451,7 @@ RC Stmt::setJoinProperties(QVarID var,const PropertyID *props,unsigned nProps)
 		QVar *qv=findVar(var); if (qv==NULL) return RC_NOTFOUND; if (qv->type>QRY_FULL_OUTER_JOIN) return RC_INVOP;
 		JoinVar *jv=(JoinVar*)qv; if (jv->nVars!=2) return RC_INVOP; CondEJ *ej;
 		for (unsigned i=nProps; i--!=0; ) {
-			if ((ej=new(ma) CondEJ(props[i],props[i],0))==NULL) return RC_NORESOURCES;
+			if ((ej=new(ma) CondEJ(props[i],props[i],0))==NULL) return RC_NOMEM;
 			ej->next=jv->condEJ; jv->condEJ=ej;
 		}
 		return RC_OK;
@@ -466,7 +462,7 @@ RC OrderSegQ::conv(const OrderSeg& sg,MemAlloc *ma)
 {
 	flags=sg.flags; var=sg.var; aggop=OP_SET; lPref=sg.lPrefix; Session *ses=NULL;
 	if (sg.expr==NULL) {pid=sg.pid; return RC_OK;}
-	for (const IExprTree *et=sg.expr;;) {
+	for (const IExprNode *et=sg.expr;;) {
 		uint8_t op=et->getOp(); long lstr; const Value *pv;
 		switch (op) {
 		default: break;
@@ -493,11 +489,11 @@ RC OrderSegQ::conv(const OrderSeg& sg,MemAlloc *ma)
 			break;
 		}
 		lPref=0; aggop=OP_SET; flags=flags&~ORD_NCASE|ORDER_EXPR;
-		return Expr::compile((ExprTree*)sg.expr,expr,ma,false);
+		return Expr::compile((ExprNode*)sg.expr,expr,ma,false);
 	}
 }
 
-RC Stmt::setGroup(QVarID var,const OrderSeg *segs,unsigned nSegs,IExprTree *having)
+RC Stmt::setGroup(QVarID var,const OrderSeg *segs,unsigned nSegs,IExprNode *having)
 {
 	try {
 		// shutdown ???
@@ -508,11 +504,11 @@ RC Stmt::setGroup(QVarID var,const OrderSeg *segs,unsigned nSegs,IExprTree *havi
 			ma->free(qv->groupBy); qv->groupBy=NULL; qv->nGroupBy=0; if (qv->having!=NULL) {qv->having->destroy(); qv->having=NULL;}
 		}
 		if (segs!=NULL && nSegs!=0) {
-			if ((qv->groupBy=new(ma) OrderSegQ[nSegs])==NULL) return RC_NORESOURCES;
+			if ((qv->groupBy=new(ma) OrderSegQ[nSegs])==NULL) return RC_NOMEM;
 			for (unsigned i=0; i<nSegs; i++) if ((rc=qv->groupBy[i].conv(segs[i],ma))!=RC_OK) {qv->nGroupBy=i; return rc;}
 			qv->nGroupBy=nSegs;
 			if (qv->stype==SEL_COUNT) qv->stype=SEL_VALUESET; else if (qv->stype==SEL_DERIVED) qv->stype=SEL_DERIVEDSET;
-			if (having!=NULL && (rc=Expr::compile((ExprTree*)having,qv->having,ma,true,&qv->aggrs))!=RC_OK) return rc;
+			if (having!=NULL && (rc=Expr::compile((ExprNode*)having,qv->having,ma,true,&qv->aggrs))!=RC_OK) return rc;
 		}
 		return RC_OK;
 	} catch (RC rc) {return rc;} catch (...) {report(MSG_ERROR,"Exception in IStmt::setGroup()\n"); return RC_INTERNAL;}
@@ -528,7 +524,7 @@ RC Stmt::setOrder(const OrderSeg *segs,unsigned nSegs)
 			ma->free(orderBy); orderBy=NULL; nOrderBy=0;
 		}
 		if (segs!=NULL && nSegs!=0) {
-			if ((orderBy=new(ma) OrderSegQ[nSegs])==NULL) return RC_NORESOURCES;
+			if ((orderBy=new(ma) OrderSegQ[nSegs])==NULL) return RC_NOMEM;
 			for (unsigned i=0; i<nSegs; i++) if ((rc=orderBy[i].conv(segs[i],ma))!=RC_OK) {nOrderBy=i; return rc;}
 			nOrderBy=nSegs;
 		}
@@ -543,12 +539,12 @@ RC Stmt::copyValues(Value *vals,unsigned nVals,unsigned& pn,DynOArrayBuf<uint64_
 		Value& v=vals[pn],*pv; RC rc; Expr *exp;
 		switch (v.type) {
 		case VT_EXPRTREE:
-			if ((rc=Expr::compile((ExprTree*)v.exprt,exp,ma,false))!=RC_OK) return rc;
+			if ((rc=Expr::compile((ExprNode*)v.exprt,exp,ma,false))!=RC_OK) return rc;
 			v.expr=exp; v.type=VT_EXPR; v.fcalc=1; setHT(v,ma->getAType()); break;
 		case VT_COLLECTION: 
 			if (v.isNav()) {if ((rc=copyV0(v,ma))!=RC_OK) return rc; break;}
 		case VT_STRUCT:
-			if ((pv=new(ma) Value[v.length])==NULL) return RC_NORESOURCES;
+			if ((pv=new(ma) Value[v.length])==NULL) return RC_NOMEM;
 			memcpy(pv,v.varray,v.length*sizeof(Value)); for (unsigned i=0; i<v.length; i++) setHT(pv[i]);
 			v.varray=pv; setHT(v,ma->getAType()); if ((rc=copyValues(pv,v.length,v.length,tids))!=RC_OK) return rc;
 			break;
@@ -581,7 +577,7 @@ RC Stmt::setValues(const Value *values,unsigned nVals,const IntoClass *it,unsign
 		nValues=nNested=0; mode&=~MODE_MANY_PINS;
 		if (into!=NULL) {ma->free((void*)into); into=NULL; nInto=0;}
 		if (values!=NULL && nVals!=0) {
-			Value *pv=new(ma) Value[nVals]; if (pv==NULL) return RC_NORESOURCES;
+			Value *pv=new(ma) Value[nVals]; if (pv==NULL) return RC_NOMEM;
 			memcpy(pv,values,nVals*sizeof(Value)); 
 			Session *ses=Session::getSession(); if (ses==NULL) return RC_NOSESSION;
 			DynOArrayBuf<uint64_t,uint64_t> tids((MemAlloc*)ses); RC rc;
@@ -590,7 +586,7 @@ RC Stmt::setValues(const Value *values,unsigned nVals,const IntoClass *it,unsign
 			vals=pv; nValues=nVals;
 		}
 		if (it!=NULL && nIt!=0) {
-			if ((into=new(ma) IntoClass[nIt])==NULL) return RC_NORESOURCES;
+			if ((into=new(ma) IntoClass[nIt])==NULL) return RC_NOMEM;
 			memcpy(into,it,nIt*sizeof(IntoClass));
 		}
 		return RC_OK;
@@ -602,7 +598,7 @@ RC Stmt::countNestedNoCopy(Value *values,unsigned nVals)
 	RC rc; Expr *exp;
 	for (unsigned i=0; i<nVals; i++) {
 		if (values[i].type==VT_EXPRTREE) {
-			ExprTree *et=(ExprTree*)values[i].exprt; if ((rc=Expr::compile(et,exp,ma,false))!=RC_OK) return rc;
+			ExprNode *et=(ExprNode*)values[i].exprt; if ((rc=Expr::compile(et,exp,ma,false))!=RC_OK) return rc;
 			values[i].expr=exp; values[i].type=VT_EXPR; values[i].fcalc=1; setHT(values[i],ma->getAType()); et->destroy();
 		} else if (values[i].fcalc!=0) switch (values[i].type) {
 		case VT_STMT:
@@ -653,7 +649,7 @@ RC Stmt::getNested(const Value *pv,unsigned nV,PIN **ppins,PIN *pins,unsigned& c
 		if (pv[i].isNav()) break;
 	case VT_STRUCT:
 		if ((pv[i].flags&HEAP_TYPE_MASK)==NO_HEAP) {
-			if ((pp=new(ses) Value[pv[i].length])==NULL) return RC_NORESOURCES;
+			if ((pp=new(ses) Value[pv[i].length])==NULL) return RC_NOMEM;
 			memcpy(pp,pv[i].varray,pv[i].length*sizeof(Value)); 
 			for (unsigned j=0; j<pv[i].length; j++) setHT(pp[j]);
 			((Value*)pv)[i].varray=pp; setHT(pv[i],SES_HEAP);
@@ -671,7 +667,7 @@ RC Stmt::getNested(PIN **ppins,PIN *npins,unsigned& cnt,Session *ses,PIN *parent
 		Value *pv=vals,*pv2; unsigned nVals=nValues; bool fNF=true;
 		if ((mode&MODE_MANY_PINS)!=0) {pv=(Value*)pins[n].vals; nVals=pins[n].nValues; tid.pid=pins[n].tpid;}
 		if (pv!=NULL && nVals!=0 && (nNested!=0 || (mode&MODE_PART)!=0 && parent!=NULL)) {
-			if ((pv2=new(ses) Value[nVals])==NULL) return RC_NORESOURCES;
+			if ((pv2=new(ses) Value[nVals])==NULL) return RC_NOMEM;
 			memcpy(pv2,pv,nVals*sizeof(Value)); for (unsigned i=0; i<nVals; i++) setHT(pv[i]);
 			fNF=false; pv=pv2;
 		}
@@ -685,28 +681,19 @@ RC Stmt::getNested(PIN **ppins,PIN *npins,unsigned& cnt,Session *ses,PIN *parent
 	return RC_OK;
 }
 
-RC Stmt::processCondition(ExprTree *node,QVar *qv)
+RC Stmt::processCondition(ExprNode *node,QVar *qv)
 {
-	DynArray<const ExprTree*> exprs(ma); RC rc=processCond(node,qv,&exprs);
+	DynArray<const ExprNode*> exprs(ma); RC rc=processCond(node,qv,&exprs);
 	if (rc==RC_OK) exprs+=node; else if (rc==RC_FALSE) rc=RC_OK; else return rc;
 	if (exprs!=0 && qv!=NULL) {
-		if (qv->isMulti() && qv->type>=QRY_UNION) return RC_INVPARAM; Expr *expr,**pp;
-		RC rc=Expr::compileConds(exprs,exprs,expr,ma); if (rc!=RC_OK) return rc;
-		if (qv->nConds==0) qv->cond=expr;
-		else if (qv->nConds==1) {
-			if ((pp=(Expr**)ma->malloc(sizeof(Expr*)*2))==NULL) {ma->free(expr); return RC_NORESOURCES;}
-			pp[0]=qv->cond; pp[1]=expr; qv->conds=pp;
-		} else {
-			if ((qv->conds=(Expr**)ma->realloc(qv->conds,(qv->nConds+1)*sizeof(Expr*)))==NULL) {ma->free(expr); return RC_NORESOURCES;}
-			qv->conds[qv->nConds]=expr;
-		}
-		if ((expr->getFlags()&EXPR_PARAMS)!=0) mode|=QRY_PARAMS;
-		qv->nConds++;
+		if (qv->isMulti() && qv->type>=QRY_UNION) return RC_INVPARAM;
+		RC rc=Expr::compileConds(&exprs[0],exprs,qv->cond,qv->cond,ma); if (rc!=RC_OK) return rc;
+		if ((qv->cond->getFlags()&EXPR_PARAMS)!=0) mode|=QRY_PARAMS; qv->qvf|=QVF_COND;
 	}
 	return RC_OK;
 }
 
-RC Stmt::processCond(ExprTree *node,QVar *qv,DynArray<const ExprTree*> *exprs)
+RC Stmt::processCond(ExprNode *node,QVar *qv,DynArray<const ExprNode*> *exprs)
 {
 	if (node!=NULL && node->nops>0) {
 		const Value &v=node->operands[0],*pv=node->nops>1?&node->operands[1]:(Value*)0; CondIdx *ci; RC rc,rc2; Value *pp;
@@ -714,13 +701,13 @@ RC Stmt::processCond(ExprTree *node,QVar *qv,DynArray<const ExprTree*> *exprs)
 		default: break;
 		case OP_LAND:
 			assert (v.type==VT_EXPRTREE && pv->type==VT_EXPRTREE);
-			if ((rc=processCond((ExprTree*)v.exprt,qv,exprs))!=RC_OK && rc!=RC_FALSE) return rc;
-			if ((rc2=processCond((ExprTree*)pv->exprt,qv,exprs))!=RC_OK && rc2!=RC_FALSE || rc==rc2) return rc2;
-			return (rc=(*exprs)+=(ExprTree*)(rc==RC_OK?v.exprt:pv->exprt))!=RC_OK?rc:RC_FALSE;
+			if ((rc=processCond((ExprNode*)v.exprt,qv,exprs))!=RC_OK && rc!=RC_FALSE) return rc;
+			if ((rc2=processCond((ExprNode*)pv->exprt,qv,exprs))!=RC_OK && rc2!=RC_FALSE || rc==rc2) return rc2;
+			return (rc=(*exprs)+=(ExprNode*)(rc==RC_OK?v.exprt:pv->exprt))!=RC_OK?rc:RC_FALSE;
 		case OP_EXISTS:
 			if (node->nops==1 && v.type==VT_VARREF && (v.refV.flags&VAR_TYPE_MASK)==0 && v.length==1 && v.refV.refN==0 && qv->type==QRY_SIMPLE) {
 				if (v.refV.id==PROP_SPEC_PINID) return RC_FALSE;
-				if ((node->flags&NOT_BOOLEAN_OP)==0) return (rc=qv->addPropRefs(&v.refV.id,1))==RC_OK?RC_FALSE:rc;
+				if ((node->flags&NOT_BOOLEAN_OP)==0) return (rc=qv->addReqProps(&v.refV.id,1))==RC_OK?RC_FALSE:rc;
 			}
 			break;
 		case OP_IS_A:
@@ -735,7 +722,7 @@ RC Stmt::processCond(ExprTree *node,QVar *qv,DynArray<const ExprTree*> *exprs)
 							break;
 						}
 					if (cs==NULL) {
-						if ((sv->classes=(SourceSpec*)sv->ma->realloc((void*)sv->classes,(sv->nClasses+1)*sizeof(SourceSpec)))==NULL) return RC_NORESOURCES;
+						if ((sv->classes=(SourceSpec*)sv->ma->realloc((void*)sv->classes,(sv->nClasses+1)*sizeof(SourceSpec)))==NULL) return RC_NOMEM;
 						cs=(SourceSpec*)&sv->classes[sv->nClasses]; cs->objectID=node->operands[1].uid; cs->params=NULL; cs->nParams=0; sv->nClasses++;
 					}
 					if (node->nops>2 && (rc=copyV(&node->operands[2],cs->nParams=node->nops-2,*(Value**)&cs->params,sv->ma))!=RC_OK) return rc;
@@ -749,8 +736,8 @@ RC Stmt::processCond(ExprTree *node,QVar *qv,DynArray<const ExprTree*> *exprs)
 			// commutativity ?
 			if (qv->type<QRY_UNION) {
 				ushort flags=(node->flags&CASE_INSENSITIVE_OP)!=0?CND_NCASE:0; const Value *pv1=&v,*pv2=pv;  //???(FOR_ALL_LEFT_OP|EXISTS_LEFT_OP|FOR_ALL_RIGHT_OP|EXISTS_RIGHT_OP)
-				if (pv1->type==VT_EXPRTREE && pv2->type==VT_EXPRTREE && ((ExprTree*)pv1->exprt)->op==((ExprTree*)pv2->exprt)->op && (((ExprTree*)pv1->exprt)->op==OP_UPPER || ((ExprTree*)pv1->exprt)->op==OP_LOWER))
-					{flags|=CND_NCASE; pv1=&((ExprTree*)pv1->exprt)->operands[0]; pv2=&((ExprTree*)pv2->exprt)->operands[0];}
+				if (pv1->type==VT_EXPRTREE && pv2->type==VT_EXPRTREE && ((ExprNode*)pv1->exprt)->op==((ExprNode*)pv2->exprt)->op && (((ExprNode*)pv1->exprt)->op==OP_UPPER || ((ExprNode*)pv1->exprt)->op==OP_LOWER))
+					{flags|=CND_NCASE; pv1=&((ExprNode*)pv1->exprt)->operands[0]; pv2=&((ExprNode*)pv2->exprt)->operands[0];}
 				if (pv1->type==VT_VARREF && (pv1->refV.flags&VAR_TYPE_MASK)==0) {
 					// multijoin!
 					if (pv1->refV.refN<2 && pv2->type==VT_VARREF && (pv2->refV.flags&VAR_TYPE_MASK)==0 && pv2->refV.refN<2 && pv2->refV.refN!=pv1->refV.refN) {
@@ -794,14 +781,14 @@ RC Stmt::processCond(ExprTree *node,QVar *qv,DynArray<const ExprTree*> *exprs)
 				if (node->op==OP_LT || node->op==OP_IN && (node->flags&EXCLUDE_RBOUND_OP)!=0) flags|=SCAN_EXCLUDE_END;
 				else if (node->op==OP_BEGINS) flags|=SCAN_PREFIX; else if (node->op==OP_EQ) flags|=SCAN_EXACT;
 				bool fExpr=true; PropertyID pid=STORE_INVALID_URIID; ushort lPref=0; long lstr; Session *ses=NULL;
-				for (const Value *vv=&v; ;vv=&((ExprTree*)vv->exprt)->operands[0]) {
+				for (const Value *vv=&v; ;vv=&((ExprNode*)vv->exprt)->operands[0]) {
 					if (vv->type==VT_VARREF && (vv->refV.flags&VAR_TYPE_MASK)==0 && vv->refV.refN==0 && vv->length==1) {fExpr=false; pid=vv->refV.id; break;}
 					if (vv->type==VT_EXPRTREE) {
-						if (((ExprTree*)vv->exprt)->op==OP_UPPER || ((ExprTree*)vv->exprt)->op==OP_LOWER) {flags|=ORD_NCASE; continue;}
+						if (((ExprNode*)vv->exprt)->op==OP_UPPER || ((ExprNode*)vv->exprt)->op==OP_LOWER) {flags|=ORD_NCASE; continue;}
 						if (ses==NULL && (ses=Session::getSession())==NULL) return RC_NOSESSION;
-						if (((ExprTree*)vv->exprt)->op==OP_SUBSTR && Expr::getI(((ExprTree*)vv->exprt)->operands[1],lstr,EvalCtx(ses))==RC_OK && lstr>=0) {
-							if ((((ExprTree*)vv->exprt)->nops==2 || ((ExprTree*)vv->exprt)->nops==3 && lstr==0 && 
-								Expr::getI(((ExprTree*)vv->exprt)->operands[2],lstr,EvalCtx(ses))==RC_OK) && lstr>0) {if (lPref==0 || lstr<lPref) lPref=(ushort)lstr; continue;}
+						if (((ExprNode*)vv->exprt)->op==OP_SUBSTR && Expr::getI(((ExprNode*)vv->exprt)->operands[1],lstr,EvalCtx(ses))==RC_OK && lstr>=0) {
+							if ((((ExprNode*)vv->exprt)->nops==2 || ((ExprNode*)vv->exprt)->nops==3 && lstr==0 && 
+								Expr::getI(((ExprNode*)vv->exprt)->operands[2],lstr,EvalCtx(ses))==RC_OK) && lstr>0) {if (lPref==0 || lstr<lPref) lPref=(ushort)lstr; continue;}
 						}
 					}
 					lPref=0; flags&=~ORD_NCASE; break;
@@ -848,11 +835,7 @@ RC Stmt::substitute(const Value *params,unsigned nParams,MemAlloc *ma)
 RC QVar::substitute(const Value *params,unsigned nParams,MemAlloc *ma)
 {
 	RC rc; unsigned i;
-	if (nConds==1) {
-		if ((cond->getFlags()&EXPR_PARAMS)!=0 && (rc=Expr::substitute(cond,params,nParams,ma))!=RC_OK) return rc;
-	} else for (i=0; i<nConds; i++) if ((conds[i]->getFlags()&EXPR_PARAMS)!=0) {
-		if ((rc=Expr::substitute(conds[i],params,nParams,ma))!=RC_OK) return rc;
-	}
+	if (cond!=NULL && (cond->getFlags()&EXPR_PARAMS)!=0 && (rc=Expr::substitute(cond,params,nParams,ma))!=RC_OK) return rc;
 	if (groupBy!=NULL) for (i=0; i<nGroupBy; i++) if ((groupBy[i].flags&ORDER_EXPR)!=0 && (groupBy[i].expr->getFlags()&EXPR_PARAMS)!=0) {
 		// subs
 	}
@@ -878,35 +861,22 @@ RC SimpleVar::substitute(const Value *params,unsigned nParams,MemAlloc *ma)
 	return RC_OK;
 }
 
-RC QVar::addPropRefs(const PropertyID *props,unsigned nProps)
+RC QVar::addReqProps(const PropertyID *prp,unsigned nP)
 {
-	Expr *exp=NULL,**pex=&exp;
-	if (nConds!=0 && ((*(pex=nConds==1?&cond:&conds[0]))->getFlags()&EXPR_NO_CODE)==0) pex=&exp;
-	RC rc=Expr::addPropRefs(pex,props,nProps,ma);
-	if (rc==RC_OK && pex==&exp) {
-		if (nConds==0) cond=exp;
-		else if (nConds==1) {
-			if ((pex=(Expr**)ma->malloc(sizeof(Expr*)*2))!=NULL) {pex[0]=cond; pex[1]=exp; conds=pex;}
-			else {ma->free(exp); rc=RC_NORESOURCES;}
-		} else {
-			if ((conds=(Expr**)ma->realloc(conds,(nConds+1)*sizeof(Expr*)))!=NULL) conds[nConds]=exp;
-			else {ma->free(exp); rc=RC_NORESOURCES;}
-		}
-		nConds++;
-	}
-	return rc;
+	if ((props=(PropertyID*)ma->realloc(props,(nProps+nP)*sizeof(PropertyID),nProps*sizeof(PropertyID)))==NULL) return RC_NOMEM;
+	for (unsigned i=0,xn=nProps+nP,pid; i<nP; i++) if ((pid=prp[i]&STORE_MAX_URIID)!=PROP_SPEC_PINID)
+		{RC rc=BIN<PropertyID>::insert(props,nProps,pid,pid,ma,&xn); if (rc!=RC_OK) return rc;}
+	return RC_OK;
 }
 
 RC QVar::mergeProps(PropListP& plp,bool fForce,bool fFlags) const
 {
-	RC rc; if (nConds==1) return cond->mergeProps(plp,fForce,fFlags);
-	for (unsigned i=0; i<nConds; i++) if ((rc=conds[i]->mergeProps(plp,fForce,fFlags))!=RC_OK) return rc;
-	return RC_OK;
+	return cond!=NULL?cond->mergeProps(plp,fForce,fFlags):RC_OK;
 }
 
 RC SimpleVar::mergeProps(PropListP& plp,bool fForce,bool fFlags) const
 {
-	RC rc=nConds!=0?QVar::mergeProps(plp,fForce,fFlags):RC_OK;
+	RC rc=cond!=NULL?QVar::mergeProps(plp,fForce,fFlags):RC_OK;
 	for (CondIdx *ci=condIdx; rc==RC_OK && ci!=NULL; ci=ci->next)
 		rc=ci->expr!=NULL?ci->expr->mergeProps(plp,fForce,fFlags):plp.merge(0,&ci->ks.propID,1,fForce,fFlags);
 	return rc;
@@ -915,16 +885,8 @@ RC SimpleVar::mergeProps(PropListP& plp,bool fForce,bool fFlags) const
 RC 	SimpleVar::getPropDNF(PropDNF *&dnf,size_t& ldnf,MemAlloc *ma) const
 {
 	dnf=NULL; ldnf=0; RC rc;
-	if (nConds==1) {
-		if ((rc=cond->getPropDNF(0,dnf,ldnf,ma))!=RC_OK) return rc;
-	} else if (nConds!=0) {
-		if ((rc=conds[0]->getPropDNF(0,dnf,ldnf,ma))!=RC_OK) return rc;
-		for (unsigned i=1; i<nConds; i++) {
-			PropDNF *dnf2=NULL; size_t ldnf2=0;
-			if ((rc=conds[i]->getPropDNF(0,dnf2,ldnf2,ma))!=RC_OK) {ma->free(dnf); dnf=NULL; return rc;}
-			if ((rc=PropDNF::andP(dnf,ldnf,dnf2,ldnf2,ma))!=RC_OK) {ma->free(dnf2); ma->free(dnf); dnf=NULL; return rc;}
-		}
-	}
+	if (props!=NULL && nProps!=0 && (rc=PropDNF::andP(dnf,ldnf,props,nProps,ma))!=RC_OK) return rc;
+	if (cond!=NULL && (rc=cond->getPropDNF(0,dnf,ldnf,ma))!=RC_OK) return rc;
 	if (condIdx!=0) {
 		PropertyID *pids=(PropertyID*)alloca(nCondIdx*sizeof(PropertyID));
 		if (pids!=NULL) {
@@ -941,22 +903,20 @@ RC 	SimpleVar::getPropDNF(PropDNF *&dnf,size_t& ldnf,MemAlloc *ma) const
 
 bool SimpleVar::checkXPropID(PropertyID xp) const
 {
-	const PropertyID *props; unsigned nProps;
+	const PropertyID *prps; unsigned nP;
+	if (props!=NULL && nProps!=0) for (unsigned i=0; i<nProps; i++) if ((props[i]&STORE_MAX_URIID)>xp) return false;
+	if (cond!=NULL) {
+		cond->getExtRefs(prps,nP);
+		if (prps!=NULL) for (unsigned i=0; i<nP; i++) if ((prps[i]&PROP_OPTIONAL)==0 && (prps[i]&STORE_MAX_URIID)>xp) return false;
+	}
 	if (condIdx!=NULL) {
 		bool f=false;
 		for (CondIdx *ci=condIdx; ci!=NULL; ci=ci->next) if (ci->expr!=NULL) {
-			ci->expr->getExtRefs(props,nProps);
-			if (props!=NULL) for (unsigned i=0; i<nProps; i++) 
-				if ((props[i]&PROP_OPTIONAL)==0 && (props[i]&STORE_MAX_URIID)>xp) return false;	//???
+			ci->expr->getExtRefs(prps,nP);
+			if (prps!=NULL) for (unsigned i=0; i<nP; i++) 
+				if ((prps[i]&PROP_OPTIONAL)==0 && (prps[i]&STORE_MAX_URIID)>xp) return false;	//???
 		} else if (ci->ks.propID<=xp) {f=true; break;}
 		if (!f) return false;
-	}
-	if (nConds==1) {
-		cond->getExtRefs(props,nProps);
-		if (props!=NULL) for (unsigned i=0; i<nProps; i++) if ((props[i]&PROP_OPTIONAL)==0 && (props[i]&STORE_MAX_URIID)>xp) return false;
-	} else if (nConds>1) for (unsigned j=0; j<nConds; j++) {
-		conds[j]->getExtRefs(props,nProps);
-		if (props!=NULL) for (unsigned i=0; i<nProps; i++) if ((props[i]&PROP_OPTIONAL)==0 && (props[i]&STORE_MAX_URIID)>xp) return false;
 	}
 	return true;
 }
@@ -965,7 +925,7 @@ bool Stmt::classOK(const QVar *qv)
 {
 	if (qv->type==QRY_SIMPLE) {
 		const SimpleVar *sv=(const SimpleVar*)qv;
-		if (sv->condIdx!=NULL && sv->nCondIdx>0) return true;
+		if (sv->cond!=NULL && (sv->cond->getFlags()&EXPR_PARAMS)==0 || sv->props!=NULL && sv->nProps!=0 || sv->condIdx!=NULL && sv->nCondIdx>0) return true;
 		switch (sv->expr.type) {
 		case VT_COLLECTION: case VT_REFID: case VT_REF: return true; break;
 		case VT_STMT: if (((Stmt*)sv->expr.stmt)->top!=NULL && ((Stmt*)sv->expr.stmt)->classOK(((Stmt*)sv->expr.stmt)->top)) return true; break;
@@ -975,8 +935,6 @@ bool Stmt::classOK(const QVar *qv)
 			Class *cls=StoreCtx::get()->classMgr->getClass(sv->classes[0].objectID);
 			if (cls!=NULL) {Stmt *cqry=cls->getQuery(); bool fOK=cqry!=NULL && cqry->isClassOK(); cls->release(); if (fOK) return true;}
 		}
-		if (qv->nConds==1) {if ((qv->cond->getFlags()&EXPR_PARAMS)==0) return true;}
-		else if (qv->conds!=NULL) for (unsigned i=0; i<qv->nConds; i++) if ((qv->conds[i]->getFlags()&EXPR_PARAMS)==0) return true;
 	}
 	return false;
 }
@@ -1066,32 +1024,27 @@ RC Stmt::connectVars()
 RC QVar::clone(QVar *cloned) const
 {
 	RC rc=RC_OK; cloned->stype=stype; cloned->qvf=qvf;
-	if (name!=NULL && (cloned->name=strdup(name,cloned->ma))==NULL) rc=RC_NORESOURCES;
-	else if ((cloned->nConds=nConds)==1) {
-		if ((cloned->cond=Expr::clone(cond,cloned->ma))==NULL) rc=RC_NORESOURCES;
-	} else if (nConds>0) {
-		if ((cloned->conds=new(cloned->ma) Expr*[nConds])==NULL) rc=RC_NORESOURCES;
-		else {
-			memset(cloned->conds,0,nConds*sizeof(Expr*));
-			for (unsigned i=0; i<nConds; i++)
-				if ((cloned->conds[i]=Expr::clone(conds[i],cloned->ma))==NULL) {rc=RC_NORESOURCES; break;}
-		}
-	}
+	if (name!=NULL && (cloned->name=strdup(name,cloned->ma))==NULL ||
+		cond!=NULL && (cloned->cond=Expr::clone(cond,cloned->ma))==NULL) rc=RC_NOMEM;
 	if (rc==RC_OK && outs!=NULL && nOuts!=0) {
-		if ((cloned->outs=new(cloned->ma) ValueV[cloned->nOuts=nOuts])==NULL) rc=RC_NORESOURCES;
+		if ((cloned->outs=new(cloned->ma) Values[cloned->nOuts=nOuts])==NULL) rc=RC_NOMEM;
 		else for (unsigned i=0; i<nOuts; i++)
 			if ((rc=copyV(outs[i].vals,cloned->outs[i].nValues=outs[i].nValues,*(Value**)&cloned->outs[i].vals,cloned->ma))!=RC_OK) break;
 			else cloned->outs[i].fFree=true;
 	}
-	if (groupBy!=NULL && nGroupBy>0) {
-		if ((cloned->groupBy=new(cloned->ma) OrderSegQ[cloned->nGroupBy=nGroupBy])==NULL) rc=RC_NORESOURCES;
+	if (props!=NULL && nProps!=0) {
+		if ((cloned->props=new(cloned->ma) PropertyID[cloned->nProps=nProps])==NULL) rc=RC_NOMEM;
+		else memcpy(cloned->props,props,sizeof(PropertyID)*nProps);
+	}
+	if (groupBy!=NULL && nGroupBy!=0) {
+		if ((cloned->groupBy=new(cloned->ma) OrderSegQ[cloned->nGroupBy=nGroupBy])==NULL) rc=RC_NOMEM;
 		else {
 			memcpy(cloned->groupBy,groupBy,sizeof(OrderSegQ)*nGroupBy);
 			for (unsigned i=0; i<nGroupBy; i++) if ((groupBy[i].flags&ORDER_EXPR)!=0)
-				{if ((cloned->groupBy[i].expr=Expr::clone(groupBy[i].expr,cloned->ma))==NULL) {rc=RC_NORESOURCES; break;}}
+				{if ((cloned->groupBy[i].expr=Expr::clone(groupBy[i].expr,cloned->ma))==NULL) {rc=RC_NOMEM; break;}}
 		}
 	}
-	if (having!=NULL && (cloned->having=Expr::clone(having,cloned->ma))==NULL) rc=RC_NORESOURCES;
+	if (having!=NULL && (cloned->having=Expr::clone(having,cloned->ma))==NULL) rc=RC_NOMEM;
 	else if (aggrs.vals!=NULL && (rc=copyV(aggrs.vals,cloned->aggrs.nValues=aggrs.nValues,*(Value**)&cloned->aggrs.vals,cloned->ma))==RC_OK) cloned->aggrs.fFree=true;
 	if (rc!=RC_OK) delete cloned;
 	return rc;
@@ -1099,34 +1052,34 @@ RC QVar::clone(QVar *cloned) const
 
 RC SimpleVar::clone(MemAlloc *m,QVar *&res) const
 {
-	SimpleVar *cv=new(m) SimpleVar(id,m); if (cv==NULL) return RC_NORESOURCES;
+	SimpleVar *cv=new(m) SimpleVar(id,m); if (cv==NULL) return RC_NOMEM;
 	if (classes!=NULL && nClasses!=0) {
-		if ((cv->classes=new(m) SourceSpec[nClasses])==NULL) {delete cv; return RC_NORESOURCES;}
+		if ((cv->classes=new(m) SourceSpec[nClasses])==NULL) {delete cv; return RC_NOMEM;}
 		for (cv->nClasses=0; cv->nClasses<nClasses; cv->nClasses++) {
 			SourceSpec &to=cv->classes[cv->nClasses],&from=classes[cv->nClasses]; RC rc;
 			to.objectID=from.objectID; to.params=NULL; to.nParams=0;
 			if (from.params!=NULL && from.nParams!=0) {
 				Value *pv=new(m) Value[to.nParams=from.nParams]; to.params=pv;
-				if (pv==NULL) {delete cv; return RC_NORESOURCES;}
+				if (pv==NULL) {delete cv; return RC_NOMEM;}
 				for (unsigned j=0; j<to.nParams; j++) if ((rc=copyV(from.params[j],pv[j],m))!=RC_OK) {delete cv; return rc;}
 			}
 		}
 	}
 	CondIdx **ppCondIdx=&cv->condIdx,*ci2; cv->nCondIdx=nCondIdx;
 	for (const CondIdx *ci=condIdx; ci!=NULL; ci=ci->next) {
-		if ((ci2=ci->clone(m))==NULL) {delete cv; return RC_NORESOURCES;}
+		if ((ci2=ci->clone(m))==NULL) {delete cv; return RC_NOMEM;}
 		*ppCondIdx=cv->lastCondIdx=ci2; ppCondIdx=&ci2->next;
 	}
-	RC rc=copyV(expr,cv->expr,m); if (rc!=RC_OK) {delete cv; return RC_NORESOURCES;}
+	RC rc=copyV(expr,cv->expr,m); if (rc!=RC_OK) {delete cv; return RC_NOMEM;}
 	if (path!=NULL && nPathSeg!=0) {
 		if ((rc=copyPath(path,nPathSeg,cv->path,m))!=RC_OK) {delete cv; return rc;}
 		cv->nPathSeg=nPathSeg;
 	}
 	CondFT **ppCondFT=&cv->condFT;
 	for (const CondFT *ft=condFT; ft!=NULL; ft=ft->next) {
-		char *s=strdup(ft->str,m); if (s==NULL) {delete cv; return RC_NORESOURCES;}
+		char *s=strdup(ft->str,m); if (s==NULL) {delete cv; return RC_NOMEM;}
 		*ppCondFT=new(ft->nPids,m) CondFT(NULL,s,ft->flags,ft->pids,ft->nPids);
-		if (*ppCondFT==NULL) {delete cv; return RC_NORESOURCES;}
+		if (*ppCondFT==NULL) {delete cv; return RC_NOMEM;}
 		ppCondFT=&(*ppCondFT)->next;
 	}
 	return QVar::clone(res=cv);
@@ -1134,19 +1087,19 @@ RC SimpleVar::clone(MemAlloc *m,QVar *&res) const
 
 RC SetOpVar::clone(MemAlloc *m,QVar *&res) const
 {
-	SetOpVar *sv=new(nVars,m) SetOpVar(nVars,id,type,m); if (sv==NULL) return RC_NORESOURCES;
+	SetOpVar *sv=new(nVars,m) SetOpVar(nVars,id,type,m); if (sv==NULL) return RC_NOMEM;
 	for (unsigned i=0; i<nVars; i++) sv->vars[i].varID=vars[i].var->getID();
 	return QVar::clone(res=sv);
 }
 
 RC JoinVar::clone(MemAlloc *m,QVar *&res) const
 {
-	JoinVar *jv=new(nVars,m) JoinVar(nVars,id,type,m); if (jv==NULL) return RC_NORESOURCES;
+	JoinVar *jv=new(nVars,m) JoinVar(nVars,id,type,m); if (jv==NULL) return RC_NOMEM;
 	for (unsigned i=0; i<nVars; i++) jv->vars[i].varID=vars[i].var->getID();
 	CondEJ **ppCondEJ=&jv->condEJ;
 	for (const CondEJ *cndEJ=condEJ; cndEJ!=NULL; cndEJ=cndEJ->next) {
 		CondEJ *condEJ=*ppCondEJ=new(m) CondEJ(cndEJ->propID1,cndEJ->propID2,cndEJ->flags);
-		if (condEJ==NULL) {delete jv; return RC_NORESOURCES;}
+		if (condEJ==NULL) {delete jv; return RC_NOMEM;}
 		condEJ->next=NULL; ppCondEJ=&condEJ->next;
 	}
 	return QVar::clone(res=jv);
@@ -1156,14 +1109,14 @@ RC JoinVar::clone(MemAlloc *m,QVar *&res) const
 
 size_t QVar::serSize() const
 {
-	unsigned i;
-	size_t len=4+1+afy_len32(nOuts)+afy_len32(nConds)+afy_len32(nGroupBy)+1+afy_len16(aggrs.nValues);
+	size_t len=4+1+afy_len32(nOuts)+afy_len32(nProps)+afy_len32(nGroupBy)+1+afy_len16(aggrs.nValues);
 	if (name!=NULL) len+=min(strlen(name),size_t(255));
 	if (outs!=NULL) for (unsigned i=0; i<nOuts; i++) {
-		const ValueV& td=outs[i]; len+=afy_len16(td.nValues);
+		const Values& td=outs[i]; len+=afy_len16(td.nValues);
 		for (unsigned j=0; j<td.nValues; j++) len+=AfyKernel::serSize(td.vals[j],true);
 	}
-	if (nConds==1) len+=cond->serSize(); else for (i=0; i<nConds; i++) len+=conds[i]->serSize();
+	if (cond!=NULL) {assert((qvf&QVF_COND)!=0); len+=cond->serSize();}
+	if (props!=NULL) for (unsigned i=0; i<nProps; i++) len+=afy_len32(props[i]);
 	if (groupBy!=NULL && nGroupBy!=0) for (unsigned i=0; i<nGroupBy; i++)
 		{const OrderSegQ& sq=groupBy[i]; len+=2+afy_len16(sq.flags)+afy_len32(sq.lPref)+((sq.flags&ORDER_EXPR)!=0?sq.expr->serSize():afy_len32(sq.pid));}
 	if (having!=NULL) len+=having->serSize();
@@ -1173,18 +1126,17 @@ size_t QVar::serSize() const
 
 byte *QVar::serQV(byte *buf) const
 {
-	unsigned i;
 	buf[0]=id; buf[1]=type; buf[2]=stype; buf[3]=qvf; buf=serialize(buf+4);
 	size_t l=name!=NULL?min(strlen(name),size_t(255)):0;
 	buf[0]=(byte)l; if (l!=0) memcpy(buf+1,name,l); buf+=l+1;
 	afy_enc32(buf,nOuts);
 	if (outs!=NULL) for (unsigned i=0; i<nOuts; i++) {
-		const ValueV& td=outs[i]; afy_enc16(buf,td.nValues);
+		const Values& td=outs[i]; afy_enc16(buf,td.nValues);
 		for (unsigned j=0; j<td.nValues; j++) buf=AfyKernel::serialize(td.vals[j],buf,true);
 	}
-	afy_enc32(buf,nConds);
-	if (nConds==1) buf=cond->serialize(buf);
-	else for (i=0; i<nConds; i++) buf=conds[i]->serialize(buf);
+	if (cond!=NULL) buf=cond->serialize(buf);
+	afy_enc32(buf,nProps);
+	if (props!=NULL) for (unsigned i=0; i<nProps; i++) afy_enc32(buf,props[i]);
 	afy_enc32(buf,nGroupBy);
 	if (groupBy!=NULL && nGroupBy!=0) for (unsigned i=0; i<nGroupBy; i++) {
 		const OrderSegQ& sq=groupBy[i]; buf[0]=sq.var; buf[1]=sq.aggop; buf+=2;
@@ -1214,7 +1166,7 @@ RC QVar::deserialize(const byte *&buf,const byte *const ebuf,MemAlloc *ma,QVar *
 		if (buf>=ebuf) rc=RC_CORRUPTED;
 		else if ((l=*buf++)!=0) {
 			if (l>255 || buf+l>ebuf) rc=RC_CORRUPTED;
-			else if ((res->name=new(ma) char[l+1])==NULL) rc=RC_NORESOURCES;
+			else if ((res->name=new(ma) char[l+1])==NULL) rc=RC_NOMEM;
 			else {memcpy(res->name,buf,l); res->name[l]=0; buf+=l;}
 		}
 
@@ -1222,12 +1174,12 @@ RC QVar::deserialize(const byte *&buf,const byte *const ebuf,MemAlloc *ma,QVar *
 		
 		CHECK_dec32(buf,res->nOuts,ebuf);
 		if (res->nOuts!=0) {
-			if ((res->outs=new(ma) ValueV[res->nOuts])==NULL) rc=RC_NORESOURCES;
+			if ((res->outs=new(ma) Values[res->nOuts])==NULL) rc=RC_NOMEM;
 			else {
-				memset(res->outs,0,res->nOuts*sizeof(ValueV));
+				memset(res->outs,0,res->nOuts*sizeof(Values));
 				for (unsigned i=0; rc==RC_OK && i<res->nOuts; i++) {
 					CHECK_dec16(buf,res->outs[i].nValues,ebuf);
-					if ((res->outs[i].vals=new(ma) Value[res->outs[i].nValues])==NULL) rc=RC_NORESOURCES;
+					if ((res->outs[i].vals=new(ma) Value[res->outs[i].nValues])==NULL) rc=RC_NOMEM;
 					else {
 						res->outs[i].fFree=true;
 						for (unsigned j=0; j<res->outs[i].nValues; j++) if ((rc=AfyKernel::deserialize(*(Value*)&res->outs[i].vals[j],buf,ebuf,ma,false,true))!=RC_OK) break;
@@ -1235,16 +1187,15 @@ RC QVar::deserialize(const byte *&buf,const byte *const ebuf,MemAlloc *ma,QVar *
 				}
 			}
 		}
-		CHECK_dec32(buf,res->nConds,ebuf);
-		if (res->nConds==1) rc=Expr::deserialize(res->cond,buf,ebuf,ma);
-		else if (res->nConds>1) {
-			if ((res->conds=new(ma) Expr*[res->nConds])==NULL) rc=RC_NORESOURCES;
-			else for (unsigned i=0; i<res->nConds; i++)
-				if ((rc=Expr::deserialize(res->conds[i],buf,ebuf,ma))!=RC_OK) break;
+		if ((qvf&QVF_COND)!=0) rc=Expr::deserialize(res->cond,buf,ebuf,ma);
+		CHECK_dec32(buf,res->nProps,ebuf);
+		if (res->nProps!=0) {
+			if ((res->props=new(ma) PropertyID[res->nProps])==NULL) rc=RC_NOMEM;
+			else for (unsigned i=0; i<res->nProps; i++) {CHECK_dec32(buf,res->props[i],ebuf);}
 		}
 		CHECK_dec32(buf,res->nGroupBy,ebuf);
 		if (res->nGroupBy!=0) {
-			if ((res->groupBy=new(ma) OrderSegQ[res->nGroupBy])==NULL) rc=RC_NORESOURCES;
+			if ((res->groupBy=new(ma) OrderSegQ[res->nGroupBy])==NULL) rc=RC_NOMEM;
 			else for (unsigned i=0; i<res->nGroupBy; i++) {
 				OrderSegQ &sq=res->groupBy[i]; if (ebuf-buf<2) {rc=RC_CORRUPTED; break;}
 				sq.var=buf[0]; sq.aggop=buf[1]; buf+=2; 
@@ -1256,7 +1207,7 @@ RC QVar::deserialize(const byte *&buf,const byte *const ebuf,MemAlloc *ma,QVar *
 		rc=buf>=ebuf?RC_CORRUPTED:*buf++!=0?Expr::deserialize(res->having,buf,ebuf,ma):RC_OK;
 		CHECK_dec16(buf,res->aggrs.nValues,ebuf);
 		if (res->aggrs.nValues!=0) {
-			if ((res->aggrs.vals=new(ma) Value[res->aggrs.nValues])==NULL) rc=RC_NORESOURCES;
+			if ((res->aggrs.vals=new(ma) Value[res->aggrs.nValues])==NULL) rc=RC_NOMEM;
 			else {
 				res->aggrs.fFree=true;
 				for (unsigned j=0; j<res->aggrs.nValues; j++) if ((rc=AfyKernel::deserialize(*(Value*)&res->aggrs.vals[j],buf,ebuf,ma,false,true))!=RC_OK) break;
@@ -1355,13 +1306,13 @@ RC SimpleVar::deserialize(const byte *&buf,const byte *const ebuf,QVarID id,MemA
 	SimpleVar *cv=new(ma) SimpleVar(id,ma); RC rc;
 	CHECK_dec32(buf,cv->nClasses,ebuf);
 	if (cv->nClasses!=0) {
-		if ((cv->classes=new(ma) SourceSpec[cv->nClasses])==NULL) return RC_NORESOURCES;
+		if ((cv->classes=new(ma) SourceSpec[cv->nClasses])==NULL) return RC_NOMEM;
 		memset(cv->classes,0,cv->nClasses*sizeof(SourceSpec));
 		for (unsigned i=0; i<cv->nClasses; i++) {
 			SourceSpec &cs=cv->classes[i];
 			CHECK_dec32(buf,cs.objectID,ebuf); CHECK_dec32(buf,cs.nParams,ebuf);
 			if (cs.nParams!=0) {
-				if ((cs.params=new(ma) Value[cs.nParams])==NULL) return RC_NORESOURCES;
+				if ((cs.params=new(ma) Value[cs.nParams])==NULL) return RC_NOMEM;
 				memset((void*)cs.params,0,cs.nParams*sizeof(Value));
 				for (unsigned j=0; j<cs.nParams; j++)
 					if ((rc=AfyKernel::deserialize(*(Value*)&cs.params[j],buf,ebuf,ma,false))!=RC_OK) return rc;
@@ -1375,7 +1326,7 @@ RC SimpleVar::deserialize(const byte *&buf,const byte *const ebuf,QVarID id,MemA
 		if (buf+2>ebuf) return RC_CORRUPTED; ks.type=buf[0]; ks.op=buf[1]; buf+=2;
 		CHECK_dec16(buf,param,ebuf);
 		// expr????
-		CondIdx *ci=new(ma) CondIdx(ks,param,ma,iexp); if (ci==NULL) return RC_NORESOURCES;
+		CondIdx *ci=new(ma) CondIdx(ks,param,ma,iexp); if (ci==NULL) return RC_NOMEM;
 		cv->lastCondIdx=cv->condIdx==NULL?cv->condIdx=ci:cv->lastCondIdx->next=ci; 
 	}
 	if ((rc=AfyKernel::deserialize(cv->expr,buf,ebuf,ma,false))!=RC_OK) return rc;
@@ -1383,16 +1334,16 @@ RC SimpleVar::deserialize(const byte *&buf,const byte *const ebuf,QVarID id,MemA
 	for (uint32_t i=0; i<cntFT; i++) {
 		uint32_t l,flg,np;
 		CHECK_dec32(buf,l,ebuf); if (buf+l>ebuf) return RC_CORRUPTED;
-		char *str=new(ma) char[l+1]; if (str==NULL) return RC_NORESOURCES;
+		char *str=new(ma) char[l+1]; if (str==NULL) return RC_NOMEM;
 		memcpy(str,buf,l); str[l]='\0'; buf+=l;
 		CHECK_dec32(buf,flg,ebuf); CHECK_dec32(buf,np,ebuf);
-		if ((cf=new(np,ma) CondFT(NULL,str,flg,NULL,np))==NULL) return RC_NORESOURCES;
+		if ((cf=new(np,ma) CondFT(NULL,str,flg,NULL,np))==NULL) return RC_NOMEM;
 		for (unsigned i=0; i<np; i++) {CHECK_dec32(buf,flg,ebuf); cf->pids[i]=flg;}
 		*pft=cf; pft=&cf->next;
 	}
 	CHECK_dec32(buf,cv->nPathSeg,ebuf);
 	if (cv->nPathSeg!=0) {
-		if ((cv->path=new(ma) PathSeg[cv->nPathSeg])==NULL) return RC_NORESOURCES;
+		if ((cv->path=new(ma) PathSeg[cv->nPathSeg])==NULL) return RC_NOMEM;
 		memset(cv->path,0,cv->nPathSeg*sizeof(PathSeg));
 		for (unsigned i=0; i<cv->nPathSeg; i++) {
 			PathSeg& ps=cv->path[i]; if (buf>=ebuf) return RC_CORRUPTED;
@@ -1400,7 +1351,7 @@ RC SimpleVar::deserialize(const byte *&buf,const byte *const ebuf,QVarID id,MemA
 			CHECK_dec32(buf,ps.nPids,ebuf);
 			if (ps.nPids==0) ps.pid=PROP_SPEC_ANY;
 			else if (ps.nPids==1) {CHECK_dec32(buf,ps.pid,ebuf);}
-			else if ((ps.pids=new(ma) PropertyID[ps.nPids])==NULL) return RC_NORESOURCES;
+			else if ((ps.pids=new(ma) PropertyID[ps.nPids])==NULL) return RC_NOMEM;
 			else for (unsigned j=0; j<ps.nPids; j++) {CHECK_dec32(buf,ps.pids[j],ebuf);}
 			if ((f&0x01)!=0) {CHECK_dec32(buf,ps.eid.eid,ebuf);} else ps.eid.eid=STORE_COLLECTION_ID;
 			if ((f&0x02)!=0) {if ((rc=Expr::deserialize(*(Expr**)&ps.filter,buf,ebuf,ma))!=RC_OK) return rc;}
@@ -1408,7 +1359,7 @@ RC SimpleVar::deserialize(const byte *&buf,const byte *const ebuf,QVarID id,MemA
 				CHECK_dec32(buf,ps.cid,ebuf);
 				if ((f&0x08)!=0) {
 					CHECK_dec16(buf,ps.nParams,ebuf); if (ps.nParams==0) return RC_CORRUPTED;
-					if ((ps.params=new(ma) Value[ps.nParams])==NULL) return RC_NORESOURCES;
+					if ((ps.params=new(ma) Value[ps.nParams])==NULL) return RC_NOMEM;
 					memset(ps.params,0,ps.nParams*sizeof(Value));
 					for (uint16_t j=0; j<ps.nParams; j++)
 						if ((rc=AfyKernel::deserialize(ps.params[j],buf,ebuf,ma,false))!=RC_OK) return rc;
@@ -1436,7 +1387,7 @@ byte *SetOpVar::serialize(byte *buf) const
 RC SetOpVar::deserialize(const byte *&buf,const byte *const ebuf,QVarID id,byte type,MemAlloc *ma,QVar *&res)
 {
 	assert(buf<ebuf); unsigned nv=*buf++; if (size_t(ebuf-buf)<nv) return RC_CORRUPTED;
-	SetOpVar *sv=new(nv,ma) SetOpVar(nv,id,type,ma); if (sv==NULL) return RC_NORESOURCES;
+	SetOpVar *sv=new(nv,ma) SetOpVar(nv,id,type,ma); if (sv==NULL) return RC_NOMEM;
 	for (unsigned i=0; i<nv; i++) sv->vars[i].varID=*buf++;
 	res=sv; return RC_OK;
 }
@@ -1462,13 +1413,13 @@ byte *JoinVar::serialize(byte *buf) const
 RC JoinVar::deserialize(const byte *&buf,const byte *const ebuf,QVarID id,byte type,MemAlloc *ma,QVar *&res)
 {
 	assert(buf<ebuf); unsigned nv=*buf++; if (size_t(ebuf-buf)<=nv) return RC_CORRUPTED;
-	JoinVar *jv=new(nv,ma) JoinVar(nv,id,type,ma); if (jv==NULL) return RC_NORESOURCES;
+	JoinVar *jv=new(nv,ma) JoinVar(nv,id,type,ma); if (jv==NULL) return RC_NOMEM;
 	for (unsigned i=0; i<nv; i++) jv->vars[i].varID=*buf++;
 	unsigned nej=*buf++; CondEJ **pej=&jv->condEJ,*ej;
 	for (unsigned i=0; i<nej; i++,pej=&ej->next) {
 		uint32_t pid1,pid2; uint16_t flg;
 		CHECK_dec32(buf,pid1,ebuf); CHECK_dec32(buf,pid2,ebuf); CHECK_dec16(buf,flg,ebuf);
-		if ((*pej=ej=new(ma) CondEJ(pid1,pid2,flg))==NULL) {delete jv; return RC_NORESOURCES;}
+		if ((*pej=ej=new(ma) CondEJ(pid1,pid2,flg))==NULL) {delete jv; return RC_NOMEM;}
 		ej->next=NULL;
 	}
 	res=jv; return RC_OK;
@@ -1548,7 +1499,7 @@ RC Stmt::deserialize(Stmt *&res,const byte *&buf,const byte *const ebuf,MemAlloc
 	if (buf+1>=ebuf || (op=(STMT_OP)*buf++)<STMT_QUERY || op>=STMT_OP_ALL
 		|| (txi=(TXI_LEVEL)*buf++)<TXI_DEFAULT || txi>=TXI_SERIALIZABLE) return RC_CORRUPTED;
 	CHECK_dec32(buf,mode,ebuf);
-	Stmt *stmt=res=new(ma) Stmt(mode,ma,op,txi);  if (stmt==NULL) return RC_NORESOURCES;
+	Stmt *stmt=res=new(ma) Stmt(mode,ma,op,txi);  if (stmt==NULL) return RC_NOMEM;
 	QVar **pqv=&stmt->vars,*qv; unsigned nv; RC rc=RC_OK;
 	CHECK_dec32(buf,nv,ebuf);
 	for (unsigned i=0; i<nv; i++) {
@@ -1559,7 +1510,7 @@ RC Stmt::deserialize(Stmt *&res,const byte *&buf,const byte *const ebuf,MemAlloc
 	if (rc==RC_OK) {
 		CHECK_dec32(buf,stmt->nOrderBy,ebuf);
 		if (stmt->nOrderBy!=0) {
-			if ((stmt->orderBy=new(ma) OrderSegQ[stmt->nOrderBy])==NULL) rc=RC_NORESOURCES;
+			if ((stmt->orderBy=new(ma) OrderSegQ[stmt->nOrderBy])==NULL) rc=RC_NOMEM;
 			else {
 				memset(stmt->orderBy,0,sizeof(OrderSegQ)*stmt->nOrderBy);
 				for (unsigned i=0; i<stmt->nOrderBy; i++) {
@@ -1574,7 +1525,7 @@ RC Stmt::deserialize(Stmt *&res,const byte *&buf,const byte *const ebuf,MemAlloc
 		if (rc==RC_OK) {
 			CHECK_dec16(buf,stmt->with.nValues,ebuf);
 			if (stmt->with.nValues!=0) {
-				if ((stmt->with.vals=new(ma) Value[stmt->with.nValues])==NULL) rc=RC_NORESOURCES;
+				if ((stmt->with.vals=new(ma) Value[stmt->with.nValues])==NULL) rc=RC_NOMEM;
 				else {
 					memset((void*)stmt->with.vals,0,stmt->with.nValues*sizeof(Value));
 					for (unsigned i=0; i<stmt->with.nValues; i++)
@@ -1587,12 +1538,12 @@ RC Stmt::deserialize(Stmt *&res,const byte *&buf,const byte *const ebuf,MemAlloc
 					CHECK_dec32(buf,stmt->nValues,ebuf); if ((f&0x02)!=0) {CHECK_dec32(buf,stmt->nNested,ebuf);}
 					if ((f&0x80)!=0) {
 						stmt->mode|=MODE_MANY_PINS;
-						if ((stmt->pins=new(ma) PINDscr[stmt->nValues])==NULL) rc=RC_NORESOURCES;
+						if ((stmt->pins=new(ma) PINDscr[stmt->nValues])==NULL) rc=RC_NOMEM;
 						else {
 							memset(stmt->pins,0,sizeof(PINDscr)*stmt->nValues);
 							for (unsigned i=0; rc==RC_OK && i<stmt->nValues; i++) {
 								uint32_t nV; CHECK_dec32(buf,nV,ebuf); stmt->pins[i].nValues=nV;
-								if ((stmt->pins[i].vals=new(ma) Value[nV])==NULL) {rc=RC_NORESOURCES; break;}
+								if ((stmt->pins[i].vals=new(ma) Value[nV])==NULL) {rc=RC_NOMEM; break;}
 								memset((void*)stmt->pins[i].vals,0,sizeof(Value)*nV);
 								for (unsigned j=0; j<nV; j++) 
 									if ((rc=AfyKernel::deserialize(*(Value*)&stmt->pins[i].vals[j],buf,ebuf,ma,false,true))!=RC_OK) break;
@@ -1600,7 +1551,7 @@ RC Stmt::deserialize(Stmt *&res,const byte *&buf,const byte *const ebuf,MemAlloc
 							}
 						}
 					} else {
-						if ((stmt->vals=new(ma) Value[stmt->nValues])==NULL) rc=RC_NORESOURCES;
+						if ((stmt->vals=new(ma) Value[stmt->nValues])==NULL) rc=RC_NOMEM;
 						else {
 							memset(stmt->vals,0,sizeof(Value)*stmt->nValues);
 							for (unsigned i=0; i<stmt->nValues; i++) if ((rc=AfyKernel::deserialize(stmt->vals[i],buf,ebuf,ma,false,true))!=RC_OK) break;	
@@ -1609,7 +1560,7 @@ RC Stmt::deserialize(Stmt *&res,const byte *&buf,const byte *const ebuf,MemAlloc
 				}
 				if (rc==RC_OK && (f&0x04)!=0) {
 					CHECK_dec32(buf,stmt->nInto,ebuf);
-					if ((stmt->into=new(ma) IntoClass[stmt->nInto])==NULL) rc=RC_NORESOURCES;
+					if ((stmt->into=new(ma) IntoClass[stmt->nInto])==NULL) rc=RC_NOMEM;
 					else {
 						memset(stmt->into,0,stmt->nInto*sizeof(IntoClass));
 						for (unsigned i=0; rc==RC_OK && i<stmt->nInto; i++)

@@ -14,11 +14,10 @@ WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the
 License for the specific language governing permissions and limitations
 under the License.
 
-Written by Mark Venguerov 2012-2013
+Written by Mark Venguerov 2012-2014
 
 **************************************************************************************/
 #ifdef WIN32
-#define WIN32_LEAN_AND_MEAN
 #define	FD_SETSIZE	1024
 #endif
 
@@ -34,14 +33,17 @@ using namespace AfyKernel;
 
 #define EREAD_BIT	0x80000000
 #define EWRITE_BIT	0x40000000
-#define CONNECT_BIT	0x20000000
-#define READ_BIT	0x10000000
-#define WRITE_BIT	0x08000000
-#define	RWAIT_BIT	0x04000000
-#define	WWAIT_BIT	0x02000000
-#define	RESUME_BIT	0x01000000
-#define	SERVER_BIT	0x00800000
-#define	INIT_BIT	0x00400000
+#define READ_BIT	0x20000000
+#define WRITE_BIT	0x10000000
+#define	RWAIT_BIT	0x08000000
+#define	WWAIT_BIT	0x04000000
+#define	RESUME_BIT	0x02000000
+#define	SERVER_BIT	0x01000000
+#define	INIT_BIT	0x00800000
+#define	CLOSE_BIT	0x00400000
+
+#define	POLL_TIMEOUT	1000
+#define	TCP_CONNECTION_TABLE_SIZE	32
 
 #ifdef WIN32
 #define	SHANDLE				SOCKET
@@ -51,7 +53,13 @@ using namespace AfyKernel;
 #define	SHUT_RDWR			SD_BOTH
 #define DEFAULT_PORT_NAME	"COM"
 inline	bool				checkBlock(int err) {return err==WSAEWOULDBLOCK;}
+#define	pollfd				WSAPOLLFD
+#define	poll				WSAPoll
+#if defined(_WIN32_WINNT) && _WIN32_WINNT<_WIN32_WINNT_VISTA
+#define SELECT_IMPL
+#endif
 #else
+#include <poll.h>
 #include <termios.h>
 #include <netinet/tcp.h>
 #define	SHANDLE				int
@@ -100,11 +108,15 @@ inline RC nbio(SOCKET sock) {
 }
 
 struct AfySocketP {
-	IAfySocket	*iob;
-	AfySocketP() : iob(NULL) {}
-	AfySocketP(IAfySocket *io) : iob(io) {}
-	__forceinline static int cmp(const AfySocketP& ip,SHANDLE h) {return cmp3((SHANDLE)ip.iob->getSocket(),h);}
-	__forceinline operator SHANDLE() const {return (SHANDLE)iob->getSocket();}
+	IAfySocket		*iob;
+	SHANDLE			h;
+	bool			fClose;
+	AfySocketP() : iob(NULL),h(INVALID_SHANDLE),fClose(false) {}
+	AfySocketP(SHANDLE sh) : iob(NULL),h(sh),fClose(false) {}
+	AfySocketP(IAfySocket *io) : iob(io),h(io!=NULL?(SHANDLE)io->getSocket():INVALID_SHANDLE),fClose(false) {}
+	__forceinline void operator=(const AfySocketP& rhs) {iob=rhs.iob; h=rhs.h; fClose=rhs.fClose;}
+	__forceinline static int cmp(const AfySocketP& ip,SHANDLE h) {return cmp3((SHANDLE)ip,h);}
+	__forceinline operator SHANDLE() const {return h;}
 };
 
 class IOBlock : public Afy::IAfySocket
@@ -122,96 +134,150 @@ public:
 	virtual	void destroy() = 0;
 };
 
+struct IOQueueElt
+{
+	IOQueueElt	*next;
+	IAfySocket	*iob;
+	unsigned	iobits;
+};
+
+static Pool ioQueueBlocks(&sharedAlloc,0x20);
+
 class IOCtl
 {
 	RWLock					lock;
-	fd_set					R,W,E;
 	volatile HTHREAD		thread;
 	volatile THREADID		threadId;
-	volatile bool			inSelect;
+	volatile bool			fWaiting;
 	volatile bool			fRemoved;
 	volatile bool			fStop;
+	SharedCounter			mark;
+	RWLock					qlock;
+	IOQueueElt				*queue;
 	DynOArrayBufV<AfySocketP,SHANDLE,AfySocketP,128> ioblocks;
-	volatile int			idx;
 #ifdef WIN32
 	HANDLE					ioPort;
+#ifdef SELECT_IMPL
+	fd_set					R,W,E;
 public:
-	IOCtl() : thread((HTHREAD)0),threadId((THREADID)0),inSelect(false),fRemoved(false),fStop(false),ioblocks(&sharedAlloc),ioPort(NULL) {FD_ZERO(&R); FD_ZERO(&W); FD_ZERO(&E);}
+	IOCtl() : thread((HTHREAD)0),threadId((THREADID)0),fWaiting(false),fRemoved(false),fStop(false),ioblocks(&sharedAlloc),queue(NULL),ioPort(NULL) {FD_ZERO(&R); FD_ZERO(&W); FD_ZERO(&E);}
 #else
-	SOCKET					spipe[2];
+	DynArray<pollfd,128>	fdfs;
 public:
-	IOCtl() : thread((HTHREAD)0),inSelect(false),fRemoved(false),fStop(false),ioblocks(&sharedAlloc) {spipe[0]=spipe[1]=INVALID_SOCKET; FD_ZERO(&R); FD_ZERO(&W); FD_ZERO(&E);}
+	IOCtl() : thread((HTHREAD)0),threadId((THREADID)0),fWaiting(false),fRemoved(false),fStop(false),queue(NULL),ioblocks(&sharedAlloc),ioPort(NULL),fdfs(&sharedAlloc) {}
+#endif
+#else
+	DynArray<pollfd,128>	fdfs;
+	struct PipeBlock : public Afy::IAfySocket {
+		SOCKET		spipe[2];
+		PipeBlock() {spipe[0]=spipe[1]=INVALID_SOCKET;}
+		SOCKET		getSocket() const {return spipe[0];}
+		IAffinity	*getAffinity() const {return NULL;}
+		ISession	*getSession() const {return NULL;}
+		void		process(ISession *ses,unsigned bits) {if ((bits&R_BIT)!=0) {char buf[20]; while (read(spipe[0],buf,sizeof(buf))==sizeof(buf));}}
+	}						sp;
+public:
+	IOCtl() : thread((HTHREAD)0),fWaiting(false),fRemoved(false),fStop(false),queue(NULL),ioblocks(&sharedAlloc),fdfs(&sharedAlloc) {}
 #endif
 	RC	add(IAfySocket *iob,unsigned iobits) {
-		if ((((StoreCtx*)iob->getAffinity())->mode&STARTUP_RT)!=0) return RC_INVPARAM;
+		IAffinity *aff=iob->getAffinity();
+		if (aff!=NULL && (((StoreCtx*)aff)->mode&STARTUP_RT)!=0) return RC_INVPARAM;
 		SHANDLE sh=(SHANDLE)iob->getSocket(); if (sh==INVALID_SHANDLE) return RC_INVPARAM;
-		RWLockP lck(&lock,RW_X_LOCK); unsigned i=0; RC rc=ioblocks.add(AfySocketP(iob),&i);
-		if (rc==RC_OK) {
-			if ((iobits&R_BIT)!=0) FD_SET(sh,&R); else FD_CLR(sh,&R);
-			if ((iobits&W_BIT)!=0) FD_SET(sh,&W); else FD_CLR(sh,&W);
-			FD_SET(sh,&E); if (inSelect) interrupt(); else if ((int)i<=idx) idx++;
-		}
-		return rc==RC_OK?start():rc==RC_FALSE?RC_OK:rc;
+		RWLockP lck(&qlock,RW_X_LOCK); 
+		if (aff!=NULL && ((StoreCtx*)aff)->inShutdown()) return RC_SHUTDOWN;
+		IOQueueElt *ie=(IOQueueElt*)ioQueueBlocks.alloc(sizeof(IOQueueElt));
+		if (ie==NULL) return RC_NOMEM; ie->next=queue; ie->iob=iob; ie->iobits=iobits; queue=ie;
+		return fWaiting?(interrupt(),RC_OK):start();
 	}
-	void remove(IAfySocket *iob) {
+	void remove(IAfySocket *iob,bool fClose) {
 		SHANDLE fd=(SHANDLE)iob->getSocket();
 		if (fd!=INVALID_SHANDLE) {
-			RWLockP lck(&lock,RW_X_LOCK); unsigned i=0;
-			FD_CLR(fd,&R); FD_CLR(fd,&W); FD_CLR(fd,&E);
-			if (ioblocks.remove(AfySocketP(iob),&i)==RC_OK && !inSelect && (int)i<idx) --idx;
-			if (inSelect) fRemoved=true;
+			RWLockP lck(&qlock,RW_X_LOCK);
+			for (IOQueueElt **pie=&queue,*ie; (ie=*pie)!=NULL; pie=&ie->next)
+				if (ie->iob==iob) {*pie=ie->next; ioQueueBlocks.dealloc(ie); if (fClose) ::closesocket(fd); return;}
+			lck.set(NULL); lck.set(&lock,RW_X_LOCK); AfySocketP *sp=(AfySocketP*)ioblocks.find(fd);
+			if (sp!=NULL && sp->iob==iob) {sp->iob=NULL; sp->fClose=fClose; fRemoved=true; if (fWaiting) interrupt();}
 		}
 	}
-	void set(IAfySocket *iob,unsigned iobits) {
+	void set(IAfySocket *iob,unsigned iobits,unsigned mask) {
 		RWLockP lck(&lock,RW_X_LOCK); SHANDLE fd=(SHANDLE)iob->getSocket();
-		if ((iobits&R_BIT)!=0) FD_SET(fd,&R); else FD_CLR(fd,&R);
-		if ((iobits&W_BIT)!=0) FD_SET(fd,&W); else FD_CLR(fd,&W);
-		FD_SET(fd,&E); if (inSelect) interrupt();
-	}
-	void reset(IAfySocket *iob,unsigned iobits) {
-		RWLockP lck(&lock,RW_X_LOCK); SHANDLE fd=(SHANDLE)iob->getSocket();
-		if ((iobits&R_BIT)!=0) FD_CLR(fd,&R);
-		if ((iobits&W_BIT)!=0) FD_CLR(fd,&W);
+		unsigned idx=ioblocks.findIdx(fd);
+		if (idx!=~0u && ioblocks[idx].iob==iob) {
+#ifndef SELECT_IMPL
+			pollfd &pfd=const_cast<pollfd&>(fdfs[idx]);
+			if ((mask&R_BIT)!=0) if ((iobits&R_BIT)!=0) pfd.events|=POLLIN; else pfd.events&=~POLLIN;
+			if ((mask&W_BIT)!=0) if ((iobits&W_BIT)!=0) pfd.events|=POLLOUT; else pfd.events&=~POLLOUT;
+#else
+			if ((mask&R_BIT)!=0) if ((iobits&R_BIT)!=0) FD_SET(fd,&R); else FD_CLR(fd,&R);
+			if ((mask&W_BIT)!=0) if ((iobits&W_BIT)!=0) FD_SET(fd,&W); else FD_CLR(fd,&W);
+#endif
+			if (fWaiting) interrupt();
+		}
 	}
 	void threadProc() {
 		if (!casP((void *volatile*)&thread,(void*)0,(void*)getThread())) return;
 		threadId=getThreadId();
 		
 		Session *ioSes=Session::createSession(NULL); if (ioSes==NULL) return;
-		ioSes->setIdentity(STORE_OWNER,true);
 		
 #ifndef WIN32
-		if (pipe(spipe)>=0) {nbio(spipe[0]); nbio(spipe[1]); FD_SET(spipe[0],&R);} else report(MSG_WARNING,"Failed to create select pipe (%d)\n",errno); 
+		if (pipe(sp.spipe)<0) report(MSG_WARNING,"Failed to create poll interrupt pipe (%d)\n",errno);
+		else {nbio(sp.spipe[0]); nbio(sp.spipe[1]); if (add(&sp,R_BIT)!=RC_OK) report(MSG_WARNING,"Failed to add poll interrupt pipe\n");}
+#elif defined(SELECT_IMPL)
+		fd_set r,w,e;
 #endif
 		lock.lock(RW_X_LOCK);
-		for (fd_set r,w,e;;) {
-			timeval timeout={1,0}; int nst=getNFDs(); r=R; w=W; e=E; inSelect=true; fRemoved=false; lock.unlock();
-			int num=::select(nst,&r,&w,&e,&timeout); lock.lock(RW_X_LOCK); inSelect=false; if (fStop) break;
-			if (num<0) {
+		for (;;++mark) {
+			while (queue!=NULL) {
+				IOQueueElt *ie=queue; queue=ie->next;
+				unsigned i=0; SHANDLE sh=(SHANDLE)ie->iob->getSocket();
+				RC rc=ioblocks.add(AfySocketP(ie->iob),&i);
+				if (rc==RC_OK) {
+#ifndef SELECT_IMPL
+					pollfd pfd={sh,((ie->iobits&R_BIT)!=0?POLLIN:0)|((ie->iobits&W_BIT)!=0?POLLOUT:0),0};
+					rc=fdfs.add(i,pfd);
+#else
+					if ((ie->iobits&R_BIT)!=0) FD_SET(sh,&R); else FD_CLR(sh,&R);
+					if ((ie->iobits&W_BIT)!=0) FD_SET(sh,&W); else FD_CLR(sh,&W);
+					FD_SET(sh,&E);
+#endif
+				}
+				if (rc!=RC_OK) report(MSG_ERROR,"Failed to add socket %X to polling (%d)\n",sh,rc);
+				ioQueueBlocks.dealloc(ie);
+			}
+			fWaiting=true; fRemoved=false; int nfds=(int)ioblocks,res;
+#ifdef SELECT_IMPL
+			timeval timeout={POLL_TIMEOUT/1000,0}; r=R; w=W; e=E; lock.unlock(); res=::select(nfds,&r,&w,&e,&timeout);
+#else
+			int timeout=POLL_TIMEOUT; lock.unlock(); res=nfds!=0?::poll(&fdfs[0],nfds,timeout):(threadSleep(timeout,true),0);
+#endif
+			lock.lock(RW_X_LOCK); fWaiting=false; if (fStop) break;
+			if (res<0) {
 				int err=WSAGetLastError();
 #ifdef WIN32
-				if (nst!=0 && err!=WAIT_IO_COMPLETION && err!=WAIT_TIMEOUT && (err!=WSAENOTSOCK || !fRemoved)) {
+				if (nfds!=0 && err!=WAIT_IO_COMPLETION && err!=WAIT_TIMEOUT) {
 #else
-				if (nst!=0 && err!=EAGAIN && err!=EINTR && (err!=ENOTSOCK || !fRemoved)) {
+				if (nfds!=0 && err!=EAGAIN && err!=EINTR) {
 #endif
-					report(MSG_ERROR,"Select error: %d\n",err);
+					report(MSG_ERROR,"Socket poll error: %d\n",err);
 				}
 			} else {
-				int n=0;
-#ifndef WIN32
-				if (FD_ISSET(spipe[0],&r)) {char buf[20]; while (read(spipe[0],buf,sizeof(buf))==sizeof(buf)); n++;}
-#endif
-				for (idx=(int)ioblocks; --idx>=0 && n<num; ) {
-					IAfySocket *iob=ioblocks[idx].iob; if (iob==NULL) continue;
+				int n=0; lock.unlock();
+				for (unsigned idx=0; idx<ioblocks && n<res; idx++) {
+					IAfySocket *iob=ioblocks[idx].iob; if (iob==NULL) continue; unsigned iobits=0;
+#ifdef SELECT_IMPL
 					SHANDLE fd=(SHANDLE)iob->getSocket(); assert(fd!=INVALID_SHANDLE);
-					lock.unlock();
-
-					unsigned iobits=0;
 					if (FD_ISSET(fd,&r)!=0) iobits|=R_BIT;
 					if (FD_ISSET(fd,&w)!=0) iobits|=W_BIT;
 					if (FD_ISSET(fd,&e)!=0) iobits|=E_BIT;
+#else
+					const pollfd &pfd=fdfs[idx];
+					if ((pfd.revents&POLLIN)!=0) iobits|=R_BIT;
+					if ((pfd.revents&POLLOUT)!=0) iobits|=W_BIT;
+					if ((pfd.revents&(POLLERR|POLLNVAL))!=0) iobits|=E_BIT;			//POLLHUP ???
+#endif
 					if (iobits!=0) {
-						n++; Session *ses=(Session*)iob->getSession();
+						Session *ses=(Session*)iob->getSession(); n++;
 						if (ses==NULL) ioSes->set((StoreCtx*)iob->getAffinity());
 						else {
 							assert(ses->getStore()==iob->getAffinity());
@@ -227,45 +293,53 @@ public:
 							//ioSes->attachThread();
 						}
 					}
-					lock.lock(RW_X_LOCK);
 				}
+				lock.lock(RW_X_LOCK);
+			}
+			if (fRemoved) for (uint32_t i=ioblocks; i--!=0;) if (ioblocks[i].iob==NULL) {
+#ifdef SELECT_IMPL
+				SHANDLE fd=ioblocks[i].h; FD_CLR(fd,&R); FD_CLR(fd,&W); FD_CLR(fd,&E);
+#endif
+				if (ioblocks[i].fClose) ::closesocket(ioblocks[i].h);
+				ioblocks.remove(i);
+#ifndef SELECT_IMPL
+				fdfs-=i;
+#endif
 			}
 		}
 		lock.unlock();
 	}
 	RC		start();
 	void	interrupt();
-	int		getNFDs() const;
 	void	shutdown(StoreCtx *ctx) {
-		lock.lock(RW_X_LOCK);
-		for (uint32_t i=ioblocks; i--!=0;) {
-			IAfySocket *iob=ioblocks[i].iob;
-			if (iob!=NULL && iob->getAffinity()==ctx) {
-				SOCKET fd=iob->getSocket(); 
-				if (fd!=INVALID_SOCKET) {FD_CLR(fd,&R); FD_CLR(fd,&W); FD_CLR(fd,&E); ::closesocket(fd);}
-				ioblocks.remove(i); if (inSelect) fRemoved=true;
+		qlock.lock(RW_X_LOCK); assert(ctx->inShutdown());
+		for (IOQueueElt **pie=&queue,*ie; (ie=*pie)!=NULL;)
+			if (ie->iob->getAffinity()==ctx) {*pie=ie->next; ::closesocket((SHANDLE)ie->iob->getSocket()); ioQueueBlocks.dealloc(ie);} else pie=&ie->next;
+		qlock.unlock();
+		if (thread!=(HTHREAD)0) {
+			lock.lock(RW_X_LOCK); long old=mark; bool fWait=false;
+			for (uint32_t i=ioblocks; i--!=0;) {
+				IAfySocket *iob=ioblocks[i].iob;
+				if (iob!=NULL && iob->getAffinity()==ctx) {ioblocks[i].iob=NULL; ioblocks[i].fClose=true; fRemoved=true;}
 			}
+			if (fRemoved && fWaiting) {interrupt(); fWait=true;}
+			lock.unlock(); while (fWait && mark==old) threadYield();
 		}
-		lock.unlock();
 	}
 	bool isIOThread() const {return getThreadId()==threadId;}
 	void stopThread() {
-		lock.lock(RW_X_LOCK); fStop=true; if (inSelect) interrupt(); lock.unlock();
+		lock.lock(RW_X_LOCK); fStop=true; if (fWaiting) interrupt(); lock.unlock();
 		// wait for thread to terminate?
 	}
 };
 	
 #ifdef WIN32
 static DWORD WINAPI _iothread(void *param) {((IOCtl*)param)->threadProc(); return 0;}
-//static VOID NTAPI apc(ULONG_PTR) {
-	// need to do something here
-//}
-void IOCtl::interrupt() {/*::QueueUserAPC(apc,thread,NULL);*/}
-int IOCtl::getNFDs() const {return (int)ioblocks;}
+static VOID CALLBACK apc(ULONG_PTR) {}
+void IOCtl::interrupt() {if (::QueueUserAPC(apc,thread,NULL)==0) report(MSG_ERROR,"QueueUserAPC failed with code %d\n",GetLastError());}
 #else
 static void *_iothread(void *param) {((IOCtl*)param)->threadProc(); return NULL;}
-void IOCtl::interrupt() {char c=0; write(spipe[1],&c,1);}
-int IOCtl::getNFDs() const {int n=(int)ioblocks; return n!=0?ioblocks[n-1].iob->getSocket()+1:0;}
+void IOCtl::interrupt() {char c=0; write(sp.spipe[1],&c,1);}
 #endif
 	
 RC IOCtl::start()
@@ -287,9 +361,9 @@ RC StoreCtx::registerSocket(IAfySocket *s)
 	return ioctl.add(s,R_BIT);
 }
 
-void StoreCtx::unregisterSocket(IAfySocket *s)
+void StoreCtx::unregisterSocket(IAfySocket *s,bool fClose)
 {
-	ioctl.remove(s);
+	ioctl.remove(s,fClose);
 }
 
 class IOProcessor : public IService::Processor, public IOBlock
@@ -302,9 +376,10 @@ class IOProcessor : public IService::Processor, public IOBlock
 protected:
 	const	unsigned	type;
 	volatile unsigned	state;
+	unsigned			rtimeout;
 	Mutex				lock;
-	Event				r_wait;
-	Event				w_wait;
+	WaitEvent			r_wait;
+	WaitEvent			w_wait;
 	IOBuf				queue[MAX_WRITE_BUFFERS];
 	volatile unsigned	first,nbufs;
 	volatile RC			rrc,wrc;
@@ -313,25 +388,19 @@ protected:
 	uint64_t			nwritten;
 	uint64_t			nread;
 public:
-	IOProcessor(StoreCtx *ctx,unsigned ty,SHANDLE h=INVALID_SHANDLE)
-		: IOBlock(ctx,h),type(ty),state(0),first(0),nbufs(0),rrc(RC_OK),wrc(RC_OK),sctx(NULL),fSock(true),nwritten(0),nread(0) {}
+	IOProcessor(StoreCtx *ctx,unsigned ty,SHANDLE h=INVALID_SHANDLE,unsigned rt=DEFAULT_READ_TIMEOUT)
+		: IOBlock(ctx,h),type(ty),state(0),rtimeout(rt),first(0),nbufs(0),rrc(RC_OK),wrc(RC_OK),sctx(NULL),fSock(true),nwritten(0),nread(0) {}
 	RC invoke(IServiceCtx *ctx,const Value& inp,Value& out,unsigned& mode) {
 		RC rc=RC_OK; const bool fIOT=ioctl.isIOThread(); int res,err; sctx=ctx;
-		if ((state&CONNECT_BIT)!=0) {
-			assert(fd==INVALID_SHANDLE);
-			if ((rc=connect())!=RC_OK) {state|=EREAD_BIT|EWRITE_BIT; return rc;}
-			state&=~CONNECT_BIT;
-		}
-		if ((mode&ISRV_SWITCH)!=0) swmode();
 		if ((mode&ISRV_WRITE)!=0) {
-			if ((type&(ISRV_WRITE|ISRV_REQUEST|ISRV_SERVER))==0 || !inp.isEmpty() && !isString((ValueType)inp.type)) return RC_INVPARAM;
-			if (inp.isEmpty() || inp.bstr==NULL || inp.length==0) {int res=write(NULL,0); return res<0?convCode(getError()):RC_OK;}
+			if ((type&(ISRV_WRITE|ISRV_SERVER))==0 || !inp.isEmpty() && !isString((ValueType)inp.type)) return RC_INVPARAM;
+			if (inp.isEmpty() || inp.bstr==NULL || inp.length==0) {int res=write(NULL,0); if (res<0) ctx->error(SET_COMM,convCode(getError())); return RC_OK;}	// return native error in info
 			MutexP lck(&lock); 
-			if ((state&EWRITE_BIT)!=0) rc=wrc;
+			if ((state&EWRITE_BIT)!=0) ctx->error(SET_COMM,wrc);
 			else for (uint32_t left=inp.length;;) {
 				if (nbufs==0) {
 					if ((res=write(inp.bstr+inp.length-left,left))>=0) {nwritten+=res; if ((left-=res)==0) break;}
-					else if (!checkBlock(err=getError())) {state|=EWRITE_BIT; rc=wrc=convCode(err); break;}
+					else if (!checkBlock(err=getError())) {state|=EWRITE_BIT; ctx->error(SET_COMM,wrc=convCode(err)); break;}
 				}
 				if (nbufs<MAX_WRITE_BUFFERS) {
 					IOBuf& iob=queue[(first+nbufs++)%MAX_WRITE_BUFFERS];
@@ -343,15 +412,17 @@ public:
 				w_wait.wait(lock,0); if ((state&EWRITE_BIT)!=0) {rc=wrc; break;}
 			}
 		} else {
-			if ((type&(ISRV_READ|ISRV_REQUEST|ISRV_SERVER))==0 || out.type!=VT_BSTR && out.bstr==NULL || out.length==0) return RC_INVPARAM;
-			const uint32_t lbuf=out.length; out.length=0; if ((state&EREAD_BIT)!=0) return rrc;
-			do {
+			if ((type&(ISRV_READ|ISRV_SERVER))==0 || out.type!=VT_BSTR || out.bstr==NULL || out.length==0) return RC_INVPARAM;
+			const uint32_t lbuf=out.length; out.length=0; 
+			if ((state&EREAD_BIT)!=0) {
+				if (rrc!=RC_EOF) ctx->error(SET_COMM,rrc/*,???*/); else rc=RC_EOF;
+			} else do {
 				if ((res=read((byte*)out.str,lbuf))>0) {nread+=res; out.length=uint32_t(res); break;}
 				if (res==0) {state|=EREAD_BIT; rc=rrc=RC_EOF; break;}
-				if (!checkBlock(err=getError())) {state|=EREAD_BIT; rc=rrc=convCode(err); break;}
+				if (!checkBlock(err=getError())) {state|=EREAD_BIT; ctx->error(SET_COMM,rrc=convCode(err)); break;}
 				if ((mode&ISRV_WAIT)==0) break;
 				if (fIOT) {if ((rc=wait(R_BIT|RESUME_BIT))==RC_OK) mode|=ISRV_RESUME; break;}
-				lock.lock(); if ((rc=wait(R_BIT|RWAIT_BIT))==RC_OK) r_wait.wait(lock,0); lock.unlock();
+				lock.lock(); if ((rc=wait(R_BIT|RWAIT_BIT))==RC_OK) rc=r_wait.wait(lock,rtimeout); lock.unlock();
 			} while (rc==RC_OK);
 		}
 		return rc;
@@ -359,12 +430,12 @@ public:
 	virtual void process(ISession *,unsigned iobits) {
 		MutexP lck(&lock); int res;
 		if ((iobits&E_BIT)!=0) {
-			rrc=wrc=convCode(getError()); if ((state&L_BIT)!=0) ioctl.remove(this);
-			disconnect(); state=(state&~(R_BIT|W_BIT|E_BIT|L_BIT|READ_BIT|WRITE_BIT))|EREAD_BIT|EWRITE_BIT;
+			rrc=wrc=convCode(getError()); if ((state&L_BIT)!=0) ioctl.remove(this,true); else ::closesocket(fd);
+			state=(state&~(R_BIT|W_BIT|E_BIT|L_BIT|READ_BIT|WRITE_BIT))|EREAD_BIT|EWRITE_BIT; fd=INVALID_SOCKET;
 			report(MSG_ERROR,"IOProcessor::process() error: %s\n",getErrMsg(rrc));
 		} else {
 			if ((iobits&R_BIT)!=0 && (state&(R_BIT|RWAIT_BIT))==(R_BIT|RWAIT_BIT)) {
-				if ((state&W_BIT)==0) {ioctl.remove(this); state&=~(R_BIT|W_BIT|E_BIT|L_BIT);} else {ioctl.reset(this,R_BIT); state&=~R_BIT;}
+				if ((state&W_BIT)==0) {ioctl.remove(this,false); state&=~(R_BIT|W_BIT|E_BIT|L_BIT);} else {ioctl.set(this,0,R_BIT); state&=~R_BIT;}
 				state&=~RWAIT_BIT; r_wait.signal();
 			}
 			if ((iobits&W_BIT)!=0 && (state&W_BIT)!=0) {
@@ -378,7 +449,7 @@ public:
 					} else return;
 				}
 				if ((state&WWAIT_BIT)!=0) {state&=~WWAIT_BIT; w_wait.signal();}
-				if ((state&R_BIT)==0) {ioctl.remove(this); state&=~(R_BIT|W_BIT|E_BIT|L_BIT);} else {ioctl.reset(this,W_BIT); state&=~W_BIT;}
+				if ((state&R_BIT)==0) {ioctl.remove(this,false); state&=~(R_BIT|W_BIT|E_BIT|L_BIT);} else {ioctl.set(this,0,W_BIT); state&=~W_BIT;}
 			}
 		}
 	}
@@ -389,16 +460,16 @@ public:
 		} else
 #endif
 		if ((state&L_BIT)==0) {state|=L_BIT|bits; return ioctl.add(this,state);} 
-		bool fSet=((state^bits)&(R_BIT|W_BIT))!=0; state|=bits; if (fSet) ioctl.set(this,state);
+		if (((state^bits)&(R_BIT|W_BIT))!=0) ioctl.set(this,state|=bits,R_BIT|W_BIT);
 		return RC_OK;
 	}
-	virtual	void cleanup(IServiceCtx *sctx) {if ((state&L_BIT)!=0) {ioctl.remove(this); state&=~(L_BIT|R_BIT|W_BIT|E_BIT);}}
-	virtual	RC connect() {return RC_INVPARAM;}
-	virtual	void swmode() {}
+	virtual	void cleanup(IServiceCtx *sctx) {
+		if ((state&L_BIT)!=0) {ioctl.remove(this,false); state&=~(L_BIT|R_BIT|W_BIT|E_BIT);}
+	}
 	virtual	int getError() const = 0;
 	virtual	int	read(byte *buf,size_t lbuf) = 0;
 	virtual	int	write(const byte *buf,size_t lbuf) = 0;
-	virtual	void disconnect() = 0;
+	virtual	void disconnect(bool fKeepalive=false) = 0;
 };
 
 //----------------------------------------------------------------------------------------
@@ -475,7 +546,6 @@ public:
 		tio.c_oflag&=~OPOST;
 		tio.c_cc[VMIN]=1;
 		tio.c_cc[VTIME]=5;
-		if (fcntl(handle, F_SETFL, 0)<0) return getOSError();
 		if (tcflush(handle, TCIOFLUSH)<0) {
 			//...
 		}
@@ -551,7 +621,7 @@ public:
 	}
 	RC	 stop(bool);
 	void cleanup(IServiceCtx *ctx,bool fD) {IOProcessor::cleanup(ctx); if (fD) device.release();}
-	void disconnect();
+	void disconnect(bool);
 	void destroy();
 	friend class IO;
 };
@@ -613,7 +683,7 @@ protected:
 public:
 	IO(StoreCtx *ct) : IOHash(*new(ct) IOHash::QueueCtrl(100,(MemAlloc*)ct),10,ct),ctx(ct),xCached(100),nCached(0) {}
 	RC create(IServiceCtx *sctx,uint32_t& dscr,Processor *&ret) {
-		Device *ioc=NULL; assert(sctx->getServiceID()==SERVICE_SERIAL||sctx->getServiceID()==SERVICE_IO);
+		Device *ioc=NULL;
 		RC rc=getDevice(sctx->getParameter(PROP_SPEC_ADDRESS),ioc); if (rc!=RC_OK || ioc==NULL) return rc;
 		int64_t pos=0; int stype=-1; const Value *pv;
 		if ((pv=sctx->getParameter(PROP_SPEC_POSITION))!=NULL) {
@@ -629,13 +699,13 @@ public:
 			stype=(pv->meta&META_PROP_SEEK_END)!=0?SEEK_END:(pv->meta&META_PROP_SEEK_CUR)!=0?SEEK_CUR:SEEK_SET;
 		}
 		switch (dscr&ISRV_PROC_MASK) {
+		case ISRV_ENDPOINT|ISRV_READ|ISRV_WRITE:
+			//???
 		case ISRV_ENDPOINT|ISRV_READ:
 			dscr|=ISRV_ALLOCBUF;
 		case ISRV_ENDPOINT|ISRV_WRITE:
-			if ((ret=new(sctx) SimpleIOProc(ctx,dscr&ISRV_PROC_MASK,*ioc,pos,stype))==NULL) rc=RC_NORESOURCES;
+			if ((ret=new(sctx) SimpleIOProc(ctx,dscr&ISRV_PROC_MASK,*ioc,pos,stype))==NULL) rc=RC_NOMEM;
 			break;
-		case ISRV_ENDPOINT|ISRV_REQUEST:
-			//???
 		default:
 			ioc->release(); rc=RC_INVOP; break;
 		}
@@ -648,19 +718,19 @@ public:
 		case VT_INT: case VT_UINT:
 			if (pv->ui>=sizeof(std_io)/sizeof(std_io[0])) return RC_INVPARAM;
 			addr.str=std_io[pv->ui]; addr.len=strlen(addr.str); break;
-		case VT_STRING: case VT_URL:
+		case VT_STRING:
 			addr.str=pv->str; addr.len=pv->length; break;
 		case VT_STRUCT:
 			// find name field
 			break;
 		}
-		return addr.str==NULL?RC_INVPARAM:(addr.str=strdup(addr.str,ctx))==NULL?RC_NORESOURCES:RC_OK;
+		return addr.str==NULL?RC_INVPARAM:(addr.str=strdup(addr.str,ctx))==NULL?RC_NOMEM:RC_OK;
 	}
 	virtual Device *createDevice(const StrLen& id);
 	virtual RC listen(ISession *ses,URIID id,const Value *vals,unsigned nVals,const Value *srvParams,unsigned nSrvparams,unsigned mode,IListener *&ret) {
 		Device *ioc=NULL; RC rc=getDevice(Value::find(PROP_SPEC_ADDRESS,vals,nVals),ioc); if (rc!=RC_OK || ioc==NULL) return rc;
 		SimpleIOListener *ls=new(&sharedAlloc) SimpleIOListener(id,ctx,*this,*ioc,mode);
-		if (ls==NULL) {ioc->release(); return RC_NORESOURCES;}
+		if (ls==NULL) {ioc->release(); return RC_NOMEM;}
 		rc=copyV(vals,ls->nVals=nVals,ls->vals,&sharedAlloc);
 #ifdef WIN32
 		//???
@@ -678,7 +748,7 @@ public:
 	RC getName(const Value *pv,StrLen& addr) {
 		if (pv->type!=VT_INT&&pv->type!=VT_UINT) return IO::getName(pv,addr);
 		char buf[40]; addr.len=sprintf(buf,DEFAULT_PORT_NAME"%u",pv->ui);
-		return (addr.str=strdup(buf,ctx))!=NULL?RC_OK:RC_NORESOURCES;
+		return (addr.str=strdup(buf,ctx))!=NULL?RC_OK:RC_NOMEM;
 	}
 	Device *createDevice(const StrLen& id);
 };
@@ -697,7 +767,7 @@ void Device::setKey(const StrLen& id,void*)
 
 RC Device::load(const Value &addr,unsigned)
 {
-	assert(handle==INVALID_HANDLE_VALUE); unsigned flags=addr.meta; const Value *cmd; RC rc;
+	assert(handle==INVALID_HANDLE_VALUE); unsigned flags=addr.meta; RC rc;
 	if (isSpecFD(addr)) {
 		if (addr.ui>2) return RC_INVPARAM; assert(addr.type==VT_INT||addr.type==VT_UINT);
 #ifdef WIN32
@@ -708,10 +778,12 @@ RC Device::load(const Value &addr,unsigned)
 #endif
 	} else {
 #ifdef WIN32
-		DWORD ff=((flags&(META_PROP_READ|META_PROP_WRITE))!=META_PROP_WRITE?GENERIC_READ:0)|((flags&META_PROP_WRITE)!=0?GENERIC_WRITE:0),disp=(flags&META_PROP_CREATE)==0?OPEN_EXISTING:OPEN_ALWAYS;
-		if ((handle=::CreateFile(name.str,ff,FILE_SHARE_READ|FILE_SHARE_WRITE,NULL,disp,0,NULL))==INVALID_HANDLE_VALUE) return convCode(GetLastError());
+		DWORD ff=((flags&(META_PROP_READ|META_PROP_WRITE))!=META_PROP_WRITE?GENERIC_READ:0)|((flags&META_PROP_WRITE)!=0?GENERIC_WRITE:0);
+		DWORD disp=(flags&META_PROP_CREATE)==0?OPEN_EXISTING:OPEN_ALWAYS,flg=FILE_ATTRIBUTE_NORMAL; if ((flags&META_PROP_ASYNC)!=0) flg|=FILE_FLAG_OVERLAPPED;
+		if ((handle=::CreateFile(name.str,ff,FILE_SHARE_READ|FILE_SHARE_WRITE,NULL,disp,flg,NULL))==INVALID_HANDLE_VALUE) return convCode(GetLastError());
 #else
-		int ff=(flags&(META_PROP_READ|META_PROP_WRITE))==(META_PROP_READ|META_PROP_WRITE)?O_RDWR:(flags&META_PROP_WRITE)!=0?O_WRONLY:O_RDONLY; if ((flags&META_PROP_CREATE)!=0) ff|=O_CREAT;
+		int ff=(flags&(META_PROP_READ|META_PROP_WRITE))==(META_PROP_READ|META_PROP_WRITE)?O_RDWR:(flags&META_PROP_WRITE)!=0?O_WRONLY:O_RDONLY;
+		if ((flags&META_PROP_CREATE)!=0) ff|=O_CREAT; if ((flags&META_PROP_ASYNC)!=0) ff|=O_NONBLOCK;
 		if ((handle=::open64(name.str,ff|O_NOCTTY,S_IRUSR|S_IWUSR|S_IRGRP))==INVALID_HANDLE_VALUE) return convCode(errno);
 #endif
 	}
@@ -723,6 +795,8 @@ RC Device::load(const Value &addr,unsigned)
 #endif
 		handle=INVALID_HANDLE_VALUE; return rc;
 	}
+#if 0
+	const Value *cmd;
 	if (addr.type==VT_STRUCT && (cmd=VBIN::find(PROP_SPEC_COMMAND,addr.varray,addr.length))!=NULL) {
 		switch (cmd->type) {
 		default: break;
@@ -731,6 +805,7 @@ RC Device::load(const Value &addr,unsigned)
 			break;
 		}
 	}
+#endif
 	return RC_OK;
 }
 
@@ -776,7 +851,7 @@ RC SimpleIOProc::stop(bool fSuspend)
 	return RC_OK;
 }
 
-void SimpleIOProc::disconnect()
+void SimpleIOProc::disconnect(bool)
 {
 	if (fd!=INVALID_SHANDLE) {
 #ifdef WIN32
@@ -845,25 +920,25 @@ class Sockets;
 struct SocketProcessor : public IOProcessor
 {
 	Sockets		&mgr;
-	AddrInfo	addr;
+	SockAddr	addr;
 	ServiceCtx	*sctx;
-	SocketProcessor(StoreCtx *ct,Sockets& mg,unsigned ty,const AddrInfo& ad,SOCKET s=INVALID_SOCKET,ServiceCtx *sct=NULL)
-		: IOProcessor(ct,ty,s),mgr(mg),sctx(sct) {memcpy(&addr,&ad,sizeof(AddrInfo)); if (s==INVALID_SOCKET) state|=CONNECT_BIT; if (sct!=NULL) state|=SERVER_BIT|INIT_BIT;}
-	RC connect();
+	SocketProcessor(StoreCtx *ct,Sockets& mg,unsigned ty,const SockAddr& ad,SOCKET s=INVALID_SOCKET,ServiceCtx *sct=NULL,unsigned rt=DEFAULT_READ_TIMEOUT)
+		: IOProcessor(ct,ty,s,rt),mgr(mg),addr(ad),sctx(sct) {if (s==INVALID_SOCKET) state|=CLOSE_BIT; else if (ad.socktype==SOCK_STREAM) state|=CLOSE_BIT; if (sct!=NULL) state|=SERVER_BIT|INIT_BIT;}
+	RC connect(IServiceCtx *);
+	void resetClose() {state&=~CLOSE_BIT;}
 	void process(ISession *ses,unsigned iobits) {
 		const bool fServer=(state&SERVER_BIT)!=0 && (state&(WWAIT_BIT|RWAIT_BIT))==0,fI=(state&(RESUME_BIT|INIT_BIT))!=0;
 		if ((state&INIT_BIT)!=0) state&=~INIT_BIT; else IOProcessor::process(ses,iobits);
 		if (fServer) {
-			if (fI) {ioctl.remove(this); state&=~(R_BIT|W_BIT|E_BIT|L_BIT|RESUME_BIT);}
+			if (fI) {ioctl.remove(this,false); state&=~(R_BIT|W_BIT|E_BIT|L_BIT|RESUME_BIT);}
 			if ((!fI || sctx->invoke(NULL,0)!=RC_REPEAT) && (state&L_BIT)==0) sctx->destroy();
 		}
 	}
 	int	read(byte *buf,size_t lbuf) {return ::recv(fd,(char*)buf,(int)lbuf,0);}
 	int write(const byte *buf,size_t lbuf) {return buf!=NULL&&lbuf!=0?::send(fd,(char*)buf,(int)lbuf,0):0;}
-	void swmode() {shutdown(fd,SHUT_WR);}		// keep-alive ???
 	int getError() const;
 	void cleanup(IServiceCtx *ctx,bool fDestroying);
-	void disconnect();
+	void disconnect(bool);
 	void destroy();
 };
 
@@ -873,14 +948,14 @@ struct SocketListener : public IOBlock, public IListener
 	Sockets			&mgr;
 	Value			*vals;
 	unsigned		nVals;
-	AddrInfo		addr;
+	SockAddr		addr;
 	unsigned		mode;
 	SOCKET			asock;
 	sockaddr_storage sa; 
 	socklen_t		lsa;
 	SocketProcessor	*prc;
-	SocketListener(URIID i,StoreCtx *ct,Sockets& mg,const AddrInfo &ai,SOCKET s,unsigned md) 
-		: IOBlock(ct,s),id(i),mgr(mg),vals(NULL),nVals(0),mode(md),asock(INVALID_SOCKET),prc(NULL) {memcpy(&addr,&ai,sizeof(AddrInfo));}
+	SocketListener(URIID i,StoreCtx *ct,Sockets& mg,const SockAddr &ai,SOCKET s,unsigned md) 
+		: IOBlock(ct,s),id(i),mgr(mg),vals(NULL),nVals(0),addr(ai),mode(md),asock(INVALID_SOCKET),prc(NULL) {}
 	~SocketListener();
 	void *operator new(size_t);
 	IService *getService() const;
@@ -888,9 +963,19 @@ struct SocketListener : public IOBlock, public IListener
 	RC create(IServiceCtx *ctx,uint32_t& dscr,IService::Processor *&ret);
 	RC	stop(bool fSuspend);
 	void process(ISession *ses,unsigned iobits);
-	void disconnect();
+	void disconnect(bool);
 	void destroy();
 };
+
+struct TCPConnectionHolder : public SockAddr
+{
+	SOCKET						sock;
+	HChain<TCPConnectionHolder>	list;
+	TCPConnectionHolder(const SockAddr &sa,SOCKET s) : SockAddr(sa),sock(s),list(this) {assert(s!=INVALID_SOCKET);}
+	const SockAddr& getKey() const {return *this;}
+};
+
+typedef SyncHashTab<TCPConnectionHolder,const IAddress&,&TCPConnectionHolder::list> TCPConnTable;
 
 class Sockets : public IService
 {
@@ -898,57 +983,50 @@ class Sockets : public IService
 	friend	struct	SocketProcessor;
 	StoreCtx		*const	ctx;
 
-	static	FreeQ		listeners;
-	static	ElementID	sockEnum[LSOCKET_ENUM];
-	static	const char	*sockStr[LSOCKET_ENUM];
-	static int getSocket(const AddrInfo& ai,SOCKET& sock,bool fListen=false) {
+	static	TCPConnTable	*volatile TCPConns;
+	static	Pool			TCPCns;
+	static	Pool			listeners;
+	static	ElementID		sockEnum[LSOCKET_ENUM];
+	static	const char		*sockStr[LSOCKET_ENUM];
+	static int getSocket(const SockAddr& ai,SOCKET& sock,bool fListen=false) {
 		int opt=1;
-		if (ai.socktype!=SOCK_STREAM && ai.socktype!=SOCK_DGRAM) {
-			report(MSG_ERROR,"unsupported socket type %d\n",ai.socktype); return -1;
-		} else {
-			sock=socket(ai.family,ai.socktype,ai.protocol);
-			if (!isSOK(sock)) {report(MSG_ERROR,"socket failed with error: %ld\n",WSAGetLastError()); return -1;}
-			if (ai.socktype==SOCK_STREAM && setsockopt(sock,IPPROTO_TCP,TCP_NODELAY,(char*)&opt,sizeof(opt))<0) report(MSG_WARNING,"setting TCP_NODELAY failed\n");
-		}
+		if (ai.socktype!=SOCK_STREAM && ai.socktype!=SOCK_DGRAM) {report(MSG_ERROR,"unsupported socket type %d\n",ai.socktype); return -1;}
+		sock=socket(ai.saddr.ss_family,ai.socktype,ai.protocol);
+		if (!isSOK(sock)) {report(MSG_ERROR,"socket failed with error: %ld\n",WSAGetLastError()); return -1;}
+		if (ai.socktype==SOCK_STREAM && setsockopt(sock,IPPROTO_TCP,TCP_NODELAY,(char*)&opt,sizeof(opt))<0) report(MSG_WARNING,"setting TCP_NODELAY failed\n");
 		if (fListen) {
-			if (ai.socktype==SOCK_DGRAM) {
-				//if (fReuse) setsockopt(sock,SOL_SOCKET,SO_REUSEADDR,(char*)&opt,sizeof(opt));
-				if (setsockopt(sock,SOL_SOCKET,SO_BROADCAST,(char*)&opt,sizeof(opt))!=0) {
-				//...
-				}
-			}
+			if (nbio(sock)!=RC_OK) {::closesocket(sock); return -1;}
+			setsockopt(sock,SOL_SOCKET,SO_REUSEADDR,(char*)&opt,sizeof(opt));
 			int res=::bind(sock,(sockaddr*)&ai.saddr,(int)ai.laddr);	
 			if (res!=0) {report(MSG_ERROR,"bind failed with error: %d\n",WSAGetLastError()); ::closesocket(sock); return -1;}
 			if (ai.socktype==SOCK_STREAM && ::listen(sock,SOMAXCONN)!=0) {report(MSG_ERROR,"listen failed with error: %d\n", WSAGetLastError()); ::closesocket(sock); return -1;}
-			if (nbio(sock)!=RC_OK) {::closesocket(sock); return -1;}
 		}
 		return 0;
 	}
 public:
 	Sockets(StoreCtx *ct) : ctx(ct) {}
 	RC create(IServiceCtx *sctx,uint32_t& dscr,Processor *&ret) {
-		ret=NULL; AddrInfo ai; RC rc;
+		ret=NULL;
 		switch (dscr&ISRV_PROC_MASK) {
 		default: return RC_INVOP;
-		case ISRV_ENDPOINT|ISRV_READ: case ISRV_ENDPOINT|ISRV_REQUEST: dscr|=ISRV_ALLOCBUF; break;
+		case ISRV_ENDPOINT|ISRV_READ: 
+		case ISRV_ENDPOINT|ISRV_READ|ISRV_WRITE: dscr|=ISRV_ALLOCBUF;
 		case ISRV_ENDPOINT|ISRV_WRITE: break;
 		}
-		const Value *addr=sctx->getParameter(PROP_SPEC_ADDRESS); ai.fUDP=(dscr&ISRV_ALT)!=0;
-		if (addr==NULL) {
-			if ((addr=sctx->getParameter(PROP_SPEC_RESOLVE))==NULL) return RC_NOTFOUND;
-			if (addr->type!=VT_URIID) return RC_TYPE;
-			if ((rc=((Session*)sctx->getSession())->resolve(sctx,addr->uid,ai))!=RC_OK) return rc;
-		} else if ((rc=ai.resolve(addr,false))!=RC_OK) return rc;
-		return (ret=new(sctx) SocketProcessor(ctx,*this,dscr&ISRV_PROC_MASK,ai))!=NULL?RC_OK:RC_NORESOURCES;
+		return (ret=new(sctx) SocketProcessor(ctx,*this,dscr&ISRV_PROC_MASK,SockAddr()))!=NULL?RC_OK:RC_NOMEM;
 	}
 	RC listen(ISession *ses,URIID id,const Value *vals,unsigned nVals,const Value *srvParams,unsigned nSrvparams,unsigned mode,IListener *&ret) {
-		AddrInfo ai; SOCKET sock; RC rc;
+		SockAddr ai; SOCKET sock; RC rc;
 		const Value *pv=Value::find(PROP_SPEC_SERVICE,srvParams,nSrvparams); if (pv==NULL) pv=Value::find(PROP_SPEC_SERVICE,vals,nVals);
-		ai.fUDP=pv!=NULL && pv->type==VT_URIID && (pv->meta&META_PROP_ALT)!=0;
-		if ((rc=ai.resolve(Value::find(PROP_SPEC_ADDRESS,vals,nVals),true))!=RC_OK) return rc;
+#ifndef ANDROID
+		if (pv!=NULL && pv->type==VT_URIID && (pv->meta&META_PROP_ALT)!=0) {ai.protocol=IPPROTO_UDP; ai.socktype=SOCK_DGRAM;}
+#else
+		if (pv!=NULL && pv->type==VT_URIID && (pv->meta&META_PROP_ALT)!=0) ai.socktype=SOCK_DGRAM;
+#endif
+		if ((rc=ai.resolve(Value::find(PROP_SPEC_ADDRESS,vals,nVals)))!=RC_OK) return rc;
 		if (getSocket(ai,sock,true)!=0) return RC_OTHER;
 		SocketListener *ls=new SocketListener(id,ctx,*this,ai,sock,mode);
-		if (ls==NULL) {::closesocket(sock); return RC_NORESOURCES;}		
+		if (ls==NULL) {::closesocket(sock); return RC_NOMEM;}		
 		rc=copyV(vals,ls->nVals=nVals,ls->vals,&sharedAlloc);
 		if (rc==RC_OK && (rc=ioctl.add(ls,R_BIT))==RC_OK) ret=ls; else ls->destroy();
 		return rc;
@@ -958,28 +1036,29 @@ public:
 
 };
 
-RC AddrInfo::resolve(const Value *pv,bool fListener) {
-	char buf[40],*p; memcpy(buf,"80",3); const char *psrv=buf,*paddr=NULL; 
-	int flags=fListener?AI_PASSIVE|AI_NUMERICSERV:AI_NUMERICSERV;
+RC SockAddr::resolve(const Value *pv,IServiceCtx *sctx) {
+	char srv[10]; srv[0]=0; const char *paddr=NULL,*p,*q; size_t l,ll; 
+	int flags=sctx==NULL?AI_PASSIVE|AI_NUMERICSERV:AI_NUMERICSERV;
 	if (pv!=NULL) {
 		switch (pv->type) {
 		default: return RC_TYPE;
 		case VT_INT: case VT_UINT:
 			if (pv->ui==0||pv->ui>0xFFFF) return RC_INVPARAM;
-			sprintf(buf,"%d",(uint16_t)pv->ui); break;
+			sprintf(srv,"%d",(uint16_t)pv->ui); break;
 		case VT_STRING:
-			if ((p=(char*)memchr(pv->str,':',pv->length))==NULL) paddr=pv->str;
-			else if (p!=pv->str && p+1!=pv->str+pv->length && memchr(pv->str,'.',p-pv->str)!=NULL) {
-				psrv=p+1; size_t l=p-pv->str;
-				if (l<sizeof(buf)) {memcpy(buf,pv->str,l); buf[l]='\0'; paddr=buf;}
-				else if ((p=(char*)alloca(l+1))!=NULL) {memcpy(p,pv->str,l); p[l]='\0'; paddr=p;}
-				else return RC_NORESOURCES;
-			} else {
-				// assume IPv6 address
+			for (q=pv->str,l=pv->length,p=NULL; l!=0 && *q==' ';++q) --l; if (l==0) break;
+			if (*q>='0'&&*q<='9'&&memchr(q,'.',l)==NULL) {l=max(l,sizeof(srv)-1); memcpy(srv,q,l); srv[l]=0; break;}	// check all isdigit
+			if (*q!='[' && (*q<'0'||*q>'9')&&(p=(char*)memchr(q,':',l))!=NULL && p+3<=q+l && p[1]=='/' && p[2]=='/') {l-=size_t(p+3-q); q=p+3; p=NULL;}
+			paddr=q;
+			if (*q=='[') {
+				if ((p=(char*)memchr(q,']',l))!=NULL && ++p==q+l) p=NULL;
+			} else if (p!=NULL || (p=(char*)memchr(q,':',l))!=NULL) {
+				const char *s=p+1,*e=q+l; for (ll=0; ll+1<sizeof(srv) && s<e; ll++) srv[ll]=*s++; srv[ll]=0;
+			} else p=(char*)memchr(q,'/',l);
+			if (p!=NULL && p!=q) {
+				l=size_t(p-q); if ((paddr=(char*)alloca(l+1))==NULL) return RC_NOMEM;
+				memcpy((char*)paddr,q,l); ((char*)paddr)[l]=0;
 			}
-			break;
-		case VT_URL:
-			//parse srv://[...]:port/...
 			break;
 		//case VT_STRUCT:
 			//socket type
@@ -988,20 +1067,25 @@ RC AddrInfo::resolve(const Value *pv,bool fListener) {
 			//	break;
 		}
 	}
+	
+	int proto=-1; uint16_t port=0;
+	if (sctx!=NULL) {
+		((ServiceCtx*)sctx)->getSocketDefaults(proto,port);		//default from other services
+		if (srv[0]=='\0' && port!=0) sprintf(srv,"%d",port);
+	}
 
 	struct addrinfo hints,*result=NULL;
 	memset(&hints,0,sizeof(hints));
 	hints.ai_flags = flags;
-	hints.ai_family = AF_UNSPEC;
-	hints.ai_socktype = fUDP?SOCK_DGRAM:SOCK_STREAM;
+	hints.ai_family = (pv->meta&META_PROP_READ)!=0?AF_INET:AF_UNSPEC;
+	hints.ai_socktype = socktype;
 #ifndef ANDROID
-	hints.ai_protocol = fUDP?IPPROTO_UDP:IPPROTO_TCP;
+	hints.ai_protocol = proto>=0?proto:0;
 #endif
 
-	int res = getaddrinfo(paddr,psrv,&hints,&result);
+	int res = getaddrinfo(paddr,srv,&hints,&result);
 	if (res!=0) {report(MSG_ERROR,"getaddrinfo failed with error: %d\n",res); return convCode(res);}
 	assert(result!=NULL);
-	family=result->ai_family;
 	socktype=result->ai_socktype;
 	protocol=result->ai_protocol;
 	laddr=(socklen_t)result->ai_addrlen;
@@ -1013,30 +1097,75 @@ RC AddrInfo::resolve(const Value *pv,bool fListener) {
 	return RC_OK;
 }
 
-RC AddrInfo::getAddr(const sockaddr_storage *ss,socklen_t ls,Value& addr,IMemAlloc *ma,bool fPort)
+bool SockAddr::operator==(const IAddress& rhs) const
+{
+	const SockAddr &r=(const SockAddr&)rhs;
+	if (protocol!=r.protocol || socktype!=r.socktype || laddr!=r.laddr || saddr.ss_family!=r.saddr.ss_family) return false;
+	switch (saddr.ss_family) {
+	case AF_INET:
+		return ((sockaddr_in&)saddr).sin_port==((sockaddr_in&)r.saddr).sin_port && memcmp(&((sockaddr_in&)saddr).sin_addr,&((sockaddr_in&)r.saddr).sin_addr,sizeof(((sockaddr_in&)saddr).sin_addr))==0;
+	case AF_INET6:
+		return ((sockaddr_in6&)saddr).sin6_port==((sockaddr_in6&)r.saddr).sin6_port && memcmp(&((sockaddr_in6&)saddr).sin6_addr,&((sockaddr_in6&)r.saddr).sin6_addr,sizeof(((sockaddr_in6&)saddr).sin6_addr))==0;
+	default:
+		return memcmp(&saddr,&r.saddr,laddr)==0;
+	}
+}
+
+int SockAddr::cmp(const IAddress &rhs) const
+{
+	const SockAddr &r=(const SockAddr&)rhs; int c;
+	if ((c=cmp3(protocol,r.protocol))!=0||(c=cmp3(socktype,r.socktype))!=0||(c=cmp3(saddr.ss_family,r.saddr.ss_family))!=0) return c;
+	switch (saddr.ss_family) {
+	case AF_INET:
+		return (c=cmp3(((sockaddr_in&)saddr).sin_port,((sockaddr_in&)r.saddr).sin_port))!=0?c:sign(memcmp(&((sockaddr_in&)saddr).sin_addr,&((sockaddr_in&)r.saddr).sin_addr,sizeof(((sockaddr_in&)saddr).sin_addr)));
+	case AF_INET6:
+		return (c=cmp3(((sockaddr_in6&)saddr).sin6_port,((sockaddr_in6&)r.saddr).sin6_port))!=0?c:sign(memcmp(&((sockaddr_in6&)saddr).sin6_addr,&((sockaddr_in6&)r.saddr).sin6_addr,sizeof(((sockaddr_in6&)saddr).sin6_addr)));
+	default:
+		return sign(memcmp(&saddr,&r.saddr,laddr));
+	}
+}
+
+SockAddr::operator uint32_t() const
+{
+	const byte *p; size_t l; uint32_t hash=saddr.ss_family;
+	switch (saddr.ss_family) {
+	case AF_INET:
+		hash=hash*31^((sockaddr_in&)saddr).sin_port; p=(byte*)&((sockaddr_in&)saddr).sin_addr; l=sizeof(&((sockaddr_in&)saddr).sin_addr); break;
+	case AF_INET6:
+		hash=hash*31^((sockaddr_in6&)saddr).sin6_port; p=(byte*)&((sockaddr_in6&)saddr).sin6_addr; l=sizeof(&((sockaddr_in6&)saddr).sin6_addr); break;
+	default:
+		p=(byte*)&saddr; l=laddr; break;
+	}
+	for (size_t i=0; i<l; i++) hash=hash<<1^p[i];
+	return hash;
+}
+
+RC SockAddr::getAddr(const sockaddr_storage *ss,socklen_t ls,Value& addr,IMemAlloc *ma,bool fPort)
 {
 	char buf[128],*p=buf; size_t l=0; addr.setEmpty();
 	if (ss->ss_family==AF_INET6 && ls>=sizeof(sockaddr_in6)) {
 		const sockaddr_in6 *sa=(sockaddr_in6*)ss; if (fPort) *p++='['; bool fComp=false;
-		for (unsigned i=0; i<8; i++) {
+		for (int i=8; --i>=0; ) {
 			uint16_t seg=((uint16_t*)&sa->sin6_addr)[i];
 			if (fComp || seg!=0) p+=sprintf(p,"%s%X",i!=0?":":"",seg);
-			else for (fComp=true,*p++=':';;i++) if (i==7) {*p++=':'; break;} else if (((uint16_t*)&sa->sin6_addr)[i+1]!=0) break;
+			else for (fComp=true,*p++=':';;i--) if (i==0) {*p++=':'; break;} else if (((uint16_t*)&sa->sin6_addr)[i-1]!=0) break;
 		}
 		if (fPort) p+=sprintf(p,"]:%d",sa->sin6_port); l=p-buf;
 	} else if (ss->ss_family==AF_INET && ls>=sizeof(sockaddr_in)) {
 		const sockaddr_in *sa=(sockaddr_in*)ss;
-		l=sprintf(buf,"%d.%d.%d.%d",*(uint32_t*)&sa->sin_addr>>24,*(uint32_t*)&sa->sin_addr>>16&0xFF,*(uint32_t*)&sa->sin_addr>>8&0xFF,*(uint32_t*)&sa->sin_addr&0xFF);
+		l=sprintf(buf,"%d.%d.%d.%d",*(uint32_t*)&sa->sin_addr&0xFF,*(uint32_t*)&sa->sin_addr>>8&0xFF,*(uint32_t*)&sa->sin_addr>>16&0xFF,*(uint32_t*)&sa->sin_addr>>24);
 		if (fPort) l+=sprintf(buf+l,":%d",sa->sin_port);
 	} else return RC_INVPARAM;
 	if (l!=0) {
-		if ((p=(char*)ma->malloc(l+1))==NULL) return RC_NORESOURCES;
+		if ((p=(char*)ma->malloc(l+1))==NULL) return RC_NOMEM;
 		memcpy(p,buf,l); p[l]='\0'; addr.set(p,(uint32_t)l);
 	}
 	return RC_OK;
 }
 
-FreeQ Sockets::listeners;
+TCPConnTable	*volatile	Sockets::TCPConns=NULL;
+Pool						Sockets::TCPCns;
+Pool						Sockets::listeners;
 
 SocketListener::~SocketListener()
 {
@@ -1055,7 +1184,7 @@ IService *SocketListener::getService() const
 
 RC SocketListener::stop(bool fSuspend)
 {
-	disconnect(); if (!fSuspend) destroy(); return RC_OK;
+	disconnect(false); if (!fSuspend) destroy(); return RC_OK;
 }
 
 
@@ -1066,11 +1195,19 @@ RC SocketListener::create(IServiceCtx *sctx,uint32_t& dscr,IService::Processor *
 	case ISRV_ENDPOINT|ISRV_READ: dscr|=ISRV_ALLOCBUF; break;
 	case ISRV_ENDPOINT|ISRV_WRITE: if (prc!=NULL) {ret=prc; return RC_OK;} break;
 	}
-	RC rc=RC_OK; assert(asock!=INVALID_SOCKET); Value adr;
-	if ((prc=new(sctx) SocketProcessor(mgr.ctx,mgr,ISRV_SERVER,addr,asock,(ServiceCtx*)sctx))==NULL) {::closesocket(asock); rc=RC_NORESOURCES;}
-	else if (lsa!=0) {
-		if ((rc=AddrInfo::getAddr(&sa,lsa,adr,sctx))==RC_OK) {adr.setPropID(PROP_SPEC_ADDRESS); adr.setOp(OP_ADD); rc=sctx->getCtxPIN()->modify(&adr,1);}	// cleanup adr!
-		if (rc!=RC_OK) {prc->destroy(); prc=NULL; report(MSG_ERROR,"SocketListener: failed to set peer address (%d)\n",rc);}
+	RC rc=RC_OK; assert(asock!=INVALID_SOCKET); Value adr; unsigned rtimeout=DEFAULT_READ_TIMEOUT;
+	const Value *timeout=sctx->getParameter(PROP_SPEC_INTERVAL);
+	if (timeout!=NULL) {
+		if (timeout->type==VT_INTERVAL) rtimeout=(unsigned)(timeout->i64/1000);
+		else if (timeout->type==VT_UINT||timeout->type==VT_INT&&timeout->i>=0) rtimeout=timeout->ui;
+	}
+	if ((prc=new(sctx) SocketProcessor(mgr.ctx,mgr,ISRV_SERVER,addr,asock,(ServiceCtx*)sctx,rtimeout))==NULL) {if (asock!=fd) ::closesocket(asock); rc=RC_NOMEM;}
+	else {
+		if (asock==fd) prc->resetClose();
+		if (lsa!=0) {
+			if ((rc=SockAddr::getAddr(&sa,lsa,adr,sctx))==RC_OK) {adr.setPropID(PROP_SPEC_ADDRESS); adr.setOp(OP_ADD); rc=sctx->getCtxPIN()->modify(&adr,1);}	// cleanup adr!
+			if (rc!=RC_OK) {prc->destroy(); prc=NULL; report(MSG_ERROR,"SocketListener: failed to set peer address (%d)\n",rc);}
+		}
 	}
 	asock=INVALID_SOCKET; lsa=0; ret=prc; return rc;
 }
@@ -1078,38 +1215,34 @@ RC SocketListener::create(IServiceCtx *sctx,uint32_t& dscr,IService::Processor *
 void SocketListener::process(ISession *ses,unsigned iobits)
 {
 	if ((iobits&E_BIT)!=0) {
-		disconnect(); SOCKET sock;
+		disconnect(false); SOCKET sock;
 		if (Sockets::getSocket(addr,sock,true)!=0) destroy();
-		else {fd=sock; if (ioctl.add(this,R_BIT)!=RC_OK) {disconnect(); destroy();}}
+		else {fd=sock; if (ioctl.add(this,R_BIT)!=RC_OK) {disconnect(false); destroy();}}
 	} else if ((iobits&R_BIT)!=0) for (unsigned nAcc=0; nAcc<BURST_ACCEPT; nAcc++) {
-		if (addr.fUDP || addr.socktype==SOCK_DGRAM) {
-			//???
-		} else {
-			RC rc; lsa=(socklen_t)sizeof(sa); asock=::accept(fd,(sockaddr*)&sa,&lsa); IServiceCtx *sctx;
+		RC rc; IServiceCtx *sctx;
+		if (addr.socktype==SOCK_DGRAM) asock=fd;
+		else {
+			lsa=(socklen_t)sizeof(sa); asock=::accept(fd,(sockaddr*)&sa,&lsa);
 			if (!isSOK(asock)) {
 				int err=getSockErr(fd);
 #ifdef WIN32
 				if (err==WAIT_IO_COMPLETION) continue;
 #endif
 				if (!checkBlock(err)) report(MSG_ERROR,"SocketListener: accept error %d\n",err); break;
-			} else if (nbio(asock)==RC_OK) {
-				if ((rc=ses->createServiceCtx(vals,nVals,sctx,false,this))!=RC_OK) report(MSG_ERROR,"SocketListener: failed in ISession::createServiceCtx() (%d)\n",rc);
-				else if ((rc=prc->wait(R_BIT))!=RC_OK) {sctx->destroy(); report(MSG_ERROR,"SocketListener: failed to add SocketProcessor (%d)\n",rc);}
-				if ((mode&ISRV_TRANSIENT)!=0) {disconnect(); destroy(); break;}
-			} else ::closesocket(asock);
-			prc=NULL; asock=INVALID_SOCKET;
+			}
 		}
+		if ((rc=ses->createServiceCtx(vals,nVals,sctx,false,this))!=RC_OK) report(MSG_ERROR,"SocketListener: failed in ISession::createServiceCtx() (%d)\n",rc);
+		else if ((rc=prc->wait(R_BIT))!=RC_OK) {sctx->destroy(); report(MSG_ERROR,"SocketListener: failed to add SocketProcessor (%d)\n",rc);}
+		if ((mode&ISRV_TRANSIENT)!=0) {disconnect(false); destroy(); break;}
+		prc=NULL; asock=INVALID_SOCKET; if (addr.socktype==SOCK_DGRAM) break;
 	} else {
 		report(MSG_WARNING,"Write state in SocketListener\n");
 	}
 }
 
-void SocketListener::disconnect()
+void SocketListener::disconnect(bool)
 {
-	if (fd!=INVALID_SHANDLE) {
-		if (shutdown(fd,SHUT_RDWR)!=0) report(MSG_ERROR,"socket shutdown error %d\n",getSockErr(fd));
-		ioctl.remove(this); ::closesocket(fd); fd=INVALID_SHANDLE;
-	}
+	if (fd!=INVALID_SHANDLE) {ioctl.remove(this,true); fd=INVALID_SHANDLE;}
 }
 
 void SocketListener::destroy()
@@ -1117,32 +1250,50 @@ void SocketListener::destroy()
 	this->~SocketListener(); mgr.listeners.dealloc(this);
 }
 
-RC SocketProcessor::connect()
+RC SocketProcessor::connect(IServiceCtx *sctx)
 {
-	if (fd!=INVALID_SHANDLE) disconnect();
+	if (fd!=INVALID_SHANDLE) return RC_OK;
+	const Value *ad=sctx->getParameter(PROP_SPEC_ADDRESS); RC rc; 
+	if (ad==NULL) {
+		if ((ad=sctx->getParameter(PROP_SPEC_RESOLVE))==NULL) return RC_NOTFOUND;
+		if (ad->type==VT_URIID && (rc=((Session*)sctx->getSession())->resolve(sctx,ad->uid,addr))!=RC_OK) return rc;
+	} else if ((rc=addr.resolve(ad,sctx))!=RC_OK) return rc;
+	if (addr.socktype==SOCK_STREAM && mgr.TCPConns!=NULL) {
+		TCPConnTable::Find tcpf(*mgr.TCPConns,addr); TCPConnectionHolder *conn=tcpf.findLock(RW_X_LOCK);
+		if (conn!=NULL) {fd=conn->sock; tcpf.remove(conn); mgr.TCPCns.dealloc(conn); return RC_OK;}
+	}
 	SOCKET sock; if (Sockets::getSocket(addr,sock)!=0) return RC_OTHER;
 	if (::connect(sock,(sockaddr*)&addr.saddr,(int)addr.laddr)!=0) {
 		int err=WSAGetLastError(); RC rc=convCode(err);
 		report(MSG_ERROR,"connect failed with error: %s(%d)\n",getErrMsg(rc),err);
 		::closesocket(sock); return rc;
 	}
-	RC rc=nbio(sock); if (rc!=RC_OK) {::closesocket(sock); return rc;}
+	if ((rc=nbio(sock))!=RC_OK) {::closesocket(sock); return rc;}
 	fd=sock; return RC_OK;
 }
 
-void SocketProcessor::disconnect()
+void SocketProcessor::disconnect(bool fKeepalive)
 {
 	if (fd!=INVALID_SHANDLE) {
-		if (shutdown(fd,SHUT_RDWR)!=0) report(MSG_ERROR,"socket shutdown error %d\n",getSockErr(fd));
-		if ((state&L_BIT)!=0) {ioctl.remove(this); state&=~(L_BIT|R_BIT|W_BIT|E_BIT);}
-		::closesocket(fd); fd=INVALID_SHANDLE; state|=CONNECT_BIT;
+		void *p;
+		if (fKeepalive && addr.socktype==SOCK_STREAM && (p=mgr.TCPCns.alloc(sizeof(TCPConnectionHolder)))!=NULL) {
+			if (mgr.TCPConns==NULL) {
+				TCPConnTable *tct=new(&sharedAlloc) TCPConnTable(TCP_CONNECTION_TABLE_SIZE,&sharedAlloc);
+				if (!casP(&mgr.TCPConns,(TCPConnTable*)0,tct)) {tct->~TCPConnTable(); sharedAlloc.free(tct);}
+			}
+			TCPConnectionHolder *tch=new(p) TCPConnectionHolder(addr,fd); mgr.TCPConns->insert(tch);
+		} else if ((state&CLOSE_BIT)!=0) {
+			if ((state&L_BIT)==0) ::closesocket(fd);
+			else {ioctl.remove(this,true); state&=~(L_BIT|R_BIT|W_BIT|E_BIT);}
+		}
+		fd=INVALID_SHANDLE; state|=CLOSE_BIT;
 	}
 }
 
 void SocketProcessor::cleanup(IServiceCtx *sctx,bool)
 {
 	IOProcessor::cleanup(sctx); state&=~(EREAD_BIT|EWRITE_BIT|RWAIT_BIT|WWAIT_BIT|RESUME_BIT);
-	if (fd!=INVALID_SHANDLE) {::closesocket(fd); fd=INVALID_SHANDLE; state|=CONNECT_BIT;}
+	disconnect(sctx!=NULL?((ServiceCtx*)sctx)->isKeepalive():false);
 }
 
 void SocketProcessor::destroy()
@@ -1211,7 +1362,7 @@ RC StoreCtx::initBuiltinServices()
 {
 	RC rc; assert(serviceProviderTab==NULL && extFuncTab==NULL);
 	if ((serviceProviderTab=new(this) ServiceProviderTab(STORE_HANDLERTAB_SIZE,(MemAlloc*)this))==NULL ||
-		(extFuncTab=new(this) ExtFuncTab(STORE_EXTFUNCTAB_SIZE,(MemAlloc*)this))==NULL) return RC_NORESOURCES;
+		(extFuncTab=new(this) ExtFuncTab(STORE_EXTFUNCTAB_SIZE,(MemAlloc*)this))==NULL) return RC_NOMEM;
 	if ((rc=registerService(SERVICE_IO,new(this) IO(this)))!=RC_OK) return rc;
 	if ((rc=registerService(SERVICE_SOCKETS,new(this) Sockets(this)))!=RC_OK) return rc;
 	if ((rc=registerService(SERVICE_PROTOBUF,new(this) ProtobufService(this)))!=RC_OK) return rc;

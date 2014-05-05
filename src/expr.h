@@ -14,13 +14,13 @@ WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the
 License for the specific language governing permissions and limitations
 under the License.
 
-Written by Mark Venguerov 2004-2012
+Written by Mark Venguerov 2004-2014
 
 **************************************************************************************/
 
 /**
  * expression construction, compilation and evaluation classes
- * implementation of IExprTree and IExpr interfaces (see affinity.h)
+ * implementation of IExprNode and IExpr interfaces (see affinity.h)
  * aggregation operation data structures
  */
 #ifndef _EXPR_H_
@@ -48,17 +48,17 @@ namespace AfyKernel
 #define	EXPR_EXTN			0x8000
 #define	EXPR_BOOL			0x4000
 #define	EXPR_DISJUNCTIVE	0x2000
-#define	EXPR_NO_CODE		0x1000
-#define	EXPR_PARAMS			0x0800
-#define	EXPR_SELF			0x0400
-#define	EXPR_CONST			0x0200
-#define EXPR_NO_VARS		0x0100
-#define EXPR_MANY_VARS		0x0080
-#define EXPR_SORTED			0x0040
+#define	EXPR_PARAMS			0x1000
+#define	EXPR_SELF			0x0800
+#define	EXPR_CONST			0x0400
+#define EXPR_NO_VARS		0x0200
+#define EXPR_MANY_VARS		0x0100
+#define EXPR_SORTED			0x0080
 
 #define	PROP_OPTIONAL		0x80000000
 
 #define	STORE_VAR_ELEMENT	(STORE_ALL_ELEMENTS-1)
+#define	STORE_VAR2_ELEMENT	(STORE_ALL_ELEMENTS-2)
 
 #define	OP_CON			0x7F
 #define	OP_VAR			0x7E
@@ -78,6 +78,7 @@ namespace AfyKernel
 #define	OP_NAMED_PROP	0x70
 #define	OP_NAMED_ELT	0x6F
 #define	OP_EXTCALL		0x6E
+#define	OP_SUBX			0x6D
 
 #define	CND_EXISTS_R	0x2000
 #define	CND_FORALL_R	0x1000
@@ -101,10 +102,10 @@ namespace AfyKernel
 #define	NO_DAT2			0x0010
 #define	NO_ITV2			0x0020
 
-class	ExprTree;
+class	ExprNode;
 class	SOutCtx;
 struct	PropListP;
-struct	ValueV;
+struct	Values;
 
 /**
  * expression header
@@ -156,14 +157,14 @@ struct EvalCtx
 	unsigned	const	nEnv;
 	PIN			**const	vars;
 	unsigned	const	nVars;
-	const ValueV *const	params;
+	const Values *const	params;
 	unsigned	const	nParams;
 	const EvalCtx *const stack;
 	mutable EvalCtxType	ect;
 	mutable RExpCtx		*rctx;
 	EvalCtx(Session *s,EvalCtxType e=ECT_QUERY,const EvalCtx *st=NULL) : ma(s),ses(s),env(NULL),nEnv(0),vars(NULL),nVars(0),params(NULL),nParams(0),stack(st),ect(e),rctx(NULL) {}
 	EvalCtx(const EvalCtx& e,EvalCtxType et=ECT_QUERY) : ma(e.ma),ses(e.ses),env(e.env),nEnv(e.nEnv),vars(e.vars),nVars(e.nVars),params(e.params),nParams(e.nParams),stack(e.stack),ect(et),rctx(NULL) {}
-	EvalCtx(Session *s,PIN **en,unsigned ne,PIN **v,unsigned nV,const ValueV *par=NULL,unsigned nP=0,const EvalCtx *stk=NULL,MemAlloc *m=NULL,EvalCtxType e=ECT_QUERY)
+	EvalCtx(Session *s,PIN **en,unsigned ne,PIN **v,unsigned nV,const Values *par=NULL,unsigned nP=0,const EvalCtx *stk=NULL,MemAlloc *m=NULL,EvalCtxType e=ECT_QUERY)
 		: ma(m!=NULL?m:(MemAlloc*)s),ses(s),env(en),nEnv(ne),vars(v),nVars(nV),params(par),nParams(nP),stack(stk),ect(e),rctx(NULL) {}
 };
 
@@ -185,15 +186,24 @@ public:
 	char			*toString(unsigned mode=0,const QName *qNames=NULL,unsigned nQNames=0) const;
 	IExpr			*clone() const;
 	void			destroy();
-	static	RC		eval(const Expr *const *exprs,unsigned nExp,Value& result,const EvalCtx& ctx);
-	static	RC		compile(const ExprTree *,Expr *&,MemAlloc *ma,bool fCond,ValueV *aggs=NULL);
-	static	RC		compileConds(const ExprTree *const *,unsigned nExp,Expr *&,MemAlloc*);
+	RC				eval(Value& result,const EvalCtx& ctx) const;
+	bool			condSatisfied(const EvalCtx& ctx) const;
+	static	RC		compile(const ExprNode *,Expr *&,MemAlloc *ma,bool fCond,Values *aggs=NULL);
+	static	RC		compileConds(const ExprNode *const *exprs,unsigned nExp,Expr *merge,Expr *&res,MemAlloc*ma);
 	static	RC		create(uint16_t langID,const byte *body,uint32_t lBody,uint16_t flags,Expr *&,MemAlloc*);
 	static	RC		substitute(Expr *&exp,const Value *pars,unsigned nPars,MemAlloc *ma);
-	RC				decompile(ExprTree*&,MemAlloc *ses) const;
+	RC				decompile(ExprNode*&,MemAlloc *ses) const;
 	static	RC		calc(ExprOp op,Value& arg,const Value *moreArgs,int nargs,unsigned flags,const EvalCtx& ctx);
-	static	RC		linear(ExprOp op,Value& arg,const Value *moreArgs,int nargs,unsigned flags,const EvalCtx& ctx);
-	static	RC		calcAgg(ExprOp op,Value& res,const Value *more,unsigned nargs,unsigned flags,const EvalCtx& ctx);
+	static	RC		calcAgg(ExprOp op,Value& res,const Value *more,int nargs,unsigned flags,const EvalCtx& ctx);
+	static	RC		laNorm(ExprOp op,Value& arg,const Value *moreArgs,int nargs,unsigned flags,const EvalCtx& ctx);
+	static	RC		laTrace(ExprOp op,Value& arg,const Value *moreArgs,int nargs,unsigned flags,const EvalCtx& ctx);
+	static	RC		laTrans(ExprOp op,Value& arg,const Value *moreArgs,int nargs,unsigned flags,const EvalCtx& ctx);
+	static	RC		laDet(ExprOp op,Value& arg,const Value *moreArgs,int nargs,unsigned flags,const EvalCtx& ctx);
+	static	RC		laInv(ExprOp op,Value& arg,const Value *moreArgs,int nargs,unsigned flags,const EvalCtx& ctx);
+	static	RC		laRank(ExprOp op,Value& arg,const Value *moreArgs,int nargs,unsigned flags,const EvalCtx& ctx);
+	static	RC		laAddSub(ExprOp op,Value& lhs,const Value& rhs,unsigned flags,const EvalCtx& ctx);
+	static	RC		laMul(Value& lhs,const Value& rhs,unsigned flags,const EvalCtx& ctx);
+	static	RC		laDiv(Value& lhs,const Value& rhs,unsigned flags,const EvalCtx& ctx);
 	ushort			getFlags() const {return hdr.flags;}
 	size_t			serSize() const {return hdr.lExpr;}
 	byte			*serialize(byte *buf) const {memcpy(buf,&hdr,hdr.lExpr); return buf+hdr.lExpr;}
@@ -201,11 +211,9 @@ public:
 	void			getExtRefs(const PropertyID *&pids,unsigned& nPids) const {pids=hdr.nProps!=0?(const PropertyID*)(&hdr+1):NULL; nPids=hdr.nProps;}
 	RC				mergeProps(PropListP& plp,bool fForce=false,bool fFlags=false) const;
 	RC				getPropDNF(ushort var,struct PropDNF *&dnf,size_t& ldnf,MemAlloc *ma) const;
-	static	RC		addPropRefs(Expr **pex,const PropertyID *props,unsigned nProps,MemAlloc *ma);
 	static	RC		deserialize(Expr*&,const byte *&buf,const byte *const ebuf,MemAlloc*);
 	static	Expr	*clone(const Expr *exp,MemAlloc *ma);
 	static	RC		getI(const Value& v,long& num,const EvalCtx&);
-	static	bool	condSatisfied(const class Expr *const *exprs,unsigned nExp,const EvalCtx& ctx);
 	static	RC		condRC(int c,ExprOp op) {assert(op>=OP_EQ && op<=OP_GE); return c<-2?RC_TYPE:c==-2||(compareCodeTab[op-OP_EQ]&1<<(c+1))==0?RC_FALSE:RC_TRUE;}
 	static	RC		registerExtn(void *itf,uint16_t& langID);
 	static	void	**extnTab;
@@ -216,6 +224,10 @@ private:
 	static	const	Value *strOpConv(Value&,const Value*,Value&,const EvalCtx&);
 	static	const	Value *numOpConv(Value&,const Value*,Value&,unsigned flg,const EvalCtx&);
 	static	bool	numOpConv(Value&,unsigned flg,const EvalCtx&);
+	static	RC		expandStr(Value& v,uint32_t newl,MemAlloc *ma,bool fZero=false);
+	static	RC		laConvToDouble(Value& arg,MemAlloc *ma);
+	static	RC		laLUdec(Value &arg,unsigned *piv,double& det);
+	static	RC		laLUslv(double *b,const Value &lu,double *res,const unsigned *piv);
 	static	const	byte	compareCodeTab[];
 	friend	class	ExprCompileCtx;
 	friend	struct	AggAcc;
@@ -223,30 +235,31 @@ private:
 
 /**
  * expression tree node
- * implements IExprTree interface
+ * implements IExprNode interface
  */
-class ExprTree : public IExprTree
+class ExprNode : public IExprNode
 {
 	MemAlloc *const	ma;
 	ExprOp			op;
-	ushort			nops;
+	uint8_t			nops;
+	short			refs;
 	ushort			vrefs;
 	ushort			flags;
 	Value			operands[1];
 private:
 	void			*operator new(size_t s,unsigned nOps,MemAlloc *ma) throw() {return ma->malloc(s+int(nOps-1)*sizeof(Value));}
-	void			operator delete(void *p) {if (p!=NULL) ((ExprTree*)p)->ma->free(p);}
+	void			operator delete(void *p) {if (p!=NULL) ((ExprNode*)p)->ma->free(p);}
 	static	RC		render(const Value& v,int prty,SOutCtx&);
 	static	RC		cvNot(Value&);
 	const	static	ExprOp	notOp[];
 public:
-	ExprTree(ExprOp o,ushort no,ushort vr,unsigned flags,const Value *ops,MemAlloc *ma);
-	virtual			~ExprTree();
+	ExprNode(ExprOp o,ushort no,ushort vr,unsigned flags,const Value *ops,MemAlloc *ma);
+	virtual			~ExprNode();
 	ExprOp			getOp() const;
 	unsigned		getNumberOfOperands() const;
 	const	Value&	getOperand(unsigned idx) const;
 	unsigned		getFlags() const;
-	bool			operator==(const ExprTree& rhs) const;
+	bool			operator==(const ExprNode& rhs) const;
 	RC				render(int prty,SOutCtx&) const;
 	RC				toPathSeg(PathSeg& ps,MemAlloc *ma) const;
 	RC				getPropDNF(ushort var,struct PropDNF *&dnf,size_t& ldnf,MemAlloc *ma) const;
@@ -254,15 +267,15 @@ public:
 	IExpr			*compile();
 	char			*toString(unsigned mode=0,const QName *qNames=NULL,unsigned nQNames=0) const;
 	RC				substitute(const Value *pars,unsigned nPars,MemAlloc*);
-	IExprTree		*clone() const;
+	IExprNode		*clone() const;
 	void			destroy();
 	static	RC		node(Value&,Session*,ExprOp,unsigned,const Value *,unsigned);
 	static	RC		forceExpr(Value&,MemAlloc *ma,bool fCopy=false);
 	static	RC		normalizeCollection(Value *vals,unsigned nvals,Value& res,MemAlloc *ma,StoreCtx *ctx);
-	static	RC		normalizeArray(Value *vals,unsigned nvals,Value& res,MemAlloc *ma);
+	static	RC		normalizeArray(Session *s,Value *vals,unsigned nvals,Value& res,MemAlloc *ma);
 	static	RC		normalizeStruct(Session *s,Value *vals,unsigned nvals,Value& res,MemAlloc *ma,bool fPIN);
 	static	RC		normalizeMap(Value *vals,unsigned nvals,Value& res,MemAlloc *ma);
-	static	ushort	vRefs(const Value& v) {return v.type==VT_VARREF&&(v.refV.flags==0xFFFF||(v.refV.flags&VAR_TYPE_MASK)==0)?v.refV.refN<<8|v.refV.refN:v.type==VT_EXPRTREE?((ExprTree*)v.exprt)->vrefs:NO_VREFS;}
+	static	ushort	vRefs(const Value& v) {return v.type==VT_VARREF&&(v.refV.flags==0xFFFF||(v.refV.flags&VAR_TYPE_MASK)==0)?v.refV.refN<<8|v.refV.refN:v.type==VT_EXPRTREE?((ExprNode*)v.exprt)->vrefs:NO_VREFS;}
 	static	void	vRefs(ushort& vr1,ushort vr2) {if (vr1==NO_VREFS||vr2==MANY_VREFS) vr1=vr2; else if (vr1!=vr2&&vr1!=MANY_VREFS&&vr2!=NO_VREFS) mergeVRefs(vr1,vr2);}
 	static	void	mergeVRefs(ushort& vr1,ushort vr2);
 	void			mapVRefs(byte from,byte to);
@@ -289,7 +302,7 @@ public:
  */
 class ExprCompileCtx {
 	MemAlloc	*const	ma;
-	ValueV		*const	aggs;
+	Values		*const	aggs;
 	uint32_t	labelCount;
 	uint32_t	nStack;
 	uint32_t	nCSE;
@@ -304,11 +317,11 @@ class ExprCompileCtx {
 		uint32_t	addr;
 		ExprLbl(ExprLbl *nxt,int l,uint32_t ad) : next(nxt),label(l),addr(ad) {}
 	}			*labels;
-	ExprCompileCtx(MemAlloc *,ValueV *);
+	ExprCompileCtx(MemAlloc *,Values *);
 	~ExprCompileCtx();
-	RC		compileNode(const ExprTree *expr,unsigned flg=0);
+	RC		compileNode(const ExprNode *expr,unsigned flg=0);
 	RC		compileValue(const Value& v,unsigned flg=0);
-	RC		compileCondition(const ExprTree *node,unsigned mode,uint32_t lbl,unsigned flg=0);
+	RC		compileCondition(const ExprNode *node,unsigned mode,uint32_t lbl,unsigned flg=0);
 	RC		addUIDRef(uint32_t id,uint8_t var,uint32_t flags,uint16_t& idx);
 	RC		putCondCode(ExprOp op,unsigned fa,uint32_t lbl,bool flbl=true,int nops=0);
 	void	adjustRef(uint32_t lbl);
@@ -316,8 +329,9 @@ class ExprCompileCtx {
 	bool	expandHdr(uint32_t l);
 	RC		result(Expr *&);
 	byte	*alloc(uint32_t l) {return lCode+l>xlCode && !expand(l)?NULL:(lCode+=l,pCode+lCode-l);}
-	friend	RC	Expr::compile(const ExprTree *,Expr *&,MemAlloc*,bool fCond,ValueV*);
-	friend	RC	Expr::compileConds(const ExprTree *const *,unsigned nExp,Expr *&,MemAlloc*);
+	friend	RC	Expr::compile(const ExprNode *,Expr *&,MemAlloc*,bool fCond,Values*);
+	friend	RC	Expr::compileConds(const ExprNode *const *exprs,unsigned nExp,Expr *merge,Expr *&res,MemAlloc*ma);
+
 };
 
 class CmpValue

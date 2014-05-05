@@ -14,7 +14,7 @@ WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the
 License for the specific language governing permissions and limitations
 under the License.
 
-Written by Mark Venguerov 2004-2012
+Written by Mark Venguerov 2004-2014
 
 **************************************************************************************/
 /**
@@ -87,7 +87,7 @@ public:
 		Queue	B1;
 		Queue	B2;
 		Mutex	lock;
-		FreeQ	freeQE;
+		Pool	freeQE;
 		QueueCtrl(int nb,MemAlloc *ma=NULL) : nElts(nb),T1TargetL(0),T1(_T1),T2(_T2),B1(_B1),B2(_B2),freeQE(ma,QE_ALLOC_BLOCK_SIZE) {}
 	};
 protected:
@@ -105,7 +105,7 @@ protected:
 			if ((qe=findQE.findLock(RW_S_LOCK))==NULL) {findQE.unlock(); qe=findQE.findLock(RW_X_LOCK);}
 			if (qe==NULL) {
 				if ((flags&QMGR_INMEM)!=0) return RC_NOTFOUND;
-				if ((qe=new(ctrl.freeQE.alloc(sizeof(QE))) QE(this,key,_T1))==NULL) return RC_NORESOURCES;
+				if ((qe=new(ctrl.freeQE.alloc(sizeof(QE))) QE(this,key,_T1))==NULL) return RC_NOMEM;
 				qe->lock.lock(RW_X_LOCK);
 				hashTable.insertNoLock(qe,findQE.getIdx()); findQE.unlock();
 				ctrl.lock.lock(); ctrl.T1.l++; if (old!=NULL) releaseNoLock(old);

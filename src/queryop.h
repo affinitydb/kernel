@@ -14,7 +14,7 @@ WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the
 License for the specific language governing permissions and limitations
 under the License.
 
-Written by Mark Venguerov 2004-2012
+Written by Mark Venguerov 2004-2014
 
 **************************************************************************************/
 
@@ -366,8 +366,7 @@ class MergeOp : public QueryOp
 	const	QUERY_SETOP	op;
 	const	CondEJ		*ej;
 	const	unsigned	nej;
-	const	Expr *const	*conds;
-	unsigned			nConds;
+	const	Expr		*cond;
 	unsigned			didx;
 	PINx				pexR;
 	PINx				*pR;
@@ -386,7 +385,7 @@ class MergeOp : public QueryOp
 	Value				vls[1];
 	void				cleanup(Value *pv) {for (unsigned i=0; i<nej; i++) freeV(pv[i]);}
 public:
-	MergeOp(QueryOp *qop1,QueryOp *qop2,const CondEJ *ce,unsigned ne,QUERY_SETOP qo,const Expr *const *conds,unsigned nConds,unsigned qf);
+	MergeOp(QueryOp *qop1,QueryOp *qop2,const CondEJ *ce,unsigned ne,QUERY_SETOP qo,const Expr *conds,unsigned qf);
 	void	*operator new(size_t s,MemAlloc *ma,unsigned ne) {return ma->malloc(s+(ne*2-1)*sizeof(Value));}
 	virtual	~MergeOp();
 	void	connect(PINx **results,unsigned nRes);
@@ -422,15 +421,11 @@ class NestedLoop : public QueryOp
 	QueryOp	*const		queryOp2;
 	PINx				pexR;
 	PINx				*pR;
-	union {
-		class	Expr	**conds;
-		class	Expr	*cond;
-	};
-	unsigned			nConds;
+	class	Expr		*cond;
 public:
 	NestedLoop(QueryOp *qop1,QueryOp *qop2,unsigned qf)
-		: QueryOp(qop1,qf|QO_JOIN|(qop1->getQFlags()&(QO_IDSORT|QO_ALLPROPS|QO_REVERSIBLE))),queryOp2(qop2),pexR(qx->ses),pR(&pexR),nConds(0)
-		{conds=NULL; nOuts+=qop2->getNOuts(); sort=qop1->getSort(nSegs); props=qop1->getProps(nProps);}
+		: QueryOp(qop1,qf|QO_JOIN|(qop1->getQFlags()&(QO_IDSORT|QO_ALLPROPS|QO_REVERSIBLE))),queryOp2(qop2),pexR(qx->ses),pR(&pexR),cond(NULL)
+		{nOuts+=qop2->getNOuts(); sort=qop1->getSort(nSegs); props=qop1->getProps(nProps);}
 	virtual	~NestedLoop();
 	void	connect(PINx **results,unsigned nRes);
 	RC		init();
@@ -465,8 +460,9 @@ public:
  */
 class Filter : public QueryOp
 {
-	const Expr *const *conds;
-	unsigned		nConds;
+	const Expr		*cond;
+	PropertyID		*rprops;
+	unsigned		nrProps;
 	CondIdx			*condIdx;
 	unsigned		nCondIdx;
 	QueryWithParams	*queries;
@@ -576,21 +572,21 @@ public:
  */
 class TransOp : public QueryOp
 {
-	const	ValueV		*dscr;
+	const	Values		*dscr;
 	PINx				**ins;
 	unsigned			nIns;
 	PINx				qr,*pqr;
 	PINx				**res;
 	unsigned			nRes;
-	ValueV				aggs;
+	Values				aggs;
 	const	OrderSegQ	*groupSeg;
 	const	unsigned	nGroup;
 	const	Expr		*having;
 	AggAcc				*ac;
 	EvalCtx				ectx;
 public:
-	TransOp(QueryOp *q,const ValueV *d,unsigned nD,const ValueV& aggs,const OrderSegQ *gs,unsigned nG,const Expr *hv,unsigned qf);
-	TransOp(QCtx *qc,const ValueV *d,unsigned nD,unsigned qf);
+	TransOp(QueryOp *q,const Values *d,unsigned nD,const Values& aggs,const OrderSegQ *gs,unsigned nG,const Expr *hv,unsigned qf);
+	TransOp(QCtx *qc,const Values *d,unsigned nD,unsigned qf);
 	virtual		~TransOp();
 	void		connect(PINx **results,unsigned nRes);
 	RC			init();
@@ -605,9 +601,9 @@ public:
 class CommOp : public QueryOp
 {
 	ServiceCtx	*sctx;
-	ValueV		params;
+	Values		params;
 public:
-	CommOp(QCtx *s,ServiceCtx *sc,const ValueV& vv,unsigned md) : QueryOp(s,md),sctx(sc) {params=vv;}
+	CommOp(QCtx *s,ServiceCtx *sc,const Values& vv,unsigned md) : QueryOp(s,md),sctx(sc) {params=vv;}
 	virtual		~CommOp();
 	RC			advance(const PINx *skip=NULL);
 };

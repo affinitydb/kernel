@@ -11,6 +11,8 @@
 		1C261E0617AA136900B6C191 /* ecc.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 1C261E0417AA136700B6C191 /* ecc.cpp */; };
 		1C261E0717AA136900B6C191 /* ecc.h in Headers */ = {isa = PBXBuildFile; fileRef = 1C261E0517AA136800B6C191 /* ecc.h */; };
 		1C36E88D17236EC2007FDB31 /* builtin.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 1C36E88C17236EC2007FDB31 /* builtin.cpp */; };
+		1C5483F718F5B1E3004FB2BC /* event.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 1C5483F518F5B1E3004FB2BC /* event.cpp */; };
+		1C5483F818F5B1E3004FB2BC /* event.h in Headers */ = {isa = PBXBuildFile; fileRef = 1C5483F618F5B1E3004FB2BC /* event.h */; };
 		1C8BB9A51688E78D0065C0D4 /* service.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 1C8BB9A41688E78D0065C0D4 /* service.cpp */; };
 		1C964A67177BAC29004F03CB /* afyutils.h in Headers */ = {isa = PBXBuildFile; fileRef = 1C964A66177BAC29004F03CB /* afyutils.h */; };
 		1C964A69177CEDA1004F03CB /* afysync.h in Headers */ = {isa = PBXBuildFile; fileRef = 1C964A68177CEDA1004F03CB /* afysync.h */; };
@@ -19,8 +21,6 @@
 		1CB9E1D716D35DCA0052636C /* pin.h in Headers */ = {isa = PBXBuildFile; fileRef = 1CB9E1D416D35DCA0052636C /* pin.h */; };
 		1CB9E1D816D35DCA0052636C /* service.h in Headers */ = {isa = PBXBuildFile; fileRef = 1CB9E1D516D35DCA0052636C /* service.h */; };
 		1CCB96DC172F77DA00906023 /* afysock.h in Headers */ = {isa = PBXBuildFile; fileRef = 1CCB96DB172F77DA00906023 /* afysock.h */; };
-		1CDF484C179393E200FA0FBD /* fsm.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 1CDF484A179393E200FA0FBD /* fsm.cpp */; };
-		1CDF484D179393E200FA0FBD /* fsm.h in Headers */ = {isa = PBXBuildFile; fileRef = 1CDF484B179393E200FA0FBD /* fsm.h */; };
 		1CDF48501794FFC300FA0FBD /* named.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 1CDF484E1794FFC300FA0FBD /* named.cpp */; };
 		1CDF48511794FFC300FA0FBD /* named.h in Headers */ = {isa = PBXBuildFile; fileRef = 1CDF484F1794FFC300FA0FBD /* named.h */; };
 		1CEFA16018C4416A00AB763F /* linear.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 1CEFA15F18C4416A00AB763F /* linear.cpp */; };
@@ -132,6 +132,8 @@
 		1C261E0417AA136700B6C191 /* ecc.cpp */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.cpp.cpp; path = ecc.cpp; sourceTree = "<group>"; };
 		1C261E0517AA136800B6C191 /* ecc.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = ecc.h; sourceTree = "<group>"; };
 		1C36E88C17236EC2007FDB31 /* builtin.cpp */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.cpp.cpp; path = builtin.cpp; sourceTree = "<group>"; };
+		1C5483F518F5B1E3004FB2BC /* event.cpp */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.cpp.cpp; path = event.cpp; sourceTree = "<group>"; };
+		1C5483F618F5B1E3004FB2BC /* event.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = event.h; sourceTree = "<group>"; };
 		1C8BB9A41688E78D0065C0D4 /* service.cpp */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.cpp.cpp; path = service.cpp; sourceTree = "<group>"; };
 		1C964A66177BAC29004F03CB /* afyutils.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = afyutils.h; sourceTree = "<group>"; };
 		1C964A68177CEDA1004F03CB /* afysync.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = afysync.h; sourceTree = "<group>"; };
@@ -140,8 +142,6 @@
 		1CB9E1D416D35DCA0052636C /* pin.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = pin.h; sourceTree = "<group>"; };
 		1CB9E1D516D35DCA0052636C /* service.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = service.h; sourceTree = "<group>"; };
 		1CCB96DB172F77DA00906023 /* afysock.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = afysock.h; sourceTree = "<group>"; };
-		1CDF484A179393E200FA0FBD /* fsm.cpp */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.cpp.cpp; path = fsm.cpp; sourceTree = "<group>"; };
-		1CDF484B179393E200FA0FBD /* fsm.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = fsm.h; sourceTree = "<group>"; };
 		1CDF484E1794FFC300FA0FBD /* named.cpp */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.cpp.cpp; path = named.cpp; sourceTree = "<group>"; };
 		1CDF484F1794FFC300FA0FBD /* named.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = named.h; sourceTree = "<group>"; };
 		1CEFA15F18C4416A00AB763F /* linear.cpp */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.cpp.cpp; path = linear.cpp; sourceTree = "<group>"; };
@@ -270,8 +270,6 @@
 				1C261E0517AA136800B6C191 /* ecc.h */,
 				1CDF484E1794FFC300FA0FBD /* named.cpp */,
 				1CDF484F1794FFC300FA0FBD /* named.h */,
-				1CDF484A179393E200FA0FBD /* fsm.cpp */,
-				1CDF484B179393E200FA0FBD /* fsm.h */,
 				1C0AC138178EF0D20068D36C /* persist.cpp */,
 				1C964A6A177CEED7004F03CB /* request.h */,
 				1C36E88C17236EC2007FDB31 /* builtin.cpp */,
@@ -377,6 +375,8 @@
 				4C507BB41671A3BA00C45622 /* utils.cpp */,
 				4C507BB51671A3BA00C45622 /* utils.h */,
 				4C507BB61671A3BA00C45622 /* value.cpp */,
+				1C5483F518F5B1E3004FB2BC /* event.cpp */,
+				1C5483F618F5B1E3004FB2BC /* event.h */,
 			);
 			path = src;
 			sourceTree = SOURCE_ROOT;
@@ -453,6 +453,7 @@
 				4C507BF41671A3BA00C45622 /* pgtree.h in Headers */,
 				4C507BF51671A3BA00C45622 /* pinex.h in Headers */,
 				4C507BF71671A3BA00C45622 /* pinref.h in Headers */,
+				1C5483F818F5B1E3004FB2BC /* event.h in Headers */,
 				4C507BF81671A3BA00C45622 /* propdnf.h in Headers */,
 				4C507BFA1671A3BA00C45622 /* protobuf.h in Headers */,
 				4C507BFC1671A3BA00C45622 /* qbuild.h in Headers */,
@@ -474,7 +475,6 @@
 				1C964A67177BAC29004F03CB /* afyutils.h in Headers */,
 				1C964A69177CEDA1004F03CB /* afysync.h in Headers */,
 				1C964A6B177CEED7004F03CB /* request.h in Headers */,
-				1CDF484D179393E200FA0FBD /* fsm.h in Headers */,
 				1CDF48511794FFC300FA0FBD /* named.h in Headers */,
 				1C261E0717AA136900B6C191 /* ecc.h in Headers */,
 			);
@@ -577,6 +577,7 @@
 				4C507C0A1671A3BA00C45622 /* sort.cpp in Sources */,
 				4C507C0B1671A3BA00C45622 /* startup.cpp in Sources */,
 				4C507C0C1671A3BA00C45622 /* stmt.cpp in Sources */,
+				1C5483F718F5B1E3004FB2BC /* event.cpp in Sources */,
 				4C507C0E1671A3BA00C45622 /* storecb.cpp in Sources */,
 				4C507C101671A3BA00C45622 /* sync.cpp in Sources */,
 				4C507C121671A3BA00C45622 /* timerq.cpp in Sources */,
@@ -589,7 +590,6 @@
 				1CB9E1D616D35DCA0052636C /* pin.cpp in Sources */,
 				1C36E88D17236EC2007FDB31 /* builtin.cpp in Sources */,
 				1C0AC139178EF0D20068D36C /* persist.cpp in Sources */,
-				1CDF484C179393E200FA0FBD /* fsm.cpp in Sources */,
 				1CDF48501794FFC300FA0FBD /* named.cpp in Sources */,
 				1C261E0617AA136900B6C191 /* ecc.cpp in Sources */,
 			);

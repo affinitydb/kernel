@@ -14,7 +14,7 @@ WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the
 License for the specific language governing permissions and limitations
 under the License.
 
-Written by Mark Venguerov 2004-2012
+Written by Mark Venguerov 2004-2014
 
 **************************************************************************************/
 
@@ -46,7 +46,7 @@ Written by Mark Venguerov 2004-2012
 #include "ftindex.h"
 #include "classifier.h"
 #include "blob.h"
-#include "fsm.h"
+#include "event.h"
 #include "service.h"
 #include "ifacever.h"
 
@@ -180,7 +180,7 @@ static const char *getSrvDir(const char *dir,char *buf,size_t lbuf)
 static void checkStoreTable()
 {
 	if (storeTable==NULL) {
-		StoreTable *st=new(&sharedAlloc) StoreTable(10,&sharedAlloc); if (st==NULL) throw RC_NORESOURCES;
+		StoreTable *st=new(&sharedAlloc) StoreTable(10,&sharedAlloc); if (st==NULL) throw RC_NOMEM;
 		if (!casP(&storeTable,(StoreTable*)0,st)) {st->~StoreTable(); sharedAlloc.free(st);}
 	}
 }
@@ -212,7 +212,7 @@ RC openStore(const StartupParameters& params,IAffinity *&aff)
 
 		report(MSG_NOTICE,"Affinity startup - version %d.%02d\n",STORE_VERSION/100,STORE_VERSION%100);
 
-		if ((ctx=StoreCtx::createCtx(params.mode,dir,params.memory,params.lMemory))==NULL) return RC_NORESOURCES;
+		if ((ctx=StoreCtx::createCtx(params.mode,dir,params.memory,params.lMemory))==NULL) return RC_NOMEM;
 
 		dir=ctx->getDirectory();
 
@@ -220,9 +220,9 @@ RC openStore(const StartupParameters& params,IAffinity *&aff)
 		
 		ctx->defaultService=params.service;
 
-		if (ctx->memory==NULL && (ctx->fileMgr=new(ctx) FileMgr(ctx,params.maxFiles,getSrvDir(params.serviceDirectory,dirbuf,sizeof(dirbuf))))==NULL) throw RC_NORESOURCES;
+		if (ctx->memory==NULL && (ctx->fileMgr=new(ctx) FileMgr(ctx,params.maxFiles,getSrvDir(params.serviceDirectory,dirbuf,sizeof(dirbuf))))==NULL) throw RC_NOMEM;
 
-		if ((ctx->cryptoMgr=CryptoMgr::get())==NULL) {report(MSG_CRIT,"Cannot initialize crypto\n"); throw RC_NORESOURCES;}
+		if ((ctx->cryptoMgr=CryptoMgr::get())==NULL) {report(MSG_CRIT,"Cannot initialize crypto\n"); throw RC_NOMEM;}
 
 		SInCtx::initKW();
 
@@ -318,7 +318,7 @@ RC openStore(const StartupParameters& params,IAffinity *&aff)
 		ctx->namedMgr=new(ctx) NamedMgr(ctx);
 		ctx->classMgr=new(ctx) Classifier(ctx,params.shutdownAsyncTimeout);
 		ctx->bigMgr=new(ctx) BigMgr(ctx);
-		ctx->fsmMgr=new(ctx) FSMMgr(ctx);
+		ctx->eventMgr=new(ctx) EventMgr(ctx);
 
 		if ((rc=RequestQueue::addStore(*ctx))!=RC_OK) {
 			//...
@@ -331,7 +331,7 @@ RC openStore(const StartupParameters& params,IAffinity *&aff)
 		if (fRecv || (params.mode&STARTUP_ROLLFORWARD)!=0) {
 			report(MSG_NOTICE,fRecv ? "Affinity hasn't been properly shut down\n    automatic recovery in progress...\n" :
 																					"Rollforward in progress...\n");
-			Session *ses=Session::createSession(ctx); if (ses!=NULL) ses->setIdentity(STORE_OWNER,true);
+			Session *ses=Session::createSession(ctx);
 			if ((rc=ctx->logMgr->recover(ses,(params.mode&STARTUP_ROLLFORWARD)!=0))==RC_OK && (rc=ctx->namedMgr->restoreXPropID(ses))==RC_OK)
 				report(MSG_NOTICE,fRecv?"Recovery finished\n":"Rollforward finished\n");
 			else {
@@ -349,7 +349,7 @@ RC openStore(const StartupParameters& params,IAffinity *&aff)
 		if ((params.mode&STARTUP_RT)==0 && (rc=ctx->tqMgr->startThread())!=RC_OK) throw rc;
 		
 		if ((params.mode&STARTUP_NO_LOAD)==0) {
-			Session *ses=Session::createSession(ctx); if (ses!=NULL) ses->setIdentity(STORE_OWNER,true);
+			Session *ses=Session::createSession(ctx);
 			if ((rc=ctx->namedMgr->loadObjects(ses,(params.mode&STARTUP_SAFE)!=0))!=RC_OK)
 				{report(MSG_CRIT,"Cannot load persisted objects(%d)\n",rc); throw rc;}
 			Session::terminateSession();
@@ -393,7 +393,7 @@ RC createStore(const StoreCreationParameters& create,const StartupParameters& pa
 
 		if ((ctx=storeTable->find(StrKey(dir)))!=NULL) {report(MSG_NOTICE,"Found open store in %s\n",dir); aff=ctx; return RC_OK;}
 
-		if ((ctx=StoreCtx::createCtx(params.mode,dir,params.memory,params.lMemory,true))==NULL) return RC_NORESOURCES;
+		if ((ctx=StoreCtx::createCtx(params.mode,dir,params.memory,params.lMemory,true))==NULL) return RC_NOMEM;
 
 		dir=ctx->getDirectory();
 
@@ -404,11 +404,11 @@ RC createStore(const StoreCreationParameters& create,const StartupParameters& pa
 		ctx->bufMgr=new(ctx) BufMgr(ctx,calcBuffers(params.nBuffers,create.pageSize),create.pageSize);
 
 		if (ctx->memory==NULL) {
-			if ((ctx->fileMgr=new(ctx) FileMgr(ctx,params.maxFiles,getSrvDir(params.serviceDirectory,dirbuf,sizeof(dirbuf))))==NULL) throw RC_NORESOURCES;
+			if ((ctx->fileMgr=new(ctx) FileMgr(ctx,params.maxFiles,getSrvDir(params.serviceDirectory,dirbuf,sizeof(dirbuf))))==NULL) throw RC_NOMEM;
 			ctx->fileMgr->setPageSize(create.pageSize);
 		}
 
-		if ((ctx->cryptoMgr=CryptoMgr::get())==NULL) {report(MSG_CRIT,"Cannot initialize crypto\n"); throw RC_NORESOURCES;}
+		if ((ctx->cryptoMgr=CryptoMgr::get())==NULL) {report(MSG_CRIT,"Cannot initialize crypto\n"); throw RC_NOMEM;}
 
 		SInCtx::initKW();
 
@@ -470,14 +470,14 @@ RC createStore(const StoreCreationParameters& create,const StartupParameters& pa
 		ctx->namedMgr=new(ctx) NamedMgr(ctx);
 		ctx->classMgr=new(ctx) Classifier(ctx,params.shutdownAsyncTimeout);
 		ctx->bigMgr=new(ctx) BigMgr(ctx);
-		ctx->fsmMgr=new(ctx) FSMMgr(ctx);
+		ctx->eventMgr=new(ctx) EventMgr(ctx);
 		
 		if ((rc=RequestQueue::addStore(*ctx))!=RC_OK) {
 			//...
 			throw rc;
 		}
 
-		Session *ses=Session::createSession(ctx); if (ses!=NULL) ses->setIdentity(STORE_OWNER,true);
+		Session *ses=Session::createSession(ctx);
 
 		if ((rc=ctx->namedMgr->createBuiltinObjects(ses))!=RC_OK) {report(MSG_CRIT,"Cannot create builtin classes and properties (%d)\n",rc); throw rc;}
 		
@@ -510,8 +510,8 @@ RC createStore(const StoreCreationParameters& create,const StartupParameters& pa
 		if ((rc=ctx->theCB->update(ctx))==RC_OK || (params.mode&STARTUP_FORCE_OPEN)!=0) {
 			rc=RC_OK;
 			if (pLoad!=NULL) {
-				Session *ses=Session::createSession(ctx);
-				if ((*pLoad=ses)==NULL) {*pLoad=NULL; rc=RC_NORESOURCES;}
+				Session *ses=Session::createSession(ctx,0,true);
+				if ((*pLoad=ses)==NULL) {*pLoad=NULL; rc=RC_NOMEM;}
 				else if ((rc=ctx->txMgr->startTx(ses,TXT_READWRITE,TXI_DEFAULT))==RC_OK) {ses->setRestore(); ctx->theCB->state=SST_RESTORE;}
 			}
 			if (rc==RC_OK) {ctx->setState(SSTATE_OPEN); aff=ctx; ++StoreCtx::nStores; storeTable->insert(ctx); report(MSG_NOTICE,"Affinity running\n");}	// unique???
@@ -620,7 +620,7 @@ RC StoreCtx::shutdown()
 		}
 
 		if ((mode&STARTUP_PRINT_STATS)!=0) {
-			Session *ses=Session::createSession(this); if (ses!=NULL) ses->setIdentity(STORE_OWNER,true);
+			Session *ses=Session::createSession(this);
 			reportTree(theCB->mapRoots[MA_FTINDEX],"FT",this);
 			reportTree(theCB->mapRoots[MA_CLASSINDEX],"Class",this);
 			TreeScan *sc=namedMgr->scan(ses,NULL);
@@ -694,7 +694,7 @@ StoreCtx::~StoreCtx()
 	if (treeMgr!=NULL) treeMgr->~TreeMgr();
 	if (txMgr!=NULL) txMgr->~TxMgr();
 	if (bigMgr!=NULL) bigMgr->~BigMgr();
-	if (fsmMgr!=NULL) fsmMgr->~FSMMgr();
+	if (eventMgr!=NULL) eventMgr->~EventMgr();
 	if (tqMgr!=NULL) tqMgr->~TimerQ();
 	storeTls.set(NULL);
 	if (m!=NULL) m->truncate(TR_REL_ALL);

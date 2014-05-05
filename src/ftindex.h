@@ -14,7 +14,7 @@ WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the
 License for the specific language governing permissions and limitations
 under the License.
 
-Written by Mark Venguerov 2004-2012
+Written by Mark Venguerov 2004-2014
 
 **************************************************************************************/
 
@@ -231,7 +231,7 @@ class FTIndexMgr
 public:
 					FTIndexMgr(class StoreCtx *ct);
 	virtual			~FTIndexMgr();
-	void			*operator new(size_t s,StoreCtx *ctx) {void *p=ctx->malloc(s); if (p==NULL) throw RC_NORESOURCES; return p;}
+	void			*operator new(size_t s,StoreCtx *ctx) {void *p=ctx->malloc(s); if (p==NULL) throw RC_NOMEM; return p;}
 	Tree&			getIndexFT() {return indexFT;}
 	RC				index(ChangeInfo& inf,FTList *sl,unsigned flags,unsigned mode,MemAlloc *ma);
 	RC				process(FTList& ftl,const PID& id,const PID& doc);

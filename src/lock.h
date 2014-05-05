@@ -14,7 +14,7 @@ WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the
 License for the specific language governing permissions and limitations
 under the License.
 
-Written by Mark Venguerov 2004-2012
+Written by Mark Venguerov 2004-2014
 
 **************************************************************************************/
 
@@ -113,14 +113,6 @@ struct DLD : public TimeRQ
 };
 
 /**
- * transient versioning table operations
- */
-enum TVOp
-{
-	TVO_READ, TVO_INS, TVO_UPD
-};
-
-/**
  * transient versioning resource states
  */
 enum TVState
@@ -136,7 +128,7 @@ struct DataSS
 	DataSS				*nextD;
 	DataSS				*nextSS;
 	TVers				*tv;
-//	ValueV				data;
+//	Values				data;
 	uint32_t			stamp;
 	uint16_t			dscr;
 	bool				fDelta;
@@ -212,7 +204,7 @@ class LockMgr
 	friend	struct	PageV;
 public:
 	LockMgr(class StoreCtx *ct);
-	void	*operator new(size_t s,StoreCtx *ctx) {void *p=ctx->malloc(s); if (p==NULL) throw RC_NORESOURCES; return p;}
+	void	*operator new(size_t s,StoreCtx *ctx) {void *p=ctx->malloc(s); if (p==NULL) throw RC_NOMEM; return p;}
 	RC		lock(LockType,PINx& pe,unsigned flags=0);
 	RC		getTVers(PINx& pe,TVOp tvo=TVO_READ);
 	VBlock	*getVBlock(PageID pid) {PageVTab::Find findVB(pageVTab,pid); PageV *pv=findVB.findLock(RW_S_LOCK); if (pv!=NULL) ++pv->fixCnt; findVB.unlock(); return pv;}

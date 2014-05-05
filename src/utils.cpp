@@ -14,7 +14,7 @@ WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the
 License for the specific language governing permissions and limitations
 under the License.
 
-Written by Mark Venguerov 2004-2012
+Written by Mark Venguerov 2004-2014
 
 **************************************************************************************/
 
@@ -1472,7 +1472,7 @@ RC PageSet::add(PageID from,PageID to)
 	if (nChunks>=xChunks) {
 		ptrdiff_t sht=pc-chunks;
 		chunks=(PageSetChunk*)(chunks==NULL?ma->malloc((xChunks=6)*sizeof(PageSetChunk)):ma->realloc(chunks,(xChunks*=2)*sizeof(PageSetChunk)));
-		if (chunks!=NULL) pc=chunks+sht,end=chunks+nChunks; else {nChunks=xChunks=nPages=0; return RC_NORESOURCES;}
+		if (chunks!=NULL) pc=chunks+sht,end=chunks+nChunks; else {nChunks=xChunks=nPages=0; return RC_NOMEM;}
 	}
 	if (pc<end) memmove(pc+1,pc,(byte*)end-(byte*)pc);
 	pc->from=from; pc->to=to; nPages+=pc->npg=npg; pc->bmp=NULL; nChunks++;
@@ -1508,7 +1508,7 @@ RC PageSet::operator-=(PageID pid)
 				if (ch.from==pid) {ch.from++; ch.npg--;} 
 				else if (ch.to==pid) {ch.to--; ch.npg--;}
 				else //if (ch.to/SZ_BMP-ch.from/SZ_BMP+1<sizeof(PageSetChunk)/sizeof(uint32_t)) {
-					//if ((ch.bmp=(uint32_t*)malloc((ch.to/SZ_BMP-ch.from/SZ_BMP+1)*sizeof(uint32_t),alloc))==NULL) return RC_NORESOURCES;
+					//if ((ch.bmp=(uint32_t*)malloc((ch.to/SZ_BMP-ch.from/SZ_BMP+1)*sizeof(uint32_t),alloc))==NULL) return RC_NOMEM;
 					//for (unsigned idx=0,end=ch.to/SZ_BMP-ch.from/SZ_BMP,idx0=pid/SZ_BMP-ch.from/SZ_BMP,u; idx<=end; idx++)
 					//	{u=idx==end?(1<<(ch.to%SZ_BMP+1))-1:~0u; if (idx==0) u&=~((1<<ch.from%SZ_BMP)-1); if (idx==idx0) u&=~(1<<pid%SZ_BMP); ch.bmp[idx]=u;}
 				//} else 
@@ -1517,7 +1517,7 @@ RC PageSet::operator-=(PageID pid)
 					if (nChunks>=xChunks) {
 						ptrdiff_t sht=pc-chunks;
 						chunks=(PageSetChunk*)(chunks==NULL?ma->malloc((xChunks=6)*sizeof(PageSetChunk)):ma->realloc(chunks,(xChunks*=2)*sizeof(PageSetChunk)));
-						if (chunks!=NULL) pc=chunks+sht; else {nChunks=xChunks=nPages=0; return RC_NORESOURCES;}
+						if (chunks!=NULL) pc=chunks+sht; else {nChunks=xChunks=nPages=0; return RC_NOMEM;}
 					}
 					if (pc<&chunks[nChunks]) memmove(pc+1,pc,(byte*)&chunks[nChunks]-(byte*)pc);
 					pc->from=pid+1; pc->to=pc[-1].to; pc->npg=pc->to-pid; pc->bmp=NULL;

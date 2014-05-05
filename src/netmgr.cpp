@@ -14,7 +14,7 @@ WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the
 License for the specific language governing permissions and limitations
 under the License.
 
-Written by Mark Venguerov 2004-2012
+Written by Mark Venguerov 2004-2014
 
 **************************************************************************************/
 
@@ -38,7 +38,7 @@ NetMgr::NetMgr(StoreCtx *ct,int hashSize,int cacheSize,TIMESTAMP dExp)
 : RPINHashTab(*new(ct) RPINHashTab::QueueCtrl(cacheSize,ct),hashSize,ct),PageMgr(ct),
 	xPINs(cacheSize),defExpiration(dExp),map(MA_RCACHE,rpinIndexFmt,ct,TF_WITHDEL),freeRPINs((MemAlloc*)ct,RPIN_BLOCK)
 {
-		ctx->registerPageMgr(PGID_NETMGR,this); if (&ctrl==NULL) throw RC_NORESOURCES;
+		ctx->registerPageMgr(PGID_NETMGR,this); if (&ctrl==NULL) throw RC_NOMEM;
 }
 
 NetMgr::~NetMgr()

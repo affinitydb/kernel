@@ -14,7 +14,7 @@ WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the
 License for the specific language governing permissions and limitations
 under the License.
 
-Written by Mark Venguerov 2004-2012
+Written by Mark Venguerov 2004-2014
 
 **************************************************************************************/
 
@@ -74,7 +74,7 @@ RC PIDStore::operator+=(PINx& cb)
 {
 	if (count+1>=limit && cb.getSes()->getStore()->fileMgr!=NULL) {
 //		assert(extFile==NULL);
-//		if ((extFile=new(cb.getSes()) ExtFile(ctx))==NULL) return RC_NORESOURCES;
+//		if ((extFile=new(cb.getSes()) ExtFile(ctx))==NULL) return RC_NOMEM;
 //		RC rc=((ExtFile*)extFile)->init(cache); 
 //		if (rc!=RC_OK) {delete (ExtFile*)extFile; extFile=NULL; return rc;}
 	}

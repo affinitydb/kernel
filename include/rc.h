@@ -14,7 +14,7 @@ WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the
 License for the specific language governing permissions and limitations
 under the License.
 
-Written by Mark Venguerov 2004-2012
+Written by Mark Venguerov 2004-2014
 
 **************************************************************************************/
 
@@ -49,7 +49,7 @@ enum RC
 	RC_ALREADYEXISTS,		/**< resource (element,key,file,store etc.) already exists */
 	RC_INTERNAL,			/**< internal error */
 	RC_NOACCESS,			/**< access is denied */
-	RC_NORESOURCES,			/**< not possible to allocate resource (too big pin or not enough memory */
+	RC_NOMEM,				/**< not enough memory */
 	RC_FULL,				/**< disk is full */
 	RC_DEVICEERR,			/**< i/o device error */
 	RC_DATAERROR,			/**< data check (e.g. parity) error */

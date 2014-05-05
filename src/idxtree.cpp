@@ -26,7 +26,7 @@ WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the
 License for the specific language governing permissions and limitations
 under the License.
 
-Written by Mark Venguerov 2004-2012
+Written by Mark Venguerov 2004-2014
 
 **************************************************************************************/
 
@@ -109,7 +109,7 @@ public:
 
 TreeMgr::TreeMgr(StoreCtx *ct,unsigned timeout) : ctx(ct)
 {
-	if ((ptrt=new(ct) TreeRQTable(DEFAULT_TREERQ_SIZE,ct))==NULL) throw RC_NORESOURCES;
+	if ((ptrt=new(ct) TreeRQTable(DEFAULT_TREERQ_SIZE,ct))==NULL) throw RC_NOMEM;
 	memset(factoryTable,0,sizeof(factoryTable));
 }
 
@@ -122,7 +122,7 @@ TreeMgr::~TreeMgr()
 
 void *TreeMgr::operator new(size_t s,StoreCtx *ctx)
 {
-	void *p=ctx->malloc(s); if (p==NULL) throw RC_NORESOURCES; return p;
+	void *p=ctx->malloc(s); if (p==NULL) throw RC_NOMEM; return p;
 }
 
 RC TreeMgr::registerFactory(TreeFactory &factory)
@@ -160,11 +160,11 @@ RC TreeRQ::post(const TreeCtx& tctx,Tree::TreeOp op,PageID pid,const SearchKey *
 	if (pb!=NULL) {
 		const TreePageMgr::TreePage *tp=(const TreePageMgr::TreePage*)pb->getPageBuf();
 		shift=ceil(tp->getKeyExtra(idx),sizeof(uint64_t));
-		if ((req=new(shift+lext,ctx) TreeRQ(ctx,tctx,op,pid))==NULL) return RC_NORESOURCES;
+		if ((req=new(shift+lext,ctx) TreeRQ(ctx,tctx,op,pid))==NULL) return RC_NOMEM;
 		tp->getKey(idx,req->key); assert(req->key.type!=KT_BIN||req->key.v.ptr.l!=ushort(~0u));
 	} else {
 		assert(key->isSet()); shift=ceil(key->extra(),sizeof(uint64_t));
-		if ((req=new(shift+lext,ctx) TreeRQ(ctx,tctx,op,pid))==NULL) return RC_NORESOURCES;
+		if ((req=new(shift+lext,ctx) TreeRQ(ctx,tctx,op,pid))==NULL) return RC_NOMEM;
 		req->key=*key; assert(req->key.type!=KT_BIN||req->key.v.ptr.l!=ushort(~0u));
 	}
 	if (lext!=0) {req->mainKey=(SearchKey*)((byte*)(req+1)+shift); *(SearchKey*)req->mainKey=*tctx.mainKey;}
@@ -219,7 +219,7 @@ RC TreeCtx::getPreviousPage(bool fRead)
 	const TreePageMgr::TreePage *tp=(const TreePageMgr::TreePage *)pb->getPageBuf();
 	if (tp->info.nSearchKeys==0) return RC_NOTFOUND;
 	SearchKey *key=(SearchKey*)alloca(tp->getKeyExtra(0)+sizeof(SearchKey));
-	if (key==NULL) return RC_NORESOURCES; tp->getKey(0,*key);
+	if (key==NULL) return RC_NOMEM; tp->getKey(0,*key);
 	PageID prev=pb->getPageID(),pid; StoreCtx *ctx=tree->getStoreCtx();
 	while (depth!=0 && getParentPage(*key,fRead?0:PTX_FORUPDATE)==RC_OK) {
 		tp=(const TreePageMgr::TreePage *)pb->getPageBuf(); if (tp->info.leftMost==prev) break;
@@ -434,7 +434,7 @@ RC Tree::update(const SearchKey& key,const void *oldValue,ushort lOldValue,const
 
 RC Tree::edit(const SearchKey& key,const void *newValue,ushort lNewValue,ushort lOld,ushort sht)
 {
-	byte *pOld=NULL; if (lOld!=0 && (pOld=(byte*)alloca(lOld))==NULL) return RC_NORESOURCES;
+	byte *pOld=NULL; if (lOld!=0 && (pOld=(byte*)alloca(lOld))==NULL) return RC_NOMEM;
 	TreeCtx tctx(*this); RC rc=tctx.findPageForUpdate(&key); if (rc!=RC_OK) return rc;
 	const TreePageMgr::TreePage *tp=(const TreePageMgr::TreePage*)tctx.pb->getPageBuf(); const byte *pData; ushort lData;
 	if (lOld>0 && (pData=(const byte*)tp->getValue(key,lData))!=NULL && sht+lOld<=lData) memcpy(pOld,pData+sht,lOld);
@@ -470,7 +470,7 @@ RC Tree::drop(PageID pid,StoreCtx *ctx,TreeFreeData *dd)
 			if ((rc=ctx->trpgMgr->drop(pb,dd))!=RC_OK) {if (pb!=NULL) pb->release(); return rc;}
 		} else {
 			PageID *pp=pending.alloc0<PageID>(); if (pp!=NULL) *pp=pb->getPageID();
-			pb->release(); if (pp==NULL) return RC_NORESOURCES;
+			pb->release(); if (pp==NULL) return RC_NOMEM;
 		}
 	}
 	while (pending.pop(&pid)) {
@@ -521,7 +521,7 @@ RC TreeStdRoot::addRootPage(const SearchKey& key,PageID& pageID,unsigned level)
 	PageID newp; PBlock *pb; RC rc;
 	if ((rc=ctx->fsMgr->allocPages(1,&newp))!=RC_OK) return rc;
 	assert(newp!=INVALID_PAGEID);
-	if ((pb=ctx->bufMgr->newPage(newp,ctx->trpgMgr,NULL,0,ses))==NULL) return RC_NORESOURCES;
+	if ((pb=ctx->bufMgr->newPage(newp,ctx->trpgMgr,NULL,0,ses))==NULL) return RC_NOMEM;
 	if ((rc=ctx->trpgMgr->initPage(pb,indexFormat(),ushort(level+1),&key,root,pageID))==RC_OK)
 		{pageID=root=newp; height=level+1;}
 	pb->release(); return rc;
@@ -692,15 +692,15 @@ namespace AfyKernel
 {
 enum KVT
 {
-	KVT_NULL,KVT_INT,KVT_UINT,KVT_INT64,KVT_UINT64,KVT_FLOAT,KVT_SUINT,KVT_INTV,KVT_URI,KVT_STR,KVT_BIN,KVT_URL,KVT_REF
+	KVT_NULL,KVT_INT,KVT_UINT,KVT_INT64,KVT_UINT64,KVT_FLOAT,KVT_SUINT,KVT_INTV,KVT_URI,KVT_STR,KVT_BIN,KVT_REF
 };
 const static ValueType vtFromKVT[] =
 {
-	VT_ANY,VT_INT,VT_UINT,VT_INT64,VT_UINT64,VT_DOUBLE,VT_DATETIME,VT_INTERVAL,VT_URIID,VT_STRING,VT_BSTR,VT_URL,VT_REFID
+	VT_ANY,VT_INT,VT_UINT,VT_INT64,VT_UINT64,VT_DOUBLE,VT_DATETIME,VT_INTERVAL,VT_URIID,VT_STRING,VT_BSTR,VT_REFID
 };
 const static TREE_KT ktFromKVT[] =
 {
-	KT_ALL,KT_INT,KT_UINT,KT_INT,KT_UINT,KT_DOUBLE,KT_UINT,KT_INT,KT_UINT,KT_BIN,KT_BIN,KT_BIN,KT_REF
+	KT_ALL,KT_INT,KT_UINT,KT_INT,KT_UINT,KT_DOUBLE,KT_UINT,KT_INT,KT_UINT,KT_BIN,KT_BIN,KT_REF
 };
 };
 
@@ -752,11 +752,11 @@ RC SearchKey::toKey(const Value **ppv,unsigned nv,const IndexSeg *kds,int idx,Se
 				case VT_STRING:
 					if (pv->str!=NULL && (ks.flags&ORD_NCASE)!=0) {
 						uint32_t len=0;
-						if ((v.ptr.p=forceCaseUTF8(pv->str,pv->length,len,ma))==NULL) {rc=RC_NORESOURCES; break;}
+						if ((v.ptr.p=forceCaseUTF8(pv->str,pv->length,len,ma))==NULL) {rc=RC_NOMEM; break;}
 						assert((len&0xFFFF0000)==0); v.ptr.l=ks.lPrefix!=0?min(ks.lPrefix,(ushort)len):(ushort)len;
 						type=KT_BIN; loc=PLC_ALLC; break;
 					}
-				case VT_BSTR: case VT_URL:
+				case VT_BSTR:
 					v.ptr.p=pv->bstr; v.ptr.l=ks.lPrefix!=0?min(ks.lPrefix,(ushort)pv->length):(ushort)pv->length;
 					if (pv==&w) {loc=PLC_ALLC; w.type=VT_ERROR;} type=KT_BIN; break;
 				case VT_REF: id=pv->pin->getPID(); goto encode;
@@ -806,9 +806,9 @@ RC SearchKey::toKey(const Value **ppv,unsigned nv,const IndexSeg *kds,int idx,Se
 			if (lkey+l0+l>xbuf || buf==NULL && (buf=(byte*)alloca(xbuf))==NULL) {
 				size_t old=xbuf; xbuf=max((unsigned)(lkey+l0+l),xbuf);
 				if (buf!=NULL && !fDel) {
-					if ((p=(byte*)ma->malloc(xbuf))==NULL) {rc=RC_NORESOURCES; break;}
+					if ((p=(byte*)ma->malloc(xbuf))==NULL) {rc=RC_NOMEM; break;}
 					memcpy(p,buf,lkey); buf=p; fDel=true;
-				} else if ((buf=(byte*)ma->realloc(buf,xbuf,old))==NULL) {rc=RC_NORESOURCES; break;}
+				} else if ((buf=(byte*)ma->realloc(buf,xbuf,old))==NULL) {rc=RC_NOMEM; break;}
 			}
 			buf[lkey]=kt; lkey+=l0; while (l0>1) {--l0; buf[lkey-l0]=byte(l>>8*(l0-1));}
 			if ((kt&0xAF)==(0xA0|KVT_FLOAT)) {memcpy(buf+lkey,pd,l-1); buf[lkey+l-1]=(byte)pv->qval.units;} else if (l!=0) memcpy(buf+lkey,pd,l); 
@@ -820,12 +820,12 @@ RC SearchKey::toKey(const Value **ppv,unsigned nv,const IndexSeg *kds,int idx,Se
 		if (fDel) ma->free(buf); if (type>=KT_BIN && loc==PLC_ALLC) ma->free((void*)v.ptr.p); type=KT_ALL; loc=PLC_EMB;
 	} else if (buf!=NULL) {
 		if (fDel) v.ptr.p=xbuf>=lkey*2?(byte*)ma->realloc(buf,lkey,xbuf):buf;
-		else if ((p=(byte*)ma->malloc(lkey))==NULL) {type=KT_ALL; loc=PLC_EMB; return RC_NORESOURCES;}
+		else if ((p=(byte*)ma->malloc(lkey))==NULL) {type=KT_ALL; loc=PLC_EMB; return RC_NOMEM;}
 		else {v.ptr.p=p; memcpy(p,buf,lkey);}
 		type=KT_VAR; loc=PLC_ALLC; v.ptr.l=uint16_t(lkey);
 	} else if (type>=KT_BIN && type<KT_ALL && loc==PLC_EMB && v.ptr.p!=NULL) {
 		const void *p=v.ptr.p;
-		if ((v.ptr.p=ma->malloc(v.ptr.l))==NULL) rc=RC_NORESOURCES;
+		if ((v.ptr.p=ma->malloc(v.ptr.l))==NULL) rc=RC_NOMEM;
 		else {memcpy((void*)v.ptr.p,p,v.ptr.l); loc=PLC_ALLC;}
 	}
 	return rc;
@@ -979,8 +979,8 @@ RC SearchKey::getValues(Value *vals,unsigned nv,const IndexSeg *kd,unsigned nFie
 				case KVT_UINT64: if (ls!=sizeof(uint64_t)) pv->ui64=ls==sizeof(uint8_t)?(uint64_t)*(uint8_t*)&pv->ui:ls==sizeof(uint16_t)?(uint64_t)*(uint16_t*)&pv->ui:(uint64_t)pv->ui; break;
 				case KVT_FLOAT: if ((mod&0x10)==0) pv->type=VT_FLOAT; /*if ((mod&0x20)!=0) pv->qval.units=...*/ break;
 				case KVT_SUINT: if (ls==1) pv->type=VT_BOOL,pv->b=*(uint8_t*)&pv->ui!=0; else if (ls<sizeof(uint64_t)) {pv->type=VT_IDENTITY; if (ls<sizeof(uint32_t)) pv->iid=(IdentityID)*(uint16_t*)&pv->ui;} break;
-				case KVT_STR: case KVT_BIN: case KVT_URL:
-					if ((p=ma->malloc(ls+(pv->type==VT_BSTR?0:1)))==NULL) return RC_NORESOURCES;
+				case KVT_STR: case KVT_BIN:
+					if ((p=ma->malloc(ls+(pv->type==VT_BSTR?0:1)))==NULL) return RC_NOMEM;
 					memcpy(p,s,ls); if (pv->type!=VT_BSTR) ((char*)p)[ls]='\0'; pv->str=(char*)p;
 					pv->flags=ma->getAType(); break;
 				case KVT_REF:
@@ -992,7 +992,7 @@ RC SearchKey::getValues(Value *vals,unsigned nv,const IndexSeg *kd,unsigned nFie
 						r.id=pr.id;
 					} catch (RC& rc2) {rc=rc2;}
 					if (pv->type==VT_REFID) pv->id=r.id; 
-					else if ((pr=(RefVID*)ma->malloc(sizeof(RefVID)))==NULL) return RC_NORESOURCES;
+					else if ((pr=(RefVID*)ma->malloc(sizeof(RefVID)))==NULL) return RC_NOMEM;
 					else {*pr=r; pv->refId=pr; pv->flags=ma->getAType();}
 					break;
 				}
@@ -1018,16 +1018,16 @@ RC SearchKey::getValues(Value *vals,unsigned nv,const IndexSeg *kd,unsigned nFie
 					r.id=pr.id;
 				} catch (RC &rc) {return rc;}
 				if (vals->type==VT_REFID) vals->id=r.id;
-				else if ((pr=(RefVID*)ma->malloc(sizeof(RefVID)))==NULL) return RC_NORESOURCES;
+				else if ((pr=(RefVID*)ma->malloc(sizeof(RefVID)))==NULL) return RC_NOMEM;
 				else {*pr=r; vals->refId=pr; vals->flags=ma->getAType();}
 				break;
 			case KT_BIN:
 				switch (kd->type) {
 				default: case VT_BSTR:
-					if ((p=ma->malloc(v.ptr.l))==NULL) return RC_NORESOURCES;
+					if ((p=ma->malloc(v.ptr.l))==NULL) return RC_NOMEM;
 					memcpy(p,getPtr2(),v.ptr.l); vals->bstr=(unsigned char*)p; vals->length=v.ptr.l; vals->flags=ma->getAType(); break;
-				case VT_STRING: case VT_URL:
-					if ((p=ma->malloc(v.ptr.l+1))==NULL) return RC_NORESOURCES;
+				case VT_STRING:
+					if ((p=ma->malloc(v.ptr.l+1))==NULL) return RC_NOMEM;
 					memcpy(p,getPtr2(),v.ptr.l); ((char*)p)[v.ptr.l]='\0'; vals->str=(char*)p; vals->length=v.ptr.l; vals->flags=ma->getAType(); break;	
 				}
 				break;

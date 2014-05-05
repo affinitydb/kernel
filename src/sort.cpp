@@ -14,7 +14,7 @@ WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the
 License for the specific language governing permissions and limitations
 under the License.
 
-Written by Mark Venguerov and Andrew Skowronski 2004-2012
+Written by Mark Venguerov and Andrew Skowronski 2004-2014
 
 **************************************************************************************/
 
@@ -42,7 +42,7 @@ Sort::Sort(QueryOp *qop,const OrderSegQ *os,unsigned nsgs,unsigned qf,unsigned n
 			nValues+=pls[i].nProps;
 			if ((qflags&QO_VCOPIED)!=0 && pls[i].props!=NULL && !pls[i].fFree) {
 				PropList& pl=*(PropList*)&pls[i];
-				PropertyID *pp=new(qx->ses) PropertyID[pl.nProps]; if (pp==NULL) throw RC_NORESOURCES;
+				PropertyID *pp=new(qx->ses) PropertyID[pl.nProps]; if (pp==NULL) throw RC_NOMEM;
 				memcpy(pp,pl.props,pl.nProps*sizeof(PropertyID)); pl.props=pp; pl.fFree=true;
 			}
 		}
@@ -50,7 +50,7 @@ Sort::Sort(QueryOp *qop,const OrderSegQ *os,unsigned nsgs,unsigned qf,unsigned n
 	}
 	if (nsgs==0) {qop->unique(false); qflags|=QO_UNIQUE|QO_IDSORT;}
 	else for (unsigned i=0; i<nsgs; i++) if ((sortSegs[i].flags&ORDER_EXPR)!=0) {
-		if ((qf&QO_VCOPIED)!=0 && (sortSegs[i].expr=Expr::clone(sortSegs[i].expr,qx->ses))==NULL) throw RC_NORESOURCES;
+		if ((qf&QO_VCOPIED)!=0 && (sortSegs[i].expr=Expr::clone(sortSegs[i].expr,qx->ses))==NULL) throw RC_NOMEM;
 		index[i]=nValues++;
 	} else {
 		if (sortSegs[i].var>nPids) throw RC_INVPARAM; const PropertyID *pi=pls[sortSegs[i].var].props;
@@ -136,8 +136,8 @@ RC Sort::sort(unsigned nAbort)
 {
 	assert(queryOp!=NULL && pins==NULL && esRuns==NULL);
 	PINx qr(qx->ses); RC rc=RC_OK,rc2; unsigned nRunPins=0; nAllPins=0; ArrayVal *freeAV=NULL;
-	unsigned nqr=queryOp->getNOuts(); PINx **pqr=(PINx**)alloca(nqr*sizeof(PINx*)); if (pqr==NULL) return RC_NORESOURCES;
-	for (unsigned i=1; i<nqr; i++) if ((pqr[i]=new(qx->ses) PINx(qx->ses))==NULL) return RC_NORESOURCES;
+	unsigned nqr=queryOp->getNOuts(); PINx **pqr=(PINx**)alloca(nqr*sizeof(PINx*)); if (pqr==NULL) return RC_NOMEM;
+	for (unsigned i=1; i<nqr; i++) if ((pqr[i]=new(qx->ses) PINx(qx->ses))==NULL) return RC_NOMEM;
 	pqr[0]=&qr; queryOp->connect(pqr,nqr);
 	for (; ((rc=queryOp->next())==RC_OK || rc==RC_EOF); qr.cleanup()) {
 		if ((rc2=qx->ses->testAbortQ())!=RC_OK) {rc=rc2; break;}
@@ -169,7 +169,7 @@ RC Sort::sort(unsigned nAbort)
 		}
 		if (nRunPins>=lPins) {
 			lPins=lPins==0?256:lPins*2; if (memUsed+(lPins-nRunPins)*sizeof(EncPINRef*)>peakSortMem) lPins=unsigned((peakSortMem-memUsed)/sizeof(EncPINRef*))+nRunPins+1;
-			if ((pins=(EncPINRef**)qx->ses->realloc(pins,lPins*sizeof(EncPINRef*)))!=NULL) memUsed+=(lPins-nRunPins)*sizeof(byte*); else {rc=RC_NORESOURCES; break;}
+			if ((pins=(EncPINRef**)qx->ses->realloc(pins,lPins*sizeof(EncPINRef*)))!=NULL) memUsed+=(lPins-nRunPins)*sizeof(byte*); else {rc=RC_NOMEM; break;}
 		}
 
 #if defined(__x86_64__) || defined(IA64) || defined(_M_X64) || defined(_M_IA64)
@@ -177,7 +177,7 @@ RC Sort::sort(unsigned nAbort)
 #endif
 
 		StackAlloc::SubMark mrk; pinMem.mark(mrk);
-		EncPINRef *ep=storeValues(qr,nValues,pinMem); if (ep==NULL) {rc=RC_NORESOURCES; break;}
+		EncPINRef *ep=storeValues(qr,nValues,pinMem); if (ep==NULL) {rc=RC_NOMEM; break;}
 		pins[nRunPins++]=ep; if (nValues==0) {memUsed+=pinMem.length(mrk); continue;}
 
 		Value *vals=(Value*)getStoredValues(ep);
@@ -185,15 +185,15 @@ RC Sort::sort(unsigned nAbort)
 		bool fSkip=true; ArrayVal *avs=NULL;
 		for (unsigned i=0; i<nSegs; i++) if (index[i]!=~0u) {
 			Value *pv=&vals[index[i]]; ArrayVal *av; const Value *cv; INav *nav;
-			if ((sortSegs[i].flags&ORDER_EXPR)!=0 && (rc=Expr::eval(&sortSegs[i].expr,1,*pv,EvalCtx(qx->ses,NULL,0,(PIN**)pqr,nqr)))!=RC_OK) 
-				{if (rc==RC_NORESOURCES) break; pv->setError(); rc=RC_OK; continue;}
+			if ((sortSegs[i].flags&ORDER_EXPR)!=0 && (rc=sortSegs[i].expr->eval(*pv,EvalCtx(qx->ses,NULL,0,(PIN**)pqr,nqr)))!=RC_OK) 
+				{if (rc==RC_NOMEM) break; pv->setError(); rc=RC_OK; continue;}
 			switch (pv->type) {
 			case VT_ERROR: if ((sortSegs[i].flags&(ORD_NULLS_BEFORE|ORD_NULLS_AFTER))==0) continue; break;
 			case VT_COLLECTION:
 				switch (sortSegs[i].aggop) {
 				case OP_ALL: case OP_HISTOGRAM:
 					if ((av=freeAV)!=NULL) freeAV=av->prev;
-					else if ((av=pinMem.alloc<ArrayVal>())==NULL) {rc=RC_NORESOURCES; break;} //???
+					else if ((av=pinMem.alloc<ArrayVal>())==NULL) {rc=RC_NOMEM; break;} //???
 					av->idx=0; av->vidx=index[i]; av->lPref=sortSegs[i].lPref; av->prev=avs; avs=av;
 					if (!pv->isNav()) {
 						av->vals=(Value*)pv->varray; av->length=pv->length; av->nav=NULL; *pv=pv->varray[0];
@@ -212,8 +212,8 @@ RC Sort::sort(unsigned nAbort)
 					freeV(*pv); if (ag.result(*pv)!=RC_OK) {pv->setError(); continue;}
 					} break;
 				}
-				if (rc!=RC_OK || pv->type!=VT_STRING && pv->type!=VT_BSTR && pv->type!=VT_URL) break;
-			case VT_STRING: case  VT_BSTR: case VT_URL:
+				if (rc!=RC_OK || pv->type!=VT_STRING && pv->type!=VT_BSTR) break;
+			case VT_STRING: case  VT_BSTR:
 				if (sortSegs[i].lPref!=0) pv->length=min(pv->length,(uint32_t)sortSegs[i].lPref);	// convert to VT_STRING?
 				break;
 			}
@@ -226,7 +226,7 @@ RC Sort::sort(unsigned nAbort)
 			// changeFColl();
 			for (;;) {
 				StackAlloc::SubMark mrk2; pinMem.mark(mrk2);
-				if ((ep=storeValues(qr,nValues,pinMem))==NULL) {rc=RC_NORESOURCES; break;}
+				if ((ep=storeValues(qr,nValues,pinMem))==NULL) {rc=RC_NOMEM; break;}
 				Value *vv=(Value*)getStoredValues(ep); memcpy(vv,vals,nValues*sizeof(Value)); vals=vv; bool fNext=false; 
 				for (ArrayVal *av=avs; !fNext && av!=NULL; av=av->prev) {
 					Value *pv=&vals[av->vidx];
@@ -239,12 +239,12 @@ RC Sort::sort(unsigned nAbort)
 						else if (av->prev!=NULL) {cv=av->nav->navigate(GO_FIRST); assert(cv!=NULL);}
 						if ((rc=copyV(*cv,*pv,&pinMem))!=RC_OK) {fNext=false; break;}
 					}
-					if (av->lPref!=0 && (pv->type==VT_STRING||pv->type==VT_BSTR||pv->type==VT_URL)) pv->length=min(pv->length,(uint32_t)av->lPref);	// convert to VT_STRING?
+					if (av->lPref!=0 && (pv->type==VT_STRING||pv->type==VT_BSTR)) pv->length=min(pv->length,(uint32_t)av->lPref);	// convert to VT_STRING?
 				}
 				if (!fNext) {pinMem.truncate(TR_REL_ALL,&mrk2); break;}
 				if (nRunPins>=lPins) {
 					lPins=lPins==0?256:lPins*2; if (memUsed+(lPins-nRunPins)*sizeof(EncPINRef*)>peakSortMem) lPins=unsigned((peakSortMem-memUsed)/sizeof(EncPINRef*))+nRunPins+1;
-					if ((pins=(EncPINRef**)qx->ses->realloc(pins,lPins*sizeof(EncPINRef*)))!=NULL) memUsed+=(lPins-nRunPins)*sizeof(byte*); else {rc=RC_NORESOURCES; break;}
+					if ((pins=(EncPINRef**)qx->ses->realloc(pins,lPins*sizeof(EncPINRef*)))!=NULL) memUsed+=(lPins-nRunPins)*sizeof(byte*); else {rc=RC_NOMEM; break;}
 				}
 				pins[nRunPins++]=ep;
 				if (memUsed>peakSortMem || nRunPins*(sizeof(EncPINRef*)+sizeof(EncPINRef)+nValues*sizeof(Value))>maxSortMem) {
@@ -321,7 +321,7 @@ public:
 			assert(fileMgr!=NULL); RC rc=fileMgr->open(fid,NULL,FIO_TEMP);
 			if (rc!=RC_OK) {report(MSG_ERROR,"Failure to create external sort file (%d)\n",rc); return rc;}
 		}
-		PageID pos=getFreePage(); if (pos==INVALID_PAGEID) return RC_NORESOURCES;
+		PageID pos=getFreePage(); if (pos==INVALID_PAGEID) return RC_NOMEM;
 		assert(pages[pos].next==INVALID_PAGEID);
 
 		// encrypt page!!!
@@ -437,7 +437,7 @@ public:
 	}
 
 	RC beginRun() {
-		if (page==NULL) return RC_NORESOURCES;
+		if (page==NULL) return RC_NOMEM;
 		hdr->run=esFile->beginRun(); hdr->nItems=0;
 		pagePos=sizeof(ExtSortPageHdr);
 		nRunPins=0;
@@ -460,7 +460,7 @@ public:
 		size_t newLen=afy_len32(pinlen); pinlen+=newLen-oldLen;
 
 		if (pinlen+pagePos>pageLen) {
-			if (hdr->nItems==0) {report(MSG_ERROR,"Single sort key too large (%u) for external sort\n",pinlen); return RC_NORESOURCES;}
+			if (hdr->nItems==0) {report(MSG_ERROR,"Single sort key too large (%u) for external sort\n",pinlen); return RC_NOMEM;}
 #if TESTES
 			report(MSG_DEBUG,"Write page, run %x, %x pins\n",hdr->run,hdr->nItems);
 #endif
@@ -528,7 +528,7 @@ public:
 #if defined(__x86_64__) || defined(IA64) || defined(_M_X64) || defined(_M_IA64)
 		assert((((ptrdiff_t)buf)&1)==0);
 #endif
-		return buf!=NULL&&(page=(byte*)s->qx->ses->malloc(esFile->pageLen()))!=NULL?RC_OK:RC_NORESOURCES;
+		return buf!=NULL&&(page=(byte*)s->qx->ses->malloc(esFile->pageLen()))!=NULL?RC_OK:RC_NOMEM;
 	}
 	void setRun(RunID r, bool bTempRun) {
 		// Can change run
@@ -621,7 +621,7 @@ RC Sort::prepMerge() {
 	unsigned maxMerge = (unsigned)(maxSortMem/esFile->pageLen())-1;  assert(maxMerge>1);
 
 	nIns=nTtlRuns>maxMerge?maxMerge:nTtlRuns;	
-	if ((esRuns=new(qx->ses) InRun[nIns])==NULL) return RC_NORESOURCES;
+	if ((esRuns=new(qx->ses) InRun[nIns])==NULL) return RC_NOMEM;
 	for (r=0;r<nIns;r++) {rc=esRuns[r].init(esFile,this); if (rc!=RC_OK) return rc;}
 
 	unsigned firstLiveRun=0; unsigned nActiveRuns=nTtlRuns;
@@ -767,23 +767,23 @@ RC Sort::count(uint64_t& cnt,unsigned nAbort)
 			if (!fCheck) return queryOp->count(cnt,nAbort);
 
 			PINx qr(qx->ses); RC rc=RC_OK,rc2; nAllPins=0; Value *vals=NULL; StackAlloc::SubMark mrk; pinMem.mark(mrk);
-			unsigned nqr=queryOp->getNOuts(); PINx **pqr=(PINx**)alloca(nqr*sizeof(PINx*)); if (pqr==NULL) return RC_NORESOURCES;
-			for (unsigned i=1; i<nqr; i++) if ((pqr[i]=new(qx->ses) PINx(qx->ses))==NULL) return RC_NORESOURCES;
+			unsigned nqr=queryOp->getNOuts(); PINx **pqr=(PINx**)alloca(nqr*sizeof(PINx*)); if (pqr==NULL) return RC_NOMEM;
+			for (unsigned i=1; i<nqr; i++) if ((pqr[i]=new(qx->ses) PINx(qx->ses))==NULL) return RC_NOMEM;
 			pqr[0]=&qr; queryOp->connect(pqr,nqr);
 			for (; rc==RC_OK && (rc=queryOp->next())==RC_OK; qr.cleanup()) {
 				if ((rc2=qx->ses->testAbortQ())!=RC_OK) {rc=rc2; break;}
 				if (qr.epr.buf[0]==0 && qr.getPID().isPID() && (rc2=qr.pack())!=RC_OK) {rc=rc2; break;}
 				if (nAbort!=~0u && nAllPins+1>nAbort) {rc=RC_TIMEOUT; break;}
 				if (vals==NULL) {
-					EncPINRef *ep=storeValues(qr,nValues,pinMem); if (ep==NULL) {cnt=~0ULL; return RC_NORESOURCES;}
+					EncPINRef *ep=storeValues(qr,nValues,pinMem); if (ep==NULL) {cnt=~0ULL; return RC_NOMEM;}
 					vals=(Value*)getStoredValues(ep); pinMem.mark(mrk);
 				}
 				if (nPls!=0 && (rc=getData(pqr,nqr,pls,nPls,vals,&pinMem))!=RC_OK) break;
 				bool fSkip=true; PIN *pp=&qr;
 				for (unsigned i=0; fSkip && i<nSegs; i++) {
 					assert(index[i]!=~0u); Value *pv=&vals[index[i]];
-					if ((sortSegs[i].flags&ORDER_EXPR)!=0 && (rc=Expr::eval(&sortSegs[i].expr,1,*pv,EvalCtx(qx->ses,NULL,0,&pp,1)))!=RC_OK) 
-						{if (rc==RC_NORESOURCES) {cnt=~0ULL; return rc;} else continue;}
+					if ((sortSegs[i].flags&ORDER_EXPR)!=0 && (rc=sortSegs[i].expr->eval(*pv,EvalCtx(qx->ses,NULL,0,&pp,1)))!=RC_OK) 
+						{if (rc==RC_NOMEM) {cnt=~0ULL; return rc;} else continue;}
 					if (!pv->isEmpty()) fSkip=false;
 				}
 				if (!fSkip) nAllPins++; pinMem.truncate(TR_REL_ALL,&mrk);

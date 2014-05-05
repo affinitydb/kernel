@@ -14,7 +14,7 @@ WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the
 License for the specific language governing permissions and limitations
 under the License.
 
-Written by Mark Venguerov 2004-2012
+Written by Mark Venguerov 2004-2014
 
 **************************************************************************************/
 
@@ -143,7 +143,7 @@ public:
 
 	PBlock		*getNewPage(PageMgr *mgr);
 	RC			allocPages(unsigned nPages,PageID *buf,PBlock **pAllocPage=NULL);
-	RC			reservePage(PageID pid);
+	RC			reservePages(const uint32_t *pages,unsigned nPages);
 	PBlock		*getNewPage(PageMgr *mgr,PageID pad);
 	bool		isFreePage(PageID pid);
 	RC			freePage(PageID pid);

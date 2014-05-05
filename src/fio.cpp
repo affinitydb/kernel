@@ -14,7 +14,7 @@ WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the
 License for the specific language governing permissions and limitations
 under the License.
 
-Written by Mark Venguerov 2004-2012
+Written by Mark Venguerov 2004-2014
 
 **************************************************************************************/
 
@@ -27,7 +27,7 @@ using namespace AfyKernel;
 
 GFileMgr::GFileMgr(StoreCtx *ct,int,const char *ldDir) : ctx(ct),slotTab(NULL),xSlotTab(FIO_MAX_OPENFILES),lPage(0),loadDir(NULL)
 {
-	slotTab=(FileDesc*)ct->malloc(sizeof(FileDesc)*xSlotTab); if (slotTab==NULL) throw RC_NORESOURCES;
+	slotTab=(FileDesc*)ct->malloc(sizeof(FileDesc)*xSlotTab); if (slotTab==NULL) throw RC_NOMEM;
 	for (int i=0; i<xSlotTab; i++) slotTab[i].init();
 	if (ldDir!=NULL) loadDir=strdup(ldDir,ct);
 }
@@ -39,7 +39,7 @@ GFileMgr::~GFileMgr()
 
 void *GFileMgr::operator new(size_t s,StoreCtx *ctx)
 {
-	void *p=ctx->malloc(s); if (p==NULL) throw RC_NORESOURCES; return p;
+	void *p=ctx->malloc(s); if (p==NULL) throw RC_NOMEM; return p;
 }
 
 const char *GFileMgr::getDirectory() const
@@ -75,9 +75,9 @@ size_t GFileMgr::getFileName(FileID fid,char buf[],size_t lbuf) const
 
 RC GFileMgr::close(FileID fid)
 {
-	RWLockP rw(&lock,RW_X_LOCK); RC rc = RC_OK;
-	if (fid>=xSlotTab) rc = RC_NOTFOUND;
-	else if (slotTab[fid].isOpen()) {
+	RWLockP rw(&lock,RW_X_LOCK);
+	if (fid>=xSlotTab) return RC_NOTFOUND;
+	if (slotTab[fid].isOpen()) {
 		slotTab[fid].close();
 	}
 	return RC_OK;
@@ -108,7 +108,7 @@ RC GFileMgr::deleteStore(const char *path0)
 			&& path[l-1]!='\\'
 #endif
 		;
-		if ((path=(char*)::malloc(l+1+sizeof(STOREPREFIX DATAFILESUFFIX)))==NULL) return RC_NORESOURCES;
+		if ((path=(char*)::malloc(l+1+sizeof(STOREPREFIX DATAFILESUFFIX)))==NULL) return RC_NOMEM;
 		memcpy((char*)path,path0,l); if (fDel) ((char*)path)[l++]='/'; fDelP=true;
 		memcpy((char*)path+l,STOREPREFIX DATAFILESUFFIX,sizeof(STOREPREFIX DATAFILESUFFIX));
 	} else path=STOREPREFIX DATAFILESUFFIX;

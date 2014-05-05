@@ -37,7 +37,7 @@ static void *_timerDaemon(void *param) {((TimerQHdr*)param)->timerDaemon(); retu
 
 TimerQ::TimerQ(StoreCtx *ct,unsigned sz) : PQueue<TimeRQ,TIMESTAMP>(*(MemAlloc*)ct),ctx(ct),requests(sz,(MemAlloc*)ct),fStarted(false)
 {
-	if ((tqStore=new(timerQHdr.freeLS.alloc(sizeof(TimerQStore))) TimerQStore(this))==NULL) throw RC_NORESOURCES;
+	if ((tqStore=new(timerQHdr.freeLS.alloc(sizeof(TimerQStore))) TimerQStore(this))==NULL) throw RC_NOMEM;
 	InterlockedPushEntrySList(&timerQHdr.stores,tqStore);
 }
 
@@ -64,7 +64,7 @@ RC TimerQ::loadTimer(PINx &cb)
 
 RC TimerQ::add(TimeRQ *tr,TIMESTAMP start)
 {
-	if (tr==NULL) return RC_NORESOURCES;
+	if (tr==NULL) return RC_NOMEM;
 	requests.insert(tr); TIMESTAMP now; getTimestamp(now);
 	RC rc=push(tr,start<now?now+tr->interval:start); 
 	if (rc==RC_TRUE) {

@@ -14,7 +14,7 @@ WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the
 License for the specific language governing permissions and limitations
 under the License.
 
-Written by Mark Venguerov 2004-2012
+Written by Mark Venguerov 2004-2014
 
 **************************************************************************************/
 
@@ -107,7 +107,7 @@ RC FullScan::advance(const PINx *skip)
 				}
 				// copy if not class && topmost stx
 				if ((it=new(qx->ses) PageSet::it(stx->defHeap))!=NULL) continue;
-				state|=QST_EOF; return RC_NORESOURCES;
+				state|=QST_EOF; return RC_NOMEM;
 			}
 			if (pDir.isNull()||pDir->getPageID()!=dirPageID) pDir.getPage(dirPageID,qx->ses->getStore()->hdirMgr,QMGR_SCAN,qx->ses);
 			if (pDir.isNull()) {dirPageID=INVALID_PAGEID; return RC_CORRUPTED;}
@@ -172,14 +172,14 @@ ClassScan::~ClassScan()
 RC ClassScan::init()
 {
 	scan=meta!=0?qx->ses->getStore()->namedMgr->scan(qx->ses,NULL):qx->ses->getStore()->classMgr->getClassMap().scan(qx->ses,&key,&key,SCAN_EXACT);
-	if (scan==NULL) return RC_NORESOURCES; RC rc;
+	if (scan==NULL) return RC_NOMEM; RC rc;
 	if (nSkip>0 && (rc=scan->skip(nSkip))!=RC_OK || (rc=qx->ses->testAbortQ())!=RC_OK) {state|=QST_EOF|QST_BOF; return rc;}
 	return RC_OK;
 }
 
 RC ClassScan::advance(const PINx *skip)
 {
-	if (res!=NULL) {res->cleanup(); *res=PIN::noPID;} if (scan==NULL) return RC_NORESOURCES;
+	if (res!=NULL) {res->cleanup(); *res=PIN::noPID;} if (scan==NULL) return RC_NOMEM;
 	size_t lData; const byte *er; byte *sk=NULL,lsk=0; RC rc;
 	if (skip!=NULL && (skip->epr.buf[0]!=0 || skip->pack()==RC_OK)) {sk=skip->epr.buf; lsk=PINRef::len(skip->epr.buf);}
 	while ((er=(const byte*)scan->nextValue(lData,GO_NEXT,sk,lsk))!=NULL) {
@@ -203,7 +203,7 @@ RC ClassScan::advance(const PINx *skip)
 
 RC ClassScan::rewind()
 {
-	RC rc=scan!=NULL?scan->rewind():(scan=qx->ses->getStore()->classMgr->getClassMap().scan(qx->ses,&key,&key,SCAN_EXACT))!=NULL?RC_OK:RC_NORESOURCES;
+	RC rc=scan!=NULL?scan->rewind():(scan=qx->ses->getStore()->classMgr->getClassMap().scan(qx->ses,&key,&key,SCAN_EXACT))!=NULL?RC_OK:RC_NOMEM;
 	if (rc==RC_OK) state=state&~QST_EOF|QST_BOF;
 	return rc;
 }
@@ -343,7 +343,7 @@ RC IndexScan::setScan(unsigned idx)
 		rangeIdx=idx; assert(idx<nRanges); const SearchKey *key=&((SearchKey*)(this+1))[idx*2];
 		scan=index.scan(qx->ses,key[0].isSet()?key:(const SearchKey*)0,key[1].isSet()?key+1:(const SearchKey*)0,flags,index.getIndexSegs(),index.getNSegs());
 	}
-	return scan!=NULL?RC_OK:RC_NORESOURCES;
+	return scan!=NULL?RC_OK:RC_NOMEM;
 }
 
 RC IndexScan::init()
@@ -373,7 +373,7 @@ RC IndexScan::advance(const PINx *skip)
 			if ((qflags&QO_UNIQUE)!=0 && PINRef::isColl(er)) {
 				PINx pex(qx->ses); memcpy(pex.epr.buf,er,l);
 				if (pids!=NULL) {if ((*pids)[pex]) continue;}
-				else if ((pids=new(qx->ses) PIDStore(qx->ses))==NULL) return RC_NORESOURCES;
+				else if ((pids=new(qx->ses) PIDStore(qx->ses))==NULL) return RC_NOMEM;
 				(*pids)+=pex;
 			}
 			if (res!=NULL) {
@@ -408,7 +408,7 @@ RC IndexScan::count(uint64_t& cnt,unsigned nAbort)
 			if ((qflags&QO_UNIQUE)!=0 && PINRef::isColl(er)) {
 				cb=PIN::noPID; memcpy(cb.epr.buf,er,l);
 				if (pids!=NULL) {if ((*pids)[cb]) continue;}
-				else if ((pids=new(qx->ses) PIDStore(qx->ses))==NULL) return RC_NORESOURCES;
+				else if ((pids=new(qx->ses) PIDStore(qx->ses))==NULL) return RC_NOMEM;
 				(*pids)+=cb;
 			}
 			if (++c>=nAbort) return RC_TIMEOUT;
@@ -425,7 +425,7 @@ RC IndexScan::loadData(PINx& qr,Value *pv,unsigned nv,ElementID eid,bool fSort,M
 	if (pv==NULL || nv==0) {
 		const IndexSeg *is=index.getIndexSegs(); nv=index.getNSegs();
 		if ((pv=vals)==NULL) {
-			if ((pv=vals=new(qx->ses) Value[nv])==NULL) return RC_NORESOURCES;
+			if ((pv=vals=new(qx->ses) Value[nv])==NULL) return RC_NOMEM;
 			for (unsigned i=0; i<nv; i++) vals[i].setError(is[i].propID);
 		} else for (unsigned i=0; i<nv; i++) {freeV(vals[i]); vals[i].setError(is[i].propID);}
 		res->setProps(pv,nv); res->setPartial();
@@ -557,7 +557,7 @@ RC ExprScan::advance(const PINx *skip)
 		break;
 	case VT_RANGE:
 		if (r.varray[0].type==VT_INT) {if ((int)idx>r.varray[1].i) break;} else if (idx>r.varray[1].ui) break;
-		if ((pv=new(qx->ses) Value)==NULL) return RC_NORESOURCES;
+		if ((pv=new(qx->ses) Value)==NULL) return RC_NOMEM;
 		pv->set(idx); pv->type=r.varray[0].type; pv->setPropID(PROP_SPEC_VALUE); idx++;
 		res->setProps(pv,1,0); res->epr.flags|=PINEX_DERIVED; return RC_OK;
 	}
@@ -611,7 +611,7 @@ FTScan::~FTScan()
 RC FTScan::init()
 {
 	scans[0].scan=qx->ses->getStore()->ftMgr->getIndexFT().scan(qx->ses,&word,&word,fStop?SCAN_EXCLUDE_START|SCAN_PREFIX:SCAN_PREFIX);
-	if (scans[0].scan==NULL) return RC_NORESOURCES; nScans=1; scans[0].state=QOS_ADV; return RC_OK;
+	if (scans[0].scan==NULL) return RC_NOMEM; nScans=1; scans[0].state=QOS_ADV; return RC_OK;
 }
 
 RC FTScan::advance(const PINx *skip)

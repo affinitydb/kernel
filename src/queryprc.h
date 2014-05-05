@@ -14,7 +14,7 @@ WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the
 License for the specific language governing permissions and limitations
 under the License.
 
-Written by Mark Venguerov 2004-2012
+Written by Mark Venguerov 2004-2014
 
 **************************************************************************************/
 
@@ -33,12 +33,6 @@ class IStoreNotification;
 
 namespace AfyKernel
 {
-/**
- * getBody() flags
- */
-#define	GB_DELETED			0x0001		/**< get soft-deleted PIN */
-#define	GB_REREAD			0x0002		/**< re-read page, don't re-lock */
-#define	GB_FORWARD			0x0004		/**< don't resolve FORWARD records */
 
 /**
  * PIN skew calculation constants
@@ -69,7 +63,7 @@ struct ChangeInfo
 #define PM_COLLECTION	0x00000002
 #define	PM_FTINDEXABLE	0x00000004
 #define	PM_EXPAND		0x00000008
-#define	PM_ARRAY		0x00000010
+#define	PM_MODCOLL		0x00000010
 #define	PM_SSV			0x00000020
 #define	PM_ESTREAM		0x00000040
 #define	PM_BIGC			0x00000080
@@ -149,14 +143,6 @@ struct CandidateSSV
 
 typedef DynArray<CandidateSSV>	CandidateSSVs;
 
-struct RefTrace
-{
-	const	RefTrace	*next;
-	PID					id;
-	PropertyID			pid;
-	ElementID			eid;
-};
-
 /**
  * map for resolution of mutual references of uncommitted pins
  */
@@ -179,22 +165,10 @@ class Cursor;
  */
 class QueryPrc
 {
-	RC		loadProps(PINx *pcb,unsigned mode,const PropertyID *pids=NULL,unsigned nPids=0);
-	RC		loadV(Value& v,unsigned pid,const PINx& cb,unsigned mode,MemAlloc *ma,const Value *mk=NULL,unsigned nk=1);
-	RC		loadVH(Value& v,const HeapPageMgr::HeapV *hprop,const PINx& cb,unsigned mode,MemAlloc *ma,const Value *mk=NULL,unsigned nk=1);
 	RC		loadS(Value& v,HType ty,PageOff offset,const HeapPageMgr::HeapPage *frame,unsigned mode,MemAlloc *ma,unsigned eid=STORE_COLLECTION_ID);
-	RC		loadSSVs(Value *values,unsigned nValues,unsigned mode,Session *ses,MemAlloc *ma);
-	RC		loadSSV(Value& val,ValueType ty,const HeapPageMgr::HeapObjHeader *hobj,unsigned mode,MemAlloc *ma);	// struct PropertyID?
-
-	RC		getBody(PINx& cb,TVOp tvo=TVO_READ,unsigned flags=0,VersionID=STORE_CURRENT_VERSION);
 	RC		resolveRef(Value& val,PIN *const *pins,unsigned nPins,PINMap *map);
 	RC		makeRoom(PIN *pin,ushort lxtab,PBlock *pb,Session *ses,size_t reserve);
 	RC		rename(ChangeInfo& inf,PropertyID pid,unsigned flags,bool fSync);
-	RC		checkLockAndACL(PINx& qr,TVOp tvo,QueryOp *qop=NULL);
-	RC		checkACLs(PINx& cb,IdentityID iid,TVOp tvo,unsigned flags=0,bool fProp=true);
-	RC		checkACLs(PINx *pin,PINx& cb,IdentityID iid,TVOp tvo,unsigned flags=0,bool fProp=true);
-	RC		checkACL(const Value&,PINx&,IdentityID,uint8_t,const RefTrace*,bool=true);
-	RC		getRefSafe(const PID& id,Value *&vals,unsigned& nValues,unsigned mode,PINx& cb);
 	RC		apply(const EvalCtx& ectx,STMT_OP op,PINx& qr,const Value *values,unsigned nValues,unsigned mode,PIN *pin=NULL);
 	RC		count(QueryOp *qop,uint64_t& cnt,unsigned nAbort,const OrderSegQ *os=NULL,unsigned nos=0);
 	RC		eval(const Value *pv,const EvalCtx& ctx,Value *res=NULL,unsigned mode=0);
@@ -204,9 +178,8 @@ class QueryPrc
 	size_t	splitLength(const Value *pv);
 	RC		calcLength(const Value& v,size_t& res,unsigned mode,size_t threshold,MemAlloc *ma,PageID pageID=INVALID_PAGEID,size_t *rlen=NULL);
 	RC		findCandidateSSVs(CandidateSSVs& cs,const Value *pv,unsigned nv,bool fSplit,MemAlloc *ma,const AllocCtrl *act=NULL,PropertyID=STORE_INVALID_URIID,struct ModInfo *mi=NULL);
-	RC		persistValue(const Value& v,ushort& sht,HType& vt,ushort& offs,byte *buf,size_t *plrec,const PageAddr &addr,ElementID *keygen=NULL);
+	RC		persistValue(const Value& v,ushort& sht,HType& vt,ushort& offs,byte *buf,size_t *plrec,const PageAddr &addr,ElementID *keygen=NULL,MemAlloc *pinAlloc=NULL);
 	RC		putHeapMod(HeapPageMgr::HeapPropMod *hpm,struct ModInfo *pm,byte *buf,ushort& sht,PINx&,bool=false);
-	RC		reload(PIN *pin,PINx *pcb);
 
 private:
 	IStoreNotification	*const	notification;
@@ -218,9 +191,8 @@ private:
 public:
 	QueryPrc(StoreCtx *,IStoreNotification *notItf);
 
-	RC		loadPIN(Session *ses,const PID& id,PIN *&pin,unsigned mode=0,PINx *pcb=NULL,VersionID=STORE_CURRENT_VERSION);
+	RC		reload(PIN *pin,PINx *pcb);
 	RC		loadValue(Session *ses,const PID& id,PropertyID pid,ElementID eid,Value& res,unsigned mode=0);
-	RC		loadValues(Value *pv,unsigned nv,const PID& id,Session *ses,unsigned mode=0);
 	RC		getPINValue(const PID& id,Value& res,unsigned mode,Session *ses);
 	RC		diffPIN(const PIN *pin,PINx& cb,Value *&diffProps,unsigned& nDiffProps,Session *ses);
 	RC		persistPINs(const EvalCtx& ectx,PIN *const *pins,unsigned nPins,unsigned mode,const AllocCtrl *actrl=NULL,size_t *pSize=NULL,const IntoClass *into=NULL,unsigned nInto=0);
@@ -253,7 +225,7 @@ public:
 	friend	class	Classifier;
 	friend	class	Class;
 	friend	class	StartFSM;
-	friend	class	FSMMgr;
+	friend	class	EventMgr;
 	friend	class	ProcessStream;
 	friend	class	NamedMgr;
 	friend	class	ServiceCtx;

@@ -14,7 +14,7 @@ WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the
 License for the specific language governing permissions and limitations
 under the License.
 
-Written by Mark Venguerov, Max Windish, Michael Andronov 2004-2012
+Written by Mark Venguerov, Max Windish, Michael Andronov 2004-2014
 
 **************************************************************************************/
 #ifndef _REQUEST_H_
@@ -78,7 +78,7 @@ class ThreadGroup {
 	pthread_cond_t	wait;
 	RQElt			*first;
 	RQElt			*last;
-	static FreeQ	freeQE;
+	static Pool	freeQE;
 #endif
 	ThreadGroup(RQType);
 	~ThreadGroup();

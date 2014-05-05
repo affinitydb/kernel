@@ -26,7 +26,7 @@ Written by Mark Venguerov 2010 - 2012
 
 using namespace AfyKernel;
 
-TransOp::TransOp(QueryOp *q,const ValueV *d,unsigned nD,const ValueV& ag,const OrderSegQ *gs,unsigned nG,const Expr *hv,unsigned qf) 
+TransOp::TransOp(QueryOp *q,const Values *d,unsigned nD,const Values& ag,const OrderSegQ *gs,unsigned nG,const Expr *hv,unsigned qf) 
 	: QueryOp(q,qf|(q->getQFlags()&(QO_UNIQUE|QO_IDSORT|QO_REVERSIBLE))|QO_ALLPROPS),dscr(d),ins(NULL),nIns(0),qr(qx->ses),pqr(&qr),res(NULL),
 	nRes(0),aggs(ag),groupSeg(gs),nGroup(nG),having(hv),ac(NULL),ectx(q->getQCtx()->ses)
 {
@@ -34,16 +34,16 @@ TransOp::TransOp(QueryOp *q,const ValueV *d,unsigned nD,const ValueV& ag,const O
 	if ((qf&QO_VCOPIED)!=0) {
 		if (ag.vals!=NULL) {RC rc=copyV(ag.vals,ag.nValues,*(Value**)&aggs.vals,qx->ses); if (rc!=RC_OK) throw rc; aggs.fFree=true;}
 		if (gs!=NULL) {
-			if ((groupSeg=new(qx->ses) OrderSegQ[nG])==NULL) throw RC_NORESOURCES;
+			if ((groupSeg=new(qx->ses) OrderSegQ[nG])==NULL) throw RC_NOMEM;
 			memcpy((OrderSegQ*)groupSeg,gs,nG*sizeof(OrderSegQ));
 			for (unsigned i=0; i<nG; i++) if ((gs[i].flags&ORDER_EXPR)!=0)
-				if ((((OrderSegQ*)groupSeg)[i].expr=Expr::clone(gs[i].expr,qx->ses))==NULL) throw RC_NORESOURCES;
-			if (hv!=NULL && (having=Expr::clone(hv,qx->ses))==NULL) throw RC_NORESOURCES;
+				if ((((OrderSegQ*)groupSeg)[i].expr=Expr::clone(gs[i].expr,qx->ses))==NULL) throw RC_NOMEM;
+			if (hv!=NULL && (having=Expr::clone(hv,qx->ses))==NULL) throw RC_NOMEM;
 		}
 	}
 }
 
-TransOp::TransOp(QCtx *qc,const ValueV *d,unsigned nD,unsigned qf) 
+TransOp::TransOp(QCtx *qc,const Values *d,unsigned nD,unsigned qf) 
 	: QueryOp(qc,qf|QO_UNIQUE|QO_ALLPROPS),dscr(d),ins(NULL),nIns(0),qr(qc->ses),pqr(&qr),res(NULL),nRes(0),groupSeg(NULL),nGroup(0),having(NULL),ac(NULL),ectx(qc->ses)
 {
 	nOuts=nD!=0?nD:1;
@@ -87,16 +87,16 @@ void TransOp::connect(PINx **results,unsigned nr)
 RC TransOp::init()
 {
 	if (aggs.nValues!=0) {
-		if ((qx->vals[QV_AGGS].vals=new(qx->ses) Value[qx->vals[QV_AGGS].nValues=aggs.nValues])==NULL) {state|=QST_EOF; return RC_NORESOURCES;}
+		if ((qx->vals[QV_AGGS].vals=new(qx->ses) Value[qx->vals[QV_AGGS].nValues=aggs.nValues])==NULL) {state|=QST_EOF; return RC_NOMEM;}
 		qx->vals[QV_AGGS].fFree=true; memset((Value*)qx->vals[QV_AGGS].vals,0,aggs.nValues*sizeof(Value));
-		if ((ac=new(qx->ses) AggAcc[aggs.nValues])==NULL) {state|=QST_EOF; return RC_NORESOURCES;}
+		if ((ac=new(qx->ses) AggAcc[aggs.nValues])==NULL) {state|=QST_EOF; return RC_NOMEM;}
 		for (unsigned i=0; i<aggs.nValues; i++) {
 			*const_cast<EvalCtx**>(&ac[i].ctx)=&ectx; ac[i].op=(ExprOp)aggs.vals[i].op;	ac[i].ma=qx->ses;												// flags???
-			if (aggs.vals[i].op==OP_HISTOGRAM && (ac[i].hist=new(qx->ses) Histogram(*qx->ses,0))==NULL) {state|=QST_EOF; return RC_NORESOURCES;}		// flags ???
+			if (aggs.vals[i].op==OP_HISTOGRAM && (ac[i].hist=new(qx->ses) Histogram(*qx->ses,0))==NULL) {state|=QST_EOF; return RC_NOMEM;}		// flags ???
 		}
 	}
 	if (nGroup!=0) {
-		if ((qx->vals[QV_GROUP].vals=new(qx->ses) Value[qx->vals[QV_GROUP].nValues=nGroup])==NULL) {state|=QST_EOF; return RC_NORESOURCES;}
+		if ((qx->vals[QV_GROUP].vals=new(qx->ses) Value[qx->vals[QV_GROUP].nValues=nGroup])==NULL) {state|=QST_EOF; return RC_NOMEM;}
 		qx->vals[QV_GROUP].fFree=true; memset((Value*)qx->vals[QV_GROUP].vals,0,nGroup*sizeof(Value));
 	}
 	return RC_OK;
@@ -113,7 +113,7 @@ RC TransOp::advance(const PINx *)
 				if (nGroup!=0) freeV(*(Value*)&qx->vals[QV_AGGS].vals[i]);
 				if ((rc=ac[i].result(*(Value*)&qx->vals[QV_AGGS].vals[i]))!=RC_OK) return rc;
 			}
-			if (having!=NULL && !Expr::condSatisfied(&having,1,EvalCtx(qx->ses,NULL,0,(PIN**)res,nRes,qx->vals,QV_ALL))) return RC_EOF;
+			if (having!=NULL && !having->condSatisfied(EvalCtx(qx->ses,NULL,0,(PIN**)res,nRes,qx->vals,QV_ALL))) return RC_EOF;
 			rc=RC_OK; newV=NULL; break;
 		}
 		bool fRepeat=false;
@@ -121,7 +121,7 @@ RC TransOp::advance(const PINx *)
 			fRepeat=true; assert(qx->vals[QV_GROUP].vals!=NULL);
 			// QO_LOADALL ???
 			if ((state&QST_BOF)!=0) {if ((rc=queryOp->loadData(*ins[0],(Value*)qx->vals[QV_GROUP].vals,nGroup,STORE_COLLECTION_ID,true))!=RC_OK) {state|=QST_EOF; return rc;}}
-			else if (newV==NULL && (newV=(Value*)alloca(nGroup*sizeof(Value)))==NULL) {state|=QST_EOF; return RC_NORESOURCES;}
+			else if (newV==NULL && (newV=(Value*)alloca(nGroup*sizeof(Value)))==NULL) {state|=QST_EOF; return RC_NOMEM;}
 			else if ((rc=queryOp->loadData(*ins[0],newV,nGroup,STORE_COLLECTION_ID,true))!=RC_OK) {state|=QST_EOF; return rc;}
 			else for (unsigned i=0; i<nGroup; i++) if (cmp(qx->vals[QV_GROUP].vals[i],newV[i],groupSeg[i].flags,qx->ses)!=0) {fRepeat=false; break;}
 		}
@@ -137,8 +137,8 @@ RC TransOp::advance(const PINx *)
 			const Value &v=aggs.vals[i]; Value w; w.setError();
 			if (v.type==VT_VARREF) {
 				if (v.refV.refN>=nIns) continue; assert((v.refV.flags&VAR_TYPE_MASK)==0 && v.length!=0);
-				rc=ins[v.refV.refN]->getV(v.refV.id,w,LOAD_SSV,qx->ses,v.eid<STORE_ALL_ELEMENTS||v.eid>=STORE_FIRST_ELEMENT?v.eid:STORE_COLLECTION_ID);
-			} else if (v.type==VT_EXPR && v.fcalc!=0) rc=Expr::eval((const Expr**)&v.expr,1,w,EvalCtx(qx->ses,NULL,0,(PIN**)ins,nIns,qx->vals,QV_ALL));
+				rc=ins[v.refV.refN]->getV(v.refV.id,w,LOAD_SSV,qx->ses,v.eid);
+			} else if (v.type==VT_EXPR && v.fcalc!=0) rc=((Expr*)v.expr)->eval(w,EvalCtx(qx->ses,NULL,0,(PIN**)ins,nIns,qx->vals,QV_ALL));
 			else if (v.type!=VT_ANY) {w=v; setHT(w);}
 			if (rc==RC_OK) rc=ac[i].process(w); freeV(w);
 			if (rc==RC_NOTFOUND) rc=RC_OK; else if (rc!=RC_OK) {state|=QST_EOF; return rc;}
@@ -146,7 +146,7 @@ RC TransOp::advance(const PINx *)
 		state&=~QST_BOF;
 		if (nGroup!=0) {
 			if (fRepeat) {if (newV!=NULL) for (unsigned i=0; i<nGroup; i++) freeV(newV[i]);}
-			else if (having==NULL || Expr::condSatisfied(&having,1,EvalCtx(qx->ses,NULL,0,(PIN**)res,nRes,qx->vals,QV_ALL))) break;
+			else if (having==NULL || having->condSatisfied(EvalCtx(qx->ses,NULL,0,(PIN**)res,nRes,qx->vals,QV_ALL))) break;
 			else {for (unsigned i=0; i<nGroup; i++) freeV(*(Value*)&qx->vals[QV_GROUP].vals[i]); memcpy((Value*)qx->vals[QV_GROUP].vals,newV,nGroup*sizeof(Value));}
 		} else if (ac==NULL) break;
 	}
@@ -155,19 +155,19 @@ RC TransOp::advance(const PINx *)
 		if (res!=NULL && res[0]!=NULL) {
 			res[0]->setProps(qx->vals[QV_GROUP].vals,nGroup,0);
 			if (newV==NULL) {qx->vals[QV_GROUP].vals=NULL; qx->vals[QV_GROUP].fFree=false;}
-			else if ((qx->vals[QV_GROUP].vals=new(qx->ses) Value[nGroup])==NULL) {state|=QST_EOF; return RC_NORESOURCES;}
+			else if ((qx->vals[QV_GROUP].vals=new(qx->ses) Value[nGroup])==NULL) {state|=QST_EOF; return RC_NOMEM;}
 		} else if (newV!=NULL) for (unsigned i=0; i<nGroup; i++) freeV(*(Value*)&qx->vals[QV_GROUP].vals[i]);
 		if (newV!=NULL) memcpy((Value*)qx->vals[QV_GROUP].vals,newV,nGroup*sizeof(Value));
 		return RC_OK;
 	}
 	for (unsigned i=0; i<nOuts; i++) {
-		const ValueV &td=dscr[i]; PINx *re=i<nRes?res[i]:(PINx*)0; Value w,*to=&w;
+		const Values &td=dscr[i]; PINx *re=i<nRes?res[i]:(PINx*)0; Value w,*to=&w;
 		if (re!=NULL && (qflags&QO_AUGMENT)==0) {
 			if (re->properties==NULL || re->fNoFree!=0) {
-				if ((re->properties=(Value*)qx->ses->malloc(td.nValues*sizeof(Value)))!=NULL) re->fNoFree=0; else {rc=RC_NORESOURCES; break;}
+				if ((re->properties=(Value*)qx->ses->malloc(td.nValues*sizeof(Value)))!=NULL) re->fNoFree=0; else {rc=RC_NOMEM; break;}
 			} else {
 				for (unsigned k=0; k<re->nProperties; k++) freeV(*(Value*)&re->properties[k]);
-				if (re->nProperties<td.nValues && (re->properties=(Value*)qx->ses->realloc((void*)re->properties,td.nValues*sizeof(Value)))==NULL) {rc=RC_NORESOURCES; break;}
+				if (re->nProperties<td.nValues && (re->properties=(Value*)qx->ses->realloc((void*)re->properties,td.nValues*sizeof(Value)))==NULL) {rc=RC_NOMEM; break;}
 			}
 			re->id=PIN::noPID; re->epr.flags=re->epr.flags&~(PINEX_LOCKED|PINEX_XLOCKED|PINEX_ACL_CHKED|PINEX_ADDRSET)|PINEX_DERIVED; re->fPartial=0; re->nProperties=td.nValues; to=re->properties;
 		}
@@ -178,7 +178,7 @@ RC TransOp::advance(const PINx *)
 				vty=v.refV.flags&VAR_TYPE_MASK;
 				if (vty==VAR_CTX && (qflags&QO_AUGMENT)!=0) continue;
 				if (vty!=0) {
-					const ValueV *vals=&qx->vals[(vty>>13)-1];
+					const Values *vals=&qx->vals[(vty>>13)-1];
 					if (v.refV.refN<vals->nValues) rc=copyV(vals->vals[v.refV.refN],*to,qx->ses); else rc=RC_NOTFOUND;
 				} else if (v.length!=0 && v.refV.id==PROP_SPEC_SELF && (qflags&QO_AUGMENT)!=0) continue;
 				else if (v.refV.refN>=nIns) rc=RC_NOTFOUND;
@@ -186,8 +186,8 @@ RC TransOp::advance(const PINx *)
 					//???
 				} else if (v.refV.id==PROP_SPEC_PINID && (v.property==PROP_SPEC_PINID || v.property==STORE_INVALID_URIID) && re!=NULL && (qflags&QO_AUGMENT)==0) {
 					re->id=ins[v.refV.refN]->id; if (--re->nProperties==0) {qx->ses->free((void*)re->properties); re->properties=NULL;} continue;
-				} else 
-					rc=ins[v.refV.refN]->getV(v.refV.id,*to,LOAD_SSV,qx->ses,v.eid<STORE_ALL_ELEMENTS||v.eid>=STORE_FIRST_ELEMENT?v.eid:STORE_COLLECTION_ID);
+				} else
+					rc=ins[v.refV.refN]->getV(v.refV.id,*to,LOAD_SSV,qx->ses,v.eid);
 				ty=(ValueType)v.refV.type; break;
 			case VT_CURRENT:
 				switch (v.i) {
@@ -207,7 +207,7 @@ RC TransOp::advance(const PINx *)
 			case VT_EXPR:
 				if (v.fcalc!=0) {
 					EvalCtx ectx2(qx->ses,NULL,0,(qflags&QO_AUGMENT)!=0?(PIN**)&re:(PIN**)ins,(qflags&QO_AUGMENT)!=0?1:nIns,qx->vals,QV_ALL);
-					if ((rc=Expr::eval((const Expr**)&v.expr,1,*to,ectx2))==RC_OK && to->type==VT_REF && td.nValues==1 && v.property==PROP_SPEC_VALUE) {
+					if ((rc=((Expr*)v.expr)->eval(*to,ectx2))==RC_OK && to->type==VT_REF && td.nValues==1 && v.property==PROP_SPEC_VALUE) {
 						w=*to; if (re->fNoFree==0) qx->ses->free((Value*)re->properties);
 						re->properties=((PIN*)w.pin)->properties; re->nProperties=((PIN*)w.pin)->nProperties; re->fNoFree=((PIN*)w.pin)->fNoFree;
 						((PIN*)w.pin)->fNoFree=1; freeV(w); continue;

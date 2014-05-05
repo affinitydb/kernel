@@ -40,7 +40,7 @@ Written by Mark Venguerov, Michael Andronov 2004 - 2012
 using namespace AfyKernel;
 
 /* __APPLE__ specific ... */
-FreeQ AsyncReqQ::lioReqs;
+Pool AsyncReqQ::lioReqs;
 AsyncReqQ FileMgr::lioAQueue; //track for outstanding I/O(s).
  
 namespace AfyKernel
@@ -104,7 +104,7 @@ AIOElt * unchain(AIOElt *elt){
 
 static sigset_t sigSIO;
 
-FreeQ FileMgr::freeIORequests;
+Pool FileMgr::freeIORequests;
 class IOCompletionRequest : public Request
 {
        myaio			*const	aio;
@@ -272,12 +272,12 @@ RC FileMgr::open(FileID& fid,const char *fname,unsigned flags)
 	const char *dir=ctx->getDirectory(); bool fdel=false;
 	if ((flags&FIO_TEMP)!=0) {
 		char *p=(char*)ctx->malloc((dir!=NULL?strlen(dir):2)+sizeof(STOREPREFIX)+6+1); 
-		if (p==NULL) return RC_NORESOURCES; strcpy(p,dir!=NULL?dir:"./"); strcat(p,STOREPREFIX);
+		if (p==NULL) return RC_NOMEM; strcpy(p,dir!=NULL?dir:"./"); strcat(p,STOREPREFIX);
 		fname=p; p+=strlen(p); memset(p,'X',6); p[6]='\0'; p=mktemp((char*)fname);
-		if (p==NULL||*p=='\0') {ctx->free((char*)fname); return RC_NORESOURCES;}
+		if (p==NULL||*p=='\0') {ctx->free((char*)fname); return RC_NOMEM;}
 		fdel=true;
 	} else if (dir!=NULL && !strchr(fname,'/')) {
-		char *p=(char*)ctx->malloc(strlen(dir)+strlen(fname)+1); if (p==NULL) return RC_NORESOURCES;
+		char *p=(char*)ctx->malloc(strlen(dir)+strlen(fname)+1); if (p==NULL) return RC_NOMEM;
 		strcpy(p,dir); strcat(p,fname); fname=p; fdel=true;
 	}
 
@@ -287,7 +287,7 @@ RC FileMgr::open(FileID& fid,const char *fname,unsigned flags)
 			if (!slotTab[fid].isOpen()) break;
 		}
 	}
-	if (fid>=xSlotTab) {lock.unlock(); return RC_NORESOURCES;}
+	if (fid>=xSlotTab) {lock.unlock(); return RC_NOMEM;}
 	if (slotTab[fid].isOpen()) { 
 		if ((flags&FIO_REPLACE)==0)	{lock.unlock(); return RC_ALREADYEXISTS;}
 		slotTab[fid].close();
@@ -553,8 +553,8 @@ RC GFileMgr::loadExt(const char *path,size_t l,Session *ses,const Value *pars,un
 	RC rc=RC_OK;
 	size_t ld=loadDir!=NULL && !memchr(path,'/',l)?strlen(loadDir):0,le=l<7||memcmp(path+l-6,".dylib",6)!=0?6:0,lp=0,sht=0;
 	for (const char *pp=path+l;;) {if (*--pp=='/') sht=++pp-path; else if (pp!=path) continue; if (sht+3>l || pp[0]!='l' || pp[1]!='i' || pp[2]!='b') lp=3; break;}
-	char *p=(char*)((StoreCtx*)ctx)->malloc(ld+lp+l+le+1); if (p==NULL) return RC_NORESOURCES;
-	if (ld!=0) memcpy(p,loadDir,ld);
+	char *p=(char*)((StoreCtx*)ctx)->malloc(ld+lp+l+le+2); if (p==NULL) return RC_NOMEM;
+	if (ld!=0) {memcpy(p,loadDir,ld); if (p[ld-1]!='/') p[ld++]='/';}
 	if (lp!=0) {memcpy(p+ld,path,sht); memcpy(p+ld+sht,"lib",3); memcpy(p+ld+sht+3,path+sht,l-sht);} else memcpy(p+ld,path,l);
 	if (le!=0) memcpy(p+ld+lp+l,".dylib",6); p[ld+lp+l+le]='\0';
 

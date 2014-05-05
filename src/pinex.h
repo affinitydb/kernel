@@ -14,7 +14,7 @@ WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the
 License for the specific language governing permissions and limitations
 under the License.
 
-Written by Mark Venguerov 2004-2012
+Written by Mark Venguerov 2004-2014
 
 **************************************************************************************/
 
@@ -48,6 +48,31 @@ namespace AfyKernel
 #define	PEX_PROPS			0x0004
 #define	PEX_ALLPROPS		0x0008
 
+/**
+ * getBody() flags
+ */
+#define	GB_DELETED			0x0001		/**< get soft-deleted PIN */
+#define	GB_REREAD			0x0002		/**< re-read page, don't re-lock */
+#define	GB_FORWARD			0x0004		/**< don't resolve FORWARD records */
+
+/**
+ * transient versioning table operations
+ */
+enum TVOp
+{
+	TVO_READ, TVO_INS, TVO_UPD
+};
+
+struct RefTrace
+{
+	const	RefTrace	*next;
+	PID					id;
+	PropertyID			pid;
+	ElementID			eid;
+};
+
+class QueryOp;
+
 class PINx : public PIN, public LatchHolder
 {
 	Session							*ses;
@@ -75,14 +100,29 @@ public:
 	unsigned	getState() const {return (epr.buf[0]==0&&id.isEmpty()?0:hpin!=NULL?PEX_PAGE|PEX_PID:PEX_PID)|(properties==NULL?0:fPartial!=0?PEX_PROPS:PEX_PROPS|PEX_ALLPROPS);}
 	const		HeapPageMgr::HeapPIN *fill() {if (pb.isNull()) hpin=NULL; else {const HeapPageMgr::HeapPage *hp=(HeapPageMgr::HeapPage*)pb->getPageBuf(); hpin=(HeapPageMgr::HeapPIN*)hp->getObject(hp->getOffset(addr.idx));} return hpin;}
 	bool		defined(const PropertyID *pids,unsigned nProps) const;
-	RC			getVx(PropertyID pid,Value& v,unsigned mode,MemAlloc *ma,ElementID=STORE_COLLECTION_ID);
+	bool		checkProps(const PropertyID *pids,unsigned nProps);
+	RC			getVx(PropertyID pid,Value& v,unsigned mode,MemAlloc *ma,ElementID eid=STORE_COLLECTION_ID);
+	RC			getVx(PropertyID pid,Value& v,unsigned mode,const Value& idx,MemAlloc *ma);
 	bool		isCollection(PropertyID pid) const;
 	RC			pack() const;
 	void		copyFlags();
 	void		operator=(const PID& pid) const {id=pid;}
 	void		operator=(const PageAddr& ad) const {addr=ad;}
 	Session		*getSes() const {return ses;}
+	uint32_t	estimateSize() const;
+	RC			getBody(TVOp tvo=TVO_READ,unsigned flags=0,VersionID=STORE_CURRENT_VERSION);
+	RC			checkLockAndACL(TVOp tvo,QueryOp *qop=NULL);
+	RC			loadPIN(PIN *&pin,unsigned mode=0,VersionID=STORE_CURRENT_VERSION);
+	RC			loadProps(unsigned mode,const PropertyID *pids=NULL,unsigned nPids=0);
 private:
+	RC			loadVH(Value& v,const HeapPageMgr::HeapV *hprop,unsigned mode,MemAlloc *ma,ElementID eid=STORE_COLLECTION_ID) const;
+	RC			loadMapElt(Value& v,const HeapPageMgr::HeapV *hprop,unsigned mode,const Value& idx,MemAlloc *ma) const;
+	static	RC	loadSSVs(Value *values,unsigned nValues,unsigned mode,Session *ses,MemAlloc *ma);
+	static	RC	loadSSV(Value& val,ValueType ty,const HeapPageMgr::HeapObjHeader *hobj,unsigned mode,MemAlloc *ma);	// struct PropertyID?
+	RC			checkACLs(IdentityID iid,TVOp tvo,unsigned flags=0,bool fProp=true);
+	RC			checkACLs(PINx *pin,IdentityID iid,TVOp tvo,unsigned flags=0,bool fProp=true);
+	RC			checkACL(const Value&,IdentityID,uint8_t,const RefTrace*,bool=true);
+	RC			getRefSafe(const PID& id,Value *&vals,unsigned& nValues,unsigned mode);
 	RC			unpack() const;
 	void		free();
 	friend	class	Class;
