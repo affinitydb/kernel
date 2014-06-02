@@ -61,8 +61,8 @@ const BuiltinURI NamedMgr::builtinURIs[] = {
 	{S_L("objectID"),		PROP_SPEC_OBJID},
 	{S_L("predicate"),		PROP_SPEC_PREDICATE},
 	{S_L("count"),			PROP_SPEC_COUNT},
-	{S_L("subclasses"),		PROP_SPEC_SUBCLASSES},
-	{S_L("superclasses"),	PROP_SPEC_SUPERCLASSES},
+	{S_L("specialization"),	PROP_SPEC_SPECIALIZATION},
+	{S_L("abstraction"),	PROP_SPEC_ABSTRACTION},
 	{S_L("indexInfo"),		PROP_SPEC_INDEX_INFO},
 	{S_L("properties"),		PROP_SPEC_PROPERTIES},
 	{S_L("onEnter"),		PROP_SPEC_ONENTER},
@@ -116,7 +116,7 @@ const BuiltinURI NamedMgr::builtinURIs[] = {
 };
 
 const SpecPINProps NamedMgr::specPINProps[11] = {
-	{{1ULL<<PROP_SPEC_OBJID|1ULL<<PROP_SPEC_PREDICATE,0,0,0},								PMT_CLASS},
+	{{1ULL<<PROP_SPEC_OBJID|1ULL<<PROP_SPEC_PREDICATE,0,0,0},								PMT_DATAEVENT},
 	{{1ULL<<PROP_SPEC_OBJID|1ULL<<PROP_SPEC_INTERVAL|1ULL<<PROP_SPEC_ACTION,0,0,0},			PMT_TIMER},
 	{{1ULL<<PROP_SPEC_OBJID|1ULL<<PROP_SPEC_LISTEN,0,0,0},									PMT_LISTENER},
 	{{1ULL<<PROP_SPEC_OBJID|1ULL<<PROP_SPEC_LOAD,0,0,0},									PMT_LOADER},
@@ -129,7 +129,7 @@ const SpecPINProps NamedMgr::specPINProps[11] = {
 	{{1ULL<<PROP_SPEC_OBJID|1ULL<<PROP_SPEC_EVENT,0,0},										PMT_HANDLER},
 };
 
-const unsigned NamedMgr::classMeta[MAX_BUILTIN_CLASSID+1] = {PMT_CLASS,PMT_TIMER,PMT_LISTENER,PMT_LOADER,PMT_PACKAGE,PMT_NAMED,PMT_ENUM,0,0,PMT_FSMCTX,PMT_FSM,PMT_HANDLER};
+const unsigned NamedMgr::classMeta[MAX_BUILTIN_CLASSID+1] = {PMT_DATAEVENT,PMT_TIMER,PMT_LISTENER,PMT_LOADER,PMT_PACKAGE,PMT_NAMED,PMT_ENUM,0,0,PMT_FSMCTX,PMT_FSM,PMT_HANDLER};
 
 const char *NamedMgr::getBuiltinName(URIID uid,size_t& lname)
 {
@@ -138,7 +138,7 @@ const char *NamedMgr::getBuiltinName(URIID uid,size_t& lname)
 	lname=0; return 0;
 }
 
-uint16_t NamedMgr::getMeta(ClassID cid)
+uint16_t NamedMgr::getMeta(DataEventID cid)
 {
 	return cid<=MAX_BUILTIN_CLASSID?classMeta[cid]:0;
 }
@@ -210,13 +210,17 @@ RC NamedMgr::loadObjects(Session *ses,bool fSafe)
 
 			if (rc==RC_OK || rc==RC_EOF) {
 				QCtx qc(ses); qc.ref(); ClassScan cs(&qc,CLASS_OF_CLASSES,QO_HIDDEN); cs.connect(&pcb);
-				while ((rc=cs.next())==RC_OK && (rc=cb.getBody())==RC_OK && (rc=ClassCreate::loadClass(cb,fSafe))==RC_OK);
+				while ((rc=cs.next())==RC_OK && (rc=cb.getBody())==RC_OK && (rc=CreateDataEvent::loadClass(cb,fSafe))==RC_OK);
 			}
 
 			if (!fSafe) {
 				if (rc==RC_OK || rc==RC_EOF) {
 					QCtx qc(ses); qc.ref(); ClassScan cs(&qc,CLASS_OF_FSMCTX,QO_HIDDEN); cs.connect(&pcb);
 					while ((rc=cs.next())==RC_OK && (rc=cb.getBody())==RC_OK && (rc=StartFSM::loadFSM(cb))==RC_OK);
+				}
+				if (rc==RC_OK || rc==RC_EOF) {
+					QCtx qc(ses); qc.ref(); ClassScan cs(&qc,CLASS_OF_HANDLERS,QO_HIDDEN); cs.connect(&pcb);
+					while ((rc=cs.next())==RC_OK && (rc=cb.getBody())==RC_OK /*&& (rc=StartFSM::loadFSM(cb))==RC_OK*/);
 				}
 				if (rc==RC_OK || rc==RC_EOF) {
 					QCtx qc(ses); qc.ref(); ClassScan cs(&qc,CLASS_OF_LISTENERS,QO_HIDDEN); cs.connect(&pcb);
@@ -264,10 +268,10 @@ bool NamedMgr::exists(URIID uid)
 	SearchKey key((uint64_t)uid); size_t l=0; return find(key,NULL,l)==RC_OK;
 }
 
-RC NamedMgr::getNamedPID(URIID uid,PID& id)
+RC NamedMgr::getNamedPID(URIID uid,Value& id)
 {
 	SearchKey key((uint64_t)uid); byte buf[XPINREFSIZE]; size_t l=sizeof(buf);
-	RC rc=find(key,buf,l); if (rc==RC_OK) {PINRef pr(ctx->storeID,buf); id=pr.id;}
+	RC rc=find(key,buf,l); if (rc==RC_OK) {PINRef pr(ctx->storeID,buf); id.set(pr.id); if ((pr.def&PR_SPECIAL)!=0) id.fcalc=1;}
 	return rc;
 }
 

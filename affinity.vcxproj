@@ -348,7 +348,7 @@
     <ClInclude Include="include\units.h" />
     <ClInclude Include="src\blob.h" />
     <ClInclude Include="src\buffer.h" />
-    <ClInclude Include="src\classifier.h" />
+    <ClInclude Include="src\dataevent.h" />
     <ClInclude Include="src\dlalloc.h" />
     <ClInclude Include="src\ecc.h" />
     <ClInclude Include="src\event.h" />
@@ -365,6 +365,7 @@
     <ClInclude Include="src\lsn.h" />
     <ClInclude Include="src\maps.h" />
     <ClInclude Include="src\mem.h" />
+    <ClInclude Include="src\modinfo.h" />
     <ClInclude Include="src\named.h" />
     <ClInclude Include="src\netmgr.h" />
     <ClInclude Include="src\objmgr.h" />
@@ -400,7 +401,7 @@
     <ClCompile Include="src\blob.cpp" />
     <ClCompile Include="src\buffer.cpp" />
     <ClCompile Include="src\builtin.cpp" />
-    <ClCompile Include="src\classifier.cpp" />
+    <ClCompile Include="src\dataevent.cpp" />
     <ClCompile Include="src\deletepins.cpp" />
     <ClCompile Include="src\dlalloc.cpp" />
     <ClCompile Include="src\ecc.cpp" />

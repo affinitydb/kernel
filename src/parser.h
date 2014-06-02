@@ -158,9 +158,9 @@ public:
  */
 enum Lexem {
 	LX_BOE=OP_SET, LX_EOE=OP_ADD, LX_IDENT=OP_ADD_BEFORE, LX_CON=OP_MOVE,
-	LX_KEYW=OP_MOVE_BEFORE, LX_LPR=OP_DELETE, LX_RPR=OP_EDIT, LX_COMMA=OP_RENAME,
+	LX_KEYW=OP_MOVE_BEFORE, LX_LPR=OP_DELETE, LX_RPR=OP_RENAME,
 		
-	LX_COLON=OP_ALL, LX_LBR, LX_RBR, LX_LCBR, LX_RCBR, LX_PERIOD, LX_QUEST, LX_EXCL,
+	LX_COMMA=OP_ALL, LX_COLON, LX_LBR, LX_RBR, LX_LCBR, LX_RCBR, LX_PERIOD, LX_QUEST, LX_EXCL,
 	LX_EXPR, LX_STMT, LX_URSHIFT, LX_PREFIX, LX_IS, LX_BETWEEN, LX_BAND, LX_HASH,
 	LX_SEMI, LX_CONCAT, LX_FILTER, LX_REPEAT, LX_PATHQ, LX_SELF, LX_SPROP, LX_TPID,
 	LX_RXREF, LX_REF, LX_ARROW,
@@ -181,7 +181,7 @@ enum KW {
 	KW_NOW, KW_CUSER, KW_CSTORE, KW_TIMESTAMP, KW_INTERVAL, KW_WITH,
 	KW_INSERT, KW_DELETE, KW_UPDATE, KW_CREATE, KW_PURGE, KW_UNDELETE,
 	KW_SET, KW_ADD, KW_MOVE, KW_RENAME, KW_EDIT, KW_START, KW_COMMIT,
-	KW_ROLLBACK, KW_DROP, KW_CASE, KW_WHEN, KW_THEN, KW_ELSE, KW_END, KW_RULE
+	KW_ROLLBACK, KW_DROP, KW_CASE, KW_WHEN, KW_THEN, KW_ELSE, KW_END, KW_RULE, KW_IMPORT
 };
 
 /**
@@ -290,10 +290,13 @@ protected:
 	Value						v;				/**< value associated with current lexem (string, number, etc.) */
 	DynOArrayBuf<uint64_t,uint64_t> *tids;		/**< array of temporary PIN IDs in this statement (@:xxx) */
 	TXI_LEVEL					txi;			/**< statement transaction isolation level */
+	const	char	*const		importBase;		/**< directory path for IMPORT */
+	const	bool				fImport;		/**< IMPORT allowed? */
 public:
-	SInCtx(Session *se,const char *s,size_t ls,const URIID *i=NULL,unsigned ni=0,MemAlloc *m=NULL)
+	SInCtx(Session *se,const char *s,size_t ls,const URIID *i=NULL,unsigned ni=0,const char *import=NULL,bool fImp=false,MemAlloc *m=NULL)
 		: ses(se),ma(m!=NULL?m:se),mtype(ma!=NULL?ma->getAType():NO_HEAP),str(s),end(s+ls),ids(i),nids(ni),ptr(s),lbeg(s),lmb(0),line(1),errpos(NULL),
-		mode(0),base(NULL),lBase(0),lBaseBuf(0),qNames(NULL),nQNames(0),lastQN(~0u),dnames(ma),nextLex(LX_ERR),tids(NULL),txi(TXI_DEFAULT) {v.setEmpty();}
+		mode(0),base(NULL),lBase(0),lBaseBuf(0),qNames(NULL),nQNames(0),lastQN(~0u),dnames(ma),nextLex(LX_ERR),tids(NULL),txi(TXI_DEFAULT),
+		importBase(import),fImport(fImp) {v.setEmpty();}
 	~SInCtx();
 	Stmt	*parseStmt();																			/**< parse PathSQL statement; can be called recursively for nested statements */
 	RC		exec(const Value *params,unsigned nParams,char **result=NULL,uint64_t *nProcessed=NULL,unsigned nProcess=~0u,unsigned nSkip=0);	/**< parse PathSQL, execute and return result as JSON */
@@ -316,22 +319,24 @@ private:
 	void	mapIdentity();																			/**< map identity string to IdentityID */
 	bool	parseEID(TLx lx,ElementID& eid);														/**< parse ':XXX' eid constant */
 	void	parseMeta(PropertyID pid,uint8_t& meta);												/**< parse META_PROP_*** in insert and VT_STRUCT */
+	void	parseValue(Value& w,PropertyID pid,uint8_t meta);										/**< parse RHS value in INSERT, UPDATE, CREATE */
 	void	parseRegExp();																			/**< parse regular expression, return binary string containing 'compiled' form */
 	void	parseEvents(Value& res,FSMTable *ft=NULL,unsigned *id=NULL);							/**< parse event descriptors in FSM or event handler */
 	void	parseCase();																			/**< parse CASE ... WHEN ... END */
-	void	parseInsert(Stmt *&res,DynArray<Value,10>& with);										/**< parse INSERT ... */
-	void	parseUpdate(Stmt *&res,DynArray<Value,10>& with);										/**< parse UPDATE ... */
-	void	parseDelete(Stmt *&res,KW kw,DynArray<Value,10>& with);									/**< parse DELETE..., PURGE..., UNDELETE... */
-	void	parseCreate(Stmt *&res,DynArray<Value,10>& with);										/**< parse CREATE ... */
+	void	parseInsert(Stmt *&res);																/**< parse INSERT ... */
+	void	parseUpdate(Stmt *&res);																/**< parse UPDATE ... */
+	void	parseDelete(Stmt *&res,KW kw);															/**< parse DELETE..., PURGE..., UNDELETE... */
+	void	parseCreate(Stmt *&res);																/**< parse CREATE ... */
 	void	parseDrop(Stmt *&res);																	/**< parse DROP ... */
 	void	parseStart(Stmt *&res);																	/**< parse START ... */
 	void	parseFSM(Stmt *&res);																	/**< parse CREATE FSM... */
 	void	parseSet(Stmt *&res);																	/**< parse SET ... */
 	void	parseRule(Stmt *&res);																	/**< parse RULE ... */
+	void	import();																				/**< import pathSQL package from a file */
 	QVarID	parseSelect(Stmt *res,bool fMod=false);													/**< parse SELECT statement */
 	QVarID	parseFrom(Stmt *stmt);																	/**< parse FROM clause */
 	QVarID	parseSource(Stmt *stmt,TLx lx,bool *pF,bool fSelect=true);								/**< parse a single source variable in FROM or UPDATE */
-	void	parseClasses(DynArray<SourceSpec> &css);												/**< parse a list of classes in FROM */
+	void	parseClasses(DynArray<SourceSpec> &css);												/**< parse a list of devs in FROM */
 	TLx		parseOrderOrGroup(Stmt *stmt,QVarID var,Value *os=NULL,unsigned nO=0);					/**< parse ORDER BY or GROUP BY clause */
 	ExprNode *parseCondition(const union QVarRef *vars,unsigned nVars);								/**< parse condition expresion (either in WHERE or in ON or in HAVING) */
 	RC		splitWhere(Stmt *stmt,QVar *qv,ExprNode *pe);											/**< down-propagate individual variable conditions in join, associate variables in JOIN on or WHERE conditions */
@@ -366,7 +371,7 @@ class PathSQLParser : public IService::Processor, public SInCtx
 {
 	IServiceCtx *const	sctx;
 public:
-	PathSQLParser(IServiceCtx *ct,Session *ses) : SInCtx(ses,NULL,0,NULL,0,ses),sctx(ct) {}
+	PathSQLParser(IServiceCtx *ct,Session *ses) : SInCtx(ses,NULL,0),sctx(ct) {}
 	RC		invoke(IServiceCtx *ctx,const Value& inp,Value& out,unsigned& mode);
 };
 

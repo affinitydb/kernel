@@ -22,7 +22,7 @@ Written by Mark Venguerov 2004-2014
 #include "buffer.h"
 #include "storecb.h"
 #include "logmgr.h"
-#include "classifier.h"
+#include "dataevent.h"
 #include "startup.h"
 
 using namespace AfyKernel;

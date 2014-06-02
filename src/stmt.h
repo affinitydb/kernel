@@ -47,6 +47,7 @@ namespace AfyKernel
 #define	QRY_ORDEXPR		0x40000000			/**< expressions are used in ORDER BY */
 #define	QRY_IDXEXPR		0x20000000			/**< expressions used in index references */
 #define	QRY_CPARAMS		0x10000000			/**< class/family references contain parameters */
+#define	QRY_CALCWITH	0x08000000			/**< WITH contains calculated expressions */
 
 class SOutCtx;
 class SInCtx;
@@ -177,9 +178,9 @@ public:
 	RC				addReqProps(const PropertyID *props,unsigned nProps);
 	friend	class	Stmt;
 	friend	class	SimpleVar;
-	friend	class	Classifier;
-	friend	class	ClassDrop;
-	friend	class	ClassPropIndex;
+	friend	class	DataEventMgr;
+	friend	class	DropDataEvent;
+	friend	class	DataEventRegistry;
 	friend	class	QueryPrc;
 	friend	class	QBuildCtx;
 	friend	class	SInCtx;
@@ -188,12 +189,12 @@ public:
 
 /**
  * simple query variable - no join, no set operation
- * can refer a list of classes or class families, individual PINs, collection, path expression, subquery
+ * can refer a list of data events or event families, individual PINs, collection, path expression, subquery
  */
 class SimpleVar : public QVar
 {
-	SourceSpec		*classes;
-	unsigned		nClasses;
+	SourceSpec		*srcs;
+	unsigned		nSrcs;
 	CondIdx			*condIdx;
 	CondIdx			*lastCondIdx;
 	unsigned		nCondIdx;
@@ -202,7 +203,7 @@ class SimpleVar : public QVar
 	bool			fOrProps;
 	PathSeg			*path;
 	unsigned		nPathSeg;
-	SimpleVar(QVarID i,MemAlloc *m) : QVar(i,QRY_SIMPLE,m),classes(NULL),nClasses(0),condIdx(NULL),lastCondIdx(NULL),nCondIdx(0),
+	SimpleVar(QVarID i,MemAlloc *m) : QVar(i,QRY_SIMPLE,m),srcs(NULL),nSrcs(0),condIdx(NULL),lastCondIdx(NULL),nCondIdx(0),
 										condFT(NULL),fOrProps(false),path(NULL),nPathSeg(0) {}
 	virtual			~SimpleVar();
 	RC				clone(MemAlloc *m,QVar*&) const;
@@ -217,10 +218,10 @@ class SimpleVar : public QVar
 	bool			checkXPropID(PropertyID xp) const;
 public:
 	friend	class	Stmt;
-	friend	class	Class;
-	friend	class	Classifier;
-	friend	class	ClassDrop;
-	friend	class	ClassPropIndex;
+	friend	class	DataEvent;
+	friend	class	DataEventMgr;
+	friend	class	DropDataEvent;
+	friend	class	DataEventRegistry;
 	friend	class	SInCtx;
 	friend	class	SOutCtx;
 	friend	RC		QVar::render(SOutCtx&) const;
@@ -276,6 +277,7 @@ class JoinVar : public QVar
 	byte			*serialize(byte *buf) const;
 	static	RC		deserialize(const byte *&buf,const byte *const ebuf,QVarID,byte,MemAlloc *ma,QVar*& res);
 	const	QVar	*getRefVar(unsigned refN) const;
+	unsigned		getVarIdx(unsigned refN,unsigned& sht) const;
 };
 
 /**
@@ -319,7 +321,7 @@ public:
 	Stmt(unsigned md,MemAlloc *m,STMT_OP sop=STMT_QUERY,TXI_LEVEL tx=TXI_DEFAULT) : op(sop),ma(m),mode(md),txi(tx),top(NULL),nTop(0),vars(NULL),nVars(0),orderBy(NULL),nOrderBy(0)
 			{vals=NULL; nValues=nNested=0; into=NULL; nInto=0; pmode=0; tpid=STORE_INVALID_PID;}
 	virtual	~Stmt();
-	QVarID	addVariable(const SourceSpec *classes=NULL,unsigned nClasses=0,IExprNode *cond=NULL);
+	QVarID	addVariable(const SourceSpec *srcs=NULL,unsigned nSrcs=0,IExprNode *cond=NULL);
 	QVarID	addVariable(const PID& pid,PropertyID propID,IExprNode *cond=NULL);
 	QVarID	addVariable(IStmt *qry);
 	QVarID	setOp(QVarID leftVar,QVarID rightVar,QUERY_SETOP);
@@ -340,6 +342,7 @@ public:
 	RC		setGroup(QVarID,const OrderSeg *order,unsigned nSegs,IExprNode *having=NULL);
 	RC		setOrder(const OrderSeg *order,unsigned nSegs);
 	RC		setValues(const Value *values,unsigned nValues,const IntoClass *into=NULL,unsigned nInto=0,uint64_t tid=0ULL);
+	RC		setWith(const Value *params,unsigned nParams);
 	STMT_OP	getOp() const;
 	RC		execute(ICursor **result=NULL,const Value *params=NULL,unsigned nParams=0,unsigned nReturn=~0u,unsigned nSkip=0,unsigned mode=0,uint64_t *nProcessed=NULL,TXI_LEVEL=TXI_DEFAULT) const;
 	RC		asyncexec(IStmtCallback *cb,const Value *params=NULL,unsigned nParams=0,unsigned nProcess=~0u,unsigned nSkip=0,unsigned mode=0,TXI_LEVEL=TXI_DEFAULT) const;
@@ -368,6 +371,7 @@ public:
 	
 	RC		setValuesNoCopy(PINDscr *values,unsigned nVals);
 	RC		setValuesNoCopy(Value *values,unsigned nVals);
+	RC		setWithNoCopy(Value *params,unsigned nParams);
 	RC		getNested(PIN **ppins,PIN *pins,unsigned& cnt,Session *ses,PIN *parent=NULL) const;
 	static	RC	getNested(const Value *pv,unsigned nV,PIN **ppins,PIN *pins,unsigned& cnt,Session *ses,PIN *parent);
 	RC		insert(const EvalCtx& ectx,Value *ids,unsigned& cnt) const;
@@ -388,10 +392,11 @@ protected:
 	RC		countNestedNoCopy(Value *vals,unsigned nVals);
 	RC		execute(const EvalCtx& ectx,Value *res,unsigned nReturn=~0u,unsigned nSkip=0,unsigned md=0,uint64_t *nProcessed=NULL,TXI_LEVEL txl=TXI_DEFAULT,Cursor **pResult=NULL) const;
 	static	bool	classOK(const QVar *);
-	friend	class	Class;
-	friend	class	Classifier;
-	friend	class	ClassPropIndex;
-	friend	struct	ClassWindow;
+	friend	class	DataEvent;
+	friend	class	DataEventMgr;
+	friend	class	DataEventRegistry;
+	friend	struct	StreamWindow;
+	friend	class	ProcessStream;
 	friend	class	ServiceCtx;
 	friend	class	QueryPrc;
 	friend	class	QBuildCtx;
@@ -425,13 +430,14 @@ class Cursor : public ICursor
 	bool				fSnapshot;
 	bool				fProc;
 	bool				fAdvance;
-	void	operator	delete(void *p) {if (p!=NULL) ((Cursor*)p)->ectx.ses->free(p);}
+	bool				fCopiedParams;
+	void	operator	delete(void *p) {if (p!=NULL) ((Cursor*)p)->ectx.ma->free(p);}
 	RC					skip();
 	RC					advance(bool fRet=true);
 	void				getPID(PID &id) {qr.getID(id);}
-	RC					extract(PIN *&,unsigned idx=0,bool fCopy=false);
+	RC					extract(MemAlloc *ma,PIN *&,unsigned idx=0,bool fCopy=false);
 public:
-	Cursor(const EvalCtx &ec,QueryOp *qop,uint64_t nRet,unsigned md,const Value *vals,unsigned nV,STMT_OP sop=STMT_QUERY,SelectType ste=SEL_PINSET,bool fSS=false);
+	Cursor(const EvalCtx &ec,QueryOp *qop,uint64_t nRet,unsigned md,const Value *vals,unsigned nV,const Values& with,STMT_OP sop=STMT_QUERY,SelectType ste=SEL_PINSET,bool fSS=false);
 	virtual				~Cursor();
 	RC					next(Value&);
 	RC					next(PID&);
@@ -454,15 +460,16 @@ public:
  */
 class CursorNav : public INav
 {
-	Cursor		*const	curs;
-	ValueC				v;
+	MemAlloc	*const	ma;
+	Cursor				*curs;
+	const	Value		*cv;
 	unsigned			idx;
-	mutable	uint64_t	cnt;
-	mutable	bool		fCnt;
+	DynArray<Value,8>	vals;
 	const	bool		fPID;
+	bool				fColl;
 public:
-	CursorNav(Cursor *cu,bool fP) : curs(cu),idx(0),cnt(0),fCnt(false),fPID(fP) {}
-	~CursorNav()	{if (curs!=NULL) curs->destroy();}
+	CursorNav(MemAlloc *m,Cursor *cu,bool fP) : ma(m),curs(cu),cv(NULL),idx(0),vals(m),fPID(fP),fColl(false) {}
+	~CursorNav();
 	const	Value	*navigate(GO_DIR=GO_NEXT,ElementID=STORE_COLLECTION_ID);
 	ElementID		getCurrentID();
 	const	Value	*getCurrentValue();
@@ -470,6 +477,9 @@ public:
 	INav			*clone() const;
 	unsigned		count() const;
 	void			destroy();
+	static	RC		create(Cursor *cr,Value& res,unsigned md,MemAlloc *ma);
+private:
+	static	RC		getNext(Cursor *curs,Value& v,MemAlloc *ma,bool fPID);
 };
 
 };

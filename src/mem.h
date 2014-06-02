@@ -100,7 +100,7 @@ public:
 	static	BlockAlloc *allocBlock(size_t sz,Session *ses=NULL,bool fSes=false);
 public:
 	struct SharedBlockAlloc {
-		Pool	*queues[NBLOCK_SHARED_QUEUES];
+		LIFO	*queues[NBLOCK_SHARED_QUEUES];
 		SharedBlockAlloc();
 	};
 };

@@ -72,12 +72,12 @@ enum MapAnchor
 	MA_URIID, MA_URI,					/**< URI map root pages */
 	MA_IDENTID, MA_IDENTNAME,			/**< Identity map root pages */
 	MA_RCACHE,							/**< remote PIN cache root page */
-	MA_FTINDEX,							/**< Free-text index root page */
-	MA_CLASSINDEX,						/**< class index root page */
+	MA_FTINDEX,							/**< free-text index root page */
+	MA_DATAEVENTINDEX,					/**< data event index root page */
 	MA_NAMEDPINS,						/**< named PINs map root page */
 	MA_PINEXTURI,						/**< PIN external URI map root page (not implemented yet) */
 	MA_HEAPDIRFIRST, MA_HEAPDIRLAST,	/**< first and last pages in the directory of heap pages */
-	MA_CLASSDIRFIRST, MA_CLASSDIRLAST,	/**< first and last pages in the directory of class PIN pages */
+	MA_DATAEVENTDIRFIRST, MA_DATAEVENTDIRLAST,	/**< first and last pages in the directory of data event PIN pages */
 	MA_RESERVED1, MA_RESERVED2, MA_RESERVED3, MA_RESERVED4, MA_RESERVED5, MA_RESERVED6, MA_RESERVED7, MA_RESERVED8,		/**< reserved for future use */
 	MA_ALL
 };

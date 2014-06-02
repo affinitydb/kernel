@@ -27,6 +27,7 @@ Written by Mark Venguerov 2004-2014
 #include "regexp.h"
 #include "blob.h"
 #include "maps.h"
+#include "crypt.h"
 #include <math.h>
 
 using namespace AfyKernel;
@@ -101,13 +102,13 @@ RC Expr::eval(Value& result,const EvalCtx& ctx) const
 		// call external
 		return RC_INTERNAL;
 	}
-	if ((hdr.flags&EXPR_PARAMS)!=0 && (ctx.params==NULL||ctx.nParams==0||ctx.params[0].nValues==0) && ctx.ect==ECT_CLASS) return RC_TRUE;
+	if ((hdr.flags&EXPR_PARAMS)!=0 && (ctx.params==NULL||ctx.nParams==0||ctx.params[0].nValues==0) && ctx.ect==ECT_DETECT) return RC_TRUE;
 	Value *stack=(Value*)alloca((hdr.nStack+hdr.nSubx)*sizeof(Value)),*top=stack+hdr.nSubx; if (stack==NULL) return RC_NOMEM;
 	const byte *codePtr=(const byte*)(&hdr+1)+hdr.nProps*sizeof(uint32_t),*codeEnd=(const byte*)&hdr+hdr.lExpr;
 	uint64_t subXmask=0; unsigned cntCatch=(hdr.flags&EXPR_BOOL)!=0?1:0; PINx px(ctx.ses); RExpCtx rctx(ctx.ma);
 	for (OnRelease onr(ctx,stack,&top); codePtr<codeEnd;) {
 		assert(top>=stack && top<=stack+hdr.nStack+hdr.nSubx);
-		TIMESTAMP ts; const Value *v; RC rc=RC_OK; Value w; const PIN *pin; ElementID eid; long num;
+		TIMESTAMP ts; const Value *v; RC rc=RC_OK; Value w; const PIN *pin; ElementID eid; long num; const PropInfo *pi;
 		byte op=*codePtr++; const bool ff=(op&0x80)!=0; int nops; unsigned fop; uint32_t u,vdx; PathSeg *path;
 		switch (op&=0x7F) {
 		case OP_CON:
@@ -131,9 +132,16 @@ RC Expr::eval(Value& result,const EvalCtx& ctx) const
 					//u=v->refV.refN; if (v->length==0) goto var; propID=v->refV.id; eid.eid=v->eid; goto prop;
 				}
 			}
-			if (ff) top->set(unsigned(rc!=RC_OK?(rc=RC_OK,0u):v->count())); 
+		set_param:
+			if (ff) top->set(unsigned(rc!=RC_OK?(rc=RC_OK,0u):v->count()));
 			else if (rc==RC_OK) {*top=*v; setHT(*top);} else {top->setError(); if (cntCatch!=0) rc=RC_OK;}
 			top++; break;
+		case OP_NAMED_PRM:
+			if ((u=*codePtr++)==0xFF) {u=codePtr[0]|codePtr[1]<<8; codePtr+=2;}
+			u=((uint32_t*)(&hdr+1))[u]&STORE_MAX_URIID; rc=RC_NOTFOUND;
+			if (ctx.nParams>QV_PARAMS) for (unsigned i=0; i<ctx.params[QV_PARAMS].nValues; i++)
+				if (ctx.params[QV_PARAMS].vals[i].property==u) {v=&ctx.params[QV_PARAMS].vals[i]; rc=RC_OK; break;}
+			goto set_param;
 		case OP_VAR: case OP_ENVV:
 			u=*codePtr++; pin=op==OP_VAR?u<ctx.nVars?ctx.vars[u]:NULL:u<ctx.nEnv?ctx.env[u]:NULL;
 			if (pin==NULL && op==OP_ENVV && u==0 && ctx.nVars==1) pin=ctx.vars[0];
@@ -196,7 +204,7 @@ RC Expr::eval(Value& result,const EvalCtx& ctx) const
 			}
 			if (rc==RC_OK) switch (w.type) {
 			default: freeV(w); rc=RC_TYPE; break;
-			case VT_EXPR: case VT_STMT:
+			case VT_EXPR: case VT_STMT: case VT_COLLECTION:
 				{Values vv(nops!=0?top-nops:NULL,nops); EvalCtx ectx(ctx.ses,ctx.env,ctx.nEnv,ctx.vars,ctx.nVars,&vv,1,&ctx,ctx.ma,ctx.ect);
 				rc=ctx.ses->getStore()->queryMgr->eval(&w,ectx,&w); while (--nops>=0) freeV(*--top); if (rc==RC_OK) *top++=w; else freeV(w);}
 				break;
@@ -296,6 +304,16 @@ RC Expr::eval(Value& result,const EvalCtx& ctx) const
 		case OP_EXISTS:
 			rc=top[-1].type==VT_STMT?top[-1].stmt->exist(ctx.nParams>0?ctx.params[0].vals:(Value*)0,ctx.nParams>0?ctx.params[0].nValues:0):top[-1].type==VT_UINT&&top[-1].ui>0?RC_TRUE:RC_FALSE;
 			freeV(*--top); if (((u=*codePtr++)&CND_EXT)!=0) u|=*codePtr++<<8; goto bool_op;
+		case OP_ISCHANGED:
+			if ((vdx=*codePtr++)==0xFF) {vdx=codePtr[0]|codePtr[1]<<8; codePtr+=2;}
+			if (ff) {afy_dec32(codePtr,eid); eid=afy_dec32zz(eid);}
+			if (((u=*codePtr++)&CND_EXT)!=0) u|=*codePtr++<<8;
+			rc=RC_TRUE; pi=NULL;
+			if (ctx.ect!=ECT_DETECT || ctx.modp!=NULL && (pi=ctx.modp->find(((uint32_t*)(&hdr+1))[vdx]&STORE_MAX_URIID))==NULL) rc=RC_FALSE;
+			else if (ff && pi!=NULL) {
+				//???
+			}
+			goto bool_op;
 		case OP_SIMILAR:
 			if (ctx.rctx==NULL) ctx.rctx=&rctx;
 		case OP_EQ: case OP_NE: case OP_LT: case OP_LE: case OP_GT: case OP_GE: case OP_CONTAINS: case OP_BEGINS: case OP_ENDS: case OP_IN: case OP_TESTBIT:
@@ -1161,39 +1179,6 @@ RC Expr::calc(ExprOp op,Value& arg,const Value *moreArgs,int nargs,unsigned flag
 		if ((rc=ExprNode::normalizeStruct(ctx.ses,&arg,nargs,val,ctx.ses,op==OP_PIN))!=RC_OK) return rc;
 		if (val.type==VT_EXPRTREE) {freeV(val); return RC_TYPE;}
 		arg=val; break;
-	case OP_EDIT:
-		if (moreArgs->type==VT_UINT || moreArgs->type==VT_UINT64) {
-			if (!isInteger((ValueType)arg.type) && !numOpConv(arg,NO_INT,ctx)) rc=RC_TYPE;
-			else switch (arg.type) {
-			case VT_INT: case VT_UINT:
-				arg.ui=moreArgs->type==VT_UINT?(arg.ui&~moreArgs->bedt.mask)|(moreArgs->bedt.bits&moreArgs->bedt.mask):
-					(arg.ui&~(uint32_t)moreArgs->bedt64.mask)|uint32_t(moreArgs->bedt64.bits&moreArgs->bedt64.mask);
-				break;
-			case VT_INT64: case VT_UINT64:
-				arg.ui64=moreArgs->type==VT_UINT64?(arg.ui64&~moreArgs->bedt64.mask)|(moreArgs->bedt64.bits&moreArgs->bedt64.mask):
-					(arg.ui64&~(uint64_t)moreArgs->bedt.mask)|uint64_t(moreArgs->bedt.bits&moreArgs->bedt.mask);
-				break;
-			}
-		} else {
-			assert(arg.type!=VT_STREAM);
-			sht=unsigned(moreArgs->edit.shift); len=moreArgs->edit.length;		// ???
-			if ((arg2=strOpConv(arg,moreArgs,val,ctx))==NULL) return RC_TYPE;
-			if (sht==uint32_t(~0u)) sht=arg.length; rc=RC_OK;
-			if (sht+len>arg.length) rc=RC_INVPARAM;
-			else if (arg2->length<=len && (arg.flags&HEAP_TYPE_MASK)>=SES_HEAP) {
-				p=(byte*)arg.bstr; if (arg2->length>0) memcpy(p+sht,arg2->bstr,arg2->length);
-				if (len>arg2->length && sht+len<arg.length) memmove(p+sht+arg2->length,arg.bstr+sht+len,arg.length-sht-len);
-				arg.length-=len-arg2->length;
-			} else if ((p=(byte*)ctx.ma->malloc(arg.length-len+arg2->length+(arg.type!=VT_BSTR?1:0)))!=NULL) {
-				if (sht>0) memcpy(p,arg.bstr,sht); if (arg2->length>0) memcpy(p+sht,arg2->bstr,arg2->length);
-				if (sht+len<arg.length) memcpy(p+sht+arg2->length,arg.bstr+sht+len,arg.length-sht-len);
-				if ((arg.flags&HEAP_TYPE_MASK)>=SES_HEAP) free((byte*)arg.bstr,(HEAP_TYPE)(arg.flags&HEAP_TYPE_MASK));
-				arg.length+=arg2->length-len; setHT(arg,ctx.ma->getAType()); arg.bstr=p;
-			} else rc=RC_NOMEM;
-			if (rc==RC_OK && arg.type!=VT_BSTR) p[arg.length]=0;
-			if (arg2==&val) freeV(val);
-		}
-		return rc;
 	case OP_EXTRACT:
 		if (nargs==2) {
 			if (moreArgs->type!=VT_INT && moreArgs->type!=VT_UINT) return RC_TYPE;
@@ -1225,28 +1210,28 @@ RC Expr::calc(ExprOp op,Value& arg,const Value *moreArgs,int nargs,unsigned flag
 			} else return RC_TOOBIG;
 		}
 		break;
-	case OP_MEMBERSHIP:
+	case OP_DATAEVENTS:
 		if (arg.type==VT_REFID) {
-			ClassResult clr(ctx.ses,ctx.ses->getStore()); PINx pex(ctx.ses,arg.id); 
+			DetectedEvents clr(ctx.ses,ctx.ses->getStore()); PINx pex(ctx.ses,arg.id); 
 			if ((rc=pex.getBody())!=RC_OK) return rc;
-			if ((rc=ctx.ses->getStore()->classMgr->classify(&pex,clr,ctx.ses))!=RC_OK) return rc;
-			if (clr.nClasses==0) arg.setError();
-			else if ((args=new(ctx.ma) Value[clr.nClasses])==NULL) return RC_NOMEM;
+			if ((rc=ctx.ses->getStore()->classMgr->detect(&pex,clr,ctx.ses))!=RC_OK) return rc;
+			if (clr.ndevs==0) arg.setError();
+			else if ((args=new(ctx.ma) Value[clr.ndevs])==NULL) return RC_NOMEM;
 			else {
-				for (unsigned i=0; i<clr.nClasses; i++) {args[i].setURIID(clr.classes[i]->cid); args[i].eid=i;}
-				arg.set(args,clr.nClasses); arg.flags=ctx.ma->getAType();
+				for (unsigned i=0; i<clr.ndevs; i++) {args[i].setURIID(clr.devs[i]->cid); args[i].eid=i;}
+				arg.set(args,clr.ndevs); arg.flags=ctx.ma->getAType();
 			}
 		} else if (arg.type!=VT_REF) return RC_TYPE;
 		else if ((((PIN*)arg.pin)->getMode()&PIN_HIDDEN)!=0) freeV(arg);
 		else {
-			ClassResult clr(ctx.ses,ctx.ses->getStore());
-			if ((rc=ctx.ses->getStore()->classMgr->classify((PIN*)arg.pin,clr,ctx.ses))!=RC_OK) return rc;
+			DetectedEvents clr(ctx.ses,ctx.ses->getStore());
+			if ((rc=ctx.ses->getStore()->classMgr->detect((PIN*)arg.pin,clr,ctx.ses))!=RC_OK) return rc;
 			freeV(arg);
-			if (clr.nClasses!=0) {
-				if ((args=new(ctx.ma) Value[clr.nClasses])==NULL) return RC_NOMEM;
+			if (clr.ndevs!=0) {
+				if ((args=new(ctx.ma) Value[clr.ndevs])==NULL) return RC_NOMEM;
 				else {
-					for (unsigned i=0; i<clr.nClasses; i++) {args[i].setURIID(clr.classes[i]->cid); args[i].eid=i;}
-					arg.set(args,clr.nClasses); arg.flags=ctx.ma->getAType();
+					for (unsigned i=0; i<clr.ndevs; i++) {args[i].setURIID(clr.devs[i]->cid); args[i].eid=i;}
+					arg.set(args,clr.ndevs); arg.flags=ctx.ma->getAType();
 				}
 			}
 		}
@@ -1592,4 +1577,78 @@ RC Expr::expandStr(Value& v,uint32_t newl,MemAlloc *ma,bool fZero)
 	}
 	if (fZero) memset((byte*)v.bstr+v.length,0,newl-v.length);
 	v.length=newl; return RC_OK;
+}
+
+#define	HASH_PROPERTY		0x0001
+#define	HASH_EID			0x0002
+
+void Expr::hashValue(const Value &v,unsigned flags,SHA256& sha)
+{
+	uint32_t i; const Value *cv; PIN *pin;
+	switch (v.type) {
+	case VT_STRING: 
+	case VT_BSTR: sha.add(v.bstr,v.length); break;
+	case VT_BOOL: sha.add((byte*)&v.b,1); break;
+	case VT_REF:
+		pin=(PIN*)v.pin;
+		if (pin->id.isPID()) sha.add((byte*)&pin->id,sizeof(PID));
+		for (i=0; i<pin->nProperties; i++) hashValue(pin->properties[i],HASH_PROPERTY,sha);
+		sha.add((byte*)&pin->properties,sizeof(pin->properties));
+		i=pin->mode&(PIN_NO_REPLICATION|PIN_NOTIFY|PIN_REPLICATED|PIN_HIDDEN|PIN_PERSISTENT|PIN_TRANSIENT|PIN_IMMUTABLE|PIN_DELETED);
+		sha.add((byte*)&i,sizeof(i)); sha.add((byte*)&pin->meta,sizeof(pin->meta)); break;
+	case VT_REFID: sha.add((byte*)&v.id,sizeof(PID)); break;
+	case VT_COLLECTION:
+		if (v.isNav()) {
+			for (cv=v.nav->navigate(GO_FIRST),i=0; cv!=NULL; cv=v.nav->navigate(GO_NEXT),i++) hashValue(*cv,HASH_EID,sha);
+		} else 
+			for (i=0; i<v.length; i++) hashValue(v.varray[i],HASH_EID,sha);
+		sha.add((byte*)i,sizeof(uint32_t)); break;
+	case VT_STRUCT:
+		for (i=0; i<v.length; i++) hashValue(v.varray[i],HASH_PROPERTY,sha);
+		sha.add((byte*)&v.length,sizeof(uint32_t)); break;
+	case VT_RANGE:
+		hashValue(v.varray[0],0,sha); hashValue(v.varray[1],0,sha); break;
+	case VT_ARRAY:
+		//????
+		break;
+	case VT_MAP:
+		//????
+		break;
+	case VT_STREAM:
+		//????
+		break;
+	case VT_REFPROP:
+	case VT_REFIDPROP:
+	case VT_REFELT:
+	case VT_REFIDELT:
+	case VT_EXPR:
+	case VT_STMT:
+	case VT_CURRENT:
+	case VT_VARREF:
+		//???
+		break;
+	case VT_DOUBLE: case VT_FLOAT:
+		sha.add((byte*)&v.qval.units,sizeof(v.qval.units));
+	default:
+		if ((i=typeInfo[v.type].length)!=0) sha.add((byte*)&v.i,i);
+		break;
+	}
+	if ((flags&HASH_PROPERTY)!=0) {sha.add((byte*)&v.property,sizeof(PropertyID)); sha.add((byte*)&v.meta,1);}
+	if ((flags&HASH_EID)!=0) sha.add((byte*)v.eid,sizeof(ElementID));
+}
+
+RC Expr::calcHash(ExprOp op,Value& res,const Value *more,int nargs,unsigned,const EvalCtx& ctx)
+{
+	SHA256 sha; assert(op==OP_HASH);
+	hashValue(res,0,sha); freeV(res);
+	if (nargs==2) {
+		if (more->type!=VT_IDENTITY) return RC_TYPE;
+		if (more->iid==STORE_OWNER) sha.add(ctx.ses->getStore()->theCB->encKey,ENC_KEY_SIZE);
+		else {
+			//???
+		}
+	}
+	byte *r=new(ctx.ma) byte[SHA_DIGEST_BYTES]; if (r==NULL) return RC_NOMEM;
+	memcpy(r,sha.result(),SHA_DIGEST_BYTES); res.set(r,SHA_DIGEST_BYTES); setHT(res,ctx.ma->getAType());
+	return RC_OK;
 }

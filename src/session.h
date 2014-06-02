@@ -38,8 +38,8 @@ namespace AfyKernel
  */
 class	Session;
 class	PBlock;
-class	ClassCreate;
-class	ClassPropIndex;
+class	CreateDataEvent;
+class	DataEventRegistry;
 class	ServiceCtx;
 class	ServiceTab;
 class	PINx;
@@ -131,7 +131,7 @@ class StoreCtx : public MemAlloc, public IAffinity
 			bool				fLocked;
 public:
 	class	BufMgr				*bufMgr;
-	class	Classifier			*classMgr;
+	class	DataEventMgr			*classMgr;
 	class	CryptoMgr			*cryptoMgr;
 	class	FileMgr				*fileMgr;
 	class	FSMgr				*fsMgr;
@@ -346,7 +346,7 @@ public:
 struct OnCommit
 {
 	OnCommit			*next;
-	virtual	ClassCreate	*getClass();
+	virtual	CreateDataEvent	*getDataEvent();
 	virtual	RC			process(Session *s) = 0;
 	virtual	void		destroy(Session *s) = 0;
 };
@@ -559,8 +559,9 @@ public:
 
 	RC				extcall(URIID fname,Value& arg,const Value *moreArgs,unsigned nargs,unsigned mode);
 	RC				listen(Value *vals,unsigned nVals,unsigned mode);
-	RC				prepare(ServiceCtx *&srv,const PID& id,const Value *vals,unsigned nVals,unsigned flags);
+	RC				prepare(ServiceCtx *&srv,const PID& id,const struct EvalCtx& ectx,const Value *vals,unsigned nVals,unsigned flags);
 	RC				createServiceCtx(const Value *vals,unsigned nVals,class IServiceCtx *&sctx,bool fWrite=false,class IListener *lctx=NULL);
+	RC				createServiceCtx(const struct EvalCtx *ect,const Value *vals,unsigned nVals,class ServiceCtx *&sctx,const PID *id=NULL,bool fWrite=false,class IListener *lctx=NULL);
 	RC				stopListener(URIID lid,bool fSuspend=false);
 	RC				resolve(IServiceCtx *sctx,URIID sid,IAddress& ai);
 	void			removeServiceCtx(const PID& id);
@@ -649,18 +650,18 @@ public:
 
 	RC				execute(const char *str,size_t lstr,char **result=NULL,const URIID *ids=NULL,unsigned nids=0,
 							const Value *params=NULL,unsigned nParams=0,CompilationError *ce=NULL,uint64_t *nProcessed=NULL,
-							unsigned nProcess=~0u,unsigned nSkip=0);
+							unsigned nProcess=~0u,unsigned nSkip=0,const char *importBase=NULL);
 
 	RC				createInputStream(IStreamIn *&in,IStreamIn *out=NULL,size_t lbuf=0);
 
-	RC				getClassID(const char *className,ClassID& cid);
-	RC				enableClassNotifications(ClassID,unsigned notifications);
-	RC				rebuildIndices(const ClassID *cidx=NULL,unsigned nClasses=0);
+	RC				getDataEventID(const char *className,DataEventID& cid);
+	RC				enableClassNotifications(DataEventID,unsigned notifications);
+	RC				rebuildIndices(const DataEventID *cidx=NULL,unsigned ndevs=0);
 	RC				rebuildIndexFT();
-	RC				createIndexNav(ClassID,IndexNav *&nav);
-	RC				listValues(ClassID cid,PropertyID pid,IndexNav *&ven);
+	RC				createIndexNav(DataEventID,IndexNav *&nav);
+	RC				listValues(DataEventID cid,PropertyID pid,IndexNav *&ven);
 	RC				listWords(const char *query,StringEnum *&sen);
-	RC				getClassInfo(ClassID,IPIN*&);
+	RC				getDataEventInfo(DataEventID,IPIN*&);
 	
 	RC				allocPIN(size_t maxSize,unsigned nProps,IPIN *&pin,Value *&values,unsigned mode=0);
 	RC				inject(IPIN *PIN);
@@ -670,7 +671,7 @@ public:
 	IPIN			*getPIN(const PID& id,unsigned=0);
 	IPIN			*getPIN(const Value& id,unsigned=0);
 	RC				getValue(Value& res,const PID& id,PropertyID,ElementID=STORE_COLLECTION_ID);
-	RC				getPINClasses(ClassID *&clss,unsigned& nclss,const PID& id);
+	RC				getPINEvents(DataEventID *&devs,unsigned& ndevs,const PID& id);
 	bool			isCached(const PID& id);
 	IBatch			*createBatch();
 	RC				createPIN(Value *values,unsigned nValues,IPIN **result=NULL,unsigned mode=0,const PID *original=NULL);
@@ -733,7 +734,7 @@ public:
 	friend	class	QueryPrc;
 	friend	class	SInCtx;
 	friend	class	SOutCtx;
-	friend	class	Classifier;
+	friend	class	DataEventMgr;
 	friend	class	FullScan;
 	friend	class	Cursor;
 	friend	class	Stmt;

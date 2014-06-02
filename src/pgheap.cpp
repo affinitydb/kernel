@@ -235,11 +235,11 @@ RC HeapPageMgr::update(PBlock *pb,size_t len,unsigned info,const byte *rec,size_
 	rec+=sizeof(HeapPINMod)+int(hpi->nops-1)*sizeof(HeapPropMod); RC rc=RC_OK;
 	hpin->hdr.descr=(hpin->hdr.descr&HOH_MULTIPART)|(((flags&TXMGR_UNDO)==0?hpi->descr:hpi->odscr)&~HOH_MULTIPART);
 	for (uint16_t nop=0; nop<hpi->nops; nop++) {
-		const HeapPropMod *hpm=&hpi->ops[(flags&TXMGR_UNDO)!=0?hpi->nops-1-nop:nop]; op=hpm->op; ValueType ty;
-		PageIdx hidx; HeapV *hins=NULL,*hins2=NULL; uint32_t key; HType *pType; ushort sht,x; HeapDataFmt fmt,newf; bool fNewProp=false;
+		const HeapPropMod *hpm=&hpi->ops[(flags&TXMGR_UNDO)!=0?hpi->nops-1-nop:nop]; op=hpm->op;
+		PageIdx hidx; HeapV *hins=NULL,*hins2=NULL; uint32_t key; bool fNewProp=false;
 		const TypedPtr *newPtr=&hpm->newData,*oldPtr=&hpm->oldData; PropertyID propID=hpm->propID,propID2; ElementID eid=hpm->eltId,eid2;
 		if ((flags&TXMGR_UNDO)!=0) {
-			const static ExprOp undoOP[OP_FIRST_EXPR]={OP_SET,OP_DELETE,OP_DELETE,OP_MOVE,OP_MOVE_BEFORE,OP_ADD,OP_EDIT,OP_RENAME};
+			const static ExprOp undoOP[OP_FIRST_EXPR]={OP_SET,OP_DELETE,OP_DELETE,OP_MOVE,OP_MOVE_BEFORE,OP_ADD,OP_RENAME};
 			const TypedPtr *tmp=newPtr; newPtr=oldPtr; oldPtr=tmp; op=undoOP[op];
 			switch (hpm->op) {
 			case OP_RENAME: propID=hpm->eltKey; break;
@@ -258,8 +258,7 @@ RC HeapPageMgr::update(PBlock *pb,size_t len,unsigned info,const byte *rec,size_
 		} else if (hprop==NULL) {
 			report(MSG_ERROR,"Property %08X not found, op: %d, slot: %d, page: %08X\n",propID,op,idx,hp->hdr.pageID); 
 			PINOP_ERROR(RC_NOTFOUND);
-		} else if (op!=OP_RENAME && op!=OP_MOVE && op!=OP_MOVE_BEFORE && op!=OP_EDIT && eid==STORE_COLLECTION_ID 
-																	&& hprop->type.getType()!=oldPtr->type.getType()) {
+		} else if (op!=OP_RENAME && op!=OP_MOVE && op!=OP_MOVE_BEFORE && eid==STORE_COLLECTION_ID && hprop->type.getType()!=oldPtr->type.getType()) {
 			if (hprop->type.getType()==VT_COLLECTION && ((HeapVV*)(frame+hprop->offset))->cnt==1) {
 				if (hprop->type.getFormat()!=HDF_SHORT) eid=((HeapVV*)(frame+hprop->offset))->start->getID();
 			} else {
@@ -506,69 +505,6 @@ RC HeapPageMgr::update(PBlock *pb,size_t len,unsigned info,const byte *rec,size_
 				*hins2=save;
 			} else hprop->setID(propID2); 
 			break;
-		case OP_EDIT:
-			if (!isString(hprop->type.getType()) && (elt==NULL || !isString(elt->type.getType()))) {
-				report(MSG_ERROR,"OP_EDIT for a non-string property %d, slot: %d, page: %08X\n",hprop->type.getType(),idx,hp->hdr.pageID);
-				PINOP_ERROR(RC_TYPE);
-			}
-			delta=(nl=newPtr->ptr.len)-(ol=oldPtr->ptr.len);
-			if (coll==NULL) {pType=&hprop->type; pData=frame+hprop->offset;} else {pType=&elt->type; pData=frame+elt->offset;}
-			fmt=pType->getFormat(); l=fmt==HDF_COMPACT?0:fmt==HDF_SHORT?pData[0]:pData[0]<<8|pData[1];
-			if (hpm->shift+oldPtr->ptr.len>l || -delta>l) {
-				report(MSG_ERROR,"Invalid OP_EDIT: shift %d, length %d old length %d, slot: %d, page: %08X\n",
-					hpm->shift,ol,l,idx,hp->hdr.pageID);
-				PINOP_ERROR(RC_CORRUPTED);
-			}
-			sht=fmt==HDF_NORMAL?2:fmt==HDF_SHORT?1:0;
-			newl=ushort(l+delta); newf=newl==0?HDF_COMPACT:newl<=0xFF?HDF_SHORT:HDF_NORMAL;
-			x=newf==HDF_COMPACT?0:newf==HDF_SHORT?1:2;
-			f=pData+ceil(l+sht,HP_ALIGN)==frame+hp->freeSpace; ty=pType->getType();
-			if (!f && delta>0 && coll==NULL && ceil(x+newl,HP_ALIGN)<=hp->contFree()) {
-				byte *p=frame+hp->freeSpace; assert(newf!=HDF_COMPACT);
-				if (newf==HDF_NORMAL) *p++=byte(newl>>8); *p++=byte(newl);
-				if (hpm->shift>0) {memmove(p,pData+sht,hpm->shift); p+=hpm->shift;}
-				if (nl>0) {memcpy(p,data,nl); p+=nl;}
-				ushort ltail=l-hpm->shift-ol; if (ltail>0) memmove(p,pData+sht+hpm->shift+ol,ltail);
-				hprop->offset=hp->freeSpace; newl=(ushort)ceil(newl+x,HP_ALIGN); l=(ushort)ceil(l+sht,HP_ALIGN);
-				hp->freeSpace+=newl; hp->scatteredFreeSpace+=l; hpin->hdr.descr|=HOH_MULTIPART; hpin->hdr.length+=newl-l;
-			} else {
-				byte *p=pData+sht; ushort len=l;
-				if (delta>0 && (!f || pData+ceil(x+newl,HP_ALIGN)>frame+hp->freeSpace+hp->contFree())) {
-					p=(byte*)alloca(len); if (p==NULL) PINOP_ERROR(RC_NOMEM);
-					memcpy(p,pData+sht,len); pType->setType(ty,HDF_COMPACT);
-					len=(ushort)ceil(len+sht,HP_ALIGN); hpin->hdr.length-=len; hp->scatteredFreeSpace+=len; hpin->hdr.descr|=HOH_MULTIPART;
-					hp->compact(false,idx); off=hp->getOffset(idx); assert(off!=0);
-					if (ceil(x+newl+(coll!=NULL?sizeof(HeapPageMgr::HeapV):0),HP_ALIGN)>hp->contFree()) {
-						report(MSG_ERROR,"Page %08X overflow in OP_EDIT, requested: %d, available: %d\n",
-							hp->hdr.pageID,ceil(newl+x+(coll!=NULL?sizeof(HeapPageMgr::HeapV):0),HP_ALIGN),hp->contFree());
-						PINOP_ERROR(RC_PAGEFULL);	// check before compact?
-					}
-					hprop=&(hpin=(HeapPIN*)hp->getObject(off))->getPropTab()[hidx]; f=true;
-					if (coll==NULL) {hprop->offset=hp->freeSpace; pData=frame+hp->freeSpace; pType=&hprop->type;}
-					else {
-						coll=(HeapVV*)(frame+hprop->offset); elt=(HeapV*)coll->findElt(eid); assert(elt!=NULL);
-						elt->offset=hp->freeSpace; pData=frame+hp->freeSpace; pType=&elt->type; elt->type.flags=0;
-					}
-					if (hpm->shift>0) memcpy(pData+x,p,hpm->shift); len=sht=0;
-				} else if (x>sht) {memmove(pData+x,p,l); p=pData+x;}
-				else if (x<sht && hpm->shift>0 && newf!=HDF_COMPACT) memmove(pData+x,p,hpm->shift);
-				if (newf!=HDF_COMPACT) {
-					if (newf==HDF_NORMAL) *pData++=byte(newl>>8); *pData++=byte(newl);
-					ushort ltail=l-hpm->shift-ol;
-					if (ltail!=0&&(p!=pData||nl!=ol)) memmove(pData+hpm->shift+nl,p+hpm->shift+ol,ltail);
-					if (nl>0) memcpy(pData+hpm->shift,data,nl);
-				}
-				delta=long(ceil(x+newl,HP_ALIGN)-ceil(sht+len,HP_ALIGN));
-				if (delta>0) {
-					assert(delta<=(long)hp->contFree() && f); 
-					hp->freeSpace+=ushort(delta); hpin->hdr.length+=ushort(delta);
-				} else if (delta<0) {
-					len=(ushort)(-delta);
-					if (f) hp->freeSpace-=len; else {hp->scatteredFreeSpace+=len; hpin->hdr.descr|=HOH_MULTIPART;}
-					hpin->hdr.length-=len;
-				}	
-			}
-			pType->setType(ty,newf); break;
 		case OP_MOVE:
 		case OP_MOVE_BEFORE:
 			eid2=(flags&TXMGR_UNDO)!=0?*(ElementID*)&hpm->newData:hpm->eltKey;
@@ -985,7 +921,7 @@ RC PINPageMgr::addPagesToMap(const PageSet& ps,Session *ses,bool fCl)
 	if (ses==NULL || ses->getTxState()!=TX_COMMITTING) return RC_INTERNAL;
 	const HeapDirMgr::HeapDirPage *hd; PageID last; PBlockP pb; RWLockP lck; RC rc=RC_OK; bool fLocked=false;
 	unsigned nSlots=0,xSlots=unsigned(HeapDirMgr::contentSize(ctx->bufMgr->getPageSize())/sizeof(PageID));
-	const MapAnchor maFirst=fCl?MA_CLASSDIRFIRST:MA_HEAPDIRFIRST,maLast=fCl?MA_CLASSDIRLAST:MA_HEAPDIRLAST;
+	const MapAnchor maFirst=fCl?MA_DATAEVENTDIRFIRST:MA_HEAPDIRFIRST,maLast=fCl?MA_DATAEVENTDIRLAST:MA_HEAPDIRLAST;
 	if ((last=ctx->theCB->getRoot(maLast))==INVALID_PAGEID) {
 		lck.set(&ctx->hdirMgr->dirLock,RW_X_LOCK); fLocked=true;
 		if ((last=ctx->theCB->getRoot(maLast))!=INVALID_PAGEID) {lck.set(NULL); fLocked=false;}

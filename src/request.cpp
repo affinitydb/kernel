@@ -51,7 +51,7 @@ public:
 	void *realloc(void*,size_t,size_t) {return NULL;}
 	void free(void *) {}
 } rq_Alloc;
-Pool ThreadGroup::freeQE(&rq_Alloc,512);
+LIFO ThreadGroup::freeQE(&rq_Alloc,512);
 static void *callProcessRequests(void *param) {((ThreadGroup*)param)->processRequests(); return NULL;}
 static sigset_t sigSIO,sigAIO;
 #endif

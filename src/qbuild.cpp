@@ -41,7 +41,7 @@ QBuildCtx::QBuildCtx(Session *s,EvalCtx *ectx,const Stmt *st,unsigned nsk,unsign
 	}
 	if ((md&MODE_FOR_UPDATE)!=0) flg|=QO_FORUPDATE;
 	if ((md&MODE_DELETED)!=0) flg|=QO_DELETED;
-	if ((md&MODE_CLASS)!=0) flg|=QO_CLASS|QO_RAW;
+	if ((md&MODE_DEVENT)!=0) flg|=QO_CLASS|QO_RAW;
 }
 
 QBuildCtx::~QBuildCtx()
@@ -190,8 +190,8 @@ RC SimpleVar::build(class QBuildCtx& qctx,class QueryOp *&q) const
 		if (rc==RC_OK && (cond!=NULL||props!=NULL&&nProps!=0)) rc=qctx.filter(q,cond,props,nProps);
 		qctx.flg=sflg; return rc;
 	}
-	for (unsigned i=0; rc==RC_OK && i<nClasses; i++) {
-		const SourceSpec &cs=classes[i]; ClassID cid=cs.objectID;
+	for (unsigned i=0; rc==RC_OK && i<nSrcs; i++) {
+		const SourceSpec &cs=srcs[i]; DataEventID cid=cs.objectID;
 		if (cid<=MAX_BUILTIN_CLASSID) {
 			if (qctx.nqs>=sizeof(qctx.src)/sizeof(qctx.src[0])) rc=RC_NOMEM;
 			else {
@@ -201,8 +201,8 @@ RC SimpleVar::build(class QBuildCtx& qctx,class QueryOp *&q) const
 			}
 			continue;
 		}
-		Class *cls=qctx.ses->getStore()->classMgr->getClass(cid); if (cls==NULL) {rc=RC_NOTFOUND; break;}
-		const Stmt *cqry=cls->getQuery(); ClassIndex *cidx=cls->getIndex(); const unsigned cflg=cls->getFlags(); IndexScan *is=NULL;
+		DataEvent *dev=qctx.ses->getStore()->classMgr->getDataEvent(cid); if (dev==NULL) {rc=RC_NOTFOUND; break;}
+		const Stmt *cqry=dev->getQuery(); DataIndex *cidx=dev->getIndex(); const unsigned cflg=dev->getFlags(); IndexScan *is=NULL;
 		if (qctx.nqs>=sizeof(qctx.src)/sizeof(qctx.src[0])) rc=RC_NOMEM;
 		else if ((cflg&META_PROP_INDEXED)==0 || (qctx.mode&MODE_DELETED)!=0) {
 			if (qctx.ncqs>=sizeof(qctx.condQs)/sizeof(qctx.condQs[0])) rc=RC_NOMEM;
@@ -300,7 +300,7 @@ RC SimpleVar::build(class QBuildCtx& qctx,class QueryOp *&q) const
 				}
 			}
 		}
-		if (cidx==NULL || rc!=RC_OK) cls->release();
+		if (cidx==NULL || rc!=RC_OK) dev->release();
 	}
 	if ((qctx.mode&MODE_DELETED)==0 && rc==RC_OK) for (CondFT *cf=condFT; cf!=NULL; cf=cf->next) {
 		if ((rc=qctx.mergeFT(qq,cf))!=RC_OK) break;
@@ -321,9 +321,9 @@ RC SimpleVar::build(class QBuildCtx& qctx,class QueryOp *&q) const
 			if ((qctx.src[qctx.nqs]=new(qctx.ses) ExprScan(qctx.qx,expr,qctx.flg))!=NULL) {qctx.nqs++; fArrayFilter=false;} else rc=RC_NOMEM;
 		} else {
 #ifdef _DEBUG
-			if ((qctx.mode&(MODE_CLASS|MODE_DELETED))==0) {char *s=qctx.stmt->toString(); report(MSG_WARNING,"Full scan query: %.512s\n",s); qctx.ses->free(s);}
+			if ((qctx.mode&(MODE_DEVENT|MODE_DELETED))==0) {char *s=qctx.stmt->toString(); report(MSG_WARNING,"Full scan query: %.512s\n",s); qctx.ses->free(s);}
 #endif
-			qctx.src[qctx.nqs]=new(qctx.ses) FullScan(qctx.qx,(qctx.mode&(MODE_CLASS|MODE_NODEL))==MODE_CLASS?HOH_HIDDEN:(qctx.mode&MODE_DELETED)!=0?HOH_DELETED<<16|HOH_DELETED|HOH_HIDDEN:HOH_DELETED|HOH_HIDDEN,qctx.flg);
+			qctx.src[qctx.nqs]=new(qctx.ses) FullScan(qctx.qx,(qctx.mode&(MODE_DEVENT|MODE_NODEL))==MODE_DEVENT?HOH_HIDDEN:(qctx.mode&MODE_DELETED)!=0?HOH_DELETED<<16|HOH_DELETED|HOH_HIDDEN:HOH_DELETED|HOH_HIDDEN,qctx.flg);
 			if (qctx.src[qctx.nqs]!=NULL) qctx.nqs++; else rc=RC_NOMEM;
 		}
 		if (rc==RC_OK) {

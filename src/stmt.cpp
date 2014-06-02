@@ -77,9 +77,9 @@ QVar::~QVar()
 
 SimpleVar::~SimpleVar()
 {
-	if (classes!=NULL) {
-		for (unsigned i=0; i<nClasses; i++) {SourceSpec& cs=classes[i]; if (cs.params!=NULL) freeV((Value*)cs.params,cs.nParams,ma);}
-		ma->free(classes);
+	if (srcs!=NULL) {
+		for (unsigned i=0; i<nSrcs; i++) {SourceSpec& cs=srcs[i]; if (cs.params!=NULL) freeV((Value*)cs.params,cs.nParams,ma);}
+		ma->free(srcs);
 	}
 	for (CondIdx *icond=condIdx,*icnext; icond!=NULL; icond=icnext) {
 		if (icond->expr!=NULL) ma->free(icond->expr);
@@ -95,17 +95,24 @@ JoinVar::~JoinVar()
 	for (CondEJ *cej=condEJ,*cej2; cej!=NULL; cej=cej2) {cej2=cej->next; ma->free(cej);}
 }
 
-QVarID Stmt::addVariable(const SourceSpec *classes,unsigned nClasses,IExprNode *cond)
+unsigned JoinVar::getVarIdx(unsigned refN,unsigned& sht) const
+{
+	unsigned idx; if (vars[0].var->getID()==refN) return sht; if (vars[1].var->getID()==refN) return sht+1;
+	if (vars[0].var->getType()>=QRY_UNION) sht++; else if ((idx=((JoinVar*)vars[0].var)->getVarIdx(refN,sht))!=~0u) return idx;
+	return vars[1].var->getType()<QRY_UNION?((JoinVar*)vars[1].var)->getVarIdx(refN,sht):(++sht,~0u);
+}
+
+QVarID Stmt::addVariable(const SourceSpec *srcs,unsigned nSrcs,IExprNode *cond)
 {
 	try {
 		// shutdown ???
 		if (nVars>=255) return INVALID_QVAR_ID;
 		SimpleVar *var = new(ma) SimpleVar((QVarID)nVars,ma); if (var==NULL) return INVALID_QVAR_ID;
-		if (classes!=NULL && nClasses!=0) {
-			var->classes=new(ma) SourceSpec[nClasses];
-			if (var->classes==NULL) {delete var; return INVALID_QVAR_ID;}
-			for (var->nClasses=0; var->nClasses<nClasses; var->nClasses++) {
-				SourceSpec &to=var->classes[var->nClasses]; const SourceSpec &from=classes[var->nClasses];
+		if (srcs!=NULL && nSrcs!=0) {
+			var->srcs=new(ma) SourceSpec[nSrcs];
+			if (var->srcs==NULL) {delete var; return INVALID_QVAR_ID;}
+			for (var->nSrcs=0; var->nSrcs<nSrcs; var->nSrcs++) {
+				SourceSpec &to=var->srcs[var->nSrcs]; const SourceSpec &from=srcs[var->nSrcs];
 				to.objectID=from.objectID; to.params=NULL; to.nParams=0;
 				if (from.params!=NULL && from.nParams!=0) {
 					Value *pv=new(ma) Value[to.nParams=from.nParams]; 
@@ -681,6 +688,27 @@ RC Stmt::getNested(PIN **ppins,PIN *npins,unsigned& cnt,Session *ses,PIN *parent
 	return RC_OK;
 }
 
+RC Stmt::setWith(const Value *params,unsigned nParams)
+{
+	try {Value *pv; RC rc=copyV(params,nParams,pv,ma); return rc==RC_OK?setWithNoCopy(pv,nParams):rc;}
+	catch (RC rc) {return rc;} catch (...) {report(MSG_ERROR,"Exception in IStmt::setWith()\n"); return RC_INTERNAL;}
+}
+
+RC Stmt::setWithNoCopy(Value *params,unsigned nParams)
+{
+	RC rc; ExprNode *et; Expr *exp;
+	for (unsigned i=0; i<nParams; i++) switch (params[i].type) {
+	case VT_EXPRTREE:
+		et=(ExprNode*)params[i].exprt; if ((rc=Expr::compile(et,exp,ma,false))!=RC_OK) return rc;
+		params[i].expr=exp; params[i].type=VT_EXPR; params[i].fcalc=1; setHT(params[i],ma->getAType()); et->destroy();
+	case VT_EXPR: case VT_STMT: case VT_COLLECTION: case VT_STRUCT: case VT_REF: case VT_REFIDPROP: case VT_REFIDELT:
+		if (params[i].fcalc==0) break;
+	case VT_VARREF: case VT_CURRENT:
+		mode|=QRY_CALCWITH; break;
+	}
+	with.vals=params; with.nValues=nParams; with.fFree=true; return RC_OK;
+}
+
 RC Stmt::processCondition(ExprNode *node,QVar *qv)
 {
 	DynArray<const ExprNode*> exprs(ma); RC rc=processCond(node,qv,&exprs);
@@ -712,18 +740,18 @@ RC Stmt::processCond(ExprNode *node,QVar *qv,DynArray<const ExprNode*> *exprs)
 			break;
 		case OP_IS_A:
 			if (qv->type==QRY_SIMPLE && (node->flags&NOT_BOOLEAN_OP)==0) {
-				SimpleVar *sv=(SimpleVar*)qv; SourceSpec *cs=(SourceSpec*)sv->classes;
+				SimpleVar *sv=(SimpleVar*)qv; SourceSpec *cs=(SourceSpec*)sv->srcs;
 				if (node->operands[1].type==VT_URIID) {
 					for (unsigned i=0; ;++i,++cs)
-						if (i>=sv->nClasses) {cs=NULL; break;}
+						if (i>=sv->nSrcs) {cs=NULL; break;}
 						else if (cs->objectID==node->operands[1].uid) {
 							if (node->nops<=2) return RC_FALSE;
 							if (cs->params!=NULL && cs->nParams!=0) cs=NULL;
 							break;
 						}
 					if (cs==NULL) {
-						if ((sv->classes=(SourceSpec*)sv->ma->realloc((void*)sv->classes,(sv->nClasses+1)*sizeof(SourceSpec)))==NULL) return RC_NOMEM;
-						cs=(SourceSpec*)&sv->classes[sv->nClasses]; cs->objectID=node->operands[1].uid; cs->params=NULL; cs->nParams=0; sv->nClasses++;
+						if ((sv->srcs=(SourceSpec*)sv->ma->realloc((void*)sv->srcs,(sv->nSrcs+1)*sizeof(SourceSpec)))==NULL) return RC_NOMEM;
+						cs=(SourceSpec*)&sv->srcs[sv->nSrcs]; cs->objectID=node->operands[1].uid; cs->params=NULL; cs->nParams=0; sv->nSrcs++;
 					}
 					if (node->nops>2 && (rc=copyV(&node->operands[2],cs->nParams=node->nops-2,*(Value**)&cs->params,sv->ma))!=RC_OK) return rc;
 					return RC_FALSE;
@@ -738,10 +766,10 @@ RC Stmt::processCond(ExprNode *node,QVar *qv,DynArray<const ExprNode*> *exprs)
 				ushort flags=(node->flags&CASE_INSENSITIVE_OP)!=0?CND_NCASE:0; const Value *pv1=&v,*pv2=pv;  //???(FOR_ALL_LEFT_OP|EXISTS_LEFT_OP|FOR_ALL_RIGHT_OP|EXISTS_RIGHT_OP)
 				if (pv1->type==VT_EXPRTREE && pv2->type==VT_EXPRTREE && ((ExprNode*)pv1->exprt)->op==((ExprNode*)pv2->exprt)->op && (((ExprNode*)pv1->exprt)->op==OP_UPPER || ((ExprNode*)pv1->exprt)->op==OP_LOWER))
 					{flags|=CND_NCASE; pv1=&((ExprNode*)pv1->exprt)->operands[0]; pv2=&((ExprNode*)pv2->exprt)->operands[0];}
-				if (pv1->type==VT_VARREF && (pv1->refV.flags&VAR_TYPE_MASK)==0) {
-					// multijoin!
-					if (pv1->refV.refN<2 && pv2->type==VT_VARREF && (pv2->refV.flags&VAR_TYPE_MASK)==0 && pv2->refV.refN<2 && pv2->refV.refN!=pv1->refV.refN) {
-						PropertyID pids[2]; pids[pv1->refV.refN]=pv1->length==0?PROP_SPEC_PINID:pv1->refV.id; pids[pv2->refV.refN]=pv2->length==0?PROP_SPEC_PINID:pv2->refV.id;
+				if (pv1->type==VT_VARREF && (pv1->refV.flags&VAR_TYPE_MASK)==0 && pv2->type==VT_VARREF && (pv2->refV.flags&VAR_TYPE_MASK)==0 && pv1->refV.refN!=pv2->refV.refN) {
+					unsigned idx1,idx2,sht1=0,sht2=0;
+					if ((idx1=((JoinVar*)qv)->getVarIdx(pv1->refV.refN,sht1))!=~0u && (idx2=((JoinVar*)qv)->getVarIdx(pv2->refV.refN,sht2))!=~0u && idx1!=idx2) {
+						PropertyID pids[2]; pids[idx1]=pv1->length==0?PROP_SPEC_PINID:pv1->refV.id; pids[idx2]=pv2->length==0?PROP_SPEC_PINID:pv2->refV.id;
 						CondEJ *cnd=new(ma) CondEJ(pids[0],pids[1],flags|CND_EQ); if (cnd!=NULL) {cnd->next=((JoinVar*)qv)->condEJ; ((JoinVar*)qv)->condEJ=cnd; return RC_FALSE;}
 						break;
 					}
@@ -775,7 +803,7 @@ RC Stmt::processCond(ExprNode *node,QVar *qv,DynArray<const ExprNode*> *exprs)
 			if ((node->flags&NOT_BOOLEAN_OP)!=0) break;			// no OP_NE !
 		case OP_LT: case OP_LE: case OP_GT: case OP_GE:
 			assert((node->flags&NOT_BOOLEAN_OP)==0);
-			if (qv->type==QRY_SIMPLE && ((SimpleVar*)qv)->nCondIdx<255 && pv->type==VT_VARREF && (pv->refV.flags&VAR_TYPE_MASK)==VAR_PARAM) {
+			if (qv->type==QRY_SIMPLE && ((SimpleVar*)qv)->nCondIdx<255 && pv->type==VT_VARREF && (pv->refV.flags&VAR_TYPE_MASK)==VAR_PARAM && pv->length==0) {
 				ushort flags=((node->flags&CASE_INSENSITIVE_OP)!=0?ORD_NCASE:0)|(pv->refV.flags&(ORD_DESC|ORD_NCASE|ORD_NULLS_BEFORE|ORD_NULLS_AFTER));
 				if (node->op==OP_GT || node->op==OP_IN && (node->flags&EXCLUDE_LBOUND_OP)!=0) flags|=SCAN_EXCLUDE_START;
 				if (node->op==OP_LT || node->op==OP_IN && (node->flags&EXCLUDE_RBOUND_OP)!=0) flags|=SCAN_EXCLUDE_END;
@@ -851,8 +879,8 @@ RC SimpleVar::substitute(const Value *params,unsigned nParams,MemAlloc *ma)
 	RC rc;
 	if (expr.type!=VT_ANY && (rc=AfyKernel::substitute(expr,params,nParams,ma))!=RC_OK) return rc;
 #if 0
-	SourceSpec		*classes;
-	unsigned		nClasses;
+	SourceSpec		*srcs;
+	unsigned		nSrcs;
 	CondIdx			*condIdx;
 	unsigned		nCondIdx;
 	PathSeg			*path;
@@ -931,9 +959,9 @@ bool Stmt::classOK(const QVar *qv)
 		case VT_STMT: if (((Stmt*)sv->expr.stmt)->top!=NULL && ((Stmt*)sv->expr.stmt)->classOK(((Stmt*)sv->expr.stmt)->top)) return true; break;
 		case VT_STRUCT: if (sv->expr.varray[0].property==PROP_SPEC_REF || VBIN::find(PROP_SPEC_REF,sv->expr.varray,sv->expr.length)!=NULL) return true; break;
 		}
-		if (sv->nClasses>0 && sv->classes!=NULL && sv->classes[0].objectID!=STORE_INVALID_URIID && sv->classes[0].nParams==0) {
-			Class *cls=StoreCtx::get()->classMgr->getClass(sv->classes[0].objectID);
-			if (cls!=NULL) {Stmt *cqry=cls->getQuery(); bool fOK=cqry!=NULL && cqry->isClassOK(); cls->release(); if (fOK) return true;}
+		if (sv->nSrcs>0 && sv->srcs!=NULL && sv->srcs[0].objectID!=STORE_INVALID_URIID && sv->srcs[0].nParams==0) {
+			DataEvent *dev=StoreCtx::get()->classMgr->getDataEvent(sv->srcs[0].objectID);
+			if (dev!=NULL) {Stmt *cqry=dev->getQuery(); bool fOK=cqry!=NULL && cqry->isClassOK(); dev->release(); if (fOK) return true;}
 		}
 	}
 	return false;
@@ -1053,10 +1081,10 @@ RC QVar::clone(QVar *cloned) const
 RC SimpleVar::clone(MemAlloc *m,QVar *&res) const
 {
 	SimpleVar *cv=new(m) SimpleVar(id,m); if (cv==NULL) return RC_NOMEM;
-	if (classes!=NULL && nClasses!=0) {
-		if ((cv->classes=new(m) SourceSpec[nClasses])==NULL) {delete cv; return RC_NOMEM;}
-		for (cv->nClasses=0; cv->nClasses<nClasses; cv->nClasses++) {
-			SourceSpec &to=cv->classes[cv->nClasses],&from=classes[cv->nClasses]; RC rc;
+	if (srcs!=NULL && nSrcs!=0) {
+		if ((cv->srcs=new(m) SourceSpec[nSrcs])==NULL) {delete cv; return RC_NOMEM;}
+		for (cv->nSrcs=0; cv->nSrcs<nSrcs; cv->nSrcs++) {
+			SourceSpec &to=cv->srcs[cv->nSrcs],&from=srcs[cv->nSrcs]; RC rc;
 			to.objectID=from.objectID; to.params=NULL; to.nParams=0;
 			if (from.params!=NULL && from.nParams!=0) {
 				Value *pv=new(m) Value[to.nParams=from.nParams]; to.params=pv;
@@ -1220,9 +1248,9 @@ RC QVar::deserialize(const byte *&buf,const byte *const ebuf,MemAlloc *ma,QVar *
 
 size_t SimpleVar::serSize() const
 {
-	size_t len=QVar::serSize()+afy_len32(nClasses)+afy_len32(nCondIdx)+1+afy_len32(nPathSeg);
-	if (classes!=NULL) for (unsigned i=0; i<nClasses; i++) {
-		const SourceSpec &cs=classes[i]; len+=afy_len32(cs.objectID)+afy_len32(cs.nParams);
+	size_t len=QVar::serSize()+afy_len32(nSrcs)+afy_len32(nCondIdx)+1+afy_len32(nPathSeg);
+	if (srcs!=NULL) for (unsigned i=0; i<nSrcs; i++) {
+		const SourceSpec &cs=srcs[i]; len+=afy_len32(cs.objectID)+afy_len32(cs.nParams);
 		for (unsigned i=0; i<cs.nParams; i++) len+=AfyKernel::serSize(cs.params[i]);
 	}
 	for (CondIdx *ci=condIdx; ci!=NULL; ci=ci->next) {
@@ -1258,9 +1286,9 @@ size_t SimpleVar::serSize() const
 
 byte *SimpleVar::serialize(byte *buf) const
 {
-	afy_enc32(buf,nClasses);
-	if (classes!=NULL) for (unsigned i=0; i<nClasses; i++) {
-		const SourceSpec &cs=classes[i]; afy_enc32(buf,cs.objectID); afy_enc32(buf,cs.nParams);
+	afy_enc32(buf,nSrcs);
+	if (srcs!=NULL) for (unsigned i=0; i<nSrcs; i++) {
+		const SourceSpec &cs=srcs[i]; afy_enc32(buf,cs.objectID); afy_enc32(buf,cs.nParams);
 		for (unsigned i=0; i<cs.nParams; i++) buf=AfyKernel::serialize(cs.params[i],buf);
 	}
 	afy_enc32(buf,nCondIdx);
@@ -1304,12 +1332,12 @@ byte *SimpleVar::serialize(byte *buf) const
 RC SimpleVar::deserialize(const byte *&buf,const byte *const ebuf,QVarID id,MemAlloc *ma,QVar *&res)
 {
 	SimpleVar *cv=new(ma) SimpleVar(id,ma); RC rc;
-	CHECK_dec32(buf,cv->nClasses,ebuf);
-	if (cv->nClasses!=0) {
-		if ((cv->classes=new(ma) SourceSpec[cv->nClasses])==NULL) return RC_NOMEM;
-		memset(cv->classes,0,cv->nClasses*sizeof(SourceSpec));
-		for (unsigned i=0; i<cv->nClasses; i++) {
-			SourceSpec &cs=cv->classes[i];
+	CHECK_dec32(buf,cv->nSrcs,ebuf);
+	if (cv->nSrcs!=0) {
+		if ((cv->srcs=new(ma) SourceSpec[cv->nSrcs])==NULL) return RC_NOMEM;
+		memset(cv->srcs,0,cv->nSrcs*sizeof(SourceSpec));
+		for (unsigned i=0; i<cv->nSrcs; i++) {
+			SourceSpec &cs=cv->srcs[i];
 			CHECK_dec32(buf,cs.objectID,ebuf); CHECK_dec32(buf,cs.nParams,ebuf);
 			if (cs.nParams!=0) {
 				if ((cs.params=new(ma) Value[cs.nParams])==NULL) return RC_NOMEM;

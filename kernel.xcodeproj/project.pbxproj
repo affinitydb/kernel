@@ -11,8 +11,11 @@
 		1C261E0617AA136900B6C191 /* ecc.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 1C261E0417AA136700B6C191 /* ecc.cpp */; };
 		1C261E0717AA136900B6C191 /* ecc.h in Headers */ = {isa = PBXBuildFile; fileRef = 1C261E0517AA136800B6C191 /* ecc.h */; };
 		1C36E88D17236EC2007FDB31 /* builtin.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 1C36E88C17236EC2007FDB31 /* builtin.cpp */; };
+		1C3A895F19352070006F795B /* modinfo.h in Headers */ = {isa = PBXBuildFile; fileRef = 1C3A895E19352070006F795B /* modinfo.h */; };
 		1C5483F718F5B1E3004FB2BC /* event.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 1C5483F518F5B1E3004FB2BC /* event.cpp */; };
 		1C5483F818F5B1E3004FB2BC /* event.h in Headers */ = {isa = PBXBuildFile; fileRef = 1C5483F618F5B1E3004FB2BC /* event.h */; };
+		1C5C35E01929AA230017780E /* dataevent.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 1C5C35DE1929AA230017780E /* dataevent.cpp */; };
+		1C5C35E11929AA230017780E /* dataevent.h in Headers */ = {isa = PBXBuildFile; fileRef = 1C5C35DF1929AA230017780E /* dataevent.h */; };
 		1C8BB9A51688E78D0065C0D4 /* service.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 1C8BB9A41688E78D0065C0D4 /* service.cpp */; };
 		1C964A67177BAC29004F03CB /* afyutils.h in Headers */ = {isa = PBXBuildFile; fileRef = 1C964A66177BAC29004F03CB /* afyutils.h */; };
 		1C964A69177CEDA1004F03CB /* afysync.h in Headers */ = {isa = PBXBuildFile; fileRef = 1C964A68177CEDA1004F03CB /* afysync.h */; };
@@ -28,8 +31,6 @@
 		4C507BBA1671A3BA00C45622 /* blob.h in Headers */ = {isa = PBXBuildFile; fileRef = 4C507B521671A3BA00C45622 /* blob.h */; };
 		4C507BBB1671A3BA00C45622 /* buffer.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 4C507B531671A3BA00C45622 /* buffer.cpp */; };
 		4C507BBC1671A3BA00C45622 /* buffer.h in Headers */ = {isa = PBXBuildFile; fileRef = 4C507B541671A3BA00C45622 /* buffer.h */; };
-		4C507BBE1671A3BA00C45622 /* classifier.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 4C507B561671A3BA00C45622 /* classifier.cpp */; };
-		4C507BBF1671A3BA00C45622 /* classifier.h in Headers */ = {isa = PBXBuildFile; fileRef = 4C507B571671A3BA00C45622 /* classifier.h */; };
 		4C507BC11671A3BA00C45622 /* crypt.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 4C507B5A1671A3BA00C45622 /* crypt.cpp */; };
 		4C507BC21671A3BA00C45622 /* crypt.h in Headers */ = {isa = PBXBuildFile; fileRef = 4C507B5B1671A3BA00C45622 /* crypt.h */; };
 		4C507BC31671A3BA00C45622 /* deletepins.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 4C507B5C1671A3BA00C45622 /* deletepins.cpp */; };
@@ -132,8 +133,11 @@
 		1C261E0417AA136700B6C191 /* ecc.cpp */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.cpp.cpp; path = ecc.cpp; sourceTree = "<group>"; };
 		1C261E0517AA136800B6C191 /* ecc.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = ecc.h; sourceTree = "<group>"; };
 		1C36E88C17236EC2007FDB31 /* builtin.cpp */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.cpp.cpp; path = builtin.cpp; sourceTree = "<group>"; };
+		1C3A895E19352070006F795B /* modinfo.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = modinfo.h; sourceTree = "<group>"; };
 		1C5483F518F5B1E3004FB2BC /* event.cpp */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.cpp.cpp; path = event.cpp; sourceTree = "<group>"; };
 		1C5483F618F5B1E3004FB2BC /* event.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = event.h; sourceTree = "<group>"; };
+		1C5C35DE1929AA230017780E /* dataevent.cpp */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.cpp.cpp; path = dataevent.cpp; sourceTree = "<group>"; };
+		1C5C35DF1929AA230017780E /* dataevent.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = dataevent.h; sourceTree = "<group>"; };
 		1C8BB9A41688E78D0065C0D4 /* service.cpp */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.cpp.cpp; path = service.cpp; sourceTree = "<group>"; };
 		1C964A66177BAC29004F03CB /* afyutils.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = afyutils.h; sourceTree = "<group>"; };
 		1C964A68177CEDA1004F03CB /* afysync.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = afysync.h; sourceTree = "<group>"; };
@@ -150,8 +154,6 @@
 		4C507B521671A3BA00C45622 /* blob.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = blob.h; sourceTree = "<group>"; };
 		4C507B531671A3BA00C45622 /* buffer.cpp */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.cpp.cpp; path = buffer.cpp; sourceTree = "<group>"; };
 		4C507B541671A3BA00C45622 /* buffer.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = buffer.h; sourceTree = "<group>"; };
-		4C507B561671A3BA00C45622 /* classifier.cpp */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.cpp.cpp; path = classifier.cpp; sourceTree = "<group>"; };
-		4C507B571671A3BA00C45622 /* classifier.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = classifier.h; sourceTree = "<group>"; };
 		4C507B581671A3BA00C45622 /* CMakeLists.txt */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = text; path = CMakeLists.txt; sourceTree = "<group>"; };
 		4C507B5A1671A3BA00C45622 /* crypt.cpp */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.cpp.cpp; path = crypt.cpp; sourceTree = "<group>"; };
 		4C507B5B1671A3BA00C45622 /* crypt.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = crypt.h; sourceTree = "<group>"; };
@@ -265,6 +267,9 @@
 		4C507B4D1671A3BA00C45622 /* src */ = {
 			isa = PBXGroup;
 			children = (
+				1C3A895E19352070006F795B /* modinfo.h */,
+				1C5C35DE1929AA230017780E /* dataevent.cpp */,
+				1C5C35DF1929AA230017780E /* dataevent.h */,
 				1CEFA15F18C4416A00AB763F /* linear.cpp */,
 				1C261E0417AA136700B6C191 /* ecc.cpp */,
 				1C261E0517AA136800B6C191 /* ecc.h */,
@@ -282,8 +287,6 @@
 				4C507B521671A3BA00C45622 /* blob.h */,
 				4C507B531671A3BA00C45622 /* buffer.cpp */,
 				4C507B541671A3BA00C45622 /* buffer.h */,
-				4C507B561671A3BA00C45622 /* classifier.cpp */,
-				4C507B571671A3BA00C45622 /* classifier.h */,
 				4C507B581671A3BA00C45622 /* CMakeLists.txt */,
 				4C507B5A1671A3BA00C45622 /* crypt.cpp */,
 				4C507B5B1671A3BA00C45622 /* crypt.h */,
@@ -427,7 +430,6 @@
 				4C507C281671A42200C45622 /* units.h in Headers */,
 				4C507BBA1671A3BA00C45622 /* blob.h in Headers */,
 				4C507BBC1671A3BA00C45622 /* buffer.h in Headers */,
-				4C507BBF1671A3BA00C45622 /* classifier.h in Headers */,
 				4C507BC21671A3BA00C45622 /* crypt.h in Headers */,
 				4C507BC51671A3BA00C45622 /* dlalloc.h in Headers */,
 				4C507BC91671A3BA00C45622 /* expr.h in Headers */,
@@ -458,6 +460,7 @@
 				4C507BFA1671A3BA00C45622 /* protobuf.h in Headers */,
 				4C507BFC1671A3BA00C45622 /* qbuild.h in Headers */,
 				4C507BFD1671A3BA00C45622 /* qmgr.h in Headers */,
+				1C3A895F19352070006F795B /* modinfo.h in Headers */,
 				4C507BFF1671A3BA00C45622 /* queryop.h in Headers */,
 				4C507C011671A3BA00C45622 /* queryprc.h in Headers */,
 				4C507C031671A3BA00C45622 /* recover.h in Headers */,
@@ -471,6 +474,7 @@
 				4C507C1C1671A3BA00C45622 /* utils.h in Headers */,
 				1CB9E1D716D35DCA0052636C /* pin.h in Headers */,
 				1CB9E1D816D35DCA0052636C /* service.h in Headers */,
+				1C5C35E11929AA230017780E /* dataevent.h in Headers */,
 				1CCB96DC172F77DA00906023 /* afysock.h in Headers */,
 				1C964A67177BAC29004F03CB /* afyutils.h in Headers */,
 				1C964A69177CEDA1004F03CB /* afysync.h in Headers */,
@@ -533,8 +537,8 @@
 			files = (
 				1CEFA16018C4416A00AB763F /* linear.cpp in Sources */,
 				4C507BB91671A3BA00C45622 /* blob.cpp in Sources */,
+				1C5C35E01929AA230017780E /* dataevent.cpp in Sources */,
 				4C507BBB1671A3BA00C45622 /* buffer.cpp in Sources */,
-				4C507BBE1671A3BA00C45622 /* classifier.cpp in Sources */,
 				4C507BC11671A3BA00C45622 /* crypt.cpp in Sources */,
 				4C507BC31671A3BA00C45622 /* deletepins.cpp in Sources */,
 				4C507BC41671A3BA00C45622 /* dlalloc.cpp in Sources */,

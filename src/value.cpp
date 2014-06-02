@@ -312,14 +312,7 @@ size_t AfyKernel::serSize(const Value& v,bool full)
 	case VT_MAP:
 		return 0;		// niy
 	}
-	if (full) {
-		i=afy_enc32zz(v.eid); l+=2+afy_len32(i)+afy_len32(v.property);
-		if (v.op==OP_EDIT) switch(v.type) {
-		case VT_STRING: case VT_BSTR: l+=afy_len64(v.edit.shift)+afy_len32(v.edit.length); break;
-		case VT_UINT: l+=afy_len32(v.bedt.mask); break;
-		case VT_UINT64: l+=afy_len64(v.bedt64.mask); break;
-		}
-	}
+	if (full) {i=afy_enc32zz(v.eid); l+=2+afy_len32(i)+afy_len32(v.property);}
 	return l;
 }
 
@@ -398,14 +391,7 @@ byte *AfyKernel::serialize(const Value& v,byte *buf,bool full)
 		//???
 		break;		// niy
 	}
-	if (full) {
-		buf[0]=v.op; buf[1]=v.meta; buf+=2; l=afy_enc32zz(v.eid); afy_enc32(buf,l); afy_enc32(buf,v.property);
-		if (v.op==OP_EDIT) switch (v.type) {
-		case VT_STRING: case VT_BSTR: afy_enc64(buf,v.edit.shift); afy_enc32(buf,v.edit.length); break;
-		case VT_UINT: afy_enc32(buf,v.bedt.mask); break;
-		case VT_UINT64: afy_enc64(buf,v.bedt64.mask); break;
-		}
-	}
+	if (full) {buf[0]=v.op; buf[1]=v.meta; buf+=2; l=afy_enc32zz(v.eid); afy_enc32(buf,l); afy_enc32(buf,v.property);}
 	return buf;
 }
 
@@ -532,12 +518,6 @@ RC AfyKernel::deserialize(Value& val,const byte *&buf,const byte *const ebuf,Mem
 	if (full) {
 		if (buf+4>ebuf) return RC_CORRUPTED; val.op=buf[0]; val.meta=buf[1]; buf+=2;
 		CHECK_dec32(buf,i,ebuf); val.eid=afy_dec32zz(i); CHECK_dec32(buf,val.property,ebuf);
-		if (val.op==OP_EDIT) switch (val.type) {
-		case VT_STRING: case VT_BSTR: CHECK_dec64(buf,val.edit.shift,ebuf); CHECK_dec32(buf,val.edit.length,ebuf); break;
-		case VT_UINT: CHECK_dec32(buf,val.bedt.mask,ebuf); break;
-		case VT_UINT64: CHECK_dec64(buf,val.bedt64.mask,ebuf); break;
-		default: return RC_CORRUPTED;
-		}
 	}
 	return RC_OK;
 }

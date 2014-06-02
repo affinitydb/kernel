@@ -28,7 +28,9 @@
 
 using namespace AfyKernel;
 
-Pool EventHandler::evqPool(&sharedAlloc);
+LIFO EventHandler::evqPool(&sharedAlloc);
+
+static EventHandler eh;
 
 RC Session::createEventHandler(const EventSpec evdesc[],unsigned nDesc,ActionDescriptor[])
 {

@@ -36,7 +36,7 @@ volatile long BufMgr::nStores = 0;
 namespace AfyKernel
 {
 BufQMgr::QueueCtrl bufCtrl(0);
-Pool asyncWriteReqs;
+LIFO asyncWriteReqs;
 };
 
 BufMgr::BufMgr(StoreCtx *ct,int initNumberOfBlocks,size_t lpage) 

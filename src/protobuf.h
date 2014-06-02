@@ -67,6 +67,11 @@ enum SType
 	ST_STMT, ST_UID, ST_RESULT, ST_COMPOUND, ST_STATUS, ST_RESPAGES, ST_ENUM, ST_FLUSH, ST_TX, ST_EOS
 };
 
+enum VType
+{
+	VT_FULL, VT_VARRAY, VT_ELT, VT_FLD, VT_MIN
+};
+
 struct Result
 {
 	RC			rc;
@@ -84,7 +89,7 @@ protected:
 	struct	OState {
 		SType		type;
 		bool		fCid;
-		bool		fArray;
+		uint8_t		vtype;
 		uint16_t	tag;
 		uint32_t	state;
 		uint32_t	idx;
@@ -119,18 +124,18 @@ protected:
 	const byte	*pRes2;
 	byte		rbuf[MAX_RESIDUAL_SIZE];
 	byte		idbuf[XPINREFSIZE];
-	uint64_t	pinSize;
+	uint64_t	oSize;
 	byte		*copied;
 	size_t		lCopied;
 	size_t		xCopied;
 	uint32_t	code;
 	bool		fDone;
 private:
-	__forceinline	void	push_state(SType ot,const void *obj,uint16_t tag,bool fA=false) {assert(sidx<STACK_DEPTH); stateStack[sidx++]=os; os.type=ot; os.fCid=false; os.fArray=fA; os.tag=tag; os.state=0; os.idx=0; os.obj=obj;}
+	__forceinline	void	push_state(SType ot,const void *obj,uint16_t tag,VType vt=VT_FULL) {assert(sidx<STACK_DEPTH); stateStack[sidx++]=os; os.type=ot; os.fCid=false; os.vtype=vt; os.tag=tag; os.state=0; os.idx=0; os.obj=obj;}
 	__forceinline	static	uint16_t tag(const Value& v) {return v.type==VT_STREAM?tags[v.stream.is->dataType()]:v.type<VT_ALL?tags[v.type]:0;}
 	__forceinline	static	byte wtype(const Value& v) {return types[v.type==VT_STREAM?(uint8_t)v.stream.is->dataType():v.type];}
 	uint32_t length(const PID& id) {return 1+afy_len64(id.pid)+(id.ident!=STORE_OWNER?length(id.ident,false):0);}
-	uint64_t length(const Value& v,bool fArray);
+	uint64_t length(const Value& v,uint8_t vt);
 	uint32_t length(uint32_t id,bool fProp=true);
 	void setID(uint32_t id,bool fProp=true);
 	uint32_t length(const Expr *exp);
@@ -139,7 +144,7 @@ private:
 	static const byte types[VT_ALL];
 public:
 	EncodePB(Session *s,bool fD=false) : ses(s),fDump(fD),cid(0),rtt(RTT_DEFAULT),sidx(0),cache(s),propCache(&cache,100,30),identCache(&cache,10,5),
-		lRes(0),pRes(NULL),lRes2(0),pRes2(0),copied(NULL),lCopied(0),xCopied(0),code(0),fDone(false) {os.type=ST_PBSTREAM; os.fCid=false; os.fArray=false; os.state=0; os.idx=0; os.obj=NULL;}
+		lRes(0),pRes(NULL),lRes2(0),pRes2(0),copied(NULL),lCopied(0),xCopied(0),code(0),fDone(false) {os.type=ST_PBSTREAM; os.fCid=false; os.vtype=VT_FULL; os.state=0; os.idx=0; os.obj=NULL;}
 	~EncodePB() {}
 	RC encode(unsigned char *buf,size_t& lbuf);
 	void cleanup();
@@ -341,8 +346,9 @@ public:
 	
 class ServiceEncodePB : public IService::Processor, public EncodePB
 {
+	bool	fInit;
 public:
-	ServiceEncodePB(Session *s,bool fDump) : EncodePB(s,fDump) {}
+	ServiceEncodePB(Session *s,bool fDump) : EncodePB(s,fDump),fInit(true) {}
 	RC		invoke(IServiceCtx *ctx,const Value& inp,Value& out,unsigned& mode);
 	void	cleanup(IServiceCtx *ctx,bool fDestroying);
 };

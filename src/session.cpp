@@ -21,7 +21,7 @@ Written by Mark Venguerov 2004-2014
 #include "txmgr.h"
 #include "logmgr.h"
 #include "lock.h"
-#include "classifier.h"
+#include "dataevent.h"
 #include "queryprc.h"
 #include "pgheap.h"
 #include "fsmgr.h"
@@ -558,7 +558,7 @@ RC Session::deletePINs(IPIN **pins,unsigned nPins,unsigned md)
 		if (ctx->inShutdown()) return RC_SHUTDOWN; if (ctx->isServerLocked()) return RC_READONLY;
 		PID *pids=(PID*)alloca(nPins*sizeof(PID)); if (pids==NULL) return RC_NOMEM;
 		for (unsigned j=0; j<nPins; j++) pids[j]=pins[j]->getPID();
-		TxGuard txg(this); RC rc=ctx->queryMgr->deletePINs(EvalCtx(this),(PIN**)pins,pids,nPins,md|MODE_CLASS);
+		TxGuard txg(this); RC rc=ctx->queryMgr->deletePINs(EvalCtx(this),(PIN**)pins,pids,nPins,md|MODE_DEVENT);
 		if (rc==RC_OK) for (unsigned i=0; i<nPins; i++) {pins[i]->destroy(); pins[i]=NULL;}
 		return rc;
 	} catch (RC rc) {return rc;} catch (...) {report(MSG_ERROR,"Exception in ISession::deletePINs(...)\n"); return RC_INTERNAL;}
@@ -568,7 +568,7 @@ RC Session::deletePINs(const PID *pids,unsigned nPids,unsigned md)
 {
 	try {
 		if (ctx->inShutdown()) return RC_SHUTDOWN; if (ctx->isServerLocked()) return RC_READONLY;
-		TxGuard txg(this); return ctx->queryMgr->deletePINs(EvalCtx(this),NULL,pids,nPids,md|MODE_CLASS);
+		TxGuard txg(this); return ctx->queryMgr->deletePINs(EvalCtx(this),NULL,pids,nPids,md|MODE_DEVENT);
 	} catch (RC rc) {return rc;} catch (...) {report(MSG_ERROR,"Exception in ISession::deletePINs(...)\n"); return RC_INTERNAL;}
 }
 
@@ -666,20 +666,20 @@ RC Session::getValue(Value& res,const PID& id,PropertyID pid,ElementID eid)
 	catch (...) {report(MSG_ERROR,"Exception in ISession::getValue(PID=" _LX_FM ",IdentityID=%08X,PropID=%08X)\n",id.pid,id.ident,pid); return RC_INTERNAL;}
 }
 
-RC Session::getPINClasses(ClassID *&clss,unsigned& nclss,const PID& id)
+RC Session::getPINEvents(DataEventID *&devs,unsigned& ndevs,const PID& id)
 {
 	try {
-		clss=NULL; nclss=0;
+		devs=NULL; ndevs=0;
 		if (!id.isPID()) return RC_INVPARAM; if (ctx->inShutdown()) return RC_SHUTDOWN;
-		TxGuard txg(this); ClassResult clr(this,ctx); PINx pex(this,id); pex.epr.flags|=PINEX_EXTPID; RC rc;
+		TxGuard txg(this); DetectedEvents clr(this,ctx); PINx pex(this,id); pex.epr.flags|=PINEX_EXTPID; RC rc;
 		if ((rc=pex.getBody())==RC_OK && (pex.mode&PIN_HIDDEN)==0)
-			if ((rc=ctx->classMgr->classify(&pex,clr,this))==RC_OK && clr.nClasses!=0) {
-				if ((clss=new(this) ClassID[clr.nClasses])==NULL) rc=RC_NOMEM;
-				else {nclss=clr.nClasses; for (unsigned i=0; i<clr.nClasses; i++) clss[i]=clr.classes[i]->cid;}
+			if ((rc=ctx->classMgr->detect(&pex,clr,this))==RC_OK && clr.ndevs!=0) {
+				if ((devs=new(this) DataEventID[clr.ndevs])==NULL) rc=RC_NOMEM;
+				else {ndevs=clr.ndevs; for (unsigned i=0; i<clr.ndevs; i++) devs[i]=clr.devs[i]->cid;}
 			}
 		return rc;
 	} catch (RC rc) {return rc;}
-	catch (...) {report(MSG_ERROR,"Exception in ISession::getPINClasses(PID=" _LX_FM ",IdentityID=%08X)\n",id.pid,id.ident); return RC_INTERNAL;}
+	catch (...) {report(MSG_ERROR,"Exception in ISession::getPINEvents(PID=" _LX_FM ",IdentityID=%08X)\n",id.pid,id.ident); return RC_INTERNAL;}
 }
 
 bool Session::isCached(const PID& id)
@@ -703,7 +703,7 @@ unsigned Session::getLocalStoreID()
 	return ~0u;
 }
 
-RC Session::getClassID(const char *className,ClassID& cid)
+RC Session::getDataEventID(const char *className,DataEventID& cid)
 {
 	try {
 		if (className==NULL) return RC_INVPARAM; if (ctx->inShutdown()) return RC_SHUTDOWN;
@@ -713,20 +713,20 @@ RC Session::getClassID(const char *className,ClassID& cid)
 			memcpy(p,pref,lPref); memcpy(p+lPref,className,ln+1); className=p; ln+=lPref;
 		}
 		URI *uri=(URI*)ctx->uriMgr->find(className,ln); if (uri==NULL) return RC_NOTFOUND; cid=uri->getID(); uri->release();
-		Class *cls=ctx->classMgr->getClass(cid); if (cls==NULL) return RC_NOTFOUND; else {cls->release(); return RC_OK;}
-	} catch (RC rc) {return rc;} catch (...) {report(MSG_ERROR,"Exception in ISession::getClassID()\n"); return RC_INTERNAL;}
+		DataEvent *dev=ctx->classMgr->getDataEvent(cid); if (dev==NULL) return RC_NOTFOUND; else {dev->release(); return RC_OK;}
+	} catch (RC rc) {return rc;} catch (...) {report(MSG_ERROR,"Exception in ISession::getDataEventID()\n"); return RC_INTERNAL;}
 }
 
-RC Session::enableClassNotifications(ClassID cid,unsigned notifications)
+RC Session::enableClassNotifications(DataEventID cid,unsigned notifications)
 {
 	try {
 		if (ctx->inShutdown()) return RC_SHUTDOWN;
-		Class *cls=ctx->classMgr->getClass(cid); if (cls==NULL) return RC_NOTFOUND;
-		RC rc=ctx->classMgr->enable(this,cls,notifications); cls->release(); return rc;
+		DataEvent *dev=ctx->classMgr->getDataEvent(cid); if (dev==NULL) return RC_NOTFOUND;
+		RC rc=ctx->classMgr->enable(this,dev,notifications); dev->release(); return rc;
 	} catch (RC rc) {return rc;} catch (...) {report(MSG_ERROR,"Exception in ISession::enableClassNotifications()\n"); return RC_INTERNAL;}
 }
 
-RC Session::rebuildIndices(const ClassID *cidx,unsigned nClasses)
+RC Session::rebuildIndices(const DataEventID *cidx,unsigned ndevs)
 {
 	try {
 		if (ctx->inShutdown()) return RC_SHUTDOWN; if (ctx->isServerLocked()) return RC_READONLY;
@@ -744,36 +744,36 @@ RC Session::rebuildIndexFT()
 	} catch (RC rc) {return rc;} catch (...) {report(MSG_ERROR,"Exception in ISession::rebuildIndexFT()\n"); return RC_INTERNAL;}
 }
 
-RC Session::createIndexNav(ClassID cid,IndexNav *&nav)
+RC Session::createIndexNav(DataEventID cid,IndexNav *&nav)
 {
 	try {
 		nav=NULL; if (ctx->inShutdown()) return RC_SHUTDOWN;
-		Class *cls=ctx->classMgr->getClass(cid); if (cls==NULL) return RC_NOTFOUND;
-		ClassIndex *cidx=cls->getIndex(); RC rc=RC_OK;
+		DataEvent *dev=ctx->classMgr->getDataEvent(cid); if (dev==NULL) return RC_NOTFOUND;
+		DataIndex *cidx=dev->getIndex(); RC rc=RC_OK;
 		if (cidx!=NULL /*&& !qry->vars[0].condIdx->isExpr() && (qry->vars[0].condIdx->pid==pid || pid==STORE_INVALID_URIID)*/) {
 			if ((nav=new(cidx->getNSegs(),this) IndexNavImpl(this,cidx))==NULL) rc=RC_NOMEM;
 		} else {
 		//...
 			rc=RC_INVPARAM;
 		}
-		if (cidx==NULL || rc!=RC_OK) cls->release();
+		if (cidx==NULL || rc!=RC_OK) dev->release();
 		return rc;
 	} catch (RC rc) {return rc;} catch (...) {report(MSG_ERROR,"Exception in ISession::createIndexNav()\n"); return RC_INTERNAL;}
 }
 
-RC Session::listValues(ClassID cid,PropertyID pid,IndexNav *&ven)
+RC Session::listValues(DataEventID cid,PropertyID pid,IndexNav *&ven)
 {
 	try {
 		ven=NULL; if (!checkAdmin()) return RC_NOACCESS; if (ctx->inShutdown()) return RC_SHUTDOWN;
-		Class *cls=ctx->classMgr->getClass(cid); if (cls==NULL) return RC_NOTFOUND;
-		ClassIndex *cidx=cls->getIndex(); RC rc=RC_OK;
+		DataEvent *dev=ctx->classMgr->getDataEvent(cid); if (dev==NULL) return RC_NOTFOUND;
+		DataIndex *cidx=dev->getIndex(); RC rc=RC_OK;
 		if (cidx!=NULL /*&& !qry->vars[0].condIdx->isExpr() && (qry->vars[0].condIdx->pid==pid || pid==STORE_INVALID_URIID)*/) {
 			if ((ven=new(cidx->getNSegs(),this) IndexNavImpl(this,cidx,/*qry->vars[0].condIdx->*/pid))==NULL) rc=RC_NOMEM;
 		} else {
 		//...
 			rc=RC_INVPARAM;
 		}
-		if (cidx==NULL || rc!=RC_OK) cls->release();
+		if (cidx==NULL || rc!=RC_OK) dev->release();
 		return rc;
 	} catch (RC rc) {return rc;} catch (...) {report(MSG_ERROR,"Exception in ISession::listValues()\n"); return RC_INTERNAL;}
 }
@@ -786,15 +786,15 @@ RC Session::listWords(const char *query,StringEnum *&sen)
 	} catch (RC rc) {return rc;} catch (...) {report(MSG_ERROR,"Exception in ISession::listWords()\n"); return RC_INTERNAL;}
 }
 
-RC Session::getClassInfo(ClassID cid,IPIN *&ret)
+RC Session::getDataEventInfo(DataEventID cid,IPIN *&ret)
 {
 	try {
 		ret=NULL; if (ctx->inShutdown()) return RC_SHUTDOWN;
-		Class *cls=ctx->classMgr->getClass(cid); if (cls==NULL) return RC_NOTFOUND;
-		PID id=cls->getPID(); PINx cb(this,id); cb=cls->getAddr(); cls->release(); PIN *pin=NULL;
-		RC rc=cb.loadPIN(pin,LOAD_CLIENT); if (rc==RC_OK) rc=ctx->queryMgr->getClassInfo(this,pin);
+		DataEvent *dev=ctx->classMgr->getDataEvent(cid); if (dev==NULL) return RC_NOTFOUND;
+		PID id=dev->getPID(); PINx cb(this,id); cb=dev->getAddr(); dev->release(); PIN *pin=NULL;
+		RC rc=cb.loadPIN(pin,LOAD_CLIENT); if (rc==RC_OK) rc=ctx->queryMgr->getDataEventInfo(this,pin);
 		ret=pin; return rc;
-	} catch (RC rc) {return rc;} catch (...) {report(MSG_ERROR,"Exception in ISession::getClassInfo()\n"); return RC_INTERNAL;}
+	} catch (RC rc) {return rc;} catch (...) {report(MSG_ERROR,"Exception in ISession::getDataEventInfo()\n"); return RC_INTERNAL;}
 }
 
 static int __cdecl cmpMapElts(const void *v1, const void *v2)

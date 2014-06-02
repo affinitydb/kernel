@@ -284,7 +284,7 @@ RC MergeOp::advance(const PINx *skip)
 			}
 			if (cond!=NULL) {
 				PIN *pp[2]={res,pR};
-				if (!cond->condSatisfied(EvalCtx(qx->ses,NULL,0,pp,2,qx->vals,QV_ALL,qx->ectx,qx->ses,(qflags&QO_CLASS)!=0?ECT_CLASS:ECT_QUERY))) continue;
+				if (!cond->condSatisfied(EvalCtx(qx->ses,NULL,0,pp,2,qx->vals,QV_ALL,qx->ectx,qx->ses,(qflags&QO_CLASS)!=0?ECT_DETECT:ECT_QUERY))) continue;
 			}
 			res->fReload=pR->fReload=1; return RC_OK;
 		}

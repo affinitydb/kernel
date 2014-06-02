@@ -42,9 +42,9 @@ using namespace AfyRC;
  */
 namespace Afy 
 {
-	typedef	uint32_t					IdentityID;						/**< Identity ID - used to represent an identity in this store */
-	typedef	uint32_t					URIID;							/**< URI ID - used to represent a URI in this store */
-	typedef	URIID						ClassID;						/**< Class ID - used to represent the class URI in this store */
+	typedef	uint32_t					IdentityID;						/**< Identity ID - represents an identity in this store */
+	typedef	uint32_t					URIID;							/**< URI ID - represents a URI in this store */
+	typedef	URIID						DataEventID;					/**< Data event ID - represents the URI of a specific data event in this store */
 	typedef	URIID						PropertyID;						/**< Property ID - same as URIID */
 	typedef	uint32_t					ElementID;						/**< Immutable collection element ID */
 	typedef	uint32_t					VersionID;						/**< Version number */
@@ -69,18 +69,18 @@ namespace Afy
 	/**
 	 * special property and class IDs
 	 */
-	#define	CLASS_OF_CLASSES			Afy::ClassID(0)				/**< Fixed ID of the class of all classes in the store */
-	#define	CLASS_OF_TIMERS				Afy::ClassID(1)				/**< Class of all timers */
-	#define	CLASS_OF_LISTENERS			Afy::ClassID(2)				/**< Class of all listeners */
-	#define	CLASS_OF_LOADERS			Afy::ClassID(3)				/**< Class of all loaders (i.e. PINs describing external loadable service libraries) */
-	#define	CLASS_OF_PACKAGES			Afy::ClassID(4)				/**< Class of all installed packages */
-	#define	CLASS_OF_NAMED				Afy::ClassID(5)				/**< Class of all globally named PINs (i.e. having PROP_SPEC_OBJID) */
-	#define	CLASS_OF_ENUMS				Afy::ClassID(6)				/**< Class of enumerations */
-	#define	CLASS_OF_STORES				Afy::ClassID(7)				/**< Class of known stores */
-	#define	CLASS_OF_SERVICES			Afy::ClassID(8)				/**< Class of registered services */
-	#define	CLASS_OF_FSMCTX				Afy::ClassID(9)				/**< Class of all persistent FSM contexts */
-	#define	CLASS_OF_FSMS				Afy::ClassID(10)			/**< Class of FSMs */
-	#define	CLASS_OF_HANDLERS			Afy::ClassID(11)			/**< Class of event handlers */
+	#define	CLASS_OF_CLASSES			Afy::URIID(0)				/**< Fixed ID of the class of all classes and data events */
+	#define	CLASS_OF_TIMERS				Afy::URIID(1)				/**< Class of all timers */
+	#define	CLASS_OF_LISTENERS			Afy::URIID(2)				/**< Class of all listeners */
+	#define	CLASS_OF_LOADERS			Afy::URIID(3)				/**< Class of all loaders (i.e. PINs describing external loadable service libraries) */
+	#define	CLASS_OF_PACKAGES			Afy::URIID(4)				/**< Class of all installed packages */
+	#define	CLASS_OF_NAMED				Afy::URIID(5)				/**< Class of all globally named PINs (i.e. having PROP_SPEC_OBJID) */
+	#define	CLASS_OF_ENUMS				Afy::URIID(6)				/**< Class of enumerations */
+	#define	CLASS_OF_STORES				Afy::URIID(7)				/**< Class of known stores */
+	#define	CLASS_OF_SERVICES			Afy::URIID(8)				/**< Class of registered services */
+	#define	CLASS_OF_FSMCTX				Afy::URIID(9)				/**< Class of all persistent FSM contexts */
+	#define	CLASS_OF_FSMS				Afy::URIID(10)				/**< Class of FSMs */
+	#define	CLASS_OF_HANDLERS			Afy::URIID(11)				/**< Class of event handlers */
 	
 	#define	PROP_SPEC_PINID				Afy::PropertyID(17)			/**< PIN id as PIN's property, immutable */
 	#define	PROP_SPEC_DOCUMENT			Afy::PropertyID(18)			/**< document PIN this PIN is a part of */
@@ -95,8 +95,8 @@ namespace Afy
 	#define	PROP_SPEC_OBJID				Afy::PropertyID(27)			/**< objectID of the class represented by this pin (VT_CLASSID) */
 	#define PROP_SPEC_PREDICATE			Afy::PropertyID(28)			/**< predicate of a class or relations (VT_STMT) */
 	#define	PROP_SPEC_COUNT				Afy::PropertyID(29)			/**< number of instances of a given class currently in the store */
-	#define	PROP_SPEC_SUBCLASSES		Afy::PropertyID(30)			/**< collection of classes which are specializations of this class */
-	#define	PROP_SPEC_SUPERCLASSES		Afy::PropertyID(31)			/**< collection of classes which are abstractions of this class */
+	#define	PROP_SPEC_SPECIALIZATION	Afy::PropertyID(30)			/**< collection of data events which are specializations of this data event */
+	#define	PROP_SPEC_ABSTRACTION		Afy::PropertyID(31)			/**< collection of data events which are abstractions of this data event */
 	#define PROP_SPEC_INDEX_INFO		Afy::PropertyID(32)			/**< family index information */
 	#define PROP_SPEC_PROPERTIES		Afy::PropertyID(33)			/**< properties refered by the class */
 	#define	PROP_SPEC_ONENTER			Afy::PropertyID(34)			/**< PIN entering a class action; flow of control entering a state action */
@@ -208,7 +208,7 @@ namespace Afy
 	 * @see PIN::getMetaType()
 	 */
 	#define	PMT_NAMED					0x0001		/**< PIN with afy:objectID */
-	#define	PMT_CLASS					0x0002		/**< class PIN */
+	#define	PMT_DATAEVENT				0x0002		/**< data event PIN */
 	#define	PMT_TIMER					0x0004		/**< timer PIN */
 	#define	PMT_LISTENER				0x0008		/**< socket listener PIN */
 	#define	PMT_PACKAGE					0x0010		/**< package PIN */
@@ -417,7 +417,6 @@ namespace Afy
 		OP_MOVE,					/**< move a collection element to new position */
 		OP_MOVE_BEFORE,				/**< move a collection element to new position (before specific element) */			
 		OP_DELETE,					/**< deletes the whole property or an element of a compound property */
-		OP_EDIT,					/**< string editing operation (VT_STRING/VT_BSTR) ot bit edit (VT_INT/VT_UINT/VT_INT64/VT_UINT64/VT_BSTR) */
 		OP_RENAME,					/**< rename a property, i.e. replace one PropertyID with another one */
 		OP_FIRST_EXPR,				/**< start of op codes which can be used in expressions */
 		OP_PLUS=OP_FIRST_EXPR,		/**< binary '+' or '+=' */
@@ -485,7 +484,7 @@ namespace Afy
 		OP_STDDEV_SAMP,				/**< aggregate: standard deviation of collection values, standard deviation of values in a group */
 		OP_HISTOGRAM,				/**< aggregate: histogram of collection values, histogram of values in a group */
 		OP_COALESCE,				/**< not implemented yet */
-		OP_MEMBERSHIP,				/**< returns a collection of ClassIDs of classes a pin is a member of */
+		OP_DATAEVENTS,				/**< returns a collection of DataEventIDs for this pin */
 		OP_PATH,					/**< segment of a path expression */
 		OP_FIRST_BOOLEAN,			/**< start of Boolean predicates */
 		OP_EQ=OP_FIRST_BOOLEAN,		/**< equal */
@@ -501,8 +500,9 @@ namespace Afy
 		OP_TESTBIT,					/**< test bit in a binary string */
 		OP_SIMILAR,					/**< regular expression match */
 		OP_EXISTS,					/**< property exists in PIN, i.e. IS NOT NULL */
+		OP_ISCHANGED,				/**< property has been changed */
 		OP_ISLOCAL,					/**< PIN is local, i.e. not replicated, not read-only remote cached */
-		OP_IS_A,					/**< PIN is a member of a class or one in a collection of classes */
+		OP_IS_A,					/**< PIN is a member of a data event or one in a collection of data events */
 		OP_LAND,					/**< logical AND */
 		OP_LOR,						/**< logical OR */
 		OP_LNOT,					/**< logical NOT */
@@ -511,6 +511,7 @@ namespace Afy
 		OP_EXTRACT,					/**< extract part of a date, extract identity from a PIN ID */
 		OP_BITFIELD,				/**< extract a bit field from a number or a binary string */
 		OP_CALL,					/**< call a function of code block with parameters */
+		OP_HASH,					/**< hash (SHA256) of a pin, a value, a collection */
 		OP_CASE,					/**< CASE ... WHEN ... THEN ... END construct */
 
 		OP_ALL
@@ -680,29 +681,6 @@ namespace Afy
 		uint8_t		type;
 		uint8_t		op;
 	};
-
-	/**
-	 * OP_EDIT data
-	 */
-	struct StrEdit
-	{
-		union {
-			const	char		*str;
-			const	uint8_t		*bstr;
-		};
-		uint32_t				length;				/**< shift+length must be <= the length of the string being edited */
-		uint64_t				shift;				/**< shift==~0ULL means 'end of string'; in this case length must be 0 */
-	};
-	struct BitEdit
-	{
-		uint32_t	bits;
-		uint32_t	mask;
-	};
-	struct BitEdit64
-	{
-		uint64_t	bits;
-		uint64_t	mask;
-	};
 		
 	/**
 	 * floating value with measurement unit information
@@ -803,9 +781,6 @@ namespace Afy
 			class	IExpr		*expr;
 			class	IExprNode	*exprt;
 					RefV		refV;
-					StrEdit		edit;
-					BitEdit		bedt;
-					BitEdit64	bedt64;
 					IndexSeg	iseg;
 			QualifiedValue		qval;
 			FixedArray			fa;
@@ -845,11 +820,6 @@ namespace Afy
 		void	setNow() {type=VT_CURRENT; i=CVT_TIMESTAMP; property=STORE_INVALID_URIID; fcalc=1; flags=0; op=OP_SET; eid=STORE_COLLECTION_ID; length=0; meta=0;}
 		void	setCUser() {type=VT_CURRENT; i=CVT_USER; property=STORE_INVALID_URIID; fcalc=1; flags=0; op=OP_SET; eid=STORE_COLLECTION_ID; length=0; meta=0;}
 		void	setCStore() {type=VT_CURRENT; i=CVT_STORE; property=STORE_INVALID_URIID; fcalc=1; flags=0; op=OP_SET; eid=STORE_COLLECTION_ID; length=0; meta=0;}
-		void	setEdit(const char *s,uint64_t sht,uint32_t l) {type=VT_STRING; property=STORE_INVALID_URIID; fcalc=0; flags=0; op=OP_EDIT; eid=STORE_COLLECTION_ID; length=s==NULL?0:(uint32_t)strlen(s); edit.str=s; edit.shift=sht; edit.length=l; meta=0;}
-		void	setEdit(const char *s,uint32_t nChars,uint64_t sht,uint32_t l) {type=VT_STRING; property=STORE_INVALID_URIID; fcalc=0; flags=0; op=OP_EDIT; eid=STORE_COLLECTION_ID; length=nChars; edit.str=s; edit.shift=sht; edit.length=l; meta=0;}
-		void	setEdit(const unsigned char *bs,uint32_t l,uint64_t sht,uint32_t ll) {type=VT_BSTR; property=STORE_INVALID_URIID; fcalc=0; flags=0; op=OP_EDIT; eid=STORE_COLLECTION_ID; length=l; edit.bstr=bs; edit.shift=sht; edit.length=ll; meta=0;}
-		void	setEdit(uint32_t bt,uint32_t msk) {type=VT_UINT; property=STORE_INVALID_URIID; fcalc=0; flags=0; op=OP_EDIT; eid=STORE_COLLECTION_ID; length=sizeof(BitEdit); bedt.bits=bt; bedt.mask=msk; meta=0;}
-		void	setEdit(uint64_t bt,uint64_t msk) {type=VT_UINT64; property=STORE_INVALID_URIID; fcalc=0; flags=0; op=OP_EDIT; eid=STORE_COLLECTION_ID; length=sizeof(BitEdit64); bedt64.bits=bt; bedt64.mask=msk; meta=0;}
 		void	setRename(PropertyID from,PropertyID to) {type=VT_URIID; property=from; fcalc=0; flags=0; op=OP_RENAME; eid=STORE_COLLECTION_ID; length=sizeof(PropertyID); uid=to; meta=0;}
 		void	setDelete(PropertyID p,ElementID ei=STORE_COLLECTION_ID) {type=VT_ANY; property=p; fcalc=0; flags=0; op=OP_DELETE; eid=ei; length=0; meta=0;}
 		void	setError(PropertyID pid=STORE_INVALID_URIID) {type=VT_ERROR; property=pid; fcalc=0; flags=0; op=OP_SET; eid=STORE_COLLECTION_ID; length=0; meta=0;}
@@ -893,9 +863,9 @@ namespace Afy
 
 		virtual	RC			getPINValue(Value& res) const = 0;			/**< get PIN 'value', based on PROP_SPEC_VALUE */
 
-		virtual	bool		testClassMembership(ClassID,const Value *params=NULL,unsigned nParams=0) const = 0;		/**< test if the PIN is a member of class */
-		virtual	bool		defined(const PropertyID *pids,unsigned nProps) const = 0;								/**< test if properties exists in the PIN */
-		virtual	RC			isMemberOf(ClassID *&clss,unsigned& nclss) = 0;											/**< returns an array of ClassIDs the PIN is a member of */
+		virtual	bool		testDataEvent(DataEventID,const Value *params=NULL,unsigned nParams=0) const = 0;										/**< test if the PIN would trigger a data event */
+		virtual	bool		defined(const PropertyID *pids,unsigned nProps) const = 0;																/**< test if properties exists in the PIN */
+		virtual	RC			isMemberOf(DataEventID *&devs,unsigned& ndevs) = 0;																		/**< returns an array of DataEventIDs for this PIN */
 
 		virtual	RC			refresh(bool fNet=true) = 0;																							/**< refresh PIN, i.e. re-read properties from persistent storage */
 		virtual	IPIN		*clone(const Value *overwriteValues=NULL,unsigned nOverwriteValues=0,unsigned mode=0) = 0;								/**< clone PIN (optionally modifying some properties) */
@@ -1023,14 +993,14 @@ namespace Afy
 	};
 	
 	/**
-	 * INTO classes descriptor for INSERT
+	 * INTO data events descriptor for INSERT
 	 */
 	#define	IC_UNIQUE		0x0001			/**< uniqueness constraint */
 	#define	IC_IDEMPOTENT	0x0002			/**< idempotent insert */
 	
 	struct	IntoClass
 	{
-		ClassID		cid;
+		DataEventID		cid;
 		unsigned	flags;
 	};
 
@@ -1056,7 +1026,7 @@ namespace Afy
 		};
 		Value			eid;				/**< collection/structure/map element index, if isEmpty() and eid is equal to STORE_COLLECTION_ID the whole collection/structure/map is used */
 		IExpr			*filter;			/**< filter expression; applied to PINs refered by this segment collection or single reference */
-		ClassID			cid;				/**< class the above PINs must be members of */
+		DataEventID			cid;				/**< class the above PINs must be members of */
 		Value			*params;			/**< family parameter values */
 		uint16_t		nParams;			/**< number of family parameters */
 		uint16_t		rmin;				/**< minimum number of repetitions of this segment in valid path */
@@ -1122,7 +1092,7 @@ namespace Afy
 	class AFY_EXP IStmt
 	{
 	public:
-		virtual QVarID	addVariable(const SourceSpec *classes=NULL,unsigned nClasses=0,IExprNode *cond=NULL) = 0;		/**< add varaible either for full scan (no SourceSpec specified) or for intersection of given calsses/families with optional condition */
+		virtual QVarID	addVariable(const SourceSpec *srcs=NULL,unsigned nSrcs=0,IExprNode *cond=NULL) = 0;				/**< add varaible either for full scan (no SourceSpec specified) or for intersection of given calsses/families with optional condition */
 		virtual QVarID	addVariable(const PID& pid,PropertyID propID,IExprNode *cond=NULL) = 0;							/**< add collection scanning variable */
 		virtual QVarID	addVariable(IStmt *qry) = 0;																	/**< add sub-query variable (e.g. nested SELECT in FROM */
 		virtual	QVarID	setOp(QVarID leftVar,QVarID rightVar,QUERY_SETOP) = 0;											/**< add set operation (QRY_UNION, QRY_INTERSECT, QRY_EXCEPT) variable for 2 sub-variables*/
@@ -1142,6 +1112,7 @@ namespace Afy
 		virtual	RC		setGroup(QVarID,const OrderSeg *order,unsigned nSegs,IExprNode *having=NULL) = 0;				/**< set GROUP BY clause */
 		virtual	RC		setOrder(const OrderSeg *order,unsigned nSegs) = 0;												/**< set statement-wide result ordering */
 		virtual	RC		setValues(const Value *values,unsigned nValues,const IntoClass *into=NULL,unsigned nInto=0,uint64_t tid=0ULL) =  0;		/**< set Value structures, class filter and PIN flags for STMT_INSERT and STMT_UPDATE statements */
+		virtual	RC		setWith(const Value *params,unsigned nParams) =  0;												/**< set WITH parameters for the statement evaluation */
 
 		virtual	STMT_OP	getOp() const = 0;																										/**< get statement type */
 
@@ -1354,19 +1325,19 @@ namespace Afy
 
 		virtual	RC			execute(const char *str,size_t lstr,char **result=NULL,const URIID *ids=NULL,unsigned nids=0,			/**< execute query specified by PathSQL string; return result in JSON form */
 									const Value *params=NULL,unsigned nParams=0,CompilationError *ce=NULL,uint64_t *nProcessed=NULL,
-									unsigned nProcess=~0u,unsigned nSkip=0) = 0;
+									unsigned nProcess=~0u,unsigned nSkip=0,const char *importBase=NULL) = 0;
 
 		virtual	RC			createInputStream(IStreamIn *&in,IStreamIn *out=NULL,size_t lbuf=0) = 0;			/**< create protobuf input stream interface */
 		virtual	RC			createServiceCtx(const Value *vals,unsigned nVals,class IServiceCtx *&sctx,bool fWrite=false,class IListener *lctx=NULL) = 0; /**< create IServiceCtx from provided parameters */
 
-		virtual	RC			getClassID(const char *className,ClassID& cid) = 0;									/**< get ClassID for gived class URI; equivalent to mapURIs() but check class existence */
-		virtual	RC			enableClassNotifications(ClassID,unsigned notifications) = 0;						/**< enables notifications for a given class, see CLASS_NOTIFY_XXX above */
-		virtual	RC			rebuildIndices(const ClassID *cidx=NULL,unsigned nClasses=0) = 0;					/**< rebuild all DB indices (except free-text index) */
+		virtual	RC			getDataEventID(const char *className,DataEventID& cid) = 0;									/**< get DataEventID for gived class URI; equivalent to mapURIs() but check class existence */
+		virtual	RC			enableClassNotifications(DataEventID,unsigned notifications) = 0;						/**< enables notifications for a given class, see CLASS_NOTIFY_XXX above */
+		virtual	RC			rebuildIndices(const DataEventID *cidx=NULL,unsigned ndevs=0) = 0;					/**< rebuild all DB indices (except free-text index) */
 		virtual	RC			rebuildIndexFT() = 0;																/**< rebuild free-text index */
-		virtual	RC			createIndexNav(ClassID,IndexNav *&nav) = 0;											/**< create IndexNav object */
-		virtual	RC			listValues(ClassID cid,PropertyID pid,IndexNav *&ven) = 0;							/**< list all stored values for a given class family */
+		virtual	RC			createIndexNav(DataEventID,IndexNav *&nav) = 0;											/**< create IndexNav object */
+		virtual	RC			listValues(DataEventID cid,PropertyID pid,IndexNav *&ven) = 0;							/**< list all stored values for a given class family */
 		virtual	RC			listWords(const char *query,StringEnum *&sen) = 0;									/**< list all words in FT index matching given prefix or list of words */
-		virtual	RC			getClassInfo(ClassID,IPIN*&) = 0;													/**< get class information */
+		virtual	RC			getDataEventInfo(DataEventID,IPIN*&) = 0;													/**< get class information */
 
 		virtual	RC			allocPIN(size_t maxSize,unsigned nProps,IPIN *&pin,Value *&values,unsigned mode=0) = 0;	/**< fast allocate space for a PIN which can be passed between sessions, up to 64K (for use in services mainly) */
 		virtual	RC			inject(IPIN *pin) = 0;																/**< inject a new PIN into the system triggering various events */
@@ -1376,7 +1347,7 @@ namespace Afy
 		virtual	IPIN		*getPIN(const PID& id,unsigned mode=0) = 0;											/**< retrieve a PIN by its ID */
 		virtual	IPIN		*getPIN(const Value& ref,unsigned mode=0) = 0;										/**< retrive a PIN by its reference in a Value */
 		virtual	RC			getValue(Value& res,const PID& id,PropertyID,ElementID=STORE_COLLECTION_ID) = 0;	/**< get property value for a value reference */
-		virtual	RC			getPINClasses(ClassID *&clss,unsigned& nclss,const PID& id) = 0;					/**< array of ClassIDs the PIN is a member of */
+		virtual	RC			getPINEvents(DataEventID *&devs,unsigned& ndevs,const PID& id) = 0;					/**< array of DataEventIDs for the PIN */
 		virtual	bool		isCached(const PID& id) = 0;														/**< check if a PIN is in remote PIN cache by its ID */
 		virtual	IBatch		*createBatch() = 0;																	/**< create PIN batch insert interface */
 		virtual	RC			createPIN(Value *values,unsigned nValues,IPIN **result,unsigned mode=0,const PID *original=NULL) = 0; /**< create a PIN */

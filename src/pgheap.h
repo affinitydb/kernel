@@ -121,7 +121,7 @@ protected:
 	friend	struct	PropMod;
 	friend	struct	PropInfo;
 	friend	struct	ModCtx;
-	friend	class	ClassPropIndex;
+	friend	class	DataEventRegistry;
 	friend	struct	ECB;
 	friend	class	NavTxDelete;
 	friend	class	Navigator;
@@ -399,7 +399,7 @@ public:
 
 	friend	class PINPageMgr;
 	friend	class QueryPrc;
-	friend	class Classifier;
+	friend	class DataEventMgr;
 	friend	class FullScan;
 };
 

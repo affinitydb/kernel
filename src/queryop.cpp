@@ -158,11 +158,19 @@ RC QueryOp::createCommOp(PINx *pcb,const byte *er,size_t l)
 	assert(extsrc==NULL); PINx cb(qx->ses); RC rc; ServiceCtx *sctx=NULL;
 	if (pcb==NULL) {if (er!=NULL && l!=0) {memcpy(cb.epr.buf,er,l); pcb=&cb;} else if ((pcb=res)==NULL) return RC_INTERNAL;}
 	if (pcb->isPartial() && (pcb->pb.isNull() && (rc=pcb->getBody())!=RC_OK || (rc=pcb->load(LOAD_SSV))!=RC_OK)) return rc;
-	if ((pcb->getMetaType()&PMT_COMM)==0) return RC_EOF;
-	Values vv(pcb->properties,pcb->nProperties); if (pcb==res) pcb->setProps(NULL,0);
-	if ((rc=qx->ses->prepare(sctx,pcb->id,vv.vals,vv.nValues,0))!=RC_OK) return rc; assert(sctx!=NULL);	// params ->ISRV_NOCACHE
-	CommOp *co=new(qx->ses) CommOp(qx,sctx,vv,0); if (co==NULL) {sctx->destroy(); return RC_NOMEM;}
-	co->connect(res!=NULL?&res:&pcb); if ((rc=co->advance())==RC_OK) extsrc=co; else delete co;
+	if ((pcb->getMetaType()&PMT_COMM)==0) return RC_EOF; Values params(pcb->properties,pcb->nProperties);
+	if (params.nValues==0) params.vals=NULL;
+	else if (params.vals!=NULL) {
+		if (pcb->fNoFree==0) pcb->setProps(NULL,0);
+		else if ((rc=copyV(params.vals,params.nValues,*(Value**)&params.vals,qx->ses))!=RC_OK) return rc;
+		params.fFree=true;
+	}
+	if ((rc=qx->ses->prepare(sctx,pcb->id,*qx->ectx,params.vals,params.nValues,0))==RC_OK) { // params ->ISRV_NOCACHE
+		CommOp *co=new(qx->ses) CommOp(qx,sctx,params,0); assert(sctx!=NULL);
+		if (co==NULL) {sctx->destroy(); rc=RC_NOMEM;}
+		else {co->connect(res!=NULL?&res:&pcb); params.fFree=false; if ((rc=co->advance())==RC_OK) extsrc=co; else delete co;}
+	}
+	if (params.fFree) freeV((Value*)params.vals,params.nValues,qx->ses);
 	return rc;
 }
 
@@ -179,13 +187,14 @@ RC CommOp::advance(const PINx *)
 	if ((state&QST_EOF)!=0) return RC_EOF;
 	state&=~QST_INIT; if (res!=NULL) res->cleanup();
 	RC rc=sctx->invoke(params.vals,params.nValues,res);
-	if (rc!=RC_OK) state|=QST_EOF; else if (res!=NULL) res->epr.flags|=PINEX_DERIVED;
+	if (rc!=RC_OK) state|=QST_EOF; else if (res!=NULL) res->epr.flags|=PINEX_COMM;
 	return rc;
 }
 
 //------------------------------------------------------------------------------------------------
 
-LoadOp::LoadOp(QueryOp *q,const PropList *p,unsigned nP,unsigned qf) : QueryOp(q,qf),nPls(nP) {
+LoadOp::LoadOp(QueryOp *q,const PropList *p,unsigned nP,unsigned qf) : QueryOp(q,qf),nPls(nP)
+{
 	qf=q->getQFlags(); qflags|=qf&(QO_UNIQUE|QO_STREAM);
 	if ((qflags&QO_REORDER)==0) {qflags|=qf&(QO_IDSORT|QO_REVERSIBLE); sort=q->getSort(nSegs);}
 	if (p!=NULL && nP!=0) {
@@ -214,7 +223,7 @@ RC LoadOp::advance(const PINx *skip)
 {
 	RC rc=RC_OK; assert(qx->ses!=NULL);
 	for (; (rc=queryOp->next(skip))==RC_OK; skip=NULL) {
-		for (unsigned i=0; i<nResults; i++) if ((results[i]->epr.flags&PINEX_DERIVED)==0) {
+		for (unsigned i=0; i<nResults; i++) if ((results[i]->epr.flags&(PINEX_DERIVED|PINEX_COMM))==0) {
 			results[i]->resetProps(); results[i]->fReload=1; if ((rc=qx->ses->testAbortQ())!=RC_OK) return rc;
 			if ((rc=getBody(*results[i]))!=RC_OK || (results[i]->mode&PIN_HIDDEN)!=0) 
 				{results[i]->cleanup(); if (rc==RC_OK || rc==RC_NOACCESS || rc==RC_REPEAT || rc==RC_DELETED) {rc=RC_FALSE; break;} else return rc;}	// cleanup all
@@ -398,7 +407,7 @@ void Filter::connect(PINx **rs,unsigned nR)
 RC Filter::advance(const PINx *skip)
 {
 	RC rc=RC_OK; assert(qx->ses!=NULL && results!=NULL);
-	EvalCtx ectx(qx->ses,qx->ectx!=NULL?qx->ectx->env:NULL,qx->ectx!=NULL?qx->ectx->nEnv:0,(PIN**)results,nResults,qx->vals,QV_ALL,qx->ectx,NULL,(qflags&QO_CLASS)!=0?ECT_CLASS:ECT_QUERY);		// move to FilterOp
+	EvalCtx ectx(qx->ses,qx->ectx!=NULL?qx->ectx->env:NULL,qx->ectx!=NULL?qx->ectx->nEnv:0,(PIN**)results,nResults,qx->vals,QV_ALL,qx->ectx,NULL,(qflags&QO_CLASS)!=0?ECT_DETECT:ECT_QUERY);		// move to FilterOp
 	for (; (rc=queryOp->next(skip))==RC_OK; skip=NULL) {
 		if ((qflags&QO_NODATA)==0 && (rc=queryOp->getData(*results[0],NULL,0))!=RC_OK) break;		// other vars ???
 		if ((rprops==NULL || nrProps==0 || results[0]->checkProps(rprops,nrProps)) && (cond==NULL || cond->condSatisfied(ectx))) {

@@ -58,7 +58,7 @@ class FileMgr : public GFileMgr
 			}
 		}
 	}				CP;
-	static	Pool	freeIODesc;
+	static	LIFO	freeIODesc;
 public:
 	FileMgr(class StoreCtx *ct,int maxOpenFiles,const char *ldDir);
 	RC		open(FileID& fid,const char *fname,unsigned flags=0);

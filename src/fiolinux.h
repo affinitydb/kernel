@@ -46,7 +46,7 @@ namespace AfyKernel
 class FileMgr : public GFileMgr
 {
 #if !defined(STORE_AIO_THREAD) || defined(ANDROID)
-	static	Pool		freeIORequests;
+	static	LIFO		freeIORequests;
 #endif
 
 public:

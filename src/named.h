@@ -52,7 +52,7 @@ struct BuiltinURI
 
 class NamedMgr : public TreeGlobalRoot
 {
-	friend	class Classifier;
+	friend	class DataEventMgr;
 	StoreCtx			*const	ctx;
 	const char			*storePrefix;
 	size_t				lStorePrefix;
@@ -70,13 +70,13 @@ public:
 	PropertyID			getXPropID() const {return (PropertyID)xPropID;}
 	void				setMaxPropID(PropertyID id);
 	bool				exists(URIID);
-	RC					getNamedPID(URIID uid,PID& id);
+	RC					getNamedPID(URIID uid,Value& id);
 	RC					getNamed(URIID id,PINx&,bool fUpdate=false);
 	RC					update(URIID id,PINRef& pr,uint16_t meta,bool fInsert);
 	const char			*getTraceName(class URI *uri,size_t& l) const;
 	static	const char	*getBuiltinName(URIID uid,size_t& lname);
 	static	URIID		getBuiltinURIID(const char *name,size_t lname,bool fSrv);
-	static	uint16_t	getMeta(ClassID cid);
+	static	uint16_t	getMeta(DataEventID cid);
 	static	const		SpecPINProps specPINProps[11];
 private:
 	static	const		BuiltinURI	builtinURIs[];

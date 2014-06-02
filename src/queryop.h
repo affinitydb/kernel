@@ -26,7 +26,7 @@ Written by Mark Venguerov 2004-2014
 
 #include "qbuild.h"
 #include "expr.h"
-#include "classifier.h"
+#include "dataevent.h"
 #include "propdnf.h"
 
 namespace AfyKernel
@@ -163,7 +163,7 @@ class ClassScan : public QueryOp
 	TreeScan		*scan;
 	const uint16_t	meta;
 public:
-	ClassScan(QCtx *ses,ClassID cid,unsigned md);
+	ClassScan(QCtx *ses,DataEventID cid,unsigned md);
 	virtual		~ClassScan();
 	RC			init();
 	RC			advance(const PINx *skip=NULL);
@@ -177,9 +177,9 @@ public:
  */
 class SpecClassScan : public QueryOp
 {
-	const ClassID	cls;
+	const DataEventID	dev;
 public:
-	SpecClassScan(QCtx *qx,ClassID cl,unsigned qf) : QueryOp(qx,qf|QO_UNIQUE|QO_STREAM|QO_ALLPROPS),cls(cl) {}
+	SpecClassScan(QCtx *qx,DataEventID cl,unsigned qf) : QueryOp(qx,qf|QO_UNIQUE|QO_STREAM|QO_ALLPROPS),dev(cl) {}
 	virtual		~SpecClassScan();
 	RC			init();
 	RC			advance(const PINx *skip=NULL);
@@ -194,8 +194,8 @@ public:
  */
 class IndexScan : public QueryOp
 {
-	ClassIndex&			index;
-	const	ClassID		classID;
+	DataIndex&			index;
+	const	DataEventID		classID;
 	unsigned			flags;
 	unsigned			rangeIdx;
 	TreeScan			*scan;
@@ -207,9 +207,9 @@ class IndexScan : public QueryOp
 	RC					setScan(unsigned=0);
 	void				printKey(const SearchKey& key,SOutCtx& buf,const char *def,size_t ldef) const;
 public:
-	IndexScan(QCtx *ses,ClassIndex& idx,unsigned flg,unsigned np,unsigned md);
+	IndexScan(QCtx *ses,DataIndex& idx,unsigned flg,unsigned np,unsigned md);
 	virtual				~IndexScan();
-	void				*operator new(size_t s,Session *ses,unsigned nRng,ClassIndex& idx) {return ses->malloc(s+nRng*2*sizeof(SearchKey)+idx.getNSegs()*(sizeof(OrderSegQ)+sizeof(PropertyID)));}
+	void				*operator new(size_t s,Session *ses,unsigned nRng,DataIndex& idx) {return ses->malloc(s+nRng*2*sizeof(SearchKey)+idx.getNSegs()*(sizeof(OrderSegQ)+sizeof(PropertyID)));}
 	RC					init();
 	RC					advance(const PINx *skip=NULL);
 	RC					rewind();
@@ -228,6 +228,7 @@ class ExprScan : public QueryOp
 {
 	Value		expr;
 	Value		r;
+	Value		w;
 	unsigned	idx;
 public:
 	ExprScan(QCtx *s,const Value& v,unsigned md);

@@ -23,7 +23,7 @@ Written by Mark Venguerov 2010-2014
 #include "expr.h"
 #include "parser.h"
 #include "maps.h"
-#include "classifier.h"
+#include "dataevent.h"
 #include "startup.h"
 #include "fio.h"
 #include "regexp.h"
@@ -151,6 +151,9 @@ using namespace AfyKernel;
 #define	UPDATED_S			"UPDATED"
 #define	DELETED_S			"DELETED"
 #define	EXPIRES_S			"EXPIRES"
+#define	COMMUNICATION_S		"COMMUNICATION"
+#define	PIPELINE_S			"PIPELINE"
+#define	IMPORT_S			"IMPORT"
  					
 #define	URIID_PREFIX		"."
 #define	IDENTITY_PREFIX		"!"
@@ -168,7 +171,6 @@ const OpDscr SInCtx::opDscr[] =
 	{0,		LX_ERR,		0,NULL,				NULL,			{0,	  0},	{0,	0}	},		 //LX_KEYW
 	{_U,	LX_RPR,		S_L("("),			NULL,			{40,  2},	{1,	1}	},		 //LX_LPR
 	{_C,	LX_ERR,		S_L(")"),			NULL,			{2,	  0},	{0,	0}	},		 //LX_RPR
-	{0,		LX_RPR,		S_L(","),			NULL,			{3,	  2},	{0,	0}	},		 //LX_COMMA
 	{0,		LX_ERR,		S_L("+"),			Expr::calc,		{12, 12},	{2,	2}	},		 //OP_PLUS
 	{0,		LX_ERR,		S_L("-"),			Expr::calc,		{12, 12},	{2,	2}	},		 //OP_MINUS
 	{0,		LX_ERR,		S_L("*"),			Expr::calc,		{15, 15},	{2,	2}	},		 //OP_MUL
@@ -233,7 +235,7 @@ const OpDscr SInCtx::opDscr[] =
 	{_F|_A,	LX_RPR,		S_L("STDDEV_SAMP"),	Expr::calcAgg,	{40,  2},	{1,255}	},		 //OP_STDDEV_SAMP
 	{_F|_A,	LX_RPR,		S_L("HISTOGRAM"),	Expr::calcAgg,	{40,  2},	{1,255}	},		 //OP_HISTOGRAM
 	{_F,	LX_RPR,		S_L("COALESCE"),	Expr::calc,		{40,  2},	{2,255}	},		 //OP_COALESCE
-	{_F,	LX_RPR,		S_L("MEMBERSHIP"),	Expr::calc,		{40,  2},	{1, 1}	},		 //OP_MEMBERSHIP
+	{_F,	LX_RPR,		S_L("DATAEVENTS"),	Expr::calc,		{40,  2},	{1, 1}	},		 //OP_DATAEVENTS
 	{0,		LX_ERR,		S_L("."),			Expr::calc,		{32, 32},	{2,	4}	},		 //OP_PATH
 	{0,		LX_ERR,		S_L("="),			Expr::calc,		{8,   8},	{2,	2}	},		 //OP_EQ
 	{0,		LX_ERR,		S_L("<>"),			Expr::calc,		{8,   8},	{2,	2}	},		 //OP_NE
@@ -248,6 +250,7 @@ const OpDscr SInCtx::opDscr[] =
 	{_F,	LX_RPR,		S_L("TESTBIT"),		Expr::calc,		{40,  2},	{2,	2}	},		 //OP_TESTBIT
 	{0,		LX_ERR,		S_L("SIMILAR"),		Expr::calc,		{9,   9},	{2,	2}	},		 //OP_SIMILAR
 	{_F,	LX_RPR,		S_L("EXISTS"),		Expr::calc,		{40,  2},	{1,	1}	},		 //OP_EXISTS
+	{_F,	LX_RPR,		S_L("ISCHANGED"),	Expr::calc,		{40,  2},	{1,	1}	},		 //OP_ISCHANGED
 	{_F,	LX_RPR,		S_L("ISLOCAL"),		Expr::calc,		{40,  2},	{1,	1}	},		 //OP_ISLOCAL
 	{0,		LX_RPR,		0,NULL,				Expr::calc,		{9,   9},	{2,255}	},		 //OP_IS_A
 	{0,		LX_ERR,		S_L(AND_S),			Expr::calc,		{6,   6},	{2,	2}	},		 //OP_LAND
@@ -256,7 +259,9 @@ const OpDscr SInCtx::opDscr[] =
 	{_F|_I,	LX_RPR,		S_L("EXTRACT"),		Expr::calc,		{40,  2},	{2,	2}	},		 //OP_EXTRACT
 	{_F,	LX_RPR,		S_L("BITFIELD"),	Expr::calc,		{40,  2},	{3,	3}	},		 //OP_BITFIELD
 	{0,		LX_RPR,		S_L("("),			Expr::calc,		{31,  2},	{1,255}	},		 //OP_CALL
+	{_F,	LX_RPR,		S_L("HASH"),		Expr::calcHash,	{40,  2},	{1, 2}	},		 //OP_HASH
 	{0,		LX_ERR,		0,NULL,				Expr::calc,		{0,	  0},	{3,255}	},		 //OP_CASE
+	{0,		LX_RPR,		S_L(","),			NULL,			{3,	  2},	{0,	0}	},		 //LX_COMMA
 	{0,		LX_ERR,		S_L(":"),			Expr::calc,		{20, 20},	{0,	0}	},		 //LX_COLON
 	{_U,	LX_RBR,		S_L("["),			NULL,			{36,  2},	{1,	1}	},		 //LX_LBR
 	{_C,	LX_ERR,		S_L("]"),			NULL,			{2,	  0},	{0,	0}	},		 //LX_RBR
@@ -307,7 +312,7 @@ const static Len_Str stmtKWs[STMT_OP_ALL] =
 
 const static Len_Str opKWs[OP_FIRST_EXPR] =
 {
-	{S_L(" "SET_S" ")}, {S_L(" "ADD_S" ")}, {S_L(" "ADD_S" ")}, {S_L(" "MOVE_S" ")}, {S_L(" "MOVE_S" ")}, {S_L(" "DELETE_S" ")}, {S_L(" "EDIT_S" ")}, {S_L(" "RENAME_S" ")}
+	{S_L(" "SET_S" ")}, {S_L(" "ADD_S" ")}, {S_L(" "ADD_S" ")}, {S_L(" "MOVE_S" ")}, {S_L(" "MOVE_S" ")}, {S_L(" "DELETE_S" ")}, {S_L(" "RENAME_S" ")}
 };
 
 const static Len_Str atNames[] =
@@ -371,7 +376,7 @@ const static struct
 
 enum CRT_STMT
 {
-	CRT_CLASS, CRT_EVENT, CRT_LISTENER, CRT_ENUM, CRT_TIMER, CRT_LOADER, CRT_PACKAGE, CRT_CONDITION, CRT_ACTION, CRT_HANDLER, CRT_FSM
+	CRT_CLASS, CRT_EVENT, CRT_LISTENER, CRT_ENUM, CRT_TIMER, CRT_LOADER, CRT_PACKAGE, CRT_CONDITION, CRT_ACTION, CRT_HANDLER, CRT_FSM, CRT_COMM
 };
 
 const static struct
@@ -382,23 +387,25 @@ const static struct
 	uint8_t		flags;
 } createStmt[] = 
 {
-	{{S_L(CLASS_S)},			CRT_CLASS,			PMT_CLASS,		META_PROP_INDEXED},
-	{{S_L(EVENT_S)},			CRT_EVENT,			PMT_CLASS,		0},
-	{{S_L(LISTENER_S)},			CRT_LISTENER,		PMT_LISTENER,	0},
-	{{S_L(ENUMERATION_S)},		CRT_ENUM,			PMT_ENUM,		0},
-	{{S_L(TIMER_S)},			CRT_TIMER,			PMT_TIMER,		0},
-	{{S_L(LOADER_S)},			CRT_LOADER,			PMT_LOADER,		0},
-	{{S_L(PACKAGE_S)},			CRT_PACKAGE,		PMT_PACKAGE,	0},
-	{{S_L(CONDITION_S)},		CRT_CONDITION,		0,				0},
-	{{S_L(ACTION_S)},			CRT_ACTION,			0,				0},
-	{{S_L(HANDLER_S)},			CRT_HANDLER,		0,				0},
-	{{S_L(FSM_S)},				CRT_FSM,			0,				0},
+	{{S_L(CLASS_S)},			CRT_CLASS,			PMT_DATAEVENT,		META_PROP_INDEXED},
+	{{S_L(EVENT_S)},			CRT_EVENT,			PMT_DATAEVENT,		0},
+	{{S_L(LISTENER_S)},			CRT_LISTENER,		PMT_LISTENER,		0},
+	{{S_L(ENUMERATION_S)},		CRT_ENUM,			PMT_ENUM,			0},
+	{{S_L(TIMER_S)},			CRT_TIMER,			PMT_TIMER,			0},
+	{{S_L(LOADER_S)},			CRT_LOADER,			PMT_LOADER,			0},
+	{{S_L(PACKAGE_S)},			CRT_PACKAGE,		PMT_PACKAGE,		0},
+	{{S_L(CONDITION_S)},		CRT_CONDITION,		0,					0},
+	{{S_L(ACTION_S)},			CRT_ACTION,			0,					0},
+	{{S_L(HANDLER_S)},			CRT_HANDLER,		PMT_HANDLER,		0},
+	{{S_L(FSM_S)},				CRT_FSM,			0,					0},
+	{{S_L(COMMUNICATION_S)},	CRT_COMM,			PMT_COMM,			0},
+	{{S_L(PIPELINE_S)},			CRT_COMM,			PMT_COMM,			0},
 };
 
 
 static RC renderElement(ElementID eid,SOutCtx& out,bool fBefore=false)
 {
-	if (eid!=STORE_COLLECTION_ID && eid!=STORE_VAR_ELEMENT) {
+	if (eid!=STORE_COLLECTION_ID && eid!=STORE_VAR_ELEMENT && eid!=STORE_VAR2_ELEMENT) {
 		const char *p; char buf[30]; size_t l;
 		switch (eid) {
 		case STORE_FIRST_ELEMENT: p=":"FIRST_S; l=sizeof(FIRST_S); break;
@@ -578,9 +585,7 @@ RC Stmt::render(SOutCtx& out) const
 				unsigned op=v.op>=(uint8_t)OP_FIRST_EXPR?OP_SET:v.op==(uint8_t)OP_ADD_BEFORE?OP_ADD:v.op==(uint8_t)OP_MOVE_BEFORE?OP_MOVE:(ExprOp)v.op;
 				if (op==prev) {if (!out.append(", ",2)) return RC_NOMEM;}
 				else if (out.append(opKWs[op].s,opKWs[op].l)) prev=op; else return RC_NOMEM;
-				if (op==OP_EDIT && isString((ValueType)v.type)) {
-					// SUBSTR(prop,....)='str'
-				} else if ((rc=out.renderProperty(v,op==OP_SET?13:op==OP_ADD?5:4))!=RC_OK) return rc;
+				if ((rc=out.renderProperty(v,op==OP_SET?13:op==OP_ADD?5:4))!=RC_OK) return rc;
 				else switch (op) {
 				case OP_SET:
 				case OP_ADD:
@@ -597,14 +602,6 @@ RC Stmt::render(SOutCtx& out) const
 					if (!out.append("=",1)) return RC_NOMEM;
 					if ((rc=out.renderName(v.ui))!=RC_OK) return rc;
 					break;
-				case OP_EDIT:
-					if (!out.append("{",1)) return RC_NOMEM;
-					for (uint64_t m=v.type==VT_UINT?v.bedt.mask:v.bedt64.mask,b=v.type==VT_UINT?v.bedt.bits:v.bedt64.bits,j=0; m!=0; m>>=1,b>>=1,j++) if ((m&1)!=0) {
-						if ((b&1)==0 && !out.append(NOT_S " ",sizeof(NOT_S))) return RC_NOMEM;
-						char buf[32]; size_t ll=sprintf(buf,_LD_FM,j); if (!out.append(buf,ll)) return RC_NOMEM;
-					}
-					if (!out.append("}",1)) return RC_NOMEM;
-					break;
 				}
 			}
 		}
@@ -614,7 +611,7 @@ RC Stmt::render(SOutCtx& out) const
 		if (rc!=RC_OK || top==NULL) break;
 	case STMT_DELETE: case STMT_UNDELETE:
 		if (fFrom) {
-			if (top->type!=QRY_SIMPLE || ((SimpleVar*)top)->classes!=NULL || !((SimpleVar*)top)->expr.isEmpty() || ((SimpleVar*)top)->path!=NULL) {
+			if (top->type!=QRY_SIMPLE || ((SimpleVar*)top)->srcs!=NULL || !((SimpleVar*)top)->expr.isEmpty() || ((SimpleVar*)top)->path!=NULL) {
 				if (!out.append(" " FROM_S " ",sizeof(FROM_S)+1)) return RC_NOMEM;
 				if ((rc=top->render(RP_FROM,out))!=RC_OK) break;
 			} else {
@@ -682,7 +679,7 @@ RC QVar::render(SOutCtx& out) const
 		// check dscr in children (if join)
 		if (!out.append(STAR_S,sizeof(STAR_S)-1)) return RC_NOMEM;
 	}
-	if (type!=QRY_SIMPLE || ((SimpleVar*)this)->classes!=NULL || !((SimpleVar*)this)->expr.isEmpty() || ((SimpleVar*)this)->path!=NULL) {
+	if (type!=QRY_SIMPLE || ((SimpleVar*)this)->srcs!=NULL || !((SimpleVar*)this)->expr.isEmpty() || ((SimpleVar*)this)->path!=NULL) {
 		if (!out.append(" " FROM_S " ",sizeof(FROM_S)+1)) return RC_NOMEM;
 		if ((rc=render(RP_FROM,out))!=RC_OK) return rc;
 	} else {
@@ -836,8 +833,8 @@ RC SimpleVar::render(RenderPart part,SOutCtx& out) const
 			if ((rc=out.renderValue(expr))!=RC_OK) return rc;
 			break;
 		}
-		if (classes!=NULL && nClasses!=0) for (i=0; i<nClasses; i++) {
-			const SourceSpec &cs=classes[i];
+		if (srcs!=NULL) for (i=0; i<nSrcs; i++) {
+			const SourceSpec &cs=srcs[i];
 			if (i>0 && !out.append(" & ",3)) return RC_NOMEM;
 			if ((rc=out.renderName(cs.objectID))!=RC_OK) return rc;
 			if (cs.params!=NULL && cs.nParams>0) {
@@ -1017,6 +1014,10 @@ RC ExprNode::render(int prty,SOutCtx& out) const
 		if ((rc=render(operands[0],od->prty[0],out))!=RC_OK) return rc;
 		if (!out.append("[",1)) return RC_NOMEM;
 		if ((rc=render(operands[1],SInCtx::opDscr[LX_LBR].prty[1],out))!=RC_OK) return rc;
+		if (nops==3) {
+			if (!out.append(",",1)) return RC_NOMEM;
+			if ((rc=render(operands[2],SInCtx::opDscr[LX_COMMA].prty[1],out))!=RC_OK) return rc;
+		}
 		if (!out.append("]",1)) return RC_NOMEM;
 		break;
 	case OP_PATH:
@@ -1223,7 +1224,7 @@ RC SOutCtx::renderPID(const PID& id,bool fJ) {
 }
 
 RC SOutCtx::renderValue(const Value& v,JRType jr) {
-	RC rc=RC_OK; unsigned u,sflags; Identity *ident; const char *s; size_t l; const Value *cv,*cv2; const QVar *qv; Value vv; bool ff; char *ss;
+	RC rc=RC_OK; unsigned u,sflags; const char *s; size_t l; const Value *cv,*cv2; const QVar *qv; Value vv; bool ff; char *ss;
 	if (jr!=JR_NO) {
 		if (v.type>VT_DOUBLE && !isString((ValueType)v.type) && v.type!=VT_COLLECTION && v.type!=VT_STRUCT && v.type!=VT_MAP && v.type!=VT_REFID && v.type!=VT_URIID)
 			{if ((rc=convV(v,vv,VT_STRING,ses,CV_NODEREF))==RC_OK) {vv.setPropID(v.property); vv.eid=v.eid; rc=renderValue(vv,jr); freeV(vv);} return rc;}
@@ -1235,7 +1236,7 @@ RC SOutCtx::renderValue(const Value& v,JRType jr) {
 		}
 	}
 	switch (v.type) {
-	case VT_ANY: if (!append(NULL_S,sizeof(NULL_S)-1)) return RC_NOMEM; break;
+	case VT_ANY: if (!append(jr!=JR_NO?"null":NULL_S,sizeof(NULL_S)-1)) return RC_NOMEM; break;
 	case VT_STRING:
 		if (!append(jr!=JR_NO?"\"":"'",1)) return RC_NOMEM;
 		if (v.length!=0) {
@@ -1366,12 +1367,16 @@ RC SOutCtx::renderValue(const Value& v,JRType jr) {
 			(rc=renderName(v.uid,URIID_PREFIX,NULL,jr!=JR_NO))==RC_OK && jr!=JR_NO && !append("\"",1)) rc=RC_NOMEM;
 		break;
 	case VT_IDENTITY:
-		ident=(Identity*)ses->getStore()->identMgr->ObjMgr::find(v.iid);
-		if (ident==NULL) rc=RC_NOTFOUND;
-		else {
-			const StrLen *s=ident->getName(); assert(s!=NULL);
-			rc=append(IDENTITY_PREFIX,1) && append(s->str,s->len)?RC_OK:RC_NOMEM;
-			ident->release();
+		if (v.iid==STORE_OWNER) {
+			if (!append(IDENTITY_PREFIX,1) || !append(SELF_S,sizeof(SELF_S)-1)) return RC_NOMEM;
+		} else {
+			Identity *ident=(Identity*)ses->getStore()->identMgr->ObjMgr::find(v.iid);
+			if (ident==NULL) rc=RC_NOTFOUND;
+			else {
+				const StrLen *s=ident->getName(); assert(s!=NULL);
+				rc=append(IDENTITY_PREFIX,1) && append(s->str,s->len)?RC_OK:RC_NOMEM;
+				ident->release();
+			}
 		}
 		break;
 	case VT_REF:
@@ -1414,18 +1419,20 @@ RC SOutCtx::renderValue(const Value& v,JRType jr) {
 			if ((rc=renderName(v.refV.id,NULL,qv))==RC_OK) rc=renderElement(v.eid,*this);
 			break;
 		case VAR_PARAM:
-			l=sprintf(cbuf,PARAM_PREFIX"%d",v.refV.refN); if (!append(cbuf,l)) return RC_NOMEM;
-			if (v.refV.type<VT_ALL && v.refV.type!=VT_ANY) {
-				if (!append("(",1)) return RC_NOMEM;
-				if (!append(typeName[v.refV.type].s,typeName[v.refV.type].l)) return RC_NOMEM;
-				if ((v.refV.flags&ORD_DESC)!=0 && !append(","DESC_S,sizeof(DESC_S))) return RC_NOMEM;
-				if ((v.refV.flags&(ORD_NULLS_BEFORE|ORD_NULLS_AFTER))!=0) {
-					if (!append(","NULLS_S" ",sizeof(NULLS_S)+1)) return RC_NOMEM;
-					if ((v.refV.flags&ORD_NULLS_BEFORE)!=0) {if (!append(FIRST_S,sizeof(FIRST_S)-1)) return RC_NOMEM;}
-					else if (!append(LAST_S,sizeof(LAST_S)-1)) return RC_NOMEM;
+			if (v.length==0) {
+				l=sprintf(cbuf,PARAM_PREFIX"%d",v.refV.refN); if (!append(cbuf,l)) return RC_NOMEM;
+				if (v.refV.type<VT_ALL && v.refV.type!=VT_ANY) {
+					if (!append("(",1)) return RC_NOMEM;
+					if (!append(typeName[v.refV.type].s,typeName[v.refV.type].l)) return RC_NOMEM;
+					if ((v.refV.flags&ORD_DESC)!=0 && !append(","DESC_S,sizeof(DESC_S))) return RC_NOMEM;
+					if ((v.refV.flags&(ORD_NULLS_BEFORE|ORD_NULLS_AFTER))!=0) {
+						if (!append(","NULLS_S" ",sizeof(NULLS_S)+1)) return RC_NOMEM;
+						if ((v.refV.flags&ORD_NULLS_BEFORE)!=0) {if (!append(FIRST_S,sizeof(FIRST_S)-1)) return RC_NOMEM;}
+						else if (!append(LAST_S,sizeof(LAST_S)-1)) return RC_NOMEM;
+					}
+					if (!append(")",1)) return RC_NOMEM;
 				}
-				if (!append(")",1)) return RC_NOMEM;
-			}
+			} else if ((rc=renderName(v.refV.id,PARAM_PREFIX))!=RC_OK) return rc;
 			break;
 		case VAR_AGGS:
 			if (cvar!=NULL && cvar->aggrs.vals!=NULL && v.refV.refN<cvar->aggrs.nValues) {
@@ -1515,7 +1522,7 @@ RC SOutCtx::renderRep(const Value& rep)
 RC SOutCtx::renderVarName(const QVar *qv)
 {
 	if (qv->name!=NULL) return append(qv->name,strlen(qv->name))?RC_OK:RC_NOMEM;
-	if (qv->type==QRY_SIMPLE && ((SimpleVar*)qv)->nClasses==1) {
+	if (qv->type==QRY_SIMPLE && ((SimpleVar*)qv)->nSrcs==1) {
 		// use class name ???
 	}
 	char buf[10]; size_t l=sprintf(buf,"_%d",qv->id); 
@@ -1673,6 +1680,7 @@ void SInCtx::initKW()
 		{ELSE_S,				KW_ELSE},
 		{END_S,					KW_END},
 		{RULE_S,				KW_RULE},
+		{IMPORT_S,				KW_IMPORT},
 	};
 	static volatile long fInit=-1;
 	while (fInit!=0) {
@@ -2091,13 +2099,13 @@ QVarID SInCtx::findVar(const Value &v,const QVarRef *vars,unsigned nVars) const
 	if (vars!=NULL) for (unsigned i=0; i<nVars; i++) {
 		QVar *qv=vars[i].var; URI *uri;
 		if (v.type==VT_STRING && qv->name!=NULL && strlen(qv->name)==v.length && !strncasecmp(qv->name,v.str,v.length)) return qv->id;
-		if (qv->type==QRY_SIMPLE && ((SimpleVar*)qv)->nClasses==1 && !fMany) switch (v.type) {
+		if (qv->type==QRY_SIMPLE && ((SimpleVar*)qv)->nSrcs==1 && !fMany) switch (v.type) {
 		case VT_URIID:
-			if (((SimpleVar*)qv)->classes[0].objectID==v.uid)
+			if (((SimpleVar*)qv)->srcs[0].objectID==v.uid)
 				{if (classVar==INVALID_QVAR_ID) classVar=qv->id; else {classVar=INVALID_QVAR_ID; fMany=true;}}
 			break;
 		case VT_STRING:
-			if ((uri=(URI*)ses->getStore()->uriMgr->ObjMgr::find(((SimpleVar*)qv)->classes[0].objectID))!=NULL) {
+			if ((uri=(URI*)ses->getStore()->uriMgr->ObjMgr::find(((SimpleVar*)qv)->srcs[0].objectID))!=NULL) {
 				const StrLen *cname=uri->getName();
 				if (cname!=NULL && cname->len==v.length && !strncasecmp(cname->str,v.str,v.length))
 					{if (classVar==INVALID_QVAR_ID) classVar=qv->id; else {classVar=INVALID_QVAR_ID; fMany=true;}}
@@ -2245,7 +2253,9 @@ void SInCtx::parse(Value& res,const QVarRef *vars,unsigned nVars,unsigned pflags
 		case LX_EXCL:
 			if (est!=0) goto error_no_op;
 			if (lex()!=LX_IDENT || v.type!=VT_STRING) throw SY_MISIDENT;
-			mapIdentity(); assert(v.type==VT_IDENTITY); oprs.push(v); v.setError(); est=1; continue;
+			if (v.length==sizeof(SELF_S)-1 && cmpncase(v.str,SELF_S,sizeof(SELF_S)-1)) v.setIdentity(STORE_OWNER);
+			else {mapIdentity(); assert(v.type==VT_IDENTITY);}
+			oprs.push(v); v.setError(); est=1; continue;
 		case LX_COLON:
 			if (est!=0) goto error_no_op;
 			mode|=SIM_INT_NUM; lx=lex(); mode&=~SIM_INT_NUM;
@@ -2275,22 +2285,25 @@ void SInCtx::parse(Value& res,const QVarRef *vars,unsigned nVars,unsigned pflags
 					if (lx!=LX_RPR) throw SY_MISRPR;
 				}
 			} else {
-				// add here named params, e.g. :afy:request
-				if (ops.top().lx!=LX_FILTER) throw SY_SYNTAX;
-				switch (lx) {
-				case OP_MIN: vv.set((unsigned)STORE_MIN_ELEMENT); break;
-				case OP_MAX: vv.set((unsigned)STORE_MAX_ELEMENT); break;
-				case OP_SUM: vv.set((unsigned)STORE_SUM_COLLECTION); break;
-				case OP_AVG: vv.set((unsigned)STORE_AVG_COLLECTION); break;
-				case OP_CONCAT: vv.set((unsigned)STORE_CONCAT_COLLECTION); break;
-				case LX_IDENT:
-					if (v.type==VT_STRING) {
-						if (v.length==sizeof(FIRST_S)-1 && cmpncase(v.str,FIRST_S,sizeof(FIRST_S)-1)) {vv.set((unsigned)STORE_FIRST_ELEMENT); break;}
-						if (v.length==sizeof(LAST_S)-1 && cmpncase(v.str,LAST_S,sizeof(LAST_S)-1)) {vv.set((unsigned)STORE_LAST_ELEMENT); break;}
+				bool fSpec=false;
+				if (ops.top().lx==LX_FILTER) {
+					fSpec=true;
+					switch (lx) {
+					case OP_MIN: vv.set((unsigned)STORE_MIN_ELEMENT); break;
+					case OP_MAX: vv.set((unsigned)STORE_MAX_ELEMENT); break;
+					case OP_SUM: vv.set((unsigned)STORE_SUM_COLLECTION); break;
+					case OP_AVG: vv.set((unsigned)STORE_AVG_COLLECTION); break;
+					case OP_CONCAT: vv.set((unsigned)STORE_CONCAT_COLLECTION); break;
+					case LX_IDENT:
+						if (v.type==VT_STRING) {
+							if (v.length==sizeof(FIRST_S)-1 && cmpncase(v.str,FIRST_S,sizeof(FIRST_S)-1)) {vv.set((unsigned)STORE_FIRST_ELEMENT); break;}
+							if (v.length==sizeof(LAST_S)-1 && cmpncase(v.str,LAST_S,sizeof(LAST_S)-1)) {vv.set((unsigned)STORE_LAST_ELEMENT); break;}
+						}
+					default: fSpec=false; break;
 					}
-				default: throw SY_SYNTAX;
+					if (fSpec && (nextLex=lex())!=LX_RBR) throw SY_MISRBR;
 				}
-				if ((nextLex=lex())!=LX_RBR) throw SY_MISRBR;
+				if (!fSpec) {if (lx!=LX_IDENT) throw SY_MISIDN; mapURI(); vv.setParam(0); vv.refV.id=v.uid; vv.length=1;}
 			}
 			oprs.push(vv); est=1; continue;
 		case LX_LBR:
@@ -2891,8 +2904,10 @@ TLx SInCtx::parseOrderOrGroup(Stmt *stmt,QVarID var,Value *os,unsigned nO)
 {
 	if (lex()!=LX_KEYW || v.op!=KW_BY) throw SY_MISBY; assert(stmt!=NULL);
 	DynArray<OrderSeg> segs((MemAlloc*)ses); TLx lx; RC rc=RC_OK;
+	QVarRef qr,*pq=NULL; unsigned nVars=0; qr.var=var!=INVALID_QVAR_ID?stmt->findVar(var):stmt->top;
+	if (qr.var!=NULL) {if (qr.var->type<=QRY_FULL_OUTER_JOIN) {pq=((JoinVar*)qr.var)->vars; nVars=((JoinVar*)qr.var)->nVars;} else {pq=&qr; nVars=1;}}
 	do {
-		Value w; parse(w,NULL,0,PRS_COPYV);	// vars from Transform?
+		Value w; parse(w,pq,nVars,PRS_COPYV);
 		OrderSeg &sg=segs.add(); sg.expr=NULL; sg.pid=STORE_INVALID_URIID; sg.flags=0; sg.var=0; sg.lPrefix=0;
 		if (w.type==VT_URIID) sg.pid=w.uid;
 		else if (w.type==VT_VARREF && w.length==1) {sg.pid=w.refV.id; sg.var=w.refV.refN;}
@@ -2913,7 +2928,7 @@ TLx SInCtx::parseOrderOrGroup(Stmt *stmt,QVarID var,Value *os,unsigned nO)
 			ExprNode *having=NULL;
 			if (lx==LX_KEYW && v.op==KW_HAVING) {
 				const bool fHave=(mode&SIM_HAVING)!=0; mode|=SIM_HAVING;
-				having=parseCondition(NULL,0); lx=lex(); if (!fHave) mode&=~SIM_HAVING;
+				having=parseCondition(pq,nVars); lx=lex(); if (!fHave) mode&=~SIM_HAVING;
 				Value w; w.set(having); rc=replaceGroupExprs(w,&segs[0],segs);
 				assert(w.type==VT_EXPRTREE); having=(ExprNode*)w.exprt;
 			}
@@ -2933,8 +2948,7 @@ QVarID SInCtx::parseSource(Stmt *stmt,TLx lx,bool *pF,bool fSelect)
 	switch (lx) {
 	case LX_IDENT:
 		if (v.type==VT_URIID && (v.meta&META_PROP_OBJECT)!=0) {
-			w.set(PIN::noPID);
-			if ((rc=ses->getStore()->namedMgr->getNamedPID(v.uid,w.id))!=RC_OK ||
+			if ((rc=ses->getStore()->namedMgr->getNamedPID(v.uid,w))!=RC_OK ||
 				(var=stmt->addVariable())!=INVALID_QVAR_ID && (rc=stmt->setExpr(var,w))!=RC_OK) throw rc;
 		} else {
 			parseClasses(css); 
@@ -3185,6 +3199,14 @@ void SInCtx::parseMeta(PropertyID pid,uint8_t& meta)
 	}
 }
 
+void SInCtx::parseValue(Value& w,PropertyID pid,uint8_t meta)
+{
+	parse(w); RC rc;
+	if (w.type==VT_VARREF && (w.refV.flags&VAR_TYPE_MASK)==VAR_NAMED && (rc=ExprNode::forceExpr(w,ma))!=RC_OK ||
+		(w.flags&HEAP_TYPE_MASK)!=ma->getAType() && (rc=copyV(w,w,ma))!=RC_OK) throw rc;
+	w.setPropID(pid); w.setMeta(meta);
+}
+
 inline bool checkProp(URIID uid,bool fNew)
 {
 	if (uid<MAX_BUILTIN_URIID) switch (uid) {
@@ -3195,14 +3217,13 @@ inline bool checkProp(URIID uid,bool fNew)
 	return true;
 }
 
-void SInCtx::parseInsert(Stmt *&stmt,DynArray<Value,10>& with)
+void SInCtx::parseInsert(Stmt *&stmt)
 {
 	SynErr sy=SY_ALL; RC rc=RC_OK; Value w; bool fFreeTIDs=false; TLx lx;
-	DynArray<Value,40> vals(ma); DynArray<IntoClass> classes(ma); DynArray<PINDscr,100> *pins=NULL;
+	DynArray<Value,40> vals(ma); DynArray<IntoClass> devs(ma); DynArray<PINDscr,100> *pins=NULL;
 	unsigned msave=mode&(SIM_DML_EXPR|SIM_INSERT); mode|=SIM_DML_EXPR|SIM_INSERT;
 	try {
 		if ((stmt=new(ma) Stmt(0,ma,STMT_INSERT,txi))==NULL) throw RC_NOMEM;
-		if (with!=0) {uint32_t nWith=0; Value *pw=with.get(nWith); stmt->with=Values(pw,nWith,true);}
 		if ((lx=lex())==LX_IDENT && msave!=0 && v.type==VT_STRING && v.length==sizeof(PART_S)-1 && cmpncase(v.str,PART_S,sizeof(PART_S)-1))
 			{stmt->mode|=MODE_PART; lx=lex();}
 		if (lx==LX_IDENT && v.type==VT_STRING && v.length==sizeof(INTO_S)-1 && cmpncase(v.str,INTO_S,sizeof(INTO_S)-1)) {
@@ -3212,9 +3233,9 @@ void SInCtx::parseInsert(Stmt *&stmt,DynArray<Value,10>& with)
 					if (v.length==sizeof(UNIQUE_S)-1 && cmpncase(v.str,UNIQUE_S,sizeof(UNIQUE_S)-1)) {ic.flags|=IC_UNIQUE; lx=lex();}
 					else if (v.length==sizeof(IDEMPOTENT_S)-1 && cmpncase(v.str,IDEMPOTENT_S,sizeof(IDEMPOTENT_S)-1)) {ic.flags|=IC_IDEMPOTENT; lx=lex();}
 				}
-				if ((rc=classes+=ic)!=RC_OK) throw rc;
+				if ((rc=devs+=ic)!=RC_OK) throw rc;
 			} while (lx==LX_COMMA);
-			stmt->into=classes.get(stmt->nInto);
+			stmt->into=devs.get(stmt->nInto);
 		}
 		if (lx==LX_IDENT && v.type==VT_STRING && v.length==sizeof(OPTIONS_S)-1 && cmpncase(v.str,OPTIONS_S,sizeof(OPTIONS_S)-1)) {
 			if (lex()!=LX_LPR) throw SY_MISLPR;
@@ -3251,10 +3272,7 @@ void SInCtx::parseInsert(Stmt *&stmt,DynArray<Value,10>& with)
 				if (lex()!=LX_LPR) throw SY_MISLPR; unsigned i=0;
 				do {
 					if (i>=props) {sy=SY_MANYARG; break;}
-					if ((lx=lex())!=LX_KEYW || v.op!=KW_NULL) {
-						nextLex=lx; parse(w); w.setPropID(props[i].property); w.setMeta(props[i].meta);
-						if ((w.flags&HEAP_TYPE_MASK)==ma->getAType() || (rc=copyV(w,w,ma))==RC_OK) rc=vals+=w;
-					}
+					if ((lx=lex())!=LX_KEYW || v.op!=KW_NULL) {nextLex=lx; parseValue(w,props[i].property,props[i].meta); rc=vals+=w;}
 					i++;
 				} while (rc==RC_OK && (lx=lex())==LX_COMMA);
 				if (rc!=RC_OK || sy!=SY_ALL) break;
@@ -3278,11 +3296,7 @@ void SInCtx::parseInsert(Stmt *&stmt,DynArray<Value,10>& with)
 						mapURI(); assert(v.type==VT_URIID); URIID uid=v.uid; uint8_t meta=0;
 						if (!checkProp(uid,true)) {sy=SY_INVPROP; break;}
 						parseMeta(uid,meta); if (lex()!=OP_EQ) {sy=SY_MISEQ; break;}
-						if ((lx=lex())!=LX_KEYW || v.op!=KW_NULL) {
-							nextLex=lx; parse(w);
-							if ((w.flags&HEAP_TYPE_MASK)!=ma->getAType() && (rc=copyV(w,w,ma))!=RC_OK) break;
-							w.setPropID(uid); w.meta|=meta; if ((rc=vals+=w)!=RC_OK) break;
-						}
+						if ((lx=lex())!=LX_KEYW || v.op!=KW_NULL) {nextLex=lx; parseValue(w,uid,meta); if ((rc=vals+=w)!=RC_OK) break;}
 					} else if (vals!=0) {sy=SY_MISPROP; break;}
 					else if (lx==LX_SEMI) {nextLex=lx; break;}
 					else if (lx!=LX_EOE) {sy=SY_MISPROP; break;}
@@ -3328,7 +3342,6 @@ void SInCtx::parseInsert(Stmt *&stmt,DynArray<Value,10>& with)
 	} catch (...) {
 		if (stmt!=NULL) stmt->destroy();
 		for (unsigned i=0; i<vals; i++) freeV(vals[i]);
-		for (unsigned i=0; i<with; i++) freeV(with[i]);
 		if (pins!=NULL) {
 			for (unsigned i=0; i<*pins; i++) freeV(*(Value**)&(*pins)[i].vals,(*pins)[i].nValues,ma);
 			pins->~DynArray<PINDscr,100>(); ma->free(pins);
@@ -3339,7 +3352,7 @@ void SInCtx::parseInsert(Stmt *&stmt,DynArray<Value,10>& with)
 	}
 }
 
-void SInCtx::parseUpdate(Stmt *&stmt,DynArray<Value,10>& with)
+void SInCtx::parseUpdate(Stmt *&stmt)
 {
 	uint8_t op; bool fOnePin=false; unsigned md=0,msave=mode&(SIM_DML_EXPR|SIM_INSERT),nBI;
 	SynErr sy=SY_ALL; RC rc=RC_OK; Value w; ElementID eid,eid2; QVarID var; DynArray<Value,40> vals(ma); TLx lx;
@@ -3347,28 +3360,21 @@ void SInCtx::parseUpdate(Stmt *&stmt,DynArray<Value,10>& with)
 	if ((lx=lex())==LX_IDENT && v.type==VT_STRING && v.length==sizeof(RAW_S)-1 && cmpncase(v.str,RAW_S,sizeof(RAW_S)-1)) {md=MODE_RAW; lx=lex();}
 	if (lx==LX_KEYW) throw SY_SYNTAX;
 	if ((stmt=new(ma) Stmt(md,ma,STMT_UPDATE,txi))==NULL) throw RC_NOMEM;
-	if (with!=0) {uint32_t nWith=0; Value *pw=with.get(nWith); stmt->with=Values(pw,nWith,true);}
 	try {var=parseSource(stmt,lx,&fOnePin,false);} catch (...) {stmt->destroy(); throw;} 
-	mode|=SIM_DML_EXPR; lx=lex(); nBI=0;
-	while (rc==RC_OK && sy==SY_ALL && lx==LX_KEYW) {
+	mode|=SIM_DML_EXPR; nBI=0;
+	if ((lx=lex())!=LX_KEYW || v.op!=KW_SET&&v.op!=KW_ADD&&v.op!=KW_DELETE&&v.op!=KW_RENAME&&v.op!=KW_EDIT&&v.op!=KW_MOVE) throw SY_SYNTAX;
+	do {
 		switch (v.op) {
 		case KW_SET: op=OP_SET; break;
 		case KW_ADD: op=OP_ADD; break;
 		case KW_DELETE: op=OP_DELETE; break;
 		case KW_RENAME: op=OP_RENAME; break;
-		case KW_EDIT: op=OP_EDIT; break;
 		case KW_MOVE: op=OP_MOVE; break;
 		default: op=0xFF; break;
 		}
 		if (op==0xFF) break;
 		do {
-			bool fSubstr=false;
-			if ((lx=lex())!=LX_IDENT) {
-				if (op!=OP_EDIT || lx!=OP_SUBSTR) {sy=SY_MISPROP; break;}
-				if (lex()!=LX_LPR) {sy=SY_MISLPR; break;}
-				if (lex()!=LX_IDENT) {sy=SY_MISPROP; break;}
-				fSubstr=true;
-			}
+			if ((lx=lex())!=LX_IDENT) {sy=SY_MISPROP; break;}
 			mapURI(); assert(v.type==VT_URIID);
 			URIID uid=v.uid; if (!checkProp(v.uid,false)) {sy=SY_INVPROP; break;}
 			if (uid<=MAX_BUILTIN_URIID) nBI++;
@@ -3382,59 +3388,6 @@ void SInCtx::parseUpdate(Stmt *&stmt,DynArray<Value,10>& with)
 			}
 			if (lx==LX_LPR && (op==OP_SET || op==OP_ADD || op==OP_ADD_BEFORE)) {nextLex=lx; parseMeta(uid,meta); lx=lex();}
 			switch (op) {
-			case OP_EDIT:
-				if (fSubstr) {
-					StrEdit se; se.bstr=NULL; se.shift=0; se.length=0;
-					if (lx!=LX_COMMA) sy=SY_MISCOM;
-					else if ((lx=lex())==OP_MUL) {
-						se.shift=~0ULL; if (lex()!=LX_RPR) sy=SY_MISRPR;
-					} else if (lx==LX_CON && isInteger((ValueType)v.type)) {
-						switch (v.type) {
-						case VT_INT: se.shift=v.i; break;
-						case VT_UINT: se.shift=v.ui; break;
-						case VT_INT64: case VT_UINT64: se.shift=v.ui64; break;
-						}
-						if ((lx=lex())==LX_RPR) {
-							nextLex=lx; se.length=(uint32_t)se.shift; se.shift=0;
-						} else if (lx==LX_COMMA) {
-							if (lex()!=LX_CON || v.type!=VT_INT && v.type!=VT_UINT) sy=SY_MISCON;
-							else {se.length=v.ui; if (lex()!=LX_RPR) sy=SY_MISRPR;}
-						} else sy=SY_MISCOM;
-					} else sy=SY_MISCON;
-					if (sy==SY_ALL) {
-						if (lex()!=OP_EQ) sy=SY_MISEQ;
-						else if (lex()!=LX_CON || !isString((ValueType)v.type)) sy=SY_MISCON;
-						else if ((v.flags&HEAP_TYPE_MASK)==ma->getAType() || (rc=copyV(v,v,ma))==RC_OK)
-							{se.str=v.str; w.edit=se; w.type=v.type; w.length=v.length; w.flags=v.flags; setHT(v);}
-					}
-				} else if (lx==OP_EQ) {
-					if (lex()!=LX_LCBR) {sy=SY_MISLCBR; break;}
-					uint64_t bits=0,mask=0;
-					do {
-						bool fNot=false;
-						if ((lx=lex())==OP_LNOT) {fNot=true; lx=lex();}
-						if (lx==LX_CON) {
-							if (isInteger((ValueType)v.type)) {
-								mask|=v.type==VT_INT||v.type==VT_UINT?v.ui:v.ui64;
-								if (!fNot) bits|=v.type==VT_INT||v.type==VT_UINT?v.ui:v.ui64;
-							} else if (v.type==VT_ENUM) {
-								mask|=v.enu.eltid; if (!fNot) bits|=v.enu.eltid;
-							} else {rc=RC_TYPE; break;}
-						} else if (uid==PROP_SPEC_SELF && lx==LX_IDENT && v.type==VT_STRING) {
-							for (unsigned k=0; ;k++)
-								if (k>=sizeof(PINoptions)/sizeof(PINoptions[0])) {sy=SY_SYNTAX; break;}
-								else if (v.length==PINoptions[k].ls.l && cmpncase(v.str,PINoptions[k].ls.s,v.length))
-									{mask|=PINoptions[k].flg; if (!fNot) bits|=PINoptions[k].flg; break;}
-							if (sy!=SY_ALL) break;
-						} else {sy=SY_MISCON; break;}
-					} while ((lx=lex())==LX_COMMA);
-					if (sy==SY_ALL && rc==RC_OK) {
-						if (lx!=LX_RCBR) sy=SY_MISRCBR;
-						else if ((mask&0xFFFFFFFF00000000ULL)!=0) w.setEdit(bits,mask);
-						else w.setEdit((uint32_t)bits,(uint32_t)mask);
-					}
-				} else sy=SY_MISEQ;
-				break;
 			case OP_DELETE:
 				nextLex=lx; break;
 			case OP_RENAME: 
@@ -3452,9 +3405,23 @@ void SInCtx::parseUpdate(Stmt *&stmt,DynArray<Value,10>& with)
 				if (lx!=OP_EQ) {sy=SY_MISEQ; break;}
 			case OP_SET:
 				if (lx!=OP_EQ && ((eop=lx)<OP_FIRST_EXPR || lx>OP_RSHIFT && (eop=OP_CONCAT,lx)!=LX_CONCAT && (eop=OP_RSHIFT,meta|=META_PROP_UNSIGNED,lx)!=LX_URSHIFT || lex()!=OP_EQ)) {sy=SY_MISEQ; break;}
-				if ((lx=lex())==LX_KEYW && v.op==KW_NULL && eop==OP_SET) eop=OP_DELETE;
+				if (uid==PROP_SPEC_SELF) {
+					if (eop!=OP_OR && eop!=OP_AND) {rc=RC_INVOP; break;}
+					bool fNot=false,fBr=false; unsigned bits=0;
+					if ((lx=lex())==OP_NOT) {if (eop!=OP_AND) {sy=SY_SYNTAX; break;} fNot=true; lx=lex();}
+					if (lx==LX_LCBR) {fBr=true; lx=lex();}
+					do {
+						if (lx!=LX_IDENT || v.type!=VT_STRING) {sy=SY_MISIDN; break;}
+						for (unsigned k=0; ;k++)
+							if (k>=sizeof(PINoptions)/sizeof(PINoptions[0])) {sy=SY_SYNTAX; break;}
+							else if (v.length==PINoptions[k].ls.l && cmpncase(v.str,PINoptions[k].ls.s,v.length)) {bits|=PINoptions[k].flg; break;}
+						if (sy!=SY_ALL) break;
+					} while (sy==SY_ALL && fBr && (lx=lex())==LX_COMMA);
+					if (sy==SY_ALL && fBr && lx!=LX_RCBR) sy=SY_MISRCBR;
+					if (fNot) bits=~bits; w.set(bits);
+				} else if ((lx=lex())==LX_KEYW && v.op==KW_NULL && eop==OP_SET) eop=OP_DELETE;
 				else {
-					nextLex=lx; parse(w); if ((w.flags&HEAP_TYPE_MASK)!=ma->getAType()) rc=copyV(w,w,ma);
+					nextLex=lx; parseValue(w,uid,meta);
 					if (w.type==VT_EXPRTREE) {
 						ExprNode *et=(ExprNode*)w.exprt;
 						if (eop==OP_SET && et->op>=OP_FIRST_EXPR && et->op<=OP_CONCAT && et->nops==2) {
@@ -3463,13 +3430,12 @@ void SInCtx::parseUpdate(Stmt *&stmt,DynArray<Value,10>& with)
 								{eop=et->op; w=et->operands[1]; setHT(et->operands[1]); et->destroy();}
 						}
 					}
-					if (eop==OP_CONCAT && isString((ValueType)w.type)) {eop=OP_EDIT; w.edit.shift=~0ULL; w.edit.length=0;}
 				}
 				break;
 			}
 			w.property=uid; w.op=eop; w.eid=eid; w.meta|=meta;
 		} while (sy==SY_ALL && rc==RC_OK && (rc=vals+=w)==RC_OK && (lx=lex())==LX_COMMA);
-	}
+	} while (rc==RC_OK && sy==SY_ALL && lx==LX_KEYW);
 	mode=mode&~SIM_DML_EXPR|msave;
 	if (rc==RC_OK && sy==SY_ALL) {
 		nextLex=lx; uint32_t nVals=0; Value *pv=vals.get(nVals); TIMESTAMP ts=0ULL;
@@ -3489,16 +3455,14 @@ void SInCtx::parseUpdate(Stmt *&stmt,DynArray<Value,10>& with)
 		} catch (...) {stmt->destroy(); throw;}
 	} else {
 		for (unsigned i=0; i<vals; i++) freeV(vals[i]);
-		for (unsigned i=0; i<with; i++) freeV(with[i]);
 	}
 }
 
-void SInCtx::parseDelete(Stmt *&stmt,KW kw,DynArray<Value,10>& with)
+void SInCtx::parseDelete(Stmt *&stmt,KW kw)
 {
 	unsigned md=kw==KW_PURGE?MODE_PURGE:0; TLx lx; RC rc; QVarID var;
 	if ((stmt=new(ma) Stmt(md,ma,kw==KW_UNDELETE?STMT_UNDELETE:STMT_DELETE,txi))==NULL) throw RC_NOMEM;
 	try {
-		if (with!=0) {uint32_t nWith=0; Value *pw=with.get(nWith); stmt->with=Values(pw,nWith,true);}
 		bool fLCBR=false;
 		if ((lx=lex())==LX_LCBR) {fLCBR=true; if ((lx=lex())!=LX_CON || v.type!=VT_REFID) {stmt->destroy(); throw SY_MISPID;}}
 		if (lx==LX_CON && v.type==VT_REFID) {
@@ -3518,9 +3482,9 @@ void SInCtx::parseDelete(Stmt *&stmt,KW kw,DynArray<Value,10>& with)
 	}
 }
 
-void SInCtx::parseCreate(Stmt *&stmt,DynArray<Value,10>& with)
+void SInCtx::parseCreate(Stmt *&stmt)
 {
-	SynErr sy=SY_ALL; RC rc; Value w; DynArray<Value,40> vals(ma); TLx lx;
+	SynErr sy=SY_ALL; RC rc; Value w; DynArray<Value,40> vals(ma); TLx lx; TIMESTAMP ts=0ULL;
 	unsigned md=0,msave=mode&(SIM_DML_EXPR|SIM_INSERT); mode|=SIM_DML_EXPR|SIM_INSERT;
 	try {
 		uint8_t flags=0; CRT_STMT sty; Expr *exp;
@@ -3534,12 +3498,18 @@ void SInCtx::parseCreate(Stmt *&stmt,DynArray<Value,10>& with)
 				{sty=createStmt[i].sty; flags=createStmt[i].flags; break;}
 		}
 		if (sty==CRT_FSM) {parseFSM(stmt); mode=mode&~(SIM_DML_EXPR|SIM_INSERT)|msave; return;}
-		if (sty==CRT_EVENT) if ((lx=lex())==LX_IDENT && v.type==VT_STRING && v.length==sizeof(HANDLER_S)-1 &&
-			cmpncase(v.str,HANDLER_S,sizeof(HANDLER_S)-1)) sty=CRT_HANDLER; else nextLex=lx;
-		if (lex()!=LX_IDENT) throw SY_MISIDN; mapURI(true); v.setPropID(PROP_SPEC_OBJID); v.setOp(OP_SET); vals+=v;
+		if (sty==CRT_EVENT) {
+			if ((lx=lex())==LX_IDENT && v.type==VT_STRING && v.length==sizeof(HANDLER_S)-1 &&
+				cmpncase(v.str,HANDLER_S,sizeof(HANDLER_S)-1)) sty=CRT_HANDLER; else nextLex=lx;
+		} else if (sty==CRT_COMM && v.length==sizeof(COMMUNICATION_S)-1) {
+			if ((lx=lex())!=LX_IDENT || v.type!=VT_STRING || v.length!=sizeof(PIPELINE_S)-1 ||
+				!cmpncase(v.str,PIPELINE_S,sizeof(PIPELINE_S)-1)) nextLex=lx;
+		}
+		if ((lx=lex())==LX_IDENT) {mapURI(true); v.setPropID(PROP_SPEC_OBJID); v.setOp(OP_SET); vals+=v;} 
+		else if (sty==CRT_COMM) nextLex=lx; else throw SY_MISIDN;
 		switch (sty) {
 		default: break;
-		case CRT_CLASS: case CRT_EVENT: md|=MODE_CLASS; break;
+		case CRT_CLASS: case CRT_EVENT: md|=MODE_DEVENT; break;
 		case CRT_TIMER:
 			if (lex()!=LX_CON) throw SY_MISCON;
 			else if (v.type!=VT_INTERVAL) throw RC_TYPE;
@@ -3559,13 +3529,11 @@ void SInCtx::parseCreate(Stmt *&stmt,DynArray<Value,10>& with)
 		case CRT_CLASS: case CRT_EVENT:
 			parseQuery(stmt); w.set(stmt); w.setPropID(PROP_SPEC_PREDICATE); break;
 		case CRT_LISTENER:
-			if ((lx=lex())==LX_CON) {
-				if (v.type==VT_STRING) mapURI(); else if (v.type!=VT_URIID) throw RC_TYPE; w=v;
-			} else if (lx==LX_LCBR) {
-				nextLex=lx; parse(w); if (w.type!=VT_COLLECTION && w.type!=VT_STRUCT) {freeV(w); throw RC_TYPE;}
-				if ((w.flags&HEAP_TYPE_MASK)!=ma->getAType() && (rc=copyV(w,w,ma))!=RC_OK) throw rc;
-			} else throw SY_MISLCBR;
-			w.setPropID(PROP_SPEC_LISTEN); break;
+		case CRT_COMM:
+			parse(w); w.setPropID(sty==CRT_LISTENER?PROP_SPEC_LISTEN:PROP_SPEC_SERVICE);
+			if ((rc=ses->checkBuiltinProp(w,ts,true))!=RC_OK) {freeV(w); throw rc;}
+			if ((w.flags&HEAP_TYPE_MASK)!=ma->getAType() && (rc=copyV(w,w,ma))!=RC_OK) throw rc;
+			break;
 		case CRT_LOADER:
 			if ((lx=lex())!=LX_CON) throw SY_MISCON; if (v.type!=VT_STRING) throw RC_TYPE; w=v;
 			if ((w.flags&HEAP_TYPE_MASK)!=ma->getAType() && (rc=copyV(w,w,ma))!=RC_OK) throw rc;
@@ -3602,23 +3570,16 @@ void SInCtx::parseCreate(Stmt *&stmt,DynArray<Value,10>& with)
 			if ((lx=lex())!=LX_IDENT) {if (vals!=0) sy=SY_MISPROP; else if (lx!=LX_EOE) {if (lx==LX_SEMI) nextLex=lx; else sy=SY_MISPROP;} break;}
 			mapURI(); assert(v.type==VT_URIID); URIID uid=v.uid; uint8_t meta=0; parseMeta(uid,meta);
 			if (lex()!=OP_EQ) {sy=SY_MISEQ; break;}
-			if ((lx=lex())!=LX_KEYW || v.op!=KW_NULL) {
-				nextLex=lx; parse(w);
-				if ((w.flags&HEAP_TYPE_MASK)!=ma->getAType() && (rc=copyV(w,w,ma))!=RC_OK) break;
-				w.setPropID(uid); w.setMeta(meta); if ((rc=vals+=w)!=RC_OK) break;
-			}
+			if ((lx=lex())!=LX_KEYW || v.op!=KW_NULL) {nextLex=lx; parseValue(w,uid,meta); if ((rc=vals+=w)!=RC_OK) break;}
 			if ((lx=lex())!=LX_COMMA) {nextLex=lx; break;}
 		}
 		mode=mode&~(SIM_DML_EXPR|SIM_INSERT)|msave; if (rc!=RC_OK) throw rc; if (sy!=SY_ALL) throw sy;
 		uint32_t nVals=0; const Value *pv=vals.get(nVals);
 		if (nVals!=0 && (rc=ses->normalize(pv,nVals,0,ses!=NULL?ses->getStore()->getPrefix():0,ma,true))!=RC_OK) {freeV((Value*)pv,nVals,ma); throw rc;}
-		if ((rc=(stmt=new(ma) Stmt(md,ma,STMT_INSERT,txi))==NULL?RC_NOMEM:stmt->setValuesNoCopy((Value*)pv,nVals))==RC_OK && with!=0)
-			{uint32_t nWith=0; Value *pw=with.get(nWith); stmt->with=Values(pw,nWith,true);}
-		if (rc!=RC_OK) {freeV((Value*)pv,nVals,ma); throw rc;}
+		if ((rc=(stmt=new(ma) Stmt(md,ma,STMT_INSERT,txi))==NULL?RC_NOMEM:stmt->setValuesNoCopy((Value*)pv,nVals))!=RC_OK) {freeV((Value*)pv,nVals,ma); throw rc;}
 	} catch (...) {
 		if (stmt!=NULL) {stmt->destroy(); stmt=NULL;}
 		for (unsigned i=0; i<vals; i++) freeV(vals[i]);
-		for (unsigned i=0; i<with; i++) freeV(with[i]);
 		mode=mode&~(SIM_DML_EXPR|SIM_INSERT)|msave;
 		throw;
 	}
@@ -3775,11 +3736,11 @@ void SInCtx::parseDrop(Stmt *&stmt)
 		if (lx!=LX_IDENT || v.type!=VT_STRING) throw SY_SYNTAX;
 		if (v.length==sizeof(CLASS_S)-1 && cmpncase(v.str,CLASS_S,sizeof(CLASS_S)-1) || v.length==sizeof(EVENT_S)-1 && cmpncase(v.str,EVENT_S,sizeof(EVENT_S)-1)) {
 			if (lex()!=LX_IDENT) throw SY_MISIDN;
-			mapURI(true); Class *cls;
-			if ((cls=ses->getStore()->classMgr->getClass(v.uid))==NULL) rc=RC_NOTFOUND;
+			mapURI(true); DataEvent *dev;
+			if ((dev=ses->getStore()->classMgr->getDataEvent(v.uid))==NULL) rc=RC_NOTFOUND;
 			else {
-				const PID id=cls->getPID(); cls->release();
-				if ((stmt=new(ma) Stmt(MODE_PURGE|MODE_CLASS,ma,STMT_DELETE,txi))==NULL) throw RC_NOMEM;
+				const PID id=dev->getPID(); dev->release();
+				if ((stmt=new(ma) Stmt(MODE_PURGE|MODE_DEVENT,ma,STMT_DELETE,txi))==NULL) throw RC_NOMEM;
 				rc=(var=stmt->addVariable())!=INVALID_QVAR_ID?stmt->setPIDs(var,&id,1):RC_NOMEM;
 			}
 		} else if (v.length==sizeof(TIMER_S)-1 && cmpncase(v.str,TIMER_S,sizeof(TIMER_S)-1)) {
@@ -3787,11 +3748,6 @@ void SInCtx::parseDrop(Stmt *&stmt)
 		} else if (v.length==sizeof(LISTENER_S)-1 && cmpncase(v.str,LISTENER_S,sizeof(LISTENER_S)-1)) {
 			//...
 		} else throw SY_SYNTAX;
-	} else switch (v.op) {
-	default: throw SY_SYNTAX;
-	case KW_USING:
-		//???? MODE_PURGE
-		break;
 	}
 }
 
@@ -3908,69 +3864,75 @@ Stmt *SInCtx::parseStmt()
 {
 	Stmt *stmt=NULL; uint8_t op; unsigned md,msave=mode&(SIM_DML_EXPR|SIM_INSERT);
 	SynErr sy=SY_ALL; RC rc=RC_OK; Value w; DynArray<Value,10> with(ma);
-	for (TLx lx;;) {
-		switch (lx=lex()) {
-		default: throw SY_SYNTAX;
-		case LX_EOE: break;
-		case LX_LPR: v.op=KW_SELECT;
-		case LX_KEYW:
-			md=0;
-			switch (op=v.op) {
-			case KW_SELECT:
-				nextLex=lx; parseQuery(stmt,false); 
-				if (with!=0) {uint32_t nWith=0; Value *pw=with.get(nWith); stmt->with=Values(pw,nWith,true);}
-				break;
-			case KW_INSERT:
-				parseInsert(stmt,with); break;
-			case KW_UPDATE:
-				parseUpdate(stmt,with); break;
-			case KW_PURGE: case KW_DELETE: case KW_UNDELETE:
-				parseDelete(stmt,(KW)op,with); break;
-			case KW_CREATE:
-				parseCreate(stmt,with); break;
-			case KW_DROP:
-				parseDrop(stmt); break;
-			case KW_START:
-				parseStart(stmt); break;
-			case KW_COMMIT: case KW_ROLLBACK:
-				if ((lx=lex())!=LX_KEYW || v.op!=KW_ALL) nextLex=lx; else md=MODE_ALL;
-				if ((stmt=new(ma) Stmt(md,ma,op==KW_COMMIT?STMT_COMMIT:STMT_ROLLBACK))==NULL) throw RC_NOMEM;
-				break;
-			case KW_SET:
-				parseSet(stmt);
-				if ((lx=lex())==LX_SEMI) continue;
-				nextLex=lx; break;
-			case KW_WITH:
-				assert(with==0);
-				for (mode&=~(SIM_DML_EXPR|SIM_INSERT);;) {
-					if ((lx=lex())!=LX_IDENT) {if (with!=0) sy=SY_MISPROP; else if (lx!=LX_EOE) {if (lx==LX_SEMI) nextLex=lx; else sy=SY_MISPROP;} break;}
-					mapURI(); assert(v.type==VT_URIID); URIID uid=v.uid; uint8_t meta=0; parseMeta(uid,meta);
-					if (lex()!=OP_EQ) {sy=SY_MISEQ; break;}
-					if ((lx=lex())!=LX_KEYW || v.op!=KW_NULL) {
-						nextLex=lx; parse(w);
-						if ((w.flags&HEAP_TYPE_MASK)!=ma->getAType() && (rc=copyV(w,w,ma))!=RC_OK) break;
-						w.setPropID(uid); w.meta=meta; if ((rc=with+=w)!=RC_OK) break;
+	try {
+		for (TLx lx;;) {
+			switch (lx=lex()) {
+			default: throw SY_SYNTAX;
+			case LX_EOE: break;
+			case LX_LPR: v.op=KW_SELECT;
+			case LX_KEYW:
+				switch (op=v.op) {
+				case KW_SELECT:
+					nextLex=lx; parseQuery(stmt,false); break;
+				case KW_INSERT:
+					parseInsert(stmt); break;
+				case KW_UPDATE:
+					parseUpdate(stmt); break;
+				case KW_PURGE: case KW_DELETE: case KW_UNDELETE:
+					parseDelete(stmt,(KW)op); break;
+				case KW_CREATE:
+					parseCreate(stmt); break;
+				case KW_DROP:
+					if (with!=0) throw SY_SYNTAX;
+					parseDrop(stmt); break;
+				case KW_START:
+					if (with!=0) throw SY_SYNTAX;
+					parseStart(stmt); break;
+				case KW_COMMIT: case KW_ROLLBACK:
+					if (with!=0) throw SY_SYNTAX;
+					if ((lx=lex())!=LX_KEYW || v.op!=KW_ALL) {nextLex=lx; md=0;} else md=MODE_ALL;
+					if ((stmt=new(ma) Stmt(md,ma,op==KW_COMMIT?STMT_COMMIT:STMT_ROLLBACK))==NULL) throw RC_NOMEM;
+					break;
+				case KW_SET:
+					if (with!=0) throw SY_SYNTAX;
+					parseSet(stmt);
+					if ((lx=lex())==LX_SEMI) continue;
+					nextLex=lx; break;
+				case KW_WITH:
+					if (with!=0) throw SY_SYNTAX;
+					for (mode&=~(SIM_DML_EXPR|SIM_INSERT);;) {
+						if ((lx=lex())!=LX_IDENT) {if (with!=0) sy=SY_MISPROP; else if (lx!=LX_EOE) {if (lx==LX_SEMI) nextLex=lx; else sy=SY_MISPROP;} break;}
+						mapURI(); assert(v.type==VT_URIID); URIID uid=v.uid; uint8_t meta=0; parseMeta(uid,meta);
+						if (lex()!=OP_EQ) {sy=SY_MISEQ; break;}
+						if ((lx=lex())!=LX_KEYW || v.op!=KW_NULL) {
+							nextLex=lx; parse(w);
+							if ((w.flags&HEAP_TYPE_MASK)!=ma->getAType() && (rc=copyV(w,w,ma))!=RC_OK) break;
+							w.setPropID(uid); w.meta=meta; if ((rc=with+=w)!=RC_OK) break;
+						}
+						if ((lx=lex())!=LX_COMMA) {nextLex=lx; break;}
 					}
-					if ((lx=lex())!=LX_COMMA) {nextLex=lx; break;}
+					mode=mode&~(SIM_DML_EXPR|SIM_INSERT)|msave; if (rc!=RC_OK) throw rc; if (sy!=SY_ALL) throw sy;
+					if ((nextLex=lex())!=LX_KEYW || v.op!=KW_SELECT && v.op!=KW_INSERT && v.op!=KW_UPDATE && v.op!=KW_CREATE && v.op!=KW_DELETE && v.op!=KW_PURGE && v.op!=KW_UNDELETE) throw SY_SYNTAX;
+					continue;
+				case KW_RULE:
+					if (with!=0) throw SY_SYNTAX;
+					parseRule(stmt); break;
+				case KW_IMPORT:
+					if (with!=0) throw SY_SYNTAX;
+					import(); break;
 				}
-				mode=mode&~(SIM_DML_EXPR|SIM_INSERT)|msave; if (rc!=RC_OK) throw rc; if (sy!=SY_ALL) throw sy;
-				if ((nextLex=lex())!=LX_KEYW || v.op!=KW_SELECT && v.op!=KW_INSERT && v.op!=KW_UPDATE && v.op!=KW_CREATE && v.op!=KW_DELETE && v.op!=KW_PURGE && v.op!=KW_UNDELETE) throw SY_SYNTAX;
-				continue;
-			case KW_USING:
-				//???
-				throw RC_INTERNAL;
-				if ((lx=lex())==LX_SEMI) continue;
-				nextLex=lx; break;
-			case KW_RULE:
-				parseRule(stmt); break;
+				break;
 			}
-			break;
+			if (sy!=SY_ALL || rc!=RC_OK) {
+				if (stmt!=NULL) stmt->destroy();
+				if (sy!=SY_ALL) throw sy; else throw rc;
+			}
+			if (stmt!=NULL && with!=0) {uint32_t nWith=0; Value *pw=with.get(nWith); stmt->setWithNoCopy(pw,nWith);}
+			return stmt;
 		}
-		if (sy!=SY_ALL || rc!=RC_OK) {
-			if (stmt!=NULL) stmt->destroy();
-			if (sy!=SY_ALL) throw sy; else throw rc;
-		}
-		return stmt;
+	} catch (...) {
+		for (unsigned i=0; i<with; i++) freeV(with[i]);
+		throw;
 	}
 }
 
@@ -4115,6 +4077,25 @@ void SInCtx::parseManage(IAffinity *&ctx,const StartupParameters *sp)
 		if (rc!=RC_OK) throw rc;
 		if ((lx=lex())!=LX_SEMI && lx!=LX_EOE) throw RC_SYNTAX;
 	}
+}
+
+void SInCtx::import()
+{
+	TLx lx;
+	if (lex()!=LX_CON) throw SY_MISCON; if (v.type!=VT_STRING) throw RC_TYPE;
+	// store package name
+	if ((lx=lex())!=LX_KEYW || v.op!=KW_FROM) {
+		nextLex=lx;
+		// use last segment of package for filename + .psql
+	} else if (lex()!=LX_CON) throw SY_MISCON; 
+	else if (v.type!=VT_STRING) throw RC_TYPE;
+	else {
+		// use filename
+	}
+	// open file
+	// read file parse, don't evaluate until package is found
+	// evaluate package
+	// close file
 }
 
 //---------------------------------------------------------------------------------------------------
@@ -4315,11 +4296,12 @@ RC JSONOut::outPIN(IServiceCtx *ctx,PIN *pin)
 
 RC JSONOut::invoke(IServiceCtx *ctx,const Value& inp,Value& out,unsigned& mode)
 {
-	RC rc=RC_OK;
+	RC rc=RC_OK; bool fA=true;
 	if (out.type!=VT_BSTR || out.bstr==NULL || out.length==0 || (mode&(ISRV_READ|ISRV_MOREOUT))!=0) return RC_INVPARAM;
 	if (ptr==NULL) {
 		Value v; v.set(MIME_JSON,sizeof(MIME_JSON)-1); v.setPropID(PROP_SPEC_CONTENTTYPE); 
 		RC rc=ctx->getCtxPIN()->modify(&v,1); if (rc!=RC_OK) return rc;
+		if ((mode&ISRV_EOM)!=0) {assert(lc==1); lc=0; fA=false;}
 	}
 	if (!inp.isEmpty()) switch (inp.type) {
 	case VT_REF:
@@ -4344,8 +4326,10 @@ RC JSONOut::invoke(IServiceCtx *ctx,const Value& inp,Value& out,unsigned& mode)
 			memcpy((char*)out.str,ptr+sht,l); left-=l; if ((sht+=l)==cLen) sht=cLen=0;
 		}
 		if ((mode&ISRV_EOM)==0) {if (out.length!=0) mode|=ISRV_NEEDFLUSH;}
-		else if (left<2) {mode=mode&~ISRV_EOM|ISRV_NEEDFLUSH;}
-		else {((char*)out.str)[out.length++]=']'; ((char*)out.str)[out.length++]='\n';}
+		else if (fA) {
+			if (left<2) {mode=mode&~ISRV_EOM|ISRV_NEEDFLUSH;}
+			else {((char*)out.str)[out.length++]=']'; ((char*)out.str)[out.length++]='\n';}
+		}
 		out.type=VT_STRING;
 	}
 	return rc;

@@ -25,7 +25,7 @@ Written by Mark Venguerov 2004-2014
 #include "queryprc.h"
 #include "startup.h"
 #include "fsmgr.h"
-#include "classifier.h"
+#include "dataevent.h"
 
 using namespace Afy;
 using namespace AfyKernel;
@@ -357,7 +357,7 @@ RC TxSP::start(unsigned txl,unsigned txf)
 
 //----------------------------------------------------------------------------------------
 
-ClassCreate *OnCommit::getClass()
+CreateDataEvent *OnCommit::getDataEvent()
 {
 	return NULL;
 }

@@ -20,10 +20,10 @@ Written by Mark Venguerov 2004-2014
 
 /**
  * This file contains:
- * 1. Class definitions for implementation of IPIN interface (see affinity.h)
+ * 1. class definitions for implementation of IPIN interface (see affinity.h)
  * 2. struct Value helper functions: copying, conversion, comparison, serialization/deserialization, deallocation
  * 3. measurement units helper functions
- * 4. Common code for path iterator in expressions and PathOp
+ * 4. common code for path iterator in expressions and PathOp
  */
 
 #ifndef _PIN_H_
@@ -123,8 +123,8 @@ public:
 	RC			getPINValue(Value& res) const;
 	RC			getPINValue(Value& res,Session *ses) const;
 	virtual	bool defined(const PropertyID *pids,unsigned nProps) const;
-	bool		testClassMembership(ClassID,const Value *params=NULL,unsigned nParams=0) const;
-	RC			isMemberOf(ClassID *&clss,unsigned& nclss);
+	bool		testDataEvent(DataEventID,const Value *params=NULL,unsigned nParams=0) const;
+	RC			isMemberOf(DataEventID *&devs,unsigned& ndevs);
 	IPIN		*clone(const Value *overwriteValues=NULL,unsigned nOverwriteValues=0,unsigned mode=0);
 	IPIN		*project(const PropertyID *properties,unsigned nProperties,const PropertyID *newProps=NULL,unsigned mode=0);
 	RC			modify(const Value *values,unsigned nValues,unsigned mode,const ElementID *eids,unsigned*);
@@ -187,9 +187,9 @@ public:
 	friend	class	Cursor;
 	friend	class	Stmt;
 	friend	class	Session;
-	friend	class	Classifier;
-	friend	class	ClassPropIndex;
-	friend	struct	ClassResult;
+	friend	class	DataEventMgr;
+	friend	class	DataEventRegistry;
+	friend	struct	DetectedEvents;
 	friend	class	EventMgr;
 	friend	class	NamedMgr;
 	friend	class	NetMgr;
@@ -202,6 +202,7 @@ public:
 	friend	class	LoadService;
 	friend	class	StartListener;
 	friend	class	SOutCtx;
+	friend	class	Expr;
 };
 
 inline bool isRemote(const PID& id) {return id.ident!=STORE_OWNER&&id.ident!=STORE_INVALID_IDENTITY&&id.ident!=STORE_INMEM_IDENTITY||!id.isEmpty()&&ushort(id.pid>>48)!=StoreCtx::get()->storeID;}

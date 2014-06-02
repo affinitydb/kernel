@@ -844,14 +844,14 @@ public:
 /**
  * template for non-blocking concurrent queue of objects
  */
-class AFY_EXP Pool
+class AFY_EXP LIFO
 {
 	IMemAlloc	*const	ma;
 	const unsigned		blockSize;
 	SLIST_HEADER		qfree;
 	SLock				lock;
 public:
-	Pool(IMemAlloc *m=NULL,unsigned blkSize=0x200) : ma(m),blockSize(blkSize) {InitializeSListHead(&qfree);}
+	LIFO(IMemAlloc *m=NULL,unsigned blkSize=0x200) : ma(m),blockSize(blkSize) {InitializeSListHead(&qfree);}
 	void *alloc(size_t s) {
 		SLIST_ENTRY *se=InterlockedPopEntrySList(&qfree); 
 		if (se==NULL) {
@@ -883,7 +883,7 @@ public:
 /**
  * Non-blocking queue implementation
  */
-template<typename T> class Queue
+template<typename T> class FIFO
 {
 #ifndef _NO_DCAS
 	struct QNode;
@@ -906,9 +906,9 @@ template<typename T> class Queue
 	QPtr	head;
 	QPtr	tail;
 	QNode	dummy;
-	Pool	&blocks;
+	LIFO	&blocks;
 public:
-	Queue(Pool &bl) : blocks(bl) {dummy.next.dword=0; head.ptr=tail.ptr=&dummy; head.tag=tail.tag=0;}
+	FIFO(LIFO &bl) : blocks(bl) {dummy.next.dword=0; head.ptr=tail.ptr=&dummy; head.tag=tail.tag=0;}
 	RC enqueue(const T& val) {
 		QNode *node=(QNode*)blocks.alloc(sizeof(QNode));
 		if (node!=NULL) {node->next.dword=0; node->val=val;} else return RC_NOMEM;

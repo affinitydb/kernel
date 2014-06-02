@@ -44,7 +44,7 @@ Written by Mark Venguerov 2004-2014
 #include "parser.h"
 #include "netmgr.h"
 #include "ftindex.h"
-#include "classifier.h"
+#include "dataevent.h"
 #include "blob.h"
 #include "event.h"
 #include "service.h"
@@ -316,7 +316,7 @@ RC openStore(const StartupParameters& params,IAffinity *&aff)
 		ctx->ftMgr=new(ctx) FTIndexMgr(ctx);
 		ctx->queryMgr=new(ctx) QueryPrc(ctx,params.notification);
 		ctx->namedMgr=new(ctx) NamedMgr(ctx);
-		ctx->classMgr=new(ctx) Classifier(ctx,params.shutdownAsyncTimeout);
+		ctx->classMgr=new(ctx) DataEventMgr(ctx,params.shutdownAsyncTimeout);
 		ctx->bigMgr=new(ctx) BigMgr(ctx);
 		ctx->eventMgr=new(ctx) EventMgr(ctx);
 
@@ -468,7 +468,7 @@ RC createStore(const StoreCreationParameters& create,const StartupParameters& pa
 		ctx->ftMgr=new(ctx) FTIndexMgr(ctx);
 		ctx->queryMgr=new(ctx) QueryPrc(ctx,params.notification);
 		ctx->namedMgr=new(ctx) NamedMgr(ctx);
-		ctx->classMgr=new(ctx) Classifier(ctx,params.shutdownAsyncTimeout);
+		ctx->classMgr=new(ctx) DataEventMgr(ctx,params.shutdownAsyncTimeout);
 		ctx->bigMgr=new(ctx) BigMgr(ctx);
 		ctx->eventMgr=new(ctx) EventMgr(ctx);
 		
@@ -622,13 +622,13 @@ RC StoreCtx::shutdown()
 		if ((mode&STARTUP_PRINT_STATS)!=0) {
 			Session *ses=Session::createSession(this);
 			reportTree(theCB->mapRoots[MA_FTINDEX],"FT",this);
-			reportTree(theCB->mapRoots[MA_CLASSINDEX],"Class",this);
+			reportTree(theCB->mapRoots[MA_DATAEVENTINDEX],"DataEvent",this);
 			TreeScan *sc=namedMgr->scan(ses,NULL);
 			if (sc!=NULL) {
 				const void *er; size_t lD;
 				while ((er=sc->nextValue(lD))!=NULL) {
 					PINRef pr(storeID,(const byte*)er);
-					if ((pr.def&PR_U1)!=0 && (pr.u1&PMT_CLASS)!=0 && (pr.def&PR_PID2)!=0) {
+					if ((pr.def&PR_U1)!=0 && (pr.u1&PMT_DATAEVENT)!=0 && (pr.def&PR_PID2)!=0) {
 						const SearchKey& ky=sc->getKey(); assert(ky.type==KT_UINT);
 						URI *uri=NULL; char buf[20]; const char *name=buf; size_t lname;
 						if (ky.v.u>MAX_BUILTIN_URIID || (name=NamedMgr::getBuiltinName((URIID)ky.v.u,lname))==NULL)
@@ -678,7 +678,7 @@ StoreCtx::~StoreCtx()
 {
 	MemAlloc *m=mem; directory.reset();
 	if (bufMgr!=NULL) bufMgr->~BufMgr();
-	if (classMgr!=NULL) classMgr->~Classifier();
+	if (classMgr!=NULL) classMgr->~DataEventMgr();
 	if (namedMgr!=NULL) namedMgr->~NamedMgr();
 	if (fileMgr!=NULL) fileMgr->~FileMgr();
 	if (fsMgr!=NULL) fsMgr->~FSMgr();

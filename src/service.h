@@ -105,6 +105,7 @@ public:
 	ResAlloc			*ra;
 	PIN					*ctxPIN;
 	PINx				*pR;
+	const struct EvalCtx *ectx;
 	BufCache			*bufCache;
 	StackAlloc::SubMark	cmark;
 	class	Cursor		*crs;
@@ -113,7 +114,7 @@ public:
 	const Value			*errInfo;
 private:
 	RC					build(const Value *vals,unsigned nVals);
-	RC					getProcessor(ProcDscr *prc,const Value *vals,unsigned nVals);
+	RC					getProcessor(ProcDscr *prc,const Value *vals,unsigned nVals,char *buf);
 	void				fill(ProcDscr *prc,IService *isrv,const Value *vals,unsigned nVals);
 	void				nextFlush() {for (;;) if (++flushIdx>=nProcs) {flushIdx=~0u; break;} else if ((procs[flushIdx].dscr&(ISRV_NEEDFLUSH|ISRV_DELAYED))!=0) break;}
 	ProcDscr			*flush(Value& inp) {
@@ -132,8 +133,9 @@ private:
 	RC					commitPINs();
 	void				cleanup(bool fDestroy);
 	void				trace(ProcDscr *prc,unsigned st,const Value& inp,const Value &out,bool fAfter=false,RC rc=RC_OK) const;
+	char				*trcb(char *buf) const;
 public:
-	ServiceCtx(Session *s,const Value *par,uint32_t nPar,bool fW,IListener *ls);
+	ServiceCtx(Session *s,const EvalCtx *ect,const Value *par,uint32_t nPar,bool fW,IListener *ls);
 	~ServiceCtx();
 	void				*operator new(size_t s,MemAlloc *ma) {assert(s<SCTX_DEFAULT_SIZE); return ma->malloc(SCTX_DEFAULT_SIZE);}
 	RC					invoke(const Value *vals,unsigned nVals,PINx *pRes) {pR=pRes; return invoke(vals,nVals);}

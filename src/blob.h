@@ -423,7 +423,7 @@ class BigMgr
 	friend	class	Navigator;
 	StoreCtx		*const ctx;
 	BlobReadTab		blobReadTab;
-	Pool			freeBlob;
+	LIFO			freeBlob;
 public:
 	BigMgr(StoreCtx *ct,unsigned blobReadTabSize=DEFAULT_BLOBREADTAB_SIZE);
 	void *operator new(size_t s,StoreCtx *ctx) {void *p=ctx->malloc(s); if (p==NULL) throw RC_NOMEM; return p;}

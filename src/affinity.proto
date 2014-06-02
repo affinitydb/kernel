@@ -80,8 +80,8 @@ enum SpecProp {
 	SP_OBJID		= 27; // ClassID of the class defined by this PIN. Immutable.
 	SP_PREDICATE	= 28; // Predicate of the class defined by this PIN. Must be set at creation. Immutable.
 	SP_COUNT		= 29; // [Not implemented yet.] Number of instances of the class defined by this PIN. Updated automatically. Cannot be set.
-	SP_SUBCLASSES	= 30; // [Not implemented yet.] Collection of classes which are specializations of the class defined by this PIN. Updated automatically. Cannot be set.
-	SP_SUPERCLASSES	= 31; // [Not implemented yet.] Collection of classes which are abstractions of the class defined by this PIN. Updated automatically. Cannot be set.
+	SP_SPECIALIZATION= 30; // [Not implemented yet.] Collection of data events which are specializations of this data event. Updated automatically. Cannot be set.
+	SP_ABSTRACTION	= 31; // [Not implemented yet.] Collection of data events which are abstractions of this data event. Updated automatically. Cannot be set.
 	SP_INDEX_INFO	= 32; // Family index information (number of segments). Immutable.
 	SP_PROPERTIES	= 33; // Properties refered by the class. Immutable.
 	SP_ONENTER		= 34; // Actions associated with class events.
@@ -124,7 +124,7 @@ enum SpecProp {
 }
 
 enum SpecClasses {
-	SC_CLASSES		= 0;	// Class of classes.
+	SC_CLASSES		= 0;	// Class of classes and data events.
 	SC_TIMERS		= 1;	// Class of timers.
 	SC_LISTENERS	= 2;	// Class of listeners.
 	SC_LOADERS		= 3;	// Class of loaders for service libraries.

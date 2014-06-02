@@ -30,6 +30,8 @@ Written by Mark Venguerov 2012-2014
 using namespace	Afy;
 using namespace AfyKernel;
 
+static const char *stackType[]= {"RD", "WR", "SRV", "REQ"};
+
 RC IService::create(IServiceCtx *ctx,uint32_t& dscr,IService::Processor *&ret)
 {
 	return RC_INVOP;
@@ -73,10 +75,10 @@ void IService::Processor::cleanup(IServiceCtx *,bool fDestroying)
 {
 }
 
-ServiceCtx::ServiceCtx(Session *s,const Value *par,uint32_t nPar,bool fW,IListener *ls) 
+ServiceCtx::ServiceCtx(Session *s,const EvalCtx *ect,const Value *par,uint32_t nPar,bool fW,IListener *ls) 
 	: StackAlloc((MemAlloc*)s,SCTX_DEFAULT_SIZE-sizeof(ServiceCtx),(byte*)(this+1)),ses(s),list(this),id(PIN::noPID),fKeepalive(false),fWrite(fW),fConnect(ls==NULL),lst(ls),
-	cst(fW?CST_WRITE:CST_READ),sstate(0),procs(NULL),nProcs(0),cur(0),resume(0),toggleIdx(~0u),flushIdx(~0u),params(par),nParams(nPar),ra(NULL),ctxPIN(NULL),pR(NULL),bufCache(NULL),
-	crs(NULL),set(SET_LOCAL),srvrc(RC_OK),errInfo(NULL)
+	cst(fW?CST_WRITE:CST_READ),sstate(0),procs(NULL),nProcs(0),cur(0),resume(0),toggleIdx(~0u),flushIdx(~0u),params(par),nParams(nPar),ra(NULL),ctxPIN(NULL),pR(NULL),ectx(ect),
+	bufCache(NULL),crs(NULL),set(SET_LOCAL),srvrc(RC_OK),errInfo(NULL)
 {
 	action.setEmpty();
 }
@@ -88,7 +90,7 @@ ServiceCtx::~ServiceCtx()
 
 void ServiceCtx::cleanup(bool fDestroy)
 {
-	sstate=0; flushIdx=~0u; resume=0; ctxPIN=NULL; fConnect=true;
+	sstate=0; flushIdx=~0u; resume=0; ctxPIN=NULL; fConnect=true; ectx=NULL;
 	if (crs!=NULL) {crs->destroy(); crs=NULL;}
 	if (ra!=NULL) {ra->destroy(); ra=NULL;}
 	if (procs!=NULL) for (unsigned i=0; i<nProcs; i++) {
@@ -103,16 +105,19 @@ void ServiceCtx::cleanup(bool fDestroy)
 RC ServiceCtx::build(const Value *vals,unsigned nVals)
 {
 	StoreCtx *ctx=ses->getStore(); if (ctx->serviceProviderTab==NULL) return RC_INTERNAL;
-	const Value *srv=VBIN::find(lst!=NULL?PROP_SPEC_LISTEN:PROP_SPEC_SERVICE,vals,nVals); RC rc=RC_OK;
+	const Value *srv=VBIN::find(lst!=NULL?PROP_SPEC_LISTEN:PROP_SPEC_SERVICE,vals,nVals); RC rc=RC_OK; char buf[80];
 	if (srv==NULL) {
-		if (lst==NULL||procs!=NULL||cur!=0) rc=RC_INVPARAM;
-		else if ((procs=new(this) ProcDscr[2])==NULL) rc=RC_NOMEM;
+		if (lst==NULL||procs!=NULL||cur!=0) {
+			if ((ses->traceMode&TRACE_COMMS)!=0) ses->trace(0,"%s missing %s property\n",trcb(buf),lst!=NULL?"afy:listen":"afy:service");
+			rc=RC_INVPARAM;
+		} else if ((procs=new(this) ProcDscr[2])==NULL) rc=RC_NOMEM;
 		else {
 			nProcs=2; memset(procs,0,sizeof(ProcDscr)*2); 
 			procs[0].dscr=ISRV_ENDPOINT|ISRV_READ; procs[0].srvInfo=vals; procs[0].nSrvInfo=nVals;
 			if ((rc=lst->create(this,procs[0].dscr,procs[0].proc))==RC_OK) {
 				fill(&procs[0],lst->getService(),vals,nVals); procs[1].sid=SERVICE_AFFINITY;
 			}
+			if ((ses->traceMode&TRACE_COMMS)!=0) ses->trace(0,"%s special listener stack -> %s\n",trcb(buf),getErrMsg(rc));
 		}
 		return rc;
 	}
@@ -131,7 +136,8 @@ RC ServiceCtx::build(const Value *vals,unsigned nVals)
 	for (unsigned i=0; rc==RC_OK && i<nSrv; ++i,++srv) {
 		URIID id=STORE_INVALID_URIID;
 		switch (srv->type) {
-		default: return RC_TYPE;
+		default: 
+			if ((ses->traceMode&TRACE_COMMS)!=0) ses->trace(0,"%s invalid afy:service/afy:listen type %d\n",trcb(buf),srv->type); return RC_TYPE;
 		case VT_URIID: id=srv->uid; break;
 		case VT_STRUCT: if ((rc=build(srv->varray,srv->length))!=RC_OK) return rc; continue;
 		case VT_REF: if ((rc=build(((PIN*)srv->pin)->properties,((PIN*)srv->pin)->nProperties))!=RC_OK) return rc; continue;
@@ -140,48 +146,52 @@ RC ServiceCtx::build(const Value *vals,unsigned nVals)
 			if ((rc=ref.load(LOAD_SSV))!=RC_OK || (rc=build(ref.properties,ref.nProperties))!=RC_OK) return rc;}
 			continue;
 		case VT_MAP:
-			if (Value::find(PROP_SPEC_CONDITION,vals,nVals)==NULL) return RC_INVPARAM;
+			if (Value::find(PROP_SPEC_CONDITION,vals,nVals)==NULL) {
+				if ((ses->traceMode&TRACE_COMMS)!=0) ses->trace(0,"%s missing afy:condition property\n",trcb(buf));
+				return RC_INVPARAM;
+			}
 			break;
 		}
 		if (procs==NULL) {
 			if ((procs=new(this) ProcDscr)==NULL) return RC_NOMEM;
 			nProcs=1; memset(procs,0,sizeof(ProcDscr)); assert(cur==0);
 		}
+		if ((ses->traceMode&TRACE_COMMS)!=0) ses->trace(0,"%s service ID: %u -> %s\n",trcb(buf),id,getErrMsg(id==STORE_INVALID_URIID?RC_INVPARAM:RC_OK));
 		if (id==STORE_INVALID_URIID || cur>=nProcs) return RC_INVPARAM;
 		ProcDscr *prc=&procs[cur]; prc->sid=id; prc->meta=srv->meta;
-		if (id==STORE_INVALID_URIID) {
-			sstate|=ISRV_NOCACHE; prc->srvInfo=vals; prc->nSrvInfo=nVals;
-		} else if (id==SERVICE_AFFINITY) {
+		if (id==SERVICE_AFFINITY) {
 			prc->srvInfo=vals; prc->nSrvInfo=nVals; prc->dscr|=ISRV_SERVER;
 			if (cst==CST_READ && cur!=nProcs+1 && lst!=NULL) {cst=CST_SERVER; if (toggleIdx==~0u) toggleIdx=cur++;}
+			if ((ses->traceMode&TRACE_COMMS)!=0) ses->trace(0,"%s server stack with src:affinity\n",trcb(buf));
 		} else if (lst!=NULL && (cur==0 || cst==CST_SERVER && cur+1==nProcs)) {
 			prc->dscr=cur==0?ISRV_ENDPOINT|ISRV_READ:ISRV_ENDPOINT|ISRV_WRITE;
 			if ((rc=lst->create(this,prc->dscr,prc->proc))==RC_OK) {
 				if ((srv->meta&META_PROP_SYNC)!=0 || cur==0 && (srv->meta&META_PROP_ASYNC)==0) prc->dscr|=ISRV_WAIT;
 				fill(prc,lst->getService(),vals,nVals); cur++;
 			}
+			if ((ses->traceMode&TRACE_COMMS)!=0) ses->trace(0,"%s listener %s endpoint(%X) -> %s\n",trcb(buf),(prc->dscr&ISRV_READ)!=0?"READ":"WRITE",prc->dscr,getErrMsg(rc));
 		} else
-			rc=getProcessor(prc,vals,nVals);
+			rc=getProcessor(prc,vals,nVals,buf);
 	}
 	if (rc==RC_OK && lst!=NULL && toggleIdx==~0u && cur==nProcs) {
 		const Value *act=VBIN::find(PROP_SPEC_ACTION,vals,nVals);
-		if (act!=NULL) {action=*act; setHT(action);}
+		if (act!=NULL) {action=*act; setHT(action); if ((ses->traceMode&TRACE_COMMS)!=0) ses->trace(0,"%s server action set to afy:action\n",trcb(buf));}
 	}
 	return rc;
 }
 
-RC ServiceCtx::getProcessor(ProcDscr *prc,const Value *vals,unsigned nVals)
+RC ServiceCtx::getProcessor(ProcDscr *prc,const Value *vals,unsigned nVals,char *buf)
 {
 	ServiceProviderTab::Find find(*ses->getStore()->serviceProviderTab,prc->sid); RC rc=RC_NOTFOUND; const Value *pv;
 	for (ServiceProvider *ah=find.findLock(RW_S_LOCK);;ah=ah->stack) {
 		IService *isrv=ah!=NULL?ah->handler:ses->getStore()->defaultService;
 		if (isrv!=NULL) {
-			prc->srvInfo=vals; prc->nSrvInfo=nVals;
+			prc->srvInfo=vals; prc->nSrvInfo=nVals; CommStackType old=cst;
 			switch (cst) {
 			case CST_READ:
 				prc->dscr=cur==0?ISRV_ENDPOINT|ISRV_READ:lst!=NULL?ISRV_READ:ISRV_READ|ISRV_RESPONSE;
 				if ((rc=isrv->create(this,prc->dscr,prc->proc))==RC_OK) {
-					if ((prc->dscr&ISRV_SERVER)!=0) if (lst!=NULL && cur!=nProcs+1) {cst=CST_SERVER; if (toggleIdx==~0u) toggleIdx=cur;}
+					if ((prc->dscr&ISRV_SERVER)!=0 && lst!=NULL && cur!=nProcs+1) {cst=CST_SERVER; if (toggleIdx==~0u) toggleIdx=cur;}
 				} else if (cur==0 && nProcs>1) {
 					prc->dscr=ISRV_WRITE|ISRV_REQUEST; if ((rc=isrv->create(this,prc->dscr,prc->proc))==RC_OK) cst=CST_REQUEST;
 				}
@@ -203,14 +213,16 @@ RC ServiceCtx::getProcessor(ProcDscr *prc,const Value *vals,unsigned nVals)
 			}
 			if (rc==RC_REPEAT || prc->proc==NULL) rc=RC_NOTFOUND;
 			else if (rc==RC_OK) {
+				if ((ses->traceMode&TRACE_COMMS)!=0 && cst!=old) ses->trace(0,"%s %s -> %s stack type\n",trcb(buf),stackType[old],stackType[cst]);
 				fill(prc,isrv,vals,nVals);
 				if ((prc->dscr&ISRV_ENDPOINT)!=0 && ((prc->meta&META_PROP_SYNC)!=0 || (prc->dscr&ISRV_READ)!=0 && (prc->meta&META_PROP_ASYNC)==0)) prc->dscr|=ISRV_WAIT;
 				if ((prc->dscr&ISRV_ENVELOPE)!=0 && (prc->lHeader|prc->lTrailer)!=0) for (ProcDscr *prev=prc; --prev>=procs;)
 					if ((prev->dscr&ISRV_ALLOCBUF)!=0 || prev==procs) {prev->lBuffer=max(prc->lBuffer,prev->lBuffer); prev->lHeader+=prc->lHeader; prev->lTrailer+=prc->lTrailer; break;}
 				cur++;
 			}
-			if (rc!=RC_OK && ah!=NULL) continue;
+			if (rc!=RC_OK && ah!=NULL) {if ((ses->traceMode&TRACE_COMMS)!=0) ses->trace(0,"%s create failed (%s), trying next in stack\n",trcb(buf),getErrMsg(rc)); continue;}
 		}
+		if ((ses->traceMode&TRACE_COMMS)!=0) ses->trace(0,"%s create processor(%X) -> %s\n",trcb(buf),prc->dscr,getErrMsg(rc));
 		find.unlock(); break;
 	}
 	return rc;
@@ -250,7 +262,7 @@ RC ServiceCtx::invoke(const Value *vals,unsigned nVals,Value *res)
 		if ((sstate&ISRV_RESUME)!=0) {inp=prc->inp; prc->inp.setEmpty(); sstate&=~ISRV_RESUME;}		// ext ???
 		else if (cst==CST_WRITE || cst==CST_REQUEST && cur==0) {
 			inp.setEmpty(); sstate=sstate&~ISRV_PROC_MASK|ISRV_WRITE|ISRV_EOM; assert(cur==0 && (prc->dscr&ISRV_WRITE)!=0);
-			ext=VBIN::find(cst==CST_REQUEST?PROP_SPEC_REQUEST:PROP_SPEC_CONTENT,vals,nVals); sstate|=ISRV_EOM;
+			ext=getParameter(cst==CST_REQUEST?PROP_SPEC_REQUEST:PROP_SPEC_CONTENT); sstate|=ISRV_EOM;
 		} else if ((prc->dscr&ISRV_SKIP)!=0) {
 			if (flushIdx!=~0u) prc=flush(inp); else {sstate&=~ISRV_INVOKE; cleanup(false); return cst==CST_READ||cst==CST_REQUEST?RC_EOF:RC_OK;}
 		} else {
@@ -304,6 +316,11 @@ RC ServiceCtx::invoke(const Value *vals,unsigned nVals,Value *res)
 			}
 			sstate&=~(ISRV_MOREOUT|ISRV_WAIT);
 			if ((sstate&ISRV_WRITE)!=0||(prc->dscr&ISRV_SERVER)!=0) sstate|=prcst&ISRV_EOM;
+			if ((prcst&ISRV_ERROR)!=0 || rc!=RC_OK && rc!=RC_EOF) {
+				if (rc==RC_OK) rc=srvrc;
+				// process error here: trace, report, notify, jump to service
+				break;
+			}
 			if ((prcst&(ISRV_REFINP|ISRV_KEEPINP|ISRV_ENVELOPE))==0 && cur>0) {
 				if (!isString((ValueType)inp.type)) freeV(inp);
 				else {
@@ -315,10 +332,7 @@ RC ServiceCtx::invoke(const Value *vals,unsigned nVals,Value *res)
 				}
 			}
 			if ((sstate&ISRV_WRITE)!=0 && (prc->dscr&ISRV_ENDPOINT)!=0 || (prc->dscr&ISRV_SERVER)!=0 && cur+1>=nProcs) {out.setEmpty(); prcst|=ISRV_NEEDMORE;}
-			if ((prcst&ISRV_ERROR)!=0 || rc!=RC_OK && rc!=RC_EOF) {
-				// process error here: trace, report, notify, jump to service
-				break;
-			} else if (rc==RC_EOF) {
+			if (rc==RC_EOF) {
 				prc->dscr|=ISRV_SKIP; if (flushIdx!=~0u) prc=flush(inp); else {if (cst==CST_WRITE || cst==CST_SERVER) rc=RC_OK; break;}
 			} else {
 				if (isString((ValueType)out.type) && out.length!=0 && (prc->dscr&(ISRV_ALLOCBUF|ISRV_ENVELOPE))==ISRV_ALLOCBUF) {
@@ -376,13 +390,14 @@ RC ServiceCtx::invoke(const Value *vals,unsigned nVals,Value *res)
 								Value *pv;
 								switch (out.type) {
 								case VT_ERROR: throw RC_EOF;
-								case VT_STRUCT: pR->setProps(out.varray,out.length,false); break;
+								case VT_STRUCT:
+									pR->setProps(out.varray,out.length); break;			// check alloc
 								case VT_REF:
 									pR->copy((PIN*)out.pin,0);
 									pR->fNoFree=((PIN*)out.pin)->fNoFree; pR->fPartial=0;
 									((PIN*)out.pin)->fNoFree=1; freeV(out); break;
 								default:
-									if ((pv=new(this) Value)==NULL) rc=RC_NOMEM;
+									if ((pv=new(this) Value)==NULL) rc=RC_NOMEM;								// alloc?
 									else if ((rc=copyV(out,*pv,this))!=RC_OK) {freeV(out); ses->free(pv);}
 									else {pv->setPropID(PROP_SPEC_CONTENT); setHT(*pv,SES_HEAP); pR->setProps(pv,1,true);}
 									break;
@@ -427,8 +442,12 @@ IPIN *ServiceCtx::getCtxPIN()
 
 const Value *ServiceCtx::getParameter(URIID uid) const
 {
-	const Value *pv=Value::find(uid,params,nParams);
-	return pv!=NULL||cur<nProcs&&(pv=Value::find(uid,procs[cur].srvInfo,procs[cur].nSrvInfo))!=NULL?pv:ctxPIN!=NULL?ctxPIN->findProperty(uid):NULL;
+	const Value *pv;
+	if (cur<nProcs&&(pv=Value::find(uid,procs[cur].srvInfo,procs[cur].nSrvInfo))!=NULL) return pv;
+	if (ectx!=NULL && ectx->nParams>QV_PARAMS && ectx->params[QV_PARAMS].vals!=NULL) 
+		for (unsigned i=0; i<ectx->params[QV_PARAMS].nValues; i++)
+			if (ectx->params[QV_PARAMS].vals[i].property==uid) return &ectx->params[QV_PARAMS].vals[i];
+	return pv=Value::find(uid,params,nParams);
 }
 
 void ServiceCtx::getParameters(Value *vals,unsigned nVals) const
@@ -511,11 +530,10 @@ static void traceValue(const Value& v,Session *ses,char *buf,size_t lbuf,bool fI
 
 void ServiceCtx::trace(ProcDscr *prc,unsigned st,const Value& inp,const Value &out,bool fAfter,RC rc) const
 {
-	static const char *stackType[]= {"RD", "WR", "SRV", "REQ"};
 	char pbuf[20],inpval[48],outval[48]; URI *uid=NULL; const char *pp=pbuf; size_t lp; URIID lid;
 	if (id.isPID()) lp=sprintf(pbuf,"@" _LS_FM,id.pid);
 	else if (lst==NULL || (lid=lst->getID())==STORE_INVALID_URIID) {pp="<TMP>"; lp=5;}
-	else if ((uid=(URI*)ses->getStore()->uriMgr->ObjMgr::find(lid))==NULL || (pp=ses->getStore()->namedMgr->getTraceName(uid,lp))==NULL) {pp="???"; lp=3;}
+	else {uid=(URI*)ses->getStore()->uriMgr->ObjMgr::find(lid); pp=ses->getStore()->namedMgr->getTraceName(uid,lp);}
 	traceValue(inp,ses,inpval,sizeof(inpval),true); traceValue(out,ses,outval,sizeof(outval),false);
 	URI *uri=(URI*)ses->getStore()->uriMgr->ObjMgr::find(prc->sid); const StrLen unk("???",3),*nm=uri!=NULL?uri->getName():&unk;
 	size_t sht=nm->len>sizeof(AFFINITY_SERVICE_PREFIX) && memcmp(nm->str,AFFINITY_SERVICE_PREFIX,sizeof(AFFINITY_SERVICE_PREFIX)-1)==0?sizeof(AFFINITY_SERVICE_PREFIX)-1:
@@ -523,6 +541,18 @@ void ServiceCtx::trace(ProcDscr *prc,unsigned st,const Value& inp,const Value &o
 	ses->trace(0,"Comm %.*s(%s): %s %s%.*s(%d) %s %s flags=%X %s%s\n",lp,pp,stackType[cst],fAfter?"AFTER":"BEFORE",
 		sht!=0?AFFINITY_SRV_QPREFIX:"",nm->len-sht,nm->str+sht,cur,inpval,outval,st,fAfter?" -> ":"",fAfter?getErrMsg(rc):"");
 	if (uri!=NULL) uri->release(); if (uid!=NULL) uid->release();
+}
+
+char *ServiceCtx::trcb(char *buf) const
+{
+	if (id.isPID()) sprintf(buf,"Build @" _LS_FM "(%s,%d): ",id.pid,stackType[cst],cur);
+	else {
+		URI *uid=NULL; URIID lid; size_t lp;
+		if (lst!=NULL && (lid=lst->getID())!=STORE_INVALID_URIID) uid=(URI*)ses->getStore()->uriMgr->ObjMgr::find(lid);
+		const char *pp=ses->getStore()->namedMgr->getTraceName(uid,lp); if (lp>50) lp=50;
+		sprintf(buf,"Build %.*s(%s,%d): ",lp,pp,stackType[cst],cur); if (uid!=NULL) uid->release();
+	}
+	return buf;
 }
 
 RC ServiceCtx::createPIN(Value& out,Value *values,unsigned nValues,const PID *id,unsigned md,ResAlloc *ra)
@@ -580,7 +610,7 @@ RC ServiceCtx::server(ProcDscr *prc,Value& inp,Value& out,unsigned& mode)
 			if (!id.isPID()) rc=RC_INVPARAM;
 #if 0
 			else {
-				PINx pex(ses,is.pin->id); rc=ses->getStore()->queryMgr->apply(EvalCtx(ses),stmtOp[is.op],pex,is.pin->properties,is.pin->nProperties,MODE_CLASS);
+				PINx pex(ses,is.pin->id); rc=ses->getStore()->queryMgr->apply(EvalCtx(ses),stmtOp[is.op],pex,is.pin->properties,is.pin->nProperties,MODE_DEVENT);
 			}
 			if (out!=NULL) {
 				RC rc2=rc==RC_OK?pinOut(is.pin,is.oi):RC_OK;
@@ -689,37 +719,38 @@ void ServiceCtx::ResAlloc::destroy()
 
 RC Session::createServiceCtx(const Value *vals,unsigned nVals,IServiceCtx *&sctx,bool fWrite,IListener *ls)
 {
-	try {
-		ServiceCtx *srv=new(this) ServiceCtx(this,vals,nVals,fWrite,ls); if (srv==NULL) return RC_NOMEM;
-		RC rc=srv->build(vals,nVals); if (rc!=RC_OK) {srv->destroy(); return rc;}
-		if ((srv->sstate&ISRV_REVERSE)!=0) {
-			srv->sstate&=~ISRV_REVERSE; assert(srv->nProcs>1);
-			for (unsigned i=0; i<srv->nProcs/2; i++) {ServiceCtx::ProcDscr tmp=srv->procs[i]; srv->procs[i]=srv->procs[srv->nProcs-i-1]; srv->procs[srv->nProcs-i-1]=tmp;}
-		}
-		srv->mark(srv->cmark); sctx=srv; return RC_OK;
-	} catch (RC rc) {return rc;} catch (...) {return RC_INTERNAL;}
+	try {ServiceCtx *sct=NULL; RC rc=createServiceCtx(NULL,vals,nVals,sct,NULL,fWrite,ls); sctx=sct; return rc;}
+	catch (RC rc) {return rc;} catch (...) {return RC_INTERNAL;}
 }
 
-RC Session::prepare(ServiceCtx *&srv,const PID& id,const Value *vals,unsigned nVals,unsigned flags)
+RC Session::createServiceCtx(const EvalCtx *ect,const Value *vals,unsigned nVals,ServiceCtx *&sctx,const PID *id,bool fWrite,IListener *ls)
 {
-	const bool fWrite=(flags&ISRV_WRITE)!=0; RC rc=RC_OK; 
-	srv=id.isPID() && serviceTab!=NULL?serviceTab->find(id):NULL; IServiceCtx *isrv;
+	ServiceCtx *srv=new(this) ServiceCtx(this,ect,vals,nVals,fWrite,ls); if (srv==NULL) return RC_NOMEM; if (id!=NULL) srv->id=*id;
+	RC rc=srv->build(vals,nVals); if (rc!=RC_OK) {srv->destroy(); return rc;}
+	if ((srv->sstate&ISRV_REVERSE)!=0) {
+		srv->sstate&=~ISRV_REVERSE; assert(srv->nProcs>1);
+		for (unsigned i=0; i<srv->nProcs/2; i++) {ServiceCtx::ProcDscr tmp=srv->procs[i]; srv->procs[i]=srv->procs[srv->nProcs-i-1]; srv->procs[srv->nProcs-i-1]=tmp;}
+	}
+	srv->mark(srv->cmark); sctx=srv; return RC_OK;
+}
+
+RC Session::prepare(ServiceCtx *&srv,const PID& id,const EvalCtx& ectx,const Value *vals,unsigned nVals,unsigned flags)
+{
+	const bool fWrite=(flags&ISRV_WRITE)!=0; RC rc=RC_OK; srv=id.isPID() && serviceTab!=NULL?serviceTab->find(id):NULL;
 	if (srv!=NULL && (flags&ISRV_NOCACHE)!=0) {srv->remove(); serviceTab->remove(srv); srv->destroy(); nSrvCtx--; srv=NULL;}
 	if (srv!=NULL && (srv->fWrite==fWrite || (srv=srv->list.getNext())!=NULL && srv->id==id && srv->fWrite==fWrite)) {
-		srv->fConnect=true; srv->params=vals; srv->nParams=nVals; srv->resume=0; srv->pR=NULL; srv->remove(); srvCtx.insertFirst(srv);
-	} else if ((rc=createServiceCtx(vals,nVals,isrv,fWrite))==RC_OK) {
-		srv=(ServiceCtx*)isrv; srv->id=id;
-		if (((srv->sstate|flags)&ISRV_NOCACHE)==0 && id.isPID()) {
-			if (serviceTab==NULL && (serviceTab=new(this) ServiceTab(20,this,false))==NULL) rc=RC_NOMEM;
-			else {
-				if (nSrvCtx>=xSrvCtx) {
-					ServiceCtx *discard=(ServiceCtx*)srvCtx.prev; assert(serviceTab!=NULL && srvCtx.prev!=&srvCtx); 
-					discard->remove(); serviceTab->remove(discard); discard->destroy(); nSrvCtx--;
-				}
-				serviceTab->insert(srv); srvCtx.insertFirst(srv); nSrvCtx++;
+		srv->fConnect=true; srv->params=vals; srv->nParams=nVals; srv->resume=0; 
+		srv->ectx=&ectx; srv->pR=NULL; srv->remove(); srvCtx.insertFirst(srv);
+	} else if ((rc=createServiceCtx(&ectx,vals,nVals,srv,&id,fWrite))==RC_OK && ((srv->sstate|flags)&ISRV_NOCACHE)==0 && id.isPID()) {
+		if (serviceTab==NULL && (serviceTab=new(this) ServiceTab(20,this,false))==NULL) rc=RC_NOMEM;
+		else {
+			if (nSrvCtx>=xSrvCtx) {
+				ServiceCtx *discard=(ServiceCtx*)srvCtx.prev; assert(serviceTab!=NULL && srvCtx.prev!=&srvCtx); 
+				discard->remove(); serviceTab->remove(discard); discard->destroy(); nSrvCtx--;
 			}
-			if (rc!=RC_OK) {srv->destroy(); srv=NULL;}
+			serviceTab->insert(srv); srvCtx.insertFirst(srv); nSrvCtx++;
 		}
+		if (rc!=RC_OK) {srv->destroy(); srv=NULL;}
 	}
 	return rc;
 }

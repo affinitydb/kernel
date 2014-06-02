@@ -815,51 +815,6 @@ RC Collection::modify(ExprOp op,const Value *pv,ElementID epos,ElementID eid,Ses
 				}
 			}
 			break;
-		case OP_EDIT:
-			assert(ecb.hdr!=NULL);
-			if (isString(ecb.hdr->type.getType()) || ecb.hdr->type.getType()==VT_UINT || ecb.hdr->type.getType()==VT_UINT64) {
-				Value v;
-				if ((rc=ctx->queryMgr->loadS(v,__una_get(ecb.hdr->type),ecb.hdr->type.isCompact()?*(ushort*)((byte*)(ecb.hdr+1)+ecb.hdr->shift):
-					ushort((byte*)(ecb.hdr+1)-(byte*)ecb.tp)+ecb.hdr->shift,(const HeapPageMgr::HeapPage*)ecb.tp,0,ses))!=RC_OK) break;
-				if ((rc=Expr::calc(OP_EDIT,v,pv,2,0,EvalCtx(ses)))==RC_OK && (rc=persistElement(ses,v,lval,buf,lbuf,threshold,ecb.prevID,ecb.nextID))==RC_OK)
-					rc=ctx->trpgMgr->update(ecb,key,(byte*)ecb.hdr,ecb.lData,buf,lval);
-			} else if (ecb.hdr->type.isLOB()) {
-				const byte *pData=(const byte*)(ecb.hdr+1)+ecb.hdr->shift; HLOB data;
-				if (ecb.hdr->type.getFormat()==HDF_LONG) memcpy(&data,pData,sizeof(HLOB));
-				else {memcpy(&data.ref,pData,sizeof(HRefSSV)); data.len=~0ULL;}
-				if (!isString(data.ref.type.getType())) rc=RC_TYPE;
-				else {
-					PageAddr addr={data.ref.pageID,data.ref.idx};
-					uint64_t oldl=data.len; ushort lmod;
-					switch (rc=ctx->queryMgr->editData(ses,addr,data.len,*pv)) {
-					default: break;
-					case RC_OK:
-						if (ecb.hdr->type.getFormat()==HDF_LONG && data.len!=oldl)
-							rc=ctx->trpgMgr->edit(ecb,key,&data.len,sizeof(uint64_t),sizeof(uint64_t),
-											sizeof(ElementDataHdr)+ecb.hdr->shift+sizeof(HRefSSV));
-						break;
-					case RC_TRUE:
-						assert(data.len!=~0ULL && ecb.hdr->shift<=sizeof(uint32_t)*2 && ecb.hdr->type.getFormat()!=HDF_LONG);
-						{byte obuf[sizeof(ElementDataHdr)+sizeof(uint32_t)*2+sizeof(HRefSSV)];
-						byte nbuf[sizeof(ElementDataHdr)+sizeof(uint32_t)*2+sizeof(HLOB)];
-						memcpy(obuf,ecb.hdr,sizeof(ElementDataHdr)+ecb.hdr->shift);
-						memcpy(obuf+sizeof(ElementDataHdr)+ecb.hdr->shift,&data.ref,sizeof(HRefSSV));
-						data.ref.pageID=addr.pageID; data.ref.idx=addr.idx;
-						memcpy(nbuf,ecb.hdr,sizeof(ElementDataHdr)+ecb.hdr->shift);
-						memcpy(nbuf+sizeof(ElementDataHdr)+ecb.hdr->shift,&data,sizeof(HLOB));
-						((ElementDataHdr*)nbuf)->type.setType(ecb.hdr->type.getType(),HDF_LONG);
-						rc=ctx->trpgMgr->update(ecb,key,obuf,sizeof(ElementDataHdr)+ecb.hdr->shift+sizeof(HRefSSV),
-														nbuf,sizeof(ElementDataHdr)+ecb.hdr->shift+sizeof(HLOB));}
-						break;
-					case RC_FALSE:
-						data.ref.pageID=addr.pageID; data.ref.idx=addr.idx;
-						lmod=ecb.hdr->type.getFormat()!=HDF_LONG?sizeof(HRefSSV):sizeof(HLOB);
-						rc=ctx->trpgMgr->edit(ecb,key,&data,lmod,lmod,sizeof(ElementDataHdr)+ecb.hdr->shift);
-						break;
-					}
-				}
-			} else return RC_TYPE;
-			break;
 		case OP_MOVE:
 			assert(pv->type==VT_UINT);
 			if (pv->ui==epos || pv->ui==ecb.prevID || pv->ui==STORE_LAST_ELEMENT && epos==coll->lastID ||

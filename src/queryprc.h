@@ -24,6 +24,7 @@ Written by Mark Venguerov 2004-2014
 #ifndef _QUERYPRC_H_
 #define _QUERYPRC_H_
 
+#include "modinfo.h"
 #include "qbuild.h"
 #include "queryop.h"
 #include "txmgr.h"
@@ -42,86 +43,6 @@ namespace AfyKernel
 
 #define	ARRAY_THRESHOLD		256		/**< threshold of 'big' collections */
 #define STRING_THRESHOLD	64		/**< string length threshold for SSV data */
-
-/**
- * passed to FT indexer
- */
-struct ChangeInfo
-{
-	PID				id;
-	PID				docID;
-	const Value		*oldV;
-	const Value		*newV;
-	PropertyID		propID;
-	ElementID		eid;
-};
-
-/**
- * bit flags used in modifyPIN()
- */
-#define	PM_PROCESSED	0x00000001
-#define PM_COLLECTION	0x00000002
-#define	PM_FTINDEXABLE	0x00000004
-#define	PM_EXPAND		0x00000008
-#define	PM_MODCOLL		0x00000010
-#define	PM_SSV			0x00000020
-#define	PM_ESTREAM		0x00000040
-#define	PM_BIGC			0x00000080
-#define	PM_FORCESSV		0x00000100
-#define	PM_NEWCOLL		0x00000200
-#define	PM_SPILL		0x00000400
-#define	PM_BCCAND		0x00000800
-#define	PM_MOVE			0x00001000
-#define	PM_NEWPROP		0x00002000
-#define	PM_PUTOLD		0x00008000
-#define	PM_LOCAL		0x00010000
-#define	PM_INVALID		0x00020000
-#define	PM_COMPACTREF	0x00040000
-#define	PM_RESET		0x00080000
-#define	PM_SCOLL		0x00100000
-#define	PM_OLDFTINDEX	0x00200000
-#define	PM_NEWVALUES	0x00400000
-#define	PM_OLDVALUES	0x00800000
-#define	PM_CALCULATED	0x01000000
-#define	PM_GENEIDS		0x02000000
-
-/**
- * property information used in modifyPIN()
- */
-struct PropInfo
-{
-	PropertyID					propID;
-	const HeapPageMgr::HeapV	*hprop;
-	struct	ModInfo				*first;
-	struct	ModInfo				*last;
-	unsigned					nElts;
-	unsigned					flags;
-	ElementID					maxKey;
-	ElementID					single;
-	long						delta;
-	long						nDelta;
-	class	Collection			*pcol;
-	class PropInfoCmp {public: __forceinline static int	cmp(const PropInfo *pi,PropertyID pid) {return cmp3(pi->propID,pid);}};
-};
-
-/**
- * individual modification information in modifyPIN()
- */
-struct ModInfo
-{
-	ModInfo			*next;
-	ModInfo			*pnext;
-	const Value		*pv;
-	unsigned		pvIdx;
-	Value			*newV;
-	Value			*oldV;
-	unsigned		flags;
-	ElementID		eid;
-	ElementID		eltKey;
-	ElementID		epos;
-	PropInfo		*pInfo;
-	HRefSSV			*href;
-};
 
 class Cursor;
 class Stmt;
@@ -201,11 +122,10 @@ public:
 	RC		undeletePINs(const EvalCtx& ectx,const PID *pids,unsigned nPins);
 	RC		loadData(const PageAddr& addr,byte *&p,size_t& len,MemAlloc *ma);
 	RC		persistData(IStream *stream,const byte *str,size_t lstr,PageAddr& addr,uint64_t&,const PageAddr* =NULL,PBlockP* =NULL);
-	RC		editData(Session *ses,PageAddr &addr,uint64_t& length,const Value&,PBlockP *pbp=NULL,byte *pOld=NULL);
 	RC		deleteData(const PageAddr& addr,Session *ses=NULL,PBlockP *pbp=NULL);
-	bool	test(PIN *,ClassID,const EvalCtx& ectx,bool fIgnore=false);
+	bool	test(PIN *,DataEventID,const EvalCtx& ectx,bool fIgnore=false);
 	RC		transform(const PINx **vars,unsigned nVars,PIN **pins,unsigned nPins,unsigned &nOut,Session*) const;
-	RC		getClassInfo(Session *ses,PIN *pin);
+	RC		getDataEventInfo(Session *ses,PIN *pin);
 	RC		getCalcPropID(unsigned n,PropertyID& pid);
 	bool	checkCalcPropID(PropertyID pid);
 
@@ -219,11 +139,11 @@ public:
 	friend	class	FTIndexMgr;
 	friend	struct	ModCtx;
 	friend	class	Collection;
-	friend	struct	ClassResult;
-	friend	class	ClassPropIndex;
+	friend	struct	DetectedEvents;
+	friend	class	DataEventRegistry;
 	friend	struct	TimerQElt;
-	friend	class	Classifier;
-	friend	class	Class;
+	friend	class	DataEventMgr;
+	friend	class	DataEvent;
 	friend	class	StartFSM;
 	friend	class	EventMgr;
 	friend	class	ProcessStream;

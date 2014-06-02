@@ -87,7 +87,7 @@ public:
 		Queue	B1;
 		Queue	B2;
 		Mutex	lock;
-		Pool	freeQE;
+		LIFO	freeQE;
 		QueueCtrl(int nb,MemAlloc *ma=NULL) : nElts(nb),T1TargetL(0),T1(_T1),T2(_T2),B1(_B1),B2(_B2),freeQE(ma,QE_ALLOC_BLOCK_SIZE) {}
 	};
 protected:

@@ -78,7 +78,7 @@ class ThreadGroup {
 	pthread_cond_t	wait;
 	RQElt			*first;
 	RQElt			*last;
-	static Pool	freeQE;
+	static LIFO		freeQE;
 #endif
 	ThreadGroup(RQType);
 	~ThreadGroup();

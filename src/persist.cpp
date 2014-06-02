@@ -28,7 +28,7 @@ Written by Mark Venguerov 2004-2014
 #include "blob.h"
 #include "expr.h"
 #include "netmgr.h"
-#include "classifier.h"
+#include "dataevent.h"
 #include "service.h"
 #include "maps.h"
 #include "event.h"
@@ -160,13 +160,13 @@ RC QueryPrc::persistPINs(const EvalCtx& ectx,PIN *const *pins,unsigned nPins,uns
 				(NamedMgr::specPINProps[j].mask[3]&sp_bits[3])==NamedMgr::specPINProps[j].mask[3]) pin->meta|=NamedMgr::specPINProps[j].meta;
 		if ((pin->meta&PMT_FSMCTX)!=0 && (pin->mode&PIN_IMMUTABLE)!=0) {rc=RC_INVPARAM; goto finish;}
 		if ((pin->mode&PIN_DELETED)==0) {
-			if ((pin->meta&PMT_NAMED)!=0) nNamedPINs++; if ((pin->meta&(PMT_CLASS|PMT_TIMER|PMT_LISTENER|PMT_LOADER))!=0) nMetaPINs++;
-			if ((pin->meta&PMT_CLASS)!=0 && (pv=pin->findProperty(PROP_SPEC_PREDICATE))!=NULL && (pv->meta&META_PROP_INDEXED)!=0) nIndexed++;
+			if ((pin->meta&PMT_NAMED)!=0) nNamedPINs++; if ((pin->meta&(PMT_DATAEVENT|PMT_TIMER|PMT_LISTENER|PMT_LOADER))!=0) nMetaPINs++;
+			if ((pin->meta&PMT_DATAEVENT)!=0 && (pv=pin->findProperty(PROP_SPEC_PREDICATE))!=NULL && (pv->meta&META_PROP_INDEXED)!=0) nIndexed++;
 		}
 		if ((pin->mode&PIN_TRANSIENT)!=0) {
-			ClassResult clr(&mem,ctx);	if ((rc=tx.start(TXI_DEFAULT,TX_IATOMIC))!=RC_OK) goto finish;
-			if ((rc=ctx->classMgr->classify(pin,clr,ectx.ses))==RC_OK && (into==NULL || (rc=clr.checkConstraints(pin,into,nInto))==RC_OK))
-				if (clr.nActions!=0 && (rc=clr.invokeActions(ectx.ses,pin,CI_INSERT,&ectx))==RC_OK) pin->mode|=COMMIT_INVOKED;
+			DetectedEvents clr(&mem,ctx);	if ((rc=tx.start(TXI_DEFAULT,TX_IATOMIC))!=RC_OK) goto finish;
+			if ((rc=ctx->classMgr->detect(pin,clr,ectx.ses))==RC_OK && (into==NULL || (rc=clr.checkConstraints(pin,into,nInto))==RC_OK))
+				if (clr.nActions!=0 && (rc=clr.publish(ectx.ses,pin,CI_INSERT,&ectx))==RC_OK) pin->mode|=COMMIT_INVOKED;
 			if (rc==RC_OK && (pin->mode&PIN_TRANSIENT)!=0) {
 				if (rc==RC_OK && (pin->meta&PMT_LOADER)!=0) {
 					const Value *pv=Value::find(PROP_SPEC_LOAD,pin->properties,pin->nProperties);
@@ -178,7 +178,7 @@ RC QueryPrc::persistPINs(const EvalCtx& ectx,PIN *const *pins,unsigned nPins,uns
 				}
 				if (rc==RC_OK && (pin->meta&PMT_COMM)!=0) {
 					ServiceCtx *sctx=NULL;
-					rc=ectx.ses->prepare(sctx,PIN::noPID,pin->properties,pin->nProperties,ISRV_WRITE|ISRV_NOCACHE);
+					rc=ectx.ses->prepare(sctx,PIN::noPID,ectx,pin->properties,pin->nProperties,ISRV_WRITE|ISRV_NOCACHE);
 					if (rc==RC_OK && sctx!=NULL) {
 						rc=sctx->invoke(pin->properties,pin->nProperties);
 						sctx->destroy();	// cache?
@@ -195,7 +195,7 @@ RC QueryPrc::persistPINs(const EvalCtx& ectx,PIN *const *pins,unsigned nPins,uns
 			if (rc!=RC_OK) goto finish; if ((pin->mode&PIN_TRANSIENT)!=0) continue;
 		}
 		l=pin->length; cnt++; totalSize+=l+sizeof(PageOff); fUncommPINs=true;
-		if (pin->length>xSize || (pin->meta&PMT_CLASS)==0 && (double)lBig/nBig>lOther*SKEW_FACTOR) {
+		if (pin->length>xSize || (pin->meta&PMT_DATAEVENT)==0 && (double)lBig/nBig>lOther*SKEW_FACTOR) {
 			CandidateSSVs cs((MemAlloc*)ectx.ses);
 			if ((rc=findCandidateSSVs(cs,pin->properties,pin->nProperties,pin->length>xSize,ectx.ses,actrl))!=RC_OK) goto finish;
 			if (cs!=0) {
@@ -249,7 +249,7 @@ RC QueryPrc::persistPINs(const EvalCtx& ectx,PIN *const *pins,unsigned nPins,uns
 		}
 		if ((pg->lPins+=ceil(pin->length,HP_ALIGN))>xbuf) xbuf=pg->lPins;
 		if (pg->first==~0u) pg->first=i; else allocTab[pg->last]=i; allocTab[i]=~0u; pg->last=i; pin->mode|=COMMIT_ALLOCATED;
-		if ((pin->meta&(PMT_CLASS|PMT_TIMER|PMT_LISTENER|PMT_LOADER))!=0 && (pin->mode&PIN_DELETED)==0) metaPINs[nMetaPINs++]=pin;
+		if ((pin->meta&(PMT_DATAEVENT|PMT_TIMER|PMT_LISTENER|PMT_LOADER))!=0 && (pin->mode&PIN_DELETED)==0) metaPINs[nMetaPINs++]=pin;
 	}
 	if (pages!=NULL && pages->next==NULL) ectx.ses->setAtomic();
 	if (!fNewPgOnly && nNewPages>0) for (AllocPage **ppg=&pages,*pg; (pg=*ppg)!=0; ppg=&pg->next) if ((pg->flags&PGF_NEW)!=0) {
@@ -302,7 +302,8 @@ RC QueryPrc::persistPINs(const EvalCtx& ectx,PIN *const *pins,unsigned nPins,uns
 			if ((pin->meta&PMT_NAMED)!=0) {
 				pv=pin->findProperty(PROP_SPEC_OBJID); assert(pv!=NULL && pv->type==VT_URIID);
 				PID id=pin->id; if (id.isEmpty()) {id.pid=pin->addr; id.ident=STORE_OWNER;}
-				PINRef pr(ctx->storeID,id,pin->addr); if ((rc=ctx->namedMgr->update(pv->uid,pr,pin->meta,true))!=RC_OK) goto finish;
+				PINRef pr(ctx->storeID,id,pin->addr); if ((pin->meta&PMT_COMM)!=0) pr.def|=PR_SPECIAL; if ((pin->mode&PIN_HIDDEN)!=0) pr.def|=PR_HIDDEN;
+				if ((rc=ctx->namedMgr->update(pv->uid,pr,pin->meta,true))!=RC_OK) goto finish;
 			}
 			// check other UNIQUE/IDEMPOTENT
 			if ((pin->mode&COMMIT_FORCED)!=0) {
@@ -382,14 +383,14 @@ RC QueryPrc::persistPINs(const EvalCtx& ectx,PIN *const *pins,unsigned nPins,uns
 finish:
 	if (!pb.isNull()) {if (rc==RC_OK) {if (fForced) ectx.ses->forcedPage=pb->getPageID(); else ctx->heapMgr->reuse(pb,ectx.ses,reserve);} pb.release(ectx.ses);}
 
-	ClassResult clr(&mem,ctx);
+	DetectedEvents clr(&mem,ctx);
 	for (i=0; i<nPins; i++) if ((pin=pins[i])!=NULL) {
 		bool fProc = rc==RC_OK && (pin->mode&COMMIT_ALLOCATED)!=0; mem.mark(mrk);
 		if (fProc) {
 			if ((pin->mode&(PIN_TRANSIENT|PIN_DELETED))==0) {
-				if ((rc=ctx->classMgr->classify(pin,clr,ectx.ses))==RC_OK && into!=NULL) rc=clr.checkConstraints(pin,into,nInto);
-				if (rc==RC_OK && clr.nClasses>0 && (rc=ctx->classMgr->index(ectx.ses,pin,clr,CI_INSERT))==RC_OK)
-					if (clr.nActions!=0 && (pin->mode&COMMIT_INVOKED)==0 && (rc=clr.invokeActions(ectx.ses,pin,CI_INSERT,&ectx))!=RC_OK) break;
+				if ((rc=ctx->classMgr->detect(pin,clr,ectx.ses))==RC_OK && into!=NULL) rc=clr.checkConstraints(pin,into,nInto);
+				if (rc==RC_OK && clr.ndevs>0 && (rc=ctx->classMgr->updateIndex(ectx.ses,pin,clr,CI_INSERT))==RC_OK)
+					if (clr.nActions!=0 && (pin->mode&COMMIT_INVOKED)==0 && (rc=clr.publish(ectx.ses,pin,CI_INSERT,&ectx))!=RC_OK) break;
 				if (rc==RC_OK && (pin->mode&(PIN_DELETED|PIN_HIDDEN|COMMIT_FTINDEX))==COMMIT_FTINDEX) {
 					const Value *doc=pin->findProperty(PROP_SPEC_DOCUMENT); StackAlloc sa(ectx.ses); FTList ftl(sa);
 					ChangeInfo inf={pin->id,doc==NULL?PIN::noPID:doc->type==VT_REF?doc->pin->getPID():
@@ -409,10 +410,10 @@ finish:
 //				if (replication!=NULL && (pin->mode&(PIN_NO_REPLICATION|PIN_REPLICATED))==PIN_REPLICATED) rc=ectx.ses->replicate(pin);
 				if (rc==RC_OK && ctx->queryMgr->notification!=NULL && ((pin->mode&PIN_NOTIFY)!=0||(clr.notif&CLASS_NOTIFY_NEW)!=0)) {
 					IStoreNotification::NotificationEvent evt={pin->id,NULL,0,NULL,0,ectx.ses->isReplication()};
-					if ((evt.events=(IStoreNotification::EventData*)mem.malloc((clr.nClasses+1)*sizeof(IStoreNotification::EventData)))!=NULL) {
-						if ((clr.notif&CLASS_NOTIFY_NEW)!=0) for (unsigned i=0; i<clr.nClasses; i++) if ((clr.classes[i]->notifications&CLASS_NOTIFY_NEW)!=0) {
+					if ((evt.events=(IStoreNotification::EventData*)mem.malloc((clr.ndevs+1)*sizeof(IStoreNotification::EventData)))!=NULL) {
+						if ((clr.notif&CLASS_NOTIFY_NEW)!=0) for (unsigned i=0; i<clr.ndevs; i++) if ((clr.devs[i]->notifications&CLASS_NOTIFY_NEW)!=0) {
 							IStoreNotification::EventData& ev=(IStoreNotification::EventData&)evt.events[evt.nEvents++];
-							ev.type=IStoreNotification::NE_CLASS_INSTANCE_ADDED; ev.cid=clr.classes[i]->cid;
+							ev.type=IStoreNotification::NE_CLASS_INSTANCE_ADDED; ev.cid=clr.devs[i]->cid;
 						}
 						if ((pin->mode&PIN_NOTIFY)!=0) {
 							IStoreNotification::EventData& ev=(IStoreNotification::EventData&)evt.events[evt.nEvents];
@@ -432,9 +433,9 @@ finish:
 				}
 			}
 		}
-		pin->mode&=~COMMIT_MASK; clr.nClasses=clr.nIndices=clr.notif=0; mem.truncate(TR_REL_ALL,&mrk); if (rc!=RC_OK) pin->addr=PageAddr::noAddr; else pin->mode|=PIN_PERSISTENT;
+		pin->mode&=~COMMIT_MASK; clr.ndevs=clr.nIndices=clr.notif=0; mem.truncate(TR_REL_ALL,&mrk); if (rc!=RC_OK) pin->addr=PageAddr::noAddr; else pin->mode|=PIN_PERSISTENT;
 	}
-	if (rc==RC_OK && metaPINs!=NULL && nMetaPINs>0 && (rc=ctx->classMgr->classifyAll(metaPINs,nMetaPINs,ectx.ses))==RC_OK) for (unsigned i=0; i<nMetaPINs; i++) try {
+	if (rc==RC_OK && metaPINs!=NULL && nMetaPINs>0 && (rc=ctx->classMgr->buildIndex(metaPINs,nMetaPINs,ectx.ses))==RC_OK) for (unsigned i=0; i<nMetaPINs; i++) try {
 		PIN *pin=metaPINs[i];
 		if ((pin->meta&PMT_LOADER)!=0) {
 			LoadService *ls=new(ectx.ses) LoadService(pin->properties,pin->nProperties,ectx.ses);
@@ -954,166 +955,6 @@ RC QueryPrc::persistData(IStream *stream,const byte *str,size_t lstr,PageAddr& a
 		ses->free(buf);
 	}
 	return rc;
-}
-
-RC QueryPrc::editData(Session *ses,PageAddr &startAddr,uint64_t& len,const Value& v,PBlockP *pbp,byte *pOld)
-{
-	assert(v.op==OP_EDIT && v.edit.shift<=len);
-	if (ses==NULL) return RC_NOSESSION; if (!ses->inWriteTx()) return RC_READTX;
-	PageAddr addr=startAddr,prevAddr=PageAddr::noAddr,nextAddr=PageAddr::noAddr;
-	PageIdx idx=INVALID_INDEX; const byte *p=v.edit.bstr;
-	size_t left=v.length,lpiece=0,lnew; uint64_t start,epos;
-	bool fSSVLOB=false,fAddrChanged=false,fSetAddr=false,fNew=false; PBlockP pb; RC rc=RC_OK;
-	byte *buf=NULL,abuf[sizeof(HeapPageMgr::HeapModEdit)+PageAddrSize*2]; size_t lbuf=0;
-	if (v.edit.shift==~0ULL) epos=start=len; else epos=(start=v.edit.shift)+v.edit.length;
-	for (uint64_t pos=0; pos<epos || pos==epos && left>0; pos+=lpiece) {
-		if (addr.pageID==INVALID_PAGEID) {rc=RC_CORRUPTED; break;}
-		if (pbp!=NULL && !pbp->isNull()) {
-			if ((*pbp)->getPageID()!=addr.pageID) pbp->release(ses); else pbp->moveTo(pb);
-		}
-		if ((pb.isNull() || pb->getPageID()!=addr.pageID) && pb.getPage(addr.pageID,ctx->ssvMgr,PGCTL_XLOCK,ses)==NULL) {rc=RC_NOTFOUND; break;}
-		const HeapPageMgr::HeapPage *hp=(const HeapPageMgr::HeapPage*)pb->getPageBuf();
-		const HeapPageMgr::HeapObjHeader *hobj=hp->getObject(hp->getOffset(idx=addr.idx));
-		if (hobj==NULL || (hobj->descr&HOH_DELETED)!=0) {rc=RC_NOTFOUND; break;}
-		HeapObjType htype=hobj->getType(); ushort lhdr=0;
-		if (htype==HO_BLOB) {
-			memcpy(&addr,((HeapPageMgr::HeapLOB*)hobj)->next,PageAddrSize); lhdr=sizeof(HeapPageMgr::HeapLOB);
-		} else if (htype==HO_SSVALUE) {
-			addr.pageID=INVALID_PAGEID; addr.idx=INVALID_INDEX; lhdr=sizeof(HeapPageMgr::HeapObjHeader);
-			len=hobj->length-lhdr; if (v.edit.shift==~0ULL) epos=start=len;
-		} else {rc=RC_CORRUPTED; break;}
-		lpiece=hobj->length-lhdr; if (pos+lpiece<start) continue;
-		unsigned startOff=pos<start?unsigned(start-pos):0,lmod=unsigned(epos<pos+lpiece?epos-pos:lpiece)-startOff;
-		if (lmod>0 && pOld) {memcpy(pOld,(byte*)hobj+hobj->length-lpiece+startOff,lmod); pOld+=lmod;}
-		if (left==0 && lmod==lpiece) {
-			assert(htype!=HO_SSVALUE);
-			if (prevAddr.defined()) {fSetAddr=true; nextAddr=addr;}
-			else {assert(addr.defined()); startAddr=addr; fAddrChanged=true;}
-			unsigned l=hobj->length;
-			if (l>lbuf && (buf=buf==NULL?(byte*)ses->malloc(lbuf=l):(byte*)ses->realloc(buf,lbuf=l))==NULL)
-				{rc=RC_NOMEM; break;}
-			memcpy(buf,hobj,l); 
-			if ((rc=ctx->txMgr->update(pb,ctx->ssvMgr,(unsigned)idx<<HPOP_SHIFT|HPOP_PURGE,buf,l))!=RC_OK) break;
-			ctx->ssvMgr->reuse(pb,ses,false,true); pb.release(ses); continue;
-		}
-		if (htype==HO_SSVALUE && left>lmod && left-lmod>hp->totalFree() &&
-								(lnew=unsigned(lpiece+sizeof(HeapPageMgr::HeapObjHeader)+left-lmod+sizeof(PageOff)))<=
-															HeapPageMgr::contentSize(ctx->bufMgr->getPageSize())) {
-			PBlockP newPB(ctx->ssvMgr->getNewPage(lnew,ses,fNew),QMGR_UFORCE); if (newPB.isNull()) {rc=RC_FULL; break;}
-			byte *ssv=(byte*)ses->malloc(lpiece+lhdr);
-			if (ssv!=NULL) memcpy(ssv,hobj,lhdr+lpiece); else {rc=RC_NOMEM; break;}
-			if ((rc=ctx->txMgr->update(pb,ctx->ssvMgr,(unsigned)idx<<HPOP_SHIFT|HPOP_PURGE,ssv,lhdr+lpiece))==RC_OK) {
-				Value w,edit; w.set(ssv,uint32_t(lpiece+lhdr)); w.type=v.type; w.flags=SES_HEAP; edit=v; edit.edit.shift+=lhdr;
-				if ((rc=Expr::calc(OP_EDIT,w,&edit,2,0,ses))==RC_OK) {
-					((HeapPageMgr::HeapObjHeader*)w.bstr)->length=ushort(w.length);
-					hp=(const HeapPageMgr::HeapPage*)newPB->getPageBuf(); idx=hp->nSlots;
-					if ((rc=ctx->txMgr->update(newPB,ctx->ssvMgr,(unsigned)idx<<HPOP_SHIFT|HPOP_INSERT,w.bstr,w.length))==RC_OK) {
-						startAddr.pageID=newPB->getPageID(); startAddr.idx=idx; fAddrChanged=true; 
-						ctx->ssvMgr->reuse(newPB,ses,fNew,true); newPB.release(ses);
-					}
-				}
-				ssv=(byte*)w.bstr;
-			}
-			ses->free(ssv); break;
-		}
-		if (lmod>0 || left>0 && epos<=pos+lpiece && left<=hp->totalFree()) {
-			lnew=left<=lmod+hp->totalFree()?left:lmod;
-			size_t l=sizeof(HeapPageMgr::HeapModEdit)+lmod+lnew;
-			if (l>lbuf && (buf=buf==NULL?(byte*)ses->malloc(lbuf=l):(byte*)ses->realloc(buf,lbuf=l))==NULL)
-				{rc=RC_NOMEM; break;}
-			HeapPageMgr::HeapModEdit *he=(HeapPageMgr::HeapModEdit*)buf;
-			he->shift=ushort(startOff+lhdr-sizeof(HeapPageMgr::HeapObjHeader)); he->dscr=0;
-			he->newPtr.len=(ushort)lnew; he->newPtr.offset=sizeof(HeapPageMgr::HeapModEdit);
-			he->oldPtr.len=(ushort)lmod; he->oldPtr.offset=he->newPtr.offset+ushort(lnew);
-			if (lnew!=0) {memcpy(buf+he->newPtr.offset,p,lnew); p+=lnew; left-=lnew;}
-			if (lmod!=0) memcpy(buf+he->oldPtr.offset,(byte*)hobj+hobj->length-lpiece+startOff,lmod);
-			if ((rc=ctx->txMgr->update(pb,ctx->ssvMgr,(unsigned)idx<<HPOP_SHIFT|HPOP_EDIT,buf,l))!=RC_OK) break;
-		}
-		if (left>0 && epos<=pos+lpiece) {
-			StreamBuf *psb=NULL; PageAddr newAddr={pb->getPageID(),idx}; byte *tail=NULL; unsigned ltail=0; uint64_t ll;
-			if (htype==HO_SSVALUE) {
-				if (hp->totalFree()<PageAddrSize*2) {
-					byte *ssv=(byte*)ses->malloc(lnew=lhdr+lpiece+PageAddrSize*2); if (ssv==NULL) {rc=RC_NOMEM; break;}
-					memcpy(ssv,hobj,lhdr+lpiece);
-					if ((rc=ctx->txMgr->update(pb,ctx->ssvMgr,(unsigned)idx<<HPOP_SHIFT|HPOP_PURGE,ssv,lhdr+lpiece))==RC_OK) {
-						ctx->ssvMgr->reuse(pb,ses,false); pb.release(ses); newAddr=PageAddr::noAddr;
-						if ((rc=persistData(NULL,ssv+lhdr,lpiece,newAddr,ll,&PageAddr::noAddr,&pb))==RC_TRUE) rc=RC_OK;
-					}
-					ses->free(ssv); if (rc!=RC_OK) break;
-					htype=HO_BLOB; startAddr=newAddr; 
-				}
-				fSSVLOB=true;
-			}
-			if (epos<pos+lpiece) {
-				ltail=unsigned(pos+lpiece-epos); 
-				if ((tail=(byte*)ses->malloc(ltail+sizeof(HeapPageMgr::HeapModEdit)))==NULL ||
-					(psb=new(ses) StreamBuf(tail,ltail,(ValueType)v.type,ses))==NULL) {rc=RC_NOMEM; break;}
-				memcpy(tail,(byte*)(hobj+1)+lpiece-ltail,ltail);
-			} else if ((lnew=hp->totalFree())>(htype==HO_SSVALUE?PageAddrSize*2:0)) {
-				if (lnew>=left) lnew=left; else if (htype==HO_SSVALUE) lnew-=PageAddrSize*2;
-				size_t l=sizeof(HeapPageMgr::HeapModEdit)+lnew;
-				if (l>lbuf && (buf=buf==NULL?(byte*)ses->malloc(lbuf=l):(byte*)ses->realloc(buf,lbuf=l))==NULL)
-					{rc=RC_NOMEM; break;}
-				HeapPageMgr::HeapModEdit *he=(HeapPageMgr::HeapModEdit*)buf;
-				he->shift=ushort(lpiece+lhdr-sizeof(HeapPageMgr::HeapObjHeader)); he->dscr=0;
-				he->newPtr.len=(ushort)lnew; he->newPtr.offset=sizeof(HeapPageMgr::HeapModEdit);
-				he->oldPtr.len=0; he->oldPtr.offset=he->newPtr.offset+ushort(lnew);
-				memcpy(buf+he->newPtr.offset,p,lnew); p+=lnew; left-=lnew;
-				if ((rc=ctx->txMgr->update(pb,ctx->ssvMgr,(unsigned)idx<<HPOP_SHIFT|HPOP_EDIT,buf,l))!=RC_OK) break;
-			}
-			if (left>0 && ((rc=persistData(psb,p,left,newAddr,ll,&addr))==RC_OK || rc==RC_TRUE)) {
-				HeapPageMgr::HeapModEdit *he=(HeapPageMgr::HeapModEdit*)abuf;
-				if (htype==HO_SSVALUE) {
-					he->newPtr.len=PageAddrSize*2; he->oldPtr.len=he->shift=0; he->dscr=HO_SSVALUE<<8|HO_BLOB;
-					he->newPtr.offset=he->oldPtr.offset=sizeof(HeapPageMgr::HeapModEdit);
-					memcpy(abuf+he->newPtr.offset,&PageAddr::noAddr,PageAddrSize);
-					memcpy(abuf+he->newPtr.offset+PageAddrSize,&newAddr,PageAddrSize); 
-				} else {
-					he->newPtr.len=he->oldPtr.len=PageAddrSize; he->dscr=0;
-					he->shift=ushort(offsetof(HeapPageMgr::HeapLOB,next)-sizeof(HeapPageMgr::HeapObjHeader));
-					he->oldPtr.offset=(he->newPtr.offset=sizeof(HeapPageMgr::HeapModEdit))+PageAddrSize;
-					memcpy(abuf+he->newPtr.offset,&newAddr,PageAddrSize); memcpy(abuf+he->oldPtr.offset,&addr,PageAddrSize);
-				}
-				rc=ctx->txMgr->update(pb,ctx->ssvMgr,(unsigned)idx<<HPOP_SHIFT|HPOP_EDIT,abuf,sizeof(abuf));
-			}
-			if (psb!=NULL) {
-				if (rc==RC_OK) {
-					memmove(tail+sizeof(HeapPageMgr::HeapModEdit),tail,ltail);
-					HeapPageMgr::HeapModEdit *he=(HeapPageMgr::HeapModEdit*)tail;
-					he->newPtr.offset=he->oldPtr.offset=sizeof(HeapPageMgr::HeapModEdit);
-					he->newPtr.len=0; he->oldPtr.len=ushort(ltail);
-					he->dscr=0; he->shift=ushort(lpiece-ltail+lhdr-sizeof(HeapPageMgr::HeapObjHeader)); 
-					rc=ctx->txMgr->update(pb,ctx->ssvMgr,(unsigned)idx<<HPOP_SHIFT|HPOP_EDIT,tail,ltail+sizeof(HeapPageMgr::HeapModEdit));
-				}
-				psb->destroy();
-			}
-			break;
-		}
-		if (!fSetAddr) {prevAddr.pageID=hp->hdr.pageID; prevAddr.idx=idx;}
-		else if (!nextAddr.defined()) {nextAddr.pageID=hp->hdr.pageID; nextAddr.idx=idx;}
-	}
-	if (fSetAddr && rc==RC_OK) {
-		assert(prevAddr.defined());
-		if (!pb.isNull()) ctx->ssvMgr->reuse(pb,ses,false,true);
-		if (pb.getPage(prevAddr.pageID,ctx->ssvMgr,PGCTL_XLOCK,ses)==NULL) rc=RC_NOTFOUND;
-		else {
-			const HeapPageMgr::HeapPage *hp=(const HeapPageMgr::HeapPage*)pb->getPageBuf();
-			const HeapPageMgr::HeapObjHeader *hobj=hp->getObject(hp->getOffset(prevAddr.idx));
-			if (hobj==NULL || (hobj->descr&HOH_DELETED)!=0 || hobj->getType()!=HO_BLOB) rc=RC_CORRUPTED;
-			else {
-				HeapPageMgr::HeapModEdit *he=(HeapPageMgr::HeapModEdit*)abuf;
-				he->shift=ushort(offsetof(HeapPageMgr::HeapLOB,next)-sizeof(HeapPageMgr::HeapObjHeader));
-				he->newPtr.len=he->oldPtr.len=PageAddrSize; he->dscr=0;
-				he->oldPtr.offset=(he->newPtr.offset=sizeof(HeapPageMgr::HeapModEdit))+PageAddrSize;
-				memcpy(abuf+he->newPtr.offset,&nextAddr,PageAddrSize);
-				memcpy(abuf+he->oldPtr.offset,((HeapPageMgr::HeapLOB*)hobj)->next,PageAddrSize);
-				rc=ctx->txMgr->update(pb,ctx->ssvMgr,(unsigned)idx<<HPOP_SHIFT|HPOP_EDIT,abuf,sizeof(abuf));
-			}
-		}
-	}
-	ses->free(buf);
-	if (rc==RC_OK) {ctx->ssvMgr->reuse(pb,ses,false,true); pb.release(ses); len+=v.length; len-=v.edit.length;}
-	return rc!=RC_OK?rc:fSSVLOB?RC_TRUE:fAddrChanged?RC_FALSE:RC_OK;
 }
 
 RC QueryPrc::deleteData(const PageAddr& start,Session *ses,PBlockP *pbp)

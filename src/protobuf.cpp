@@ -158,7 +158,7 @@ static const MODOP modOp[STMT_OP_ALL] =
 static	const uint32_t requiredFields[] = {0, 3, 0, 1, 1, 0, 1, 3, 3, 4, 7, 0, 1, 1, 0, 0, 3, 0, 0};
 static	const uint32_t repeatedFields[] = {0x7FC, 0, 16, 0, 2, 2, 0, 0, 2, 0, 0, 0, 12, 14, 0, 0, 0, 2, 0};
 
-uint64_t EncodePB::length(const Value& v,bool fArray)
+uint64_t EncodePB::length(const Value& v,uint8_t vty)
 {
 	uint64_t l=0ULL,ll; uint32_t u; uint64_t u64; const Value *cv;
 	switch (v.type) {
@@ -188,25 +188,30 @@ uint64_t EncodePB::length(const Value& v,bool fArray)
 	case VT_COLLECTION:
 		if (v.isNav()) {
 			l=v.nav->count(); l=1+afy_len32(l);
-			for (cv=v.nav->navigate(GO_FIRST); cv!=NULL; cv=v.nav->navigate(GO_NEXT)) {ll=length(*cv,true); l+=1+afy_len64(ll)+ll;}
-			if (fArray) return l; break;
+			for (cv=v.nav->navigate(GO_FIRST); cv!=NULL; cv=v.nav->navigate(GO_NEXT)) {ll=length(*cv,VT_ELT); l+=1+afy_len64(ll)+ll;}
+			if (vty==VT_VARRAY) return l; break;
 		}
 	case VT_RANGE: case VT_STRUCT:
 		l=1+afy_len32(v.length);
-		for (u=0; u<v.length; u++) {ll=length(v.varray[u],v.op!=VT_STRUCT); l+=1+afy_len64(ll)+ll;}
-		if (fArray) return l; break;
+		for (u=0; u<v.length; u++) {ll=length(v.varray[u],v.type==VT_COLLECTION?VT_ELT:v.type==VT_STRUCT?VT_FLD:VT_MIN); l+=1+afy_len64(ll)+ll;}
+		if (vty==VT_VARRAY) return l; break;
 	case VT_MAP:
+		//???
+		return 0ULL;
+	case VT_ARRAY:
 		//???
 		return 0ULL;
 	case VT_CURRENT: l=1; break;
 	}
 	uint32_t tg=tag(v); if ((tg&7)==2) l+=afy_len64(l);
-	l+=fArray?v.eid!=~0u?afy_len16(EID_TAG)+afy_len32(v.eid):0:length(v.property)+(v.meta!=0?afy_len16(META_TAG)+afy_len8(v.meta):0);
+	if (vty==VT_ELT) {if (v.eid!=~0u) l+=afy_len16(EID_TAG)+afy_len32(v.eid);}
+	else if (vty==VT_FULL||vty==VT_FLD) l+=length(v.property)+(v.meta!=0?afy_len16(META_TAG)+afy_len8(v.meta):0);
 	return l+afy_len16(tg)+afy_len16(TYPE_TAG)+1;
 }
 
 uint32_t EncodePB::length(uint32_t id,bool fProp)
 {
+	if (id==STORE_INVALID_URIID) return 0;
 	if (id!=STORE_OWNER && (!fProp || id>MAX_BUILTIN_URIID)) {
 		IDCache& ca=fProp?propCache:identCache; RC rc;
 		if (BIN<uint32_t>::find(id,ca.ids,ca.nids)==NULL) {
@@ -256,7 +261,7 @@ void EncodePB::cleanup()
 	sidx=0; cache.truncate(TR_REL_ALL);
 	propCache.ids=propCache.newIds=NULL; propCache.nids=propCache.nnids=0;
 	identCache.ids=identCache.newIds=NULL; identCache.nids=identCache.nnids=0;
-	lRes=lRes2=0; pRes=pRes2=NULL; pinSize=0; copied=NULL; lCopied=xCopied=0;
+	lRes=lRes2=0; pRes=pRes2=NULL; oSize=0; copied=NULL; lCopied=xCopied=0;
 	code=0; fDone=false;
 }
 
@@ -324,14 +329,14 @@ RC EncodePB::encode(unsigned char *buf,size_t& lbuf)
 				switch (os.state) {
 				default: goto error;
 				case 0:
-					if (os.pin->id.isPID()) {sz=length(os.pin->id); pinSize=1+afy_len16(sz)+sz;} else pinSize=0;
+					if (os.pin->id.isPID()) {sz=length(os.pin->id); oSize=1+afy_len16(sz)+sz;} else oSize=0;
 					if (rtt!=RTT_PIDS) {
-						sz=os.pin->mode&(PIN_NO_REPLICATION|PIN_NOTIFY|PIN_REPLICATED|PIN_HIDDEN); if (sz!=0) pinSize+=1+afy_len32(sz);
-						if (os.pin->nProperties!=0) pinSize+=1+afy_len32(os.pin->nProperties);
+						sz=os.pin->mode&(PIN_NO_REPLICATION|PIN_NOTIFY|PIN_REPLICATED|PIN_HIDDEN); if (sz!=0) oSize+=1+afy_len32(sz);
+						if (os.pin->nProperties!=0) oSize+=1+afy_len32(os.pin->nProperties);
 						if (os.pin->properties!=NULL) for (i=0; i<os.pin->nProperties; i++)
-							{sz64=length(os.pin->properties[i],false); pinSize+=1+afy_len64(sz64)+sz64;}		// save ???
+							{sz64=length(os.pin->properties[i],VT_FULL); oSize+=1+afy_len64(sz64)+sz64;}		// save ???
 					}
-					if (os.fCid && sidx==0) pinSize+=1+afy_len64(cid);
+					if (os.fCid && sidx==0) oSize+=1+afy_len64(cid);
 					os.state++; os.idx=0;
 				case 1:
 					while (os.idx<propCache.nnids)
@@ -341,7 +346,7 @@ RC EncodePB::encode(unsigned char *buf,size_t& lbuf)
 					while (os.idx<identCache.nnids)
 						{setID(identCache.newIds[os.idx++],false); push_state(ST_STRMAP,NULL,STRIDENT_TAG); goto again;}
 					os.idx=0; identCache.nnids=0;
-					os.state++; VAR_OUT(PIN_TAG,afy_enc64,pinSize);
+					os.state++; VAR_OUT(PIN_TAG,afy_enc64,oSize);
 				case 3:
 					os.state++;
 					if (os.pin->id.isPID()) {push_state(ST_PID,&os.pin->id,ID_TAG); continue;}
@@ -364,15 +369,25 @@ RC EncodePB::encode(unsigned char *buf,size_t& lbuf)
 				switch (os.state) {
 				default: goto error;
 				case 0:
-					sz64=length(*os.pv,os.fArray);
-					if (os.fCid && sidx==0) sz64+=1+afy_len64(cid);
-					os.state++; VAR_OUT(os.tag,afy_enc64,sz64);
+					if (sidx==0) {os.tag=VALUE_TAG; os.vtype=VT_FULL;} oSize=length(*os.pv,os.vtype); 
+					if (sidx!=0) {os.state=3; continue;} if (os.fCid) oSize+=1+afy_len64(cid);
+					os.state++; os.idx=0;
 				case 1:
-					os.state++; ty=wtype(*os.pv); VAR_OUT(TYPE_TAG,afy_enc8,ty);
+					while (os.idx<propCache.nnids)
+						{setID(propCache.newIds[os.idx++]); push_state(ST_STRMAP,NULL,STRPROP_TAG); goto again;}
+					os.state++; os.idx=0; propCache.nnids=0;
 				case 2:
-					os.state++; 
-					if (!os.fArray) VAR_OUT(PROPERTY_TAG,afy_enc32,os.pv->property);
+					while (os.idx<identCache.nnids)
+						{setID(identCache.newIds[os.idx++],false); push_state(ST_STRMAP,NULL,STRIDENT_TAG); goto again;}
+					os.state++; os.idx=0; identCache.nnids=0;
 				case 3:
+					os.state++; VAR_OUT(os.tag,afy_enc64,oSize);
+				case 4:
+					os.state++; ty=wtype(*os.pv); VAR_OUT(TYPE_TAG,afy_enc8,ty);
+				case 5:
+					os.state++; 
+					if ((os.vtype==VT_FULL||os.vtype==VT_FLD) && os.pv->property!=STORE_INVALID_URIID) VAR_OUT(PROPERTY_TAG,afy_enc32,os.pv->property);
+				case 6:
 					tg=tag(*os.pv); os.state++; lCopied=0;
 					switch (os.pv->type) {
 					case VT_ANY: break;
@@ -443,26 +458,27 @@ RC EncodePB::encode(unsigned char *buf,size_t& lbuf)
 						push_state(ST_STREAM,os.pv->stream.is,tg); continue;
 					case VT_MAP:
 						push_state(ST_MAP,os.pv,tg); continue;
+					case VT_ARRAY:
 					default:
 						//???
 						break;
 					}
-				case 4:
+				case 7:
 					os.state++; lCopied=0;
 					if ((os.pv->type==VT_FLOAT||os.pv->type==VT_DOUBLE) && os.pv->qval.units!=Un_NDIM)
 						VAR_OUT(UNITS_TAG,afy_enc16,os.pv->qval.units);
-				case 5:
+				case 8:
 					os.state++;
-					if (os.fArray) {
+					if (os.vtype==VT_ELT) {
 						if (os.pv->eid!=~0u) VAR_OUT(EID_TAG,afy_enc32,os.pv->eid);
-					} else {
+					} else if (os.vtype==VT_FULL||os.vtype==VT_FLD) {
 						if (os.pv->meta!=0) VAR_OUT(META_TAG,afy_enc8,os.pv->meta);
 					}
-				case 6:
-					os.state++; if (os.fCid && sidx==0) VAR_OUT(CID_TAG,afy_enc64,cid);
-				case 7:
-					if (sidx==0) {fDone=true; lbuf-=po-buf; return RC_OK;}
-					break;
+				case 9:
+					if (sidx!=0) break;
+					os.state++; if (os.fCid) VAR_OUT(CID_TAG,afy_enc64,cid);
+				case 10:
+					fDone=true; lbuf-=po-buf; return RC_OK;
 				}
 				break;
 			case ST_VARRAY:
@@ -470,7 +486,7 @@ RC EncodePB::encode(unsigned char *buf,size_t& lbuf)
 				default: goto error;
 				case 0:
 					assert(os.pv->type==VT_COLLECTION||os.pv->type==VT_RANGE||os.pv->type==VT_STRUCT);
-					os.state++; sz64=length(*os.pv,os.pv->type!=VT_STRUCT); VAR_OUT(os.tag,afy_enc64,sz64);
+					os.state++; sz64=length(*os.pv,VT_VARRAY); VAR_OUT(os.tag,afy_enc64,sz64);
 				case 1:
 					sz=os.pv->type==VT_COLLECTION&&os.pv->isNav()?os.pv->nav->count():os.pv->length;
 					os.state++; VAR_OUT(VARRAY_L_TAG,afy_enc32,sz);
@@ -479,15 +495,15 @@ RC EncodePB::encode(unsigned char *buf,size_t& lbuf)
 					if (os.pv->type!=VT_COLLECTION||!os.pv->isNav()) os.idx=0;
 					else {
 						if ((cv=os.pv->nav->navigate(GO_FIRST))==NULL) break;
-						push_state(ST_VALUE,cv,VARRAY_V_TAG,true); continue;
+						push_state(ST_VALUE,cv,VARRAY_V_TAG,VT_ELT); continue;
 					}
 				case 3:
 					if (os.pv->type==VT_COLLECTION && os.pv->isNav()) {
 						// release after each?
-						while ((cv=os.pv->nav->navigate(GO_NEXT))!=NULL) {push_state(ST_VALUE,cv,VARRAY_V_TAG,true); goto again;}
+						while ((cv=os.pv->nav->navigate(GO_NEXT))!=NULL) {push_state(ST_VALUE,cv,VARRAY_V_TAG,VT_ELT); goto again;}
 						os.pv->nav->navigate(GO_FINDBYID,STORE_COLLECTION_ID);
 					} else while (os.idx<os.pv->length)
-						{push_state(ST_VALUE,&os.pv->varray[os.idx++],VARRAY_V_TAG,os.pv->type!=VT_STRUCT); goto again;}
+						{push_state(ST_VALUE,&os.pv->varray[os.idx++],VARRAY_V_TAG,os.pv->type==VT_COLLECTION?VT_ELT:os.pv->type==VT_STRUCT?VT_FLD:VT_MIN); goto again;}
 					break;
 				}
 				break;
@@ -496,7 +512,7 @@ RC EncodePB::encode(unsigned char *buf,size_t& lbuf)
 				default: goto error;
 				case 0:
 					assert(os.pv->type==VT_MAP);
-					os.state++; sz64=length(*os.pv,false); VAR_OUT(os.tag,afy_enc64,sz64);
+					os.state++; sz64=length(*os.pv,VT_VARRAY); VAR_OUT(os.tag,afy_enc64,sz64);		// VT_MAP?
 				case 1:
 					sz=os.pv->map->count();
 					os.state++; VAR_OUT(VMAP_L_TAG,afy_enc32,sz);
@@ -770,7 +786,7 @@ RC DecodePB::decode(const unsigned char *in,size_t lbuf,IMemAlloc *ra)
 				if (stype!=SITY_DUMPLOAD) set_skip(); else push_state(ST_RESPAGES,NULL,in-buf0);
 				continue;
 			case VALUE_TAG:
-				memset(&u,0,sizeof(u)); push_state(ST_VALUE,NULL,in-buf0); continue;
+				memset(&u,0,sizeof(u)); push_state(ST_VALUE,initV(&u.val.v),in-buf0); continue;
 			}
 		case ST_STRMAP:
 			switch (is.tag) {
@@ -812,7 +828,7 @@ RC DecodePB::decode(const unsigned char *in,size_t lbuf,IMemAlloc *ra)
 			switch (is.tag) {
 			default: set_skip(); continue;
 			case TYPE_TAG: if (val>=VT_CURRENT) return RC_CORRUPTED; is.pv->type=(uint8_t)val; break;
-			case PROPERTY_TAG: if (val>=STORE_MAX_URIID) return RC_CORRUPTED; is.pv->property=map((uint32_t)val); break;
+			case PROPERTY_TAG: if (val<=STORE_MAX_URIID) is.pv->property=map((uint32_t)val); else return RC_CORRUPTED; break;
 			case VALUE_OP_TAG: if (val>=OP_ALL) return RC_CORRUPTED; is.pv->op=(uint8_t)val; break;
 			case EID_TAG: is.pv->eid=(ElementID)val; break;
 			case META_TAG: is.pv->meta=(uint8_t)val; break;
@@ -1035,7 +1051,7 @@ RC ProcessStream::next(const unsigned char *in,size_t lbuf)
 						if (!u.pin.id.isPID()) rc=RC_INVPARAM;
 						else {
 							PINx pex(ses,u.pin.id); 
-							if ((rc=ses->getStore()->queryMgr->apply(EvalCtx(ses),stmtOp[u.pin.op],pex,u.pin.properties,u.pin.nProperties,MODE_CLASS))==RC_OK && outStr!=NULL)
+							if ((rc=ses->getStore()->queryMgr->apply(EvalCtx(ses),stmtOp[u.pin.op],pex,u.pin.properties,u.pin.nProperties,MODE_DEVENT))==RC_OK && outStr!=NULL)
 								rc2=pinOut(&pex,u.pin.cid,u.pin.fCid,u.pin.rtt);
 						}
 						if (outStr!=NULL) {Result res={rc,1,(MODOP)u.pin.op}; rc=resultOut(res,u.pin.cid,u.pin.fCid);}
@@ -1050,11 +1066,12 @@ RC ProcessStream::next(const unsigned char *in,size_t lbuf)
 					if (u.stmt.stmt==NULL) {
 						//compile here
 					}
-					{ICursor *ic=NULL; Result res={RC_OK,0,modOp[u.stmt.stmt->getOp()]};
-					if ((rc=u.stmt.stmt->execute(outStr!=NULL&&u.stmt.rtt!=RTT_COUNT?&ic:(ICursor**)0,u.stmt.params,u.stmt.nParams,u.stmt.limit,u.stmt.offset,u.stmt.mode,&res.cnt))==RC_OK && ic!=NULL) {
+					{Cursor *cr=NULL; Result res={RC_OK,0,modOp[u.stmt.stmt->getOp()]};
+					Values vpar(u.stmt.params,u.stmt.nParams); EvalCtx ectx(ses,NULL,0,NULL,0,&vpar,1,NULL,NULL,u.stmt.stmt->getOp()==STMT_INSERT||u.stmt.stmt->getOp()==STMT_UPDATE?ECT_INSERT:ECT_QUERY);
+					if ((rc=u.stmt.stmt->execute(ectx,NULL,u.stmt.limit,u.stmt.offset,u.stmt.mode,&res.cnt,TXI_DEFAULT,outStr!=NULL&&u.stmt.rtt!=RTT_COUNT?&cr:(Cursor**)0))==RC_OK && rc==RC_OK) {
 						assert(obuf!=NULL); RTTYPE rtt=u.stmt.rtt; const PINx *ret=NULL; Value w;
-						if (rtt==RTT_DEFAULT) {SelectType st=((Cursor*)ic)->selectType(); rtt=st==SEL_COUNT?RTT_COUNT:st==SEL_PINSET||st==SEL_AUGMENTED||st==SEL_COMPOUND?RTT_PINS:RTT_VALUES;}
-						while (rc==RC_OK && (rc=((Cursor*)ic)->next(ret))==RC_OK) {
+						if (rtt==RTT_DEFAULT) {SelectType st=cr->selectType(); rtt=st==SEL_COUNT?RTT_COUNT:st==SEL_PINSET||st==SEL_AUGMENTED||st==SEL_COMPOUND?RTT_PINS:RTT_VALUES;}
+						while (rc==RC_OK && (rc=cr->next(ret))==RC_OK) {
 							switch (rtt) {
 							case RTT_DEFAULT:
 							case RTT_COUNT: break;
@@ -1074,7 +1091,7 @@ RC ProcessStream::next(const unsigned char *in,size_t lbuf)
 								break;
 							}
 						}
-						res.cnt=ic->getCount(); ic->destroy(); if (rc==RC_EOF) rc=RC_OK;
+						res.cnt=cr->getCount(); cr->destroy(); if (rc==RC_EOF) rc=RC_OK;
 					}
 					if (outStr!=NULL) {res.rc=rc; rc=resultOut(res,u.stmt.cid,u.stmt.fCid);}
 					truncate();}
@@ -1123,7 +1140,7 @@ RC ProcessStream::pinOut(PIN *pin,uint64_t cid,bool fCid,RTTYPE rtt)
 {
 	RC rc=RC_OK;
 	if (rtt!=RTT_COUNT) {
-		if (rtt==RTT_SRCPINS && (pin->meta&PMT_CLASS)!=0) ses->getStore()->queryMgr->getClassInfo(ses,pin);
+		if (rtt==RTT_SRCPINS && (pin->meta&PMT_DATAEVENT)!=0) ses->getStore()->queryMgr->getDataEventInfo(ses,pin);
 		enc.set(pin,cid,fCid,rtt);
 		do if ((rc=enc.encode(obuf+lobuf-obleft,obleft))==RC_OK && obleft==0) {
 			RC rc2=outStr->next(obuf,lobuf); obleft=lobuf; if (rc2!=RC_EOF && rc2!=RC_OK) rc=rc2;
@@ -1152,14 +1169,16 @@ RC ProcessStream::commitPINs()
 	return rc;
 }
 
-RC Stmt::execute(IStreamOut*& result,const Value *params,unsigned nParams,unsigned nReturn,unsigned nSkip,unsigned mode,TXI_LEVEL txi) const
+RC Stmt::execute(IStreamOut*& result,const Value *params,unsigned nParams,unsigned nReturn,unsigned nSkip,unsigned md,TXI_LEVEL txi) const
 {
 	try {
-		result=NULL; ICursor *ir; RC rc; uint64_t cnt=0;
+		result=NULL; Cursor *cr; uint64_t nProcessed=0;
 		Session *ses=Session::getSession(); if (ses==NULL) return RC_NOSESSION; if (ses->getStore()->inShutdown()) return RC_SHUTDOWN;
-		if ((rc=execute(&ir,params,nParams,nReturn,nSkip,mode,&cnt,txi))!=RC_OK) return rc;
-		ProtoBufStreamOut *pb=new(ses) ProtoBufStreamOut(ses,(Cursor*)ir); if (pb==NULL) {ir->destroy(); return RC_NOMEM;}
-		result=pb; return RC_OK;
+		TxGuard txg(ses); ses->resetAbortQ(); 
+		Values vpar(params,nParams); EvalCtx ectx(ses,NULL,0,NULL,0,&vpar,1,NULL,NULL,op==STMT_INSERT||op==STMT_UPDATE?ECT_INSERT:ECT_QUERY);
+		RC rc=execute(ectx,NULL,nReturn,nSkip,md,&nProcessed,txi,(Cursor**)&cr); 
+		if (rc==RC_OK) {ProtoBufStreamOut *pb=new(ses) ProtoBufStreamOut(ses,cr); result=pb; if (pb==NULL) {cr->destroy(); rc=RC_NOMEM;}}
+		ses->releaseAllLatches(); return rc;
 	} catch (RC rc) {return rc;} catch (...) {report(MSG_ERROR,"Exception in IStmt::execute(IStream*&,...)\n"); return RC_INTERNAL;}
 }
 		
@@ -1172,9 +1191,16 @@ RC Session::createInputStream(IStreamIn *&in,IStreamIn *out,size_t lo)
 RC ServiceEncodePB::invoke(IServiceCtx *sctx,const Value& inp,Value& out,unsigned& mode)
 {
 	if (out.type!=VT_BSTR || out.bstr==NULL || out.length==0 || (mode&ISRV_READ)!=0) return RC_INVPARAM;
-	if (os.type==ST_PBSTREAM && os.state==0) {
-		Value v; v.set(MIME_PROTOBUF,sizeof(MIME_PROTOBUF)-1); v.setPropID(PROP_SPEC_CONTENTTYPE); 
-		RC rc=sctx->getCtxPIN()->modify(&v,1); if (rc!=RC_OK) return rc;
+	byte *p=(byte*)out.bstr; size_t l=out.length; RC rc;
+	if (fInit) {
+		if (os.type==ST_PBSTREAM && os.state==0 && (mode&ISRV_MOREOUT)==0) {
+			Value v; v.set(MIME_PROTOBUF,sizeof(MIME_PROTOBUF)-1); v.setPropID(PROP_SPEC_CONTENTTYPE); 
+			if ((rc=sctx->getCtxPIN()->modify(&v,1))!=RC_OK) return rc;
+		}
+		if ((rc=encode(p,l))!=RC_OK) return rc;
+		if (!fDone) {mode=mode&~ISRV_EOM|ISRV_MOREOUT|ISRV_KEEPINP; return RC_OK;}
+		fInit=false; mode&=~(ISRV_MOREOUT|ISRV_KEEPINP);
+		p+=out.length-(uint32_t)l;
 	}
 	if ((mode&ISRV_MOREOUT)!=0) mode&=~(ISRV_MOREOUT|ISRV_KEEPINP);
 	else if (inp.isEmpty()) {out.length=0; return RC_OK;}
@@ -1184,7 +1210,7 @@ RC ServiceEncodePB::invoke(IServiceCtx *sctx,const Value& inp,Value& out,unsigne
 	default: set(&inp); break;							// cid, rettype?
 	// flush, tx?
 	}
-	size_t l=out.length; RC rc=encode((byte*)out.bstr,l); if (rc!=RC_OK) return rc;
+	if ((rc=encode(p,l))!=RC_OK) return rc;
 	if (fDone) {
 		out.length-=(uint32_t)l;
 		if ((mode&ISRV_EOM)!=0) {
@@ -1199,7 +1225,7 @@ RC ServiceEncodePB::invoke(IServiceCtx *sctx,const Value& inp,Value& out,unsigne
 
 void ServiceEncodePB::cleanup(IServiceCtx *sctx,bool fDestroying)
 {
-	if (!fDestroying) EncodePB::cleanup();
+	if (!fDestroying) EncodePB::cleanup(); fInit=true;
 }
 
 RC ServiceDecodePB::invoke(IServiceCtx *sctx,const Value& inp,Value& out,unsigned& mode)

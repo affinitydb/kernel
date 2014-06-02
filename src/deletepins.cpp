@@ -24,7 +24,7 @@ Written by Mark Venguerov 2004-2014
 #include "queryprc.h"
 #include "startup.h"
 #include "netmgr.h"
-#include "classifier.h"
+#include "dataevent.h"
 #include "ftindex.h"
 #include "blob.h"
 #include "maps.h"
@@ -36,7 +36,7 @@ RC QueryPrc::deletePINs(const EvalCtx& ectx,const PIN *const *pins,const PID *pi
 	if (pins==NULL&&pids==NULL || nPins==0) return RC_OK; 
 	Session *const ses=ectx.ses; if (ses==NULL) return RC_NOSESSION; if (ses->isRestore()) return RC_OTHER;
 	if (ctx->isServerLocked()) return RC_READONLY; if (ses->inReadTx()) return RC_READTX;
-	ClassResult clr(ses,ctx); TxSP tx(ses); RC rc=tx.start(TXI_DEFAULT,nPins==1?TX_ATOMIC:0); if (rc!=RC_OK) return rc; 
+	DetectedEvents clr(ses,ctx); TxSP tx(ses); RC rc=tx.start(TXI_DEFAULT,nPins==1?TX_ATOMIC:0); if (rc!=RC_OK) return rc; 
 	bool fRepSes=ses->isReplication(); PINx cb(ses); if (pcb!=NULL && pcb->pb.isNull()) pcb=NULL;
 	const size_t threshold=ceil(size_t((HeapPageMgr::contentSize(ctx->bufMgr->getPageSize())-sizeof(PageOff))*(1.-ctx->theCB->pctFree)),HP_ALIGN);
 	DynOArray<PID> parts((MemAlloc*)ses); DynArray<Value> SSVs((MemAlloc*)ses); StackAlloc sft(ses); Value *vals=NULL; unsigned nvals=0;
@@ -68,9 +68,9 @@ RC QueryPrc::deletePINs(const EvalCtx& ectx,const PIN *const *pins,const PID *pi
 			}
 			if (pcb->hpin==NULL || pcb->hpin->hdr.getType()!=HO_PIN) break;
 			const HeapPageMgr::HeapPage *hp=(const HeapPageMgr::HeapPage*)pcb->pb->getPageBuf(); const HeapPageMgr::HeapV *hprop;
-			ushort pinDescr=pcb->hpin->hdr.descr; unsigned nProps=pcb->hpin->nProps; ClassID cid=STORE_INVALID_URIID;
+			ushort pinDescr=pcb->hpin->hdr.descr; unsigned nProps=pcb->hpin->nProps; DataEventID cid=STORE_INVALID_URIID;
 			if ((pcb->hpin->meta&PMT_COMM)!=0) 	ses->removeServiceCtx(pid);
-			if ((pcb->hpin->meta&PMT_CLASS)!=0 && ((mode&MODE_CLASS)==0 || (hprop=pcb->hpin->findProperty(PROP_SPEC_OBJID))!=NULL &&
+			if ((pcb->hpin->meta&PMT_DATAEVENT)!=0 && ((mode&MODE_DEVENT)==0 || (hprop=pcb->hpin->findProperty(PROP_SPEC_OBJID))!=NULL &&
 				pcb->loadVH(v,hprop,0,ses)==RC_OK && v.type==VT_URIID && ((cid=v.uid)==CLASS_OF_CLASSES||cid==CLASS_OF_PACKAGES||cid==CLASS_OF_NAMED))) throw RC_NOACCESS;
 			if (!fPurge && (pinDescr&HOH_DELETED)!=0) break;
 			if ((mode&MODE_CHECK_STAMP)!=0 && pins!=NULL && np<nPins) {
@@ -168,9 +168,9 @@ RC QueryPrc::deletePINs(const EvalCtx& ectx,const PIN *const *pins,const PID *pi
 				ctx->txMgr->update(pcb->pb,ctx->heapMgr,(unsigned)pcb->addr.idx<<HPOP_SHIFT|(fPurge?HPOP_PURGE:HPOP_DELETE)))!=RC_OK) throw rc;
 
 			if ((pinDescr&HOH_DELETED)==0) {
-				if ((rc=ctx->classMgr->classify(pcb,clr,ses))!=RC_OK || 
-					clr.nClasses>0 && (rc=ctx->classMgr->index(ses,pcb,clr,!fPurge?CI_SDELETE:(pinDescr&HOH_DELETED)==0?CI_DELETE:CI_PURGE))!=RC_OK ||
-					clr.nActions!=0 && (rc=clr.invokeActions(ses,pcb,CI_DELETE,&ectx))!=RC_OK) throw rc;
+				if ((rc=ctx->classMgr->detect(pcb,clr,ses))!=RC_OK || 
+					clr.ndevs>0 && (rc=ctx->classMgr->updateIndex(ses,pcb,clr,!fPurge?CI_SDELETE:(pinDescr&HOH_DELETED)==0?CI_DELETE:CI_PURGE))!=RC_OK ||
+					clr.nActions!=0 && (rc=clr.publish(ses,pcb,CI_DELETE,&ectx))!=RC_OK) throw rc;
 			}
 			if (pcb==&cb) {pcb->pb.release(ses); pcb=NULL;}
 
@@ -193,7 +193,7 @@ RC QueryPrc::deletePINs(const EvalCtx& ectx,const PIN *const *pins,const PID *pi
 				if (rc!=RC_OK) throw rc;
 			}
 			if ((pinDescr&HOH_DELETED)==0) {
-				if (cid!=STORE_INVALID_URIID) {ClassDrop *cd=new(ses) ClassDrop(cid); if (cd==NULL || ses->addOnCommit(cd)!=RC_OK) throw RC_NOMEM;}
+				if (cid!=STORE_INVALID_URIID) {DropDataEvent *cd=new(ses) DropDataEvent(cid); if (cd==NULL || ses->addOnCommit(cd)!=RC_OK) throw RC_NOMEM;}
 				if (ftl!=NULL) {
 					if ((rc=ctx->ftMgr->process(*ftl,pid,fti.docID))!=RC_OK) throw rc;
 					sft.truncate(TR_REL_ALL); ftl=NULL;
@@ -202,22 +202,22 @@ RC QueryPrc::deletePINs(const EvalCtx& ectx,const PIN *const *pins,const PID *pi
 //			if (replication!=NULL) {}
 			if (fNotify) {
 				IStoreNotification::NotificationEvent evt={pid,NULL,0,ndata,nProps,fRepSes};
-				if ((evt.events=(IStoreNotification::EventData*)ses->malloc((clr.nClasses+1)*sizeof(IStoreNotification::EventData)))!=NULL) {
+				if ((evt.events=(IStoreNotification::EventData*)ses->malloc((clr.ndevs+1)*sizeof(IStoreNotification::EventData)))!=NULL) {
 					evt.nEvents=0;
 					if ((pinDescr&HOH_NOTIFICATION)!=0) {
 						IStoreNotification::EventData& ev=(IStoreNotification::EventData&)evt.events[0];
 						ev.cid=STORE_INVALID_URIID; ev.type=IStoreNotification::NE_PIN_DELETED; evt.nEvents++;
 					}
-					if ((clr.notif&CLASS_NOTIFY_DELETE)!=0) for (i=0; i<clr.nClasses; i++) if ((clr.classes[i]->notifications&CLASS_NOTIFY_DELETE)!=0) {
+					if ((clr.notif&CLASS_NOTIFY_DELETE)!=0) for (i=0; i<clr.ndevs; i++) if ((clr.devs[i]->notifications&CLASS_NOTIFY_DELETE)!=0) {
 						IStoreNotification::EventData& ev=(IStoreNotification::EventData&)evt.events[evt.nEvents++];
-						ev.type=IStoreNotification::NE_CLASS_INSTANCE_REMOVED; ev.cid=clr.classes[i]->cid;
+						ev.type=IStoreNotification::NE_CLASS_INSTANCE_REMOVED; ev.cid=clr.devs[i]->cid;
 					}
 					try {ctx->queryMgr->notification->notify(&evt,1,ses->getTXID());} catch (...) {}
 					if (evt.events!=NULL) ses->free((void*)evt.events);
 				}
 				if (vals!=NULL) {freeV(vals,nvals,ses); vals=NULL; nvals=0;}
 			}
-			clr.nClasses=clr.nIndices=clr.notif=0;
+			clr.ndevs=clr.nIndices=clr.notif=0;
 			if ((unsigned)parts!=0 && (rc=deletePINs(ectx,NULL,&parts[0],parts,mode|MODE_CASCADE))!=RC_OK) throw rc;
 			if (fDelFwd) do {
 				cb=fwd;

@@ -60,8 +60,8 @@ using namespace Afy;
 #define	STARTUP_REDUCED_DURABILITY	0x0100											/**< no log flush on transaction commit for improved performance */
 #define	STARTUP_LOG_PREALLOC		0x0200											/**< pre-allocate log files */
 #define	STARTUP_TOUCH_FILE			0x0400											/**< change file access date if even only read access */
-#define STARTUP_NO_LOAD				0x0800											/**< don't load classes/timers/listeners until the first session is created */
-#define STARTUP_SAFE				0x1000											/**< disable classes/timers/listeners actions */
+#define STARTUP_NO_LOAD				0x0800											/**< don't load events/timers/listeners until the first session is created */
+#define STARTUP_SAFE				0x1000											/**< disable events/timers/listeners actions */
 
 #define	STARTUP_MODE_DESKTOP		0x0000											/**< database is running as a part of a desktop application */
 #define	STARTUP_MODE_SERVER			0x8000											/**< database is opened on a server */
@@ -115,7 +115,7 @@ public:
 	};
 	struct EventData {
 		NotificationEventType		type;
-		ClassID				cid;
+		DataEventID				cid;
 	};
 	/**
 	 * event descriptor

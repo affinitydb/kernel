@@ -27,7 +27,7 @@ Written by Mark Venguerov 2004-2014
 using namespace AfyKernel;
 
 FileMgr::CompletionPort FileMgr::CP;
-Pool	FileMgr::freeIODesc;
+LIFO	FileMgr::freeIODesc;
 
 struct AsyncWait : public SemData
 {

@@ -26,8 +26,8 @@ Written by Mark Venguerov 2004-2014
 #ifndef _EXPR_H_
 #define _EXPR_H_
 
+#include "modinfo.h"
 #include "pinex.h"
-#include "pin.h"
 
 using namespace Afy;
 
@@ -77,8 +77,9 @@ namespace AfyKernel
 #define	OP_RXREF		0x71
 #define	OP_NAMED_PROP	0x70
 #define	OP_NAMED_ELT	0x6F
-#define	OP_EXTCALL		0x6E
-#define	OP_SUBX			0x6D
+#define	OP_NAMED_PRM	0x6E
+#define	OP_EXTCALL		0x6D
+#define	OP_SUBX			0x6C
 
 #define	CND_EXISTS_R	0x2000
 #define	CND_FORALL_R	0x1000
@@ -143,7 +144,7 @@ struct RExpCtx : public DynArray<RxSht>
  */
 enum EvalCtxType
 {
-	ECT_QUERY, ECT_INSERT, ECT_CLASS, ECT_ACTION
+	ECT_QUERY, ECT_INSERT, ECT_DETECT, ECT_ACTION
 };
 
 /**
@@ -162,10 +163,11 @@ struct EvalCtx
 	const EvalCtx *const stack;
 	mutable EvalCtxType	ect;
 	mutable RExpCtx		*rctx;
-	EvalCtx(Session *s,EvalCtxType e=ECT_QUERY,const EvalCtx *st=NULL) : ma(s),ses(s),env(NULL),nEnv(0),vars(NULL),nVars(0),params(NULL),nParams(0),stack(st),ect(e),rctx(NULL) {}
-	EvalCtx(const EvalCtx& e,EvalCtxType et=ECT_QUERY) : ma(e.ma),ses(e.ses),env(e.env),nEnv(e.nEnv),vars(e.vars),nVars(e.nVars),params(e.params),nParams(e.nParams),stack(e.stack),ect(et),rctx(NULL) {}
-	EvalCtx(Session *s,PIN **en,unsigned ne,PIN **v,unsigned nV,const Values *par=NULL,unsigned nP=0,const EvalCtx *stk=NULL,MemAlloc *m=NULL,EvalCtxType e=ECT_QUERY)
-		: ma(m!=NULL?m:(MemAlloc*)s),ses(s),env(en),nEnv(ne),vars(v),nVars(nV),params(par),nParams(nP),stack(stk),ect(e),rctx(NULL) {}
+	const	ModProps	*modp;
+	EvalCtx(Session *s,EvalCtxType e=ECT_QUERY,const EvalCtx *st=NULL) : ma(s),ses(s),env(NULL),nEnv(0),vars(NULL),nVars(0),params(NULL),nParams(0),stack(st),ect(e),rctx(NULL),modp(NULL) {}
+	EvalCtx(const EvalCtx& e,EvalCtxType et=ECT_QUERY) : ma(e.ma),ses(e.ses),env(e.env),nEnv(e.nEnv),vars(e.vars),nVars(e.nVars),params(e.params),nParams(e.nParams),stack(e.stack),ect(et),rctx(NULL),modp(e.modp) {}
+	EvalCtx(Session *s,PIN **en,unsigned ne,PIN **v,unsigned nV,const Values *par=NULL,unsigned nP=0,const EvalCtx *stk=NULL,MemAlloc *m=NULL,EvalCtxType e=ECT_QUERY,const ModProps *mp=NULL)
+		: ma(m!=NULL?m:(MemAlloc*)s),ses(s),env(en),nEnv(ne),vars(v),nVars(nV),params(par),nParams(nP),stack(stk),ect(e),rctx(NULL),modp(mp) {}
 };
 
 class ExprPropCmp
@@ -195,6 +197,7 @@ public:
 	RC				decompile(ExprNode*&,MemAlloc *ses) const;
 	static	RC		calc(ExprOp op,Value& arg,const Value *moreArgs,int nargs,unsigned flags,const EvalCtx& ctx);
 	static	RC		calcAgg(ExprOp op,Value& res,const Value *more,int nargs,unsigned flags,const EvalCtx& ctx);
+	static	RC		calcHash(ExprOp op,Value& res,const Value *more,int nargs,unsigned flags,const EvalCtx& ctx);
 	static	RC		laNorm(ExprOp op,Value& arg,const Value *moreArgs,int nargs,unsigned flags,const EvalCtx& ctx);
 	static	RC		laTrace(ExprOp op,Value& arg,const Value *moreArgs,int nargs,unsigned flags,const EvalCtx& ctx);
 	static	RC		laTrans(ExprOp op,Value& arg,const Value *moreArgs,int nargs,unsigned flags,const EvalCtx& ctx);
@@ -228,6 +231,7 @@ private:
 	static	RC		laConvToDouble(Value& arg,MemAlloc *ma);
 	static	RC		laLUdec(Value &arg,unsigned *piv,double& det);
 	static	RC		laLUslv(double *b,const Value &lu,double *res,const unsigned *piv);
+	static	void	hashValue(const Value &v,unsigned flags,class SHA256& sha);
 	static	const	byte	compareCodeTab[];
 	friend	class	ExprCompileCtx;
 	friend	struct	AggAcc;
@@ -296,6 +300,7 @@ public:
 #define	CV_PROP		0x0008
 #define	CV_NDATA	0x0010
 #define	CV_CALL		0x0020
+#define	CV_CHNGD	0x0040
 
 /**
  * expression compilation context

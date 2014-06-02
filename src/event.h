@@ -42,13 +42,14 @@ enum EventHandlerState
 
 class EventHandler
 {
+	static	LIFO				evqPool;
+private:
 	volatile EventHandlerState	state;
 	volatile unsigned			flags;
 	RWLock						lock;
-	Queue<Event*>				evq;
-	static	Pool				evqPool;
+	//FIFO<Event*>				evq;
 public:
-	EventHandler() : state(EHS_ENTRY),flags(0),evq(evqPool) {}
+	EventHandler() : state(EHS_ENTRY),flags(0)/*,evq(evqPool)*/ {}
 	RC addEvent(unsigned idx/*,event descr*/) {
 		RWLockP lck(&lock,RW_S_LOCK);
 		if ((flags&EH_BLOCK_EVENTS)!=0) return RC_FALSE;

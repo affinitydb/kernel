@@ -40,7 +40,7 @@ Written by Mark Venguerov, Michael Andronov 2004 - 2012
 using namespace AfyKernel;
 
 /* __APPLE__ specific ... */
-Pool AsyncReqQ::lioReqs;
+LIFO AsyncReqQ::lioReqs;
 AsyncReqQ FileMgr::lioAQueue; //track for outstanding I/O(s).
  
 namespace AfyKernel
@@ -104,7 +104,7 @@ AIOElt * unchain(AIOElt *elt){
 
 static sigset_t sigSIO;
 
-Pool FileMgr::freeIORequests;
+LIFO FileMgr::freeIORequests;
 class IOCompletionRequest : public Request
 {
        myaio			*const	aio;

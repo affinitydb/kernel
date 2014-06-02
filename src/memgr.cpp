@@ -280,7 +280,7 @@ static BlockAlloc::SharedBlockAlloc sharedBlocks;
 BlockAlloc::SharedBlockAlloc::SharedBlockAlloc()
 {
 	for (unsigned i=0; i<NBLOCK_SHARED_QUEUES; i++) {
-		if ((queues[i]=::new Pool(NULL,0x400>>i))==NULL) throw RC_NOMEM;	//???
+		if ((queues[i]=::new LIFO(NULL,0x400>>i))==NULL) throw RC_NOMEM;	//???
 	}
 }
 

@@ -85,14 +85,14 @@ RC PINx::loadProps(unsigned md,const PropertyID *pids,unsigned nPids)
 	return rc;
 }
 
-RC QueryPrc::getClassInfo(Session *ses,PIN *pin)
+RC QueryPrc::getDataEventInfo(Session *ses,PIN *pin)
 {
-	const Value *cv; Class *cls=NULL; uint64_t nPINs=0; RC rc=RC_OK; Value vv,*pv;
-	if (pin==NULL || (pin->meta&PMT_CLASS)==0 || (cv=pin->findProperty(PROP_SPEC_OBJID))==NULL || cv->type!=VT_URIID) return RC_CORRUPTED;
-	const ClassID clsid=cv->uid;
-	if (rc!=RC_OK || (rc=ctx->classMgr->getClassInfo(clsid,cls,nPINs))!=RC_OK) return rc;
-	assert(cls!=NULL); ClassIndex *ci; Stmt *qry; QVar *qv; PropListP plp(ses);
-	if ((qry=cls->getQuery())!=NULL && (qv=qry->getTop())!=NULL && qv->mergeProps(plp)==RC_OK && plp.pls!=NULL && plp.nPls!=0) {
+	const Value *cv; DataEvent *dev=NULL; uint64_t nPINs=0; RC rc=RC_OK; Value vv,*pv;
+	if (pin==NULL || (pin->meta&PMT_DATAEVENT)==0 || (cv=pin->findProperty(PROP_SPEC_OBJID))==NULL || cv->type!=VT_URIID) return RC_CORRUPTED;
+	const DataEventID clsid=cv->uid;
+	if (rc!=RC_OK || (rc=ctx->classMgr->getDataEventInfo(clsid,dev,nPINs))!=RC_OK) return rc;
+	assert(dev!=NULL); DataIndex *ci; Stmt *qry; QVar *qv; PropListP plp(ses);
+	if ((qry=dev->getQuery())!=NULL && (qv=qry->getTop())!=NULL && qv->mergeProps(plp)==RC_OK && plp.pls!=NULL && plp.nPls!=0) {
 		Value *va=new(ses) Value[plp.pls[0].nProps];
 		if (va==NULL) rc=RC_NOMEM;
 		else {
@@ -102,8 +102,8 @@ RC QueryPrc::getClassInfo(Session *ses,PIN *pin)
 			if ((rc=BIN<Value,PropertyID,ValCmp,uint32_t>::insert(pin->properties,pin->nProperties,vv.property,vv,(MemAlloc*)ses))!=RC_OK) ses->free(va);
 		}
 	}
-	if (rc==RC_OK && (cls->getFlags()&META_PROP_INDEXED)!=0) {
-		if ((ci=cls->getIndex())!=NULL) {
+	if (rc==RC_OK && (dev->getFlags()&META_PROP_INDEXED)!=0) {
+		if ((ci=dev->getIndex())!=NULL) {
 			if (pin->findProperty(PROP_SPEC_INDEX_INFO)!=NULL) rc=RC_CORRUPTED;
 			else {
 				const unsigned nFields=ci->getNSegs(); const IndexSeg *is=ci->getIndexSegs();
@@ -121,7 +121,7 @@ RC QueryPrc::getClassInfo(Session *ses,PIN *pin)
 			rc=BIN<Value,PropertyID,ValCmp,uint32_t>::insert(pin->properties,pin->nProperties,vv.property,vv,(MemAlloc*)ses);
 		}
 	}
-	cls->release(); return rc;
+	dev->release(); return rc;
 }
 
 RC QueryPrc::loadValue(Session *ses,const PID& id,PropertyID propID,ElementID eid,Value& res,unsigned md)
@@ -199,7 +199,16 @@ RC PINx::loadMapElt(Value& v,const HeapPageMgr::HeapV *hprop,unsigned md,const V
 	if (hprop->type.getFormat()==HDF_LONG) {
 		// extract by idx
 	} else {
-		// find idx
+		const HeapPageMgr::HeapVV *map=(const HeapPageMgr::HeapVV*)(pb->getPageBuf()+hprop->offset);
+		if ((map->cnt&1)!=0) return RC_CORRUPTED; 
+		struct HeapMapElt {HeapPageMgr::HeapV key,val;}; QueryPrc *qprc=ses->getStore()->queryMgr; RC rc;
+		for (unsigned n=map->cnt/2,base=0; n!=0; ) {
+			unsigned k=n>>1; const HeapMapElt *q=&((HeapMapElt*)map->start)[base+k]; Value key;
+			if ((rc=qprc->loadS(key,q->key.type,q->key.offset,(HeapPageMgr::HeapPage*)pb->getPageBuf(),md,ma))!=RC_OK) return rc;
+			int c=cmp(key,idx,CND_SORT,ma); freeV(key);
+			if (c==0) return qprc->loadS(v,q->val.type,q->val.offset,(HeapPageMgr::HeapPage*)pb->getPageBuf(),md,ma);
+			if (c>0) n=k; else {n-=++k; base+=k;}
+		}
 	}
 	if ((md&LOAD_CARDINALITY)!=0) {v.set(0u); return RC_OK;} else {v.setError(hprop->getPropID()); return RC_NOTFOUND;}
 }
@@ -216,7 +225,7 @@ RC PINx::loadVH(Value& v,const HeapPageMgr::HeapV *hprop,unsigned md,MemAlloc *m
 				v.setArray(ha->data(),ha->nelts,ha->xdim,ha->ydim,(ValueType)ha->type,(Units)ha->units);
 				v.fa.start=ha->start; v.fa.flags=ha->flags; if (ma!=NULL && (rc=copyV(v,v,ma))!=RC_OK) return rc;
 			} else {
-				const void *pd=(eid>>16)<ha->ydim && (uint16_t)eid<ha->xdim?(byte*)ha->data()+ha->lelt*((uint16_t)eid+(eid>>16)*ha->xdim):
+				const void *pd=(eid>>16)<ha->xdim && (uint16_t)eid<ha->ydim?(byte*)ha->data()+ha->lelt*((uint16_t)eid*ha->xdim+(eid>>16)):
 																		ha->ydim==1 && eid<ha->nelts?(byte*)ha->data()+ha->lelt*eid:NULL;
 				if (pd==NULL) {v.setError(pid); return RC_NOTFOUND;}
 				switch (ha->type) {

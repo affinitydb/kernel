@@ -27,7 +27,7 @@ Written by Mark Venguerov 2004-2014
 #include "expr.h"
 #include "ftindex.h"
 #include "blob.h"
-#include "classifier.h"
+#include "dataevent.h"
 #include "service.h"
 #include "netmgr.h"
 #include "maps.h"
@@ -72,8 +72,7 @@ struct HRefInfo
 
 struct ModCtx : public StackAlloc
 {
-	PropInfo			**ppi;
-	unsigned			npi;
+	ModProps			mprops;
 
 	ModInfo				*list;
 	ModInfo				*last;
@@ -83,8 +82,7 @@ struct ModCtx : public StackAlloc
 	ExtCollectionInfo	*ext;
 	unsigned			flags;
 
-	ModCtx(size_t s,byte *bf,unsigned np,Session *ses) : StackAlloc(ses,s,bf,true),ppi(alloc<PropInfo*>((np+1)*sizeof(PropInfo*))),npi(0),
-		list(NULL),last(NULL),nev(0),hRef(NULL),ext(NULL),flags(0) {}
+	ModCtx(size_t s,byte *bf,unsigned np,Session *ses) : StackAlloc(ses,s,bf,true),mprops(this),list(NULL),last(NULL),nev(0),hRef(NULL),ext(NULL),flags(0) {}
 	~ModCtx() {for (ExtCollectionInfo *ei=ext; ei!=NULL; ei=ei->next) ei->pc->destroy();}
 	ModInfo *findMod(PropInfo *pi,ElementID eid,const byte *hp,PageOff offset) {
 		if (eid==STORE_FIRST_ELEMENT || eid==STORE_LAST_ELEMENT) {
@@ -114,16 +112,14 @@ struct ModCtx : public StackAlloc
 	}
 	RC addPropMod(PropertyID pid,const HeapPageMgr::HeapPIN *hpin,ModInfo *&mi,unsigned prefix) {
 		mi=NULL; const HeapPageMgr::HeapV *hprop=hpin->findProperty(pid); if (hprop==NULL) return RC_OK;
-		PropInfo **pins=NULL,*pi=(PropInfo*)BIN<PropInfo,PropertyID,PropInfo::PropInfoCmp>::find(pid,(const PropInfo**)ppi,npi,(const PropInfo***)&pins); assert(pi==NULL);
-		if ((pi=alloc<PropInfo>())==NULL) return RC_NOMEM;
-		if (pins<&ppi[npi]) memmove(pins+1,pins,(byte*)&ppi[npi]-(byte*)pins); *pins=pi; npi++;
+		PropInfo *pi=alloc<PropInfo>(); if (pi==NULL) return RC_NOMEM;
 		pi->propID=pid; pi->hprop=hprop; pi->first=pi->last=NULL;
 		pi->nElts=1; pi->maxKey=prefix; pi->delta=pi->nDelta=0; pi->pcol=NULL;
 		pi->flags=(hprop->type.flags&META_PROP_FTINDEX)!=0?PM_FTINDEXABLE|PM_OLDFTINDEX:0;
 		if ((mi=alloc<ModInfo>())==NULL || (mi->pv=mi->newV=alloc<Value>())==NULL || (mi->oldV=alloc<Value>())==NULL) return RC_NOMEM;
 		mi->pInfo=pi; mi->eid=mi->epos=STORE_COLLECTION_ID; mi->newV->setError(pid); mi->oldV->setError(pid);
 		pi->first=pi->last=mi; if (last==NULL) list=last=mi; else last=last->next=mi;
-		return RC_OK;
+		return 	mprops+=pi;
 	}
 	HRefSSV *addHRef(const HRefSSV *h) {HRefInfo *hr=alloc<HRefInfo>(); hr->href=*h; hr->next=hRef; hRef=hr; return &hr->href;}
 };
@@ -154,7 +150,7 @@ RC QueryPrc::updateComm(const EvalCtx& ectx,PIN *pin,const Value *v,unsigned nv,
 	}
 	if (rc==RC_OK) {
 		ServiceCtx *srv=NULL;
-		if ((rc=ectx.ses->prepare(srv,pin->id,params,nParams,v!=NULL&&nv!=0?ISRV_NOCACHE|ISRV_WRITE:ISRV_WRITE))==RC_OK && srv!=NULL)
+		if ((rc=ectx.ses->prepare(srv,pin->id,ectx,params,nParams,v!=NULL&&nv!=0?ISRV_NOCACHE|ISRV_WRITE:ISRV_WRITE))==RC_OK && srv!=NULL)
 			{rc=srv->invoke(params,nParams); srv->destroy();}
 	}
 	if (params!=pin->properties) freeV((Value*)params,nParams,ectx.ses);
@@ -172,7 +168,7 @@ RC QueryPrc::modifyPIN(const EvalCtx& ectx,const PID& id,const Value *v,unsigned
 		if ((mode&MODE_RAW)==0 && (pin->meta&PMT_COMM)!=0) return updateComm(ectx,pin,v,nv,mode);
 					//check FSM
 		unsigned flags=((mode&MODE_FORCE_EIDS)!=0&&eids!=NULL?MODP_EIDS:0)|((mode&MODE_NO_EID)!=0?MODP_NEID:0);
-		TIMESTAMP ts=0ULL; unsigned omode=pin->mode; //assert((meta&PMT_CLASS)==0);	???
+		TIMESTAMP ts=0ULL; unsigned omode=pin->mode; //assert((meta&PMT_DATAEVENT)==0);	???
 		for (unsigned i=0; i<nv; i++) {
 			Value w=v[i]; setHT(w);
 			if (w.property!=PROP_SPEC_PROTOTYPE) switch (w.type) {
@@ -237,15 +233,15 @@ RC QueryPrc::modifyPIN(const EvalCtx& ectx,const PID& id,const Value *v,unsigned
 	PID oldDoc=PIN::noPID,newDoc=PIN::noPID; ModInfo *mi; unsigned n; PropertyID xPropID=STORE_INVALID_URIID;
 	size_t reserve=ceil(size_t(xSize*ctx->theCB->pctFree),HP_ALIGN);
 	ElementID rprefix=(mctx.flags&MF_REMOTE)!=0?HeapPageMgr::getPrefix(id):prefix,lprefix=(mctx.flags&MF_LOCEID)!=0?prefix:rprefix;
-	ClassID cid=STORE_INVALID_URIID; ClassResult clro(&mctx,ctx),clrn(&mctx,ctx),clru(&mctx,ctx); PropInfo *pi;
-	if ((pinMeta&PMT_CLASS)!=0) {
+	DataEventID cid=STORE_INVALID_URIID; DetectedEvents clro(&mctx,ctx),clrn(&mctx,ctx),clru(&mctx,ctx); PropInfo *pi;
+	if ((pinMeta&PMT_DATAEVENT)!=0) {
 		const HeapPageMgr::HeapV *hp=pcb->hpin->findProperty(PROP_SPEC_OBJID);
 		if (hp!=NULL && pcb->loadVH(w,hp,0,&mctx)==RC_OK && w.type==VT_URIID) cid=w.uid;
 	}
 	for (n=0; n<nv; n++) {
 		pv=&v[n]; if (pNFailed!=NULL) *pNFailed=n;
 		const PropertyID propID=pv->property; ElementID eid=pv->eid; ValueType ty; bool fNew=false;
-		unsigned flags=(pinDescr&HOH_HIDDEN)==0&&(pv->meta&META_PROP_FTINDEX)!=0?PM_FTINDEXABLE:0;
+		unsigned flags=(pinDescr&HOH_HIDDEN)==0&&(pv->meta&META_PROP_FTINDEX)!=0?PM_FTINDEXABLE:0,mask;
 		ExprOp op=(ExprOp)pv->op; if (op>OP_LAST_MODOP) return RC_INVPARAM;
 		bool fAdd=op==OP_ADD||op==OP_ADD_BEFORE;
 		if (propID<=MAX_BUILTIN_URIID) switch (propID) {
@@ -260,7 +256,7 @@ RC QueryPrc::modifyPIN(const EvalCtx& ectx,const PID& id,const Value *v,unsigned
 			if (cid!=STORE_INVALID_URIID && (fAdd || op==OP_SET)) mctx.flags|=MF_ADDACL;
 			break;
 		case PROP_SPEC_PREDICATE:
-			if ((pinMeta&PMT_CLASS)!=0) {
+			if ((pinMeta&PMT_DATAEVENT)!=0) {
 				const HeapPageMgr::HeapV *hp=pcb->hpin->findProperty(PROP_SPEC_PREDICATE);
 				if (hp!=NULL && (hp->type.flags&META_PROP_INDEXED)!=0) fReIndex=true;
 			}
@@ -269,14 +265,14 @@ RC QueryPrc::modifyPIN(const EvalCtx& ectx,const PID& id,const Value *v,unsigned
 			// change interval/stop or restart timer
 			// break;
 		case PROP_SPEC_SELF:
-			if (pv->op!=OP_EDIT || pv->type!=VT_UINT || (pv->bedt.mask&~(PIN_TRANSIENT|PIN_DELETED|PIN_IMMUTABLE|PIN_PERSISTENT|PIN_HIDDEN|PIN_REPLICATED|PIN_NOTIFY|PIN_NO_REPLICATION))!=0)
-				return RC_INVPARAM;
-			if ((pv->bedt.mask&PIN_HIDDEN)!=0) {if ((pv->bedt.bits&PIN_HIDDEN)!=0) newDescr|=HOH_HIDDEN; else newDescr&=~HOH_HIDDEN;}
-			if ((pv->bedt.mask&PIN_DELETED)!=0) {if ((pv->bedt.bits&PIN_DELETED)!=0) newDescr|=HOH_DELETED; else newDescr&=~HOH_DELETED;}
-			if ((pv->bedt.mask&PIN_NOTIFY)!=0) {if ((pv->bedt.bits&PIN_NOTIFY)!=0) newDescr|=HOH_NOTIFICATION; else newDescr&=~HOH_NOTIFICATION;}
-			if ((pv->bedt.mask&PIN_NO_REPLICATION)!=0) {if ((pv->bedt.bits&PIN_NO_REPLICATION)!=0) newDescr|=HOH_NOREPLICATION; else newDescr&=~HOH_NOREPLICATION;}
-			if ((pv->bedt.mask&PIN_REPLICATED)!=0) {if ((pv->bedt.bits&PIN_REPLICATED)!=0) newDescr|=HOH_REPLICATED; else newDescr&=~HOH_REPLICATED;}
-			if ((pv->bedt.mask&PIN_IMMUTABLE)!=0) {if ((pv->bedt.bits&PIN_IMMUTABLE)!=0) newDescr|=HOH_IMMUTABLE; else newDescr&=~HOH_IMMUTABLE;}
+			if (pv->op!=OP_AND && pv->op!=OP_OR) return RC_INVOP; if (pv->type!=VT_UINT) return RC_TYPE;
+			mask=(pv->op==OP_AND?~pv->ui:pv->ui);
+			if ((mask&PIN_HIDDEN)!=0) {if (pv->op==OP_OR) newDescr|=HOH_HIDDEN; else newDescr&=~HOH_HIDDEN;}
+			if ((mask&PIN_DELETED)!=0) {if (pv->op==OP_OR) newDescr|=HOH_DELETED; else newDescr&=~HOH_DELETED;}
+			if ((mask&PIN_NOTIFY)!=0) {if (pv->op==OP_OR) newDescr|=HOH_NOTIFICATION; else newDescr&=~HOH_NOTIFICATION;}
+			if ((mask&PIN_NO_REPLICATION)!=0) {if (pv->op==OP_OR) newDescr|=HOH_NOREPLICATION; else newDescr&=~HOH_NOREPLICATION;}
+			if ((mask&PIN_REPLICATED)!=0) {if (pv->op==OP_OR) newDescr|=HOH_REPLICATED; else newDescr&=~HOH_REPLICATED;}
+			if ((mask&PIN_IMMUTABLE)!=0) {if (pv->op==OP_OR) newDescr|=HOH_IMMUTABLE; else newDescr&=~HOH_IMMUTABLE;}
 			continue;
 		case PROP_SPEC_UPDATED: case PROP_SPEC_UPDATEDBY:
 			if ((mctx.flags&MF_REPSES)==0) {
@@ -297,11 +293,9 @@ RC QueryPrc::modifyPIN(const EvalCtx& ectx,const PID& id,const Value *v,unsigned
 			break;
 		} else if (propID>STORE_MAX_URIID) return RC_INVPARAM;
 		else if (xPropID==STORE_INVALID_URIID || propID>xPropID) xPropID=propID;
-		PropInfo **pins=NULL,*pi=(PropInfo*)BIN<PropInfo,PropertyID,PropInfo::PropInfoCmp>::find(propID,(const PropInfo**)mctx.ppi,mctx.npi,(const PropInfo***)&pins);
-		if (pi==NULL) {
-			if ((pi=mctx.alloc<PropInfo>())==NULL) return RC_NOMEM;
-			if (pins<&mctx.ppi[mctx.npi]) memmove(pins+1,pins,(byte*)&mctx.ppi[mctx.npi]-(byte*)pins);
-			*pins=pi; mctx.npi++;
+		PropInfo *pi,**ppi;
+		if ((rc=mctx.mprops.findOrAdd(propID,ppi))==RC_OK) {
+			if ((pi=mctx.alloc<PropInfo>())==NULL) return RC_NOMEM; *ppi=pi;
 			pi->propID=propID; pi->hprop=pcb->hpin->findProperty(propID); pi->first=pi->last=NULL;
 			pi->nElts=pi->flags=0; pi->maxKey=prefix; pi->delta=pi->nDelta=0; pi->pcol=NULL; pi->single=STORE_COLLECTION_ID;
 			if (pi->hprop==NULL) pi->flags=PM_NEWPROP|(flags&PM_FTINDEXABLE);
@@ -313,7 +307,7 @@ RC QueryPrc::modifyPIN(const EvalCtx& ectx,const PID& id,const Value *v,unsigned
 				else {pi->flags|=PM_COLLECTION|PM_SCOLL; pi->single=((HeapPageMgr::HeapVV*)(pcb->pb->getPageBuf()+pi->hprop->offset))->start[0].getID();}
 			}
 			if ((mode&MODE_FORCE_EIDS)==0) pi->flags|=PM_GENEIDS;
-		}
+		} else if (rc==RC_FALSE) {pi=*ppi; rc=RC_OK;} else return rc;
 		if (fAdd) {mi=NULL; fNew=true; if (eid==STORE_COLLECTION_ID) eid=STORE_LAST_ELEMENT;}
 		else fNew=(mi=mctx.findMod(pi,eid,pcb->pb->getPageBuf(),pi->hprop!=NULL?pi->hprop->offset:0))==NULL;
 		if ((pi->hprop==NULL || (pi->flags&PM_RESET)!=0) && mi==NULL) {
@@ -519,27 +513,10 @@ RC QueryPrc::modifyPIN(const EvalCtx& ectx,const PID& id,const Value *v,unsigned
 					if ((rc=PINx::loadSSV(*opv,ty,hp->getObject(hp->getOffset(mi->href->idx)),0,&mctx))!=RC_OK) return rc;
 					opv->flags&=~VF_SSV;
 				}
-				if (op==OP_SET || op==OP_DELETE) continue; else if (op!=OP_EDIT) return RC_TYPE;
+				if (op==OP_SET || op==OP_DELETE) continue; else return RC_TYPE;
 			}
 			assert((opv->flags&VF_SSV)==0);
-			if (op==OP_EDIT) {
-				if (isInteger(ty)) {
-					if (!isInteger((ValueType)pv->type)) return RC_TYPE;
-				} else {
-					if (!isString(ty) || ty!=pv->type) return RC_TYPE;
-					uint64_t ls=opv->type!=VT_STREAM?opv->length:opv->stream.is->length();
-					if (pv->edit.length==ls) {
-						if (pv->edit.shift!=0) return RC_INVPARAM;
-						if ((mi->newV=mctx.alloc<Value>())==NULL) return RC_NOMEM;
-						mi->newV->bstr=pv->bstr; mi->newV->length=pv->length; mi->newV->type=pv->type;
-						mi->newV->property=pv->property; mi->newV->eid=pv->eid; mi->newV->meta=pv->meta;
-						mi->newV->op=OP_SET; setHT(*mi->newV); mi->pv=mi->newV; continue;
-					}
-					if (pv->edit.shift==~0ULL) {if (pv->edit.length!=0) return RC_INVPARAM;}
-					else if (pv->edit.shift+pv->edit.length>ls) return RC_INVPARAM;
-					else if (opv->type==VT_STREAM) continue;
-				}
-			} else if (op<OP_FIRST_EXPR) continue;
+			if (op<OP_FIRST_EXPR) continue;
 			mi->pv=opv;
 		} else if (op==OP_SET||op==OP_DELETE) {
 			if (mi->pv==mi->newV && mi->newV!=NULL && mi->newV!=pv) {freeV(*mi->newV); mi->newV=NULL;}
@@ -549,31 +526,8 @@ RC QueryPrc::modifyPIN(const EvalCtx& ectx,const PID& id,const Value *v,unsigned
 				pi->first=mi; if (op==OP_DELETE && pi->hprop==NULL) mi->flags|=PM_INVALID|PM_PROCESSED;
 			}
 			mi->pv=pv; if (op!=OP_DELETE) pi->flags|=PM_NEWVALUES; continue;
-		} else if (op==OP_EDIT) {
-			if (mi->pv->op==OP_DELETE) continue;
-			if ((ty=(ValueType)mi->pv->type)==VT_STREAM) ty=mi->pv->stream.is->dataType();
-			if (ty!=VT_UINT && ty!=VT_UINT64 && !isString(ty) || ty!=pv->type) return RC_TYPE;
-			if (mi->pv->op==OP_EDIT) {
-				if (mi->oldV->type==VT_STREAM) {
-					byte *p=(byte*)mctx.malloc(mi->pv->length); if (p==NULL) return RC_NOMEM;
-					memcpy(p,mi->pv->edit.bstr,mi->pv->length);
-					StreamEdit *estr=new(&mctx) StreamEdit(mi->oldV->stream.is->clone(),
-										mi->pv->edit.shift,mi->pv->edit.length,mi->pv->length,p,&mctx);
-					if (estr==NULL) return RC_NOMEM;
-					if (mi->newV==NULL && (mi->newV=mctx.alloc<Value>())==NULL) {estr->destroy(); return RC_NOMEM;}
-					mi->newV->set(estr); mi->newV->property=propID; 
-					mi->newV->eid=mi->pv->eid; mi->newV->meta=mi->pv->meta;
-				}
-				mi->pv=mi->newV; assert(mi->newV!=NULL && mi->newV->op==OP_SET);
-			}
-			assert(mi->pv->op==OP_ADD||mi->pv->op==OP_ADD_BEFORE||mi->pv->op==OP_SET);
-			if (mi->pv->type==VT_STREAM) {
-				byte *p=(byte*)mctx.malloc(pv->length); if (p==NULL) return RC_NOMEM; memcpy(p,pv->bstr,pv->length);
-				StreamEdit *ps=new(&mctx) StreamEdit(mi->pv->stream.is,pv->edit.shift,pv->edit.length,pv->length,p,&mctx);
-				if (ps==NULL) return RC_NOMEM; mi->newV->stream.is=ps; setHT(*mi->newV); continue;
-			}
 		}
-		assert(op>=OP_FIRST_EXPR||op==OP_EDIT);
+		assert(op>=OP_FIRST_EXPR);
 		if (mi->pv->op==OP_DELETE) continue;
 		if ((mi->flags&PM_CALCULATED)!=0) {
 			assert(mi->newV!=NULL); pv=mi->newV; if ((mi->newV=mctx.alloc<Value>())==NULL) return RC_NOMEM;
@@ -581,14 +535,11 @@ RC QueryPrc::modifyPIN(const EvalCtx& ectx,const PID& id,const Value *v,unsigned
 		} else if (mi->newV==NULL) {
 			if ((mi->newV=mctx.alloc<Value>())==NULL) return RC_NOMEM;
 			*mi->newV=*mi->pv; if (mi->pv->type==VT_STREAM) mi->pv->stream.prefix=NULL;	// collection ???
-			setHT(*mi->newV); mi->pv=op==OP_EDIT?pv:mi->newV;
-		} else if (mi->pv!=mi->newV) {
-			// OP_EDIT???
-			return RC_INTERNAL;
-		}
+			setHT(*mi->newV); mi->pv=mi->newV;
+		} else if (mi->pv!=mi->newV) return RC_INTERNAL;
 		rc=Expr::calc(op,*mi->newV,pv,2,op==OP_RSHIFT&&(pv->meta&META_PROP_UNSIGNED)!=0?CND_UNS:0,ses); if (rc!=RC_OK) return rc;
 		if (mi->oldV!=NULL) {mi->newV->eid=mi->oldV->eid; mi->newV->property=mi->oldV->property; mi->newV->meta=mi->oldV->meta;}
-		mi->newV->op=OP_SET; pi->flags|=PM_NEWVALUES; if (op==OP_EDIT && isInteger((ValueType)mi->pv->type)) mi->pv=mi->newV;
+		mi->newV->op=OP_SET; pi->flags|=PM_NEWVALUES;
 	}
 
 	if (mctx.list==NULL && newDescr==pinDescr) return RC_OK;
@@ -616,13 +567,13 @@ RC QueryPrc::modifyPIN(const EvalCtx& ectx,const PID& id,const Value *v,unsigned
 		}
 	}
 
-	unsigned nMod=0,nEdits=0;
+	unsigned nMod=0;
 	long extraLen=0,xExtraLen=0; size_t lrec=0,expLen=0,newExtraLen=0,oldExtraLen=0;
 	byte *buf=NULL,fbuf[sizeof(HeapPageMgr::HeapModEdit)+PageAddrSize*2]; size_t lbuf=0;
 	IStoreNotification::NotificationEvent evt={id,NULL,0,NULL,0,(mctx.flags&MF_REPSES)!=0};
 	bool fForceSplit = FORCE_SPLIT;
 
-	if ((pinDescr&HOH_DELETED)==0) ctx->classMgr->classify(pcb,clro,ses);
+	if ((pinDescr&HOH_DELETED)==0) ctx->classMgr->detect(pcb,clro,ses);
 
 	xExtraLen=(long)((HeapPageMgr::HeapPage*)pcb->pb->getPageBuf())->totalFree();
 
@@ -632,17 +583,15 @@ RC QueryPrc::modifyPIN(const EvalCtx& ectx,const PID& id,const Value *v,unsigned
 		if ((mi->flags&PM_MOVE)!=0 || (mi->pInfo->flags&PM_BIGC)!=0 && mi->eid!=STORE_COLLECTION_ID) {nMod++; continue;}
 		size_t newLen,oldLen=0; unsigned i; long delta=0; const Value *cv; bool fElt=false;
 		if (mi->oldV!=NULL) {
-			if (op!=OP_EDIT) {
-				const byte *pData=pcb->pb->getPageBuf()+mi->pInfo->hprop->offset; HType ht=mi->pInfo->hprop->type;
-				fElt=(mi->pInfo->flags&(PM_COLLECTION|PM_BIGC))==PM_COLLECTION; ElementID eid=mi->eid;
-				if (fElt && eid==STORE_COLLECTION_ID) {if ((mi->pInfo->flags&PM_SCOLL)!=0) eid=STORE_FIRST_ELEMENT; else fElt=false;}
-				if (fElt) {
-					const HeapPageMgr::HeapV *elt=((const HeapPageMgr::HeapVV*)pData)->findElt(eid);
-					assert(elt!=NULL); pData=pcb->pb->getPageBuf()+elt->offset; ht=elt->type;
-				}
-				oldLen=HeapPageMgr::dataLength(ht,pData,pcb->pb->getPageBuf(),(mi->pInfo->flags&PM_OLDFTINDEX)!=0?&mi->flags:(unsigned*)0);
-				if (ht==HType::compactRef) mi->flags|=PM_COMPACTREF;
+			const byte *pData=pcb->pb->getPageBuf()+mi->pInfo->hprop->offset; HType ht=mi->pInfo->hprop->type;
+			fElt=(mi->pInfo->flags&(PM_COLLECTION|PM_BIGC))==PM_COLLECTION; ElementID eid=mi->eid;
+			if (fElt && eid==STORE_COLLECTION_ID) {if ((mi->pInfo->flags&PM_SCOLL)!=0) eid=STORE_FIRST_ELEMENT; else fElt=false;}
+			if (fElt) {
+				const HeapPageMgr::HeapV *elt=((const HeapPageMgr::HeapVV*)pData)->findElt(eid);
+				assert(elt!=NULL); pData=pcb->pb->getPageBuf()+elt->offset; ht=elt->type;
 			}
+			oldLen=HeapPageMgr::dataLength(ht,pData,pcb->pb->getPageBuf(),(mi->pInfo->flags&PM_OLDFTINDEX)!=0?&mi->flags:(unsigned*)0);
+			if (ht==HType::compactRef) mi->flags|=PM_COMPACTREF;
 			if ((mi->pInfo->flags&PM_OLDFTINDEX)!=0) switch (mi->oldV->type) {
 			case VT_STREAM: if (mi->oldV->stream.is->dataType()!=VT_STRING) break;
 			case VT_STRING: mi->flags|=IX_OFT; break;
@@ -663,20 +612,12 @@ RC QueryPrc::modifyPIN(const EvalCtx& ectx,const PID& id,const Value *v,unsigned
 				break;
 			}
 		}
-		switch (op) {
-		case OP_EDIT:
-			if (mi->oldV->type==VT_STREAM) newLen=oldLen=sizeof(HLOB);
-			else {
-				if (mi->href!=NULL && mi->oldV->length+mi->pv->length-mi->pv->edit.length>xSize) delta+=sizeof(HLOB)-sizeof(HRefSSV);
-				newLen=pv->length; oldLen=pv->edit.length; assert(isString((ValueType)mi->oldV->type));
-			}
-			break;
-		case OP_DELETE:
+		if (op==OP_DELETE) {
 			assert((mi->flags&PM_MODCOLL)==0);	// delete entire collection???
 			delta-=!fElt?sizeof(HeapPageMgr::HeapV):(mi->pInfo->flags&PM_SCOLL)==0?sizeof(HeapPageMgr::HeapV):
 					sizeof(HeapPageMgr::HeapV)+sizeof(HeapPageMgr::HeapVV)+sizeof(HeapPageMgr::HeapV);
-			newLen=0; mi->pInfo->nDelta--; break;
-		default:
+			newLen=0; mi->pInfo->nDelta--;
+		} else {
 			if ((mi->pInfo->flags&PM_BIGC)!=0 && mi->pInfo->pcol!=NULL) newLen=HeapPageMgr::collDescrSize(mi->pInfo->pcol->getDescriptor());
 			else if ((rc=calcLength(*pv,newLen,0,xSize,&mctx,oldAddr.pageID,&newExtraLen))!=RC_OK) {if (rc!=RC_EOF) goto finish; rc=RC_OK; mi->flags|=PM_INVALID; continue;}
 			if ((pv->flags&VF_REF)!=0) {rc=RC_INVPARAM; goto finish;}
@@ -729,7 +670,6 @@ RC QueryPrc::modifyPIN(const EvalCtx& ectx,const PID& id,const Value *v,unsigned
 			else if ((mi->pInfo->flags&(PM_NEWCOLL|PM_SCOLL))==(PM_NEWCOLL|PM_SCOLL)) {
 				delta+=long(sizeof(HeapPageMgr::HeapVV)+sizeof(HeapPageMgr::HeapKey));
 			}
-			break;
 		}
 		if (newLen<=oldLen) {if ((delta-=long(ceil(oldLen,HP_ALIGN)-ceil(newLen,HP_ALIGN)))>0) mi->flags|=PM_EXPAND;}
 		else if ((delta+=long(ceil(newLen,HP_ALIGN)-ceil(oldLen,HP_ALIGN)))>0) mi->flags|=PM_EXPAND;
@@ -742,7 +682,7 @@ RC QueryPrc::modifyPIN(const EvalCtx& ectx,const PID& id,const Value *v,unsigned
 		if (expLen+extraLen+newExtraLen<=xSize && (mctx.flags&(MF_MOVED|MF_REMOTE))!=0) mctx.flags|=MF_MIGRATE;
 		else for (bool fForceOut=false;;) {
 			const HeapPageMgr::HeapV *hprop=pcb->hpin->getPropTab(),*hend=hprop+pcb->hpin->nProps;
-			PropInfo **ppi=mctx.ppi,**piend=ppi+mctx.npi; CandidateSSVs cs(&mctx); int cmp;
+			PropInfo **ppi=(PropInfo**)&mctx.mprops[0],**piend=ppi+mctx.mprops; CandidateSSVs cs(&mctx); int cmp;
 			while (hprop<hend || ppi<piend) {
 				if (ppi<piend && (pi=*ppi,cmp=hprop<hend?cmp3(pi->propID,hprop->getID()):-1)<=0) {
 					if (cmp==0) {
@@ -754,8 +694,7 @@ RC QueryPrc::modifyPIN(const EvalCtx& ectx,const PID& id,const Value *v,unsigned
 									if ((rc=cs+=CandidateSSV(mi->pv,pi->propID,len,mi,sizeof(HeapPageMgr::HeapExtCollection)))!=RC_OK) goto finish;
 									pi->flags|=PM_BCCAND; break;
 								}
-							} else if ((mi->pv->flags&VF_SSV)==0 && (mi->pv->op!=OP_EDIT || isString((ValueType)mi->pv->type) && mi->newV!=NULL))
-								(void)findCandidateSSVs(cs,mi->pv->op==OP_EDIT?mi->newV:mi->pv,1,true,&mctx,NULL,pi->propID,mi);
+							} else if ((mi->pv->flags&VF_SSV)==0) (void)findCandidateSSVs(cs,mi->pv,1,true,&mctx,NULL,pi->propID,mi);
 						}
 						++hprop;
 					} else for (mi=pi->first; mi!=NULL; mi=mi->pnext) if ((mi->flags&(PM_MOVE|PM_PROCESSED))==0 && (mi->pv->flags&VF_SSV)==0) {
@@ -824,10 +763,6 @@ RC QueryPrc::modifyPIN(const EvalCtx& ectx,const PID& id,const Value *v,unsigned
 							*cd.mi->newV=*cd.mi->oldV; setHT(*cd.mi->newV); cd.mi->newV->flags|=VF_SSV; cd.mi->next=mctx.list; mctx.list=cd.mi;
 							nMod++; lrec+=ceil(cd.length,HP_ALIGN)+cd.dlen;
 						} else {
-							if (cd.mi->pv->op==OP_EDIT) {
-								assert(cd.mi->newV!=NULL); 
-								lrec+=ceil(cd.mi->newV->length-cd.mi->pv->length,HP_ALIGN); cd.mi->pv=cd.mi->newV;
-							}
 							cd.mi->pv->flags|=VF_SSV; if (cd.mi->oldV!=NULL) cd.mi->flags&=~PM_EXPAND;		// only OP_ADD?
 						}
 					}
@@ -919,7 +854,7 @@ RC QueryPrc::modifyPIN(const EvalCtx& ectx,const PID& id,const Value *v,unsigned
 	}
 
 	if ((mctx.flags&MF_SSVS)!=0) for (mi=mctx.list; mi!=NULL; mi=mi->next) if (mi->oldV!=NULL && (mi->flags&(PM_SSV|PM_PROCESSED))==PM_SSV) {
-		pv=mi->pv; assert(pv->op==OP_SET||pv->op==OP_DELETE||pv->op==OP_EDIT);
+		pv=mi->pv; assert(pv->op==OP_SET||pv->op==OP_DELETE);
 		PageAddr saddr; uint64_t lstr; ValueType ty;
 		switch (pv->op) {
 		default: assert(0);
@@ -954,32 +889,6 @@ RC QueryPrc::modifyPIN(const EvalCtx& ectx,const PID& id,const Value *v,unsigned
 			else mctx.flags|=MF_DELSSV;
 #endif
 			continue;
-		case OP_EDIT:
-			if (mi->oldV->type==VT_STREAM) {
-				assert(mi->href==NULL); byte *s=NULL;
-				if (pv->edit.length!=0 && (s=(byte*)mctx.malloc(pv->edit.length))==NULL) {rc=RC_NOMEM; goto finish;}
-				StreamX *str=(StreamX*)mi->oldV->stream.is; saddr=str->getAddr(); lstr=str->length(); ty=str->dataType(); 
-				if ((rc=editData(ses,saddr,lstr,*pv,&pageSSV,s))==RC_OK || rc==RC_TRUE || rc==RC_FALSE) {
-					str->destroy(); mi->oldV->stream.is=NULL;
-					if ((str=new(&mctx) StreamX(saddr,lstr,ty,&mctx))==NULL) {rc=RC_NOMEM; goto finish;}
-					if ((mi->oldV->stream.is=new(&mctx) StreamEdit(str,pv->edit.shift,pv->length,pv->edit.length,s,&mctx))==NULL)
-						{str->destroy(); rc=RC_NOMEM; goto finish;}
-					mctx.addObj((StreamX*)str);
-					if (mi->newV==NULL) {
-						if ((mi->newV=mctx.alloc<Value>())==NULL) {rc=RC_NOMEM; goto finish;}
-						StreamX *pstr=new(&mctx) StreamX(saddr,lstr,ty,&mctx);
-						if (pstr==NULL) {rc=RC_NOMEM; goto finish;}
-						mctx.addObj(pstr); mi->newV->set(pstr); 
-					}
-					if (rc!=RC_OK || pv->edit.length!=pv->length) mi->flags|=PM_ESTREAM; else {mi->flags|=PM_PROCESSED; nMod--;}
-					continue;
-				}
-			} else {
-				assert(mi->href!=NULL && isString((ValueType)mi->oldV->type)); lstr=~0ULL;
-				saddr.pageID=mi->href->pageID; saddr.idx=mi->href->idx; ty=mi->href->type.getType();
-				if ((rc=editData(ses,saddr,lstr,*pv,&pageSSV))==RC_OK || rc==RC_TRUE || rc==RC_FALSE) mi->href->pageID=INVALID_PAGEID;
-			}
-			break;
 		}
 		switch (rc) {
 		default: goto finish;
@@ -1042,8 +951,8 @@ RC QueryPrc::modifyPIN(const EvalCtx& ectx,const PID& id,const Value *v,unsigned
 				if ((mi->flags&PM_COMPACTREF)!=0) lrec+=PageAddrSize;
 			}
 			if (cid!=STORE_INVALID_URIID) {
-				Class *cls=ctx->classMgr->getClass(cid,RW_X_LOCK); if (cls==NULL) {rc=RC_NOTFOUND; goto finish;}
-				rc=cls->setAddr(newAddr); cls->release(); if (rc!=RC_OK) goto finish;
+				DataEvent *dev=ctx->classMgr->getDataEvent(cid,RW_X_LOCK); if (dev==NULL) {rc=RC_NOTFOUND; goto finish;}
+				rc=dev->setAddr(newAddr); dev->release(); if (rc!=RC_OK) goto finish;
 			}
 			lrec+=oldExtraLen+newExtraLen;
 		}
@@ -1076,30 +985,30 @@ RC QueryPrc::modifyPIN(const EvalCtx& ectx,const PID& id,const Value *v,unsigned
 
 	if (xPropID!=STORE_INVALID_URIID) ctx->namedMgr->setMaxPropID(xPropID);
 	if (pcb->hpin==NULL) goto finish;
-	if (pcb->hpin->nProps>0 && (newDescr&HOH_DELETED)==0) rc=ctx->classMgr->classify(pcb,clrn,ses);
+	if (pcb->hpin->nProps>0 && (newDescr&HOH_DELETED)==0) rc=ctx->classMgr->detect(pcb,clrn,ses,&mctx.mprops);
 	
-	if ((((mctx.flags&MF_NOTIFY)!=0 || (pinDescr|newDescr)&HOH_FT)!=0) && (pinDescr&HOH_HIDDEN)==0 || clro.nClasses!=0 || clrn.nClasses!=0) mctx.flags|=MF_REFRESH;
+	if ((((mctx.flags&MF_NOTIFY)!=0 || (pinDescr|newDescr)&HOH_FT)!=0) && (pinDescr&HOH_HIDDEN)==0 || clro.ndevs!=0 || clrn.ndevs!=0) mctx.flags|=MF_REFRESH;
 
 	if (pin!=NULL) rc=reload(pin,pcb);
 	for (ec=&ectx,pp=NULL; rc==RC_OK && ec!=NULL; ec=ec->stack) if (ec->env!=NULL && ec->nEnv!=0 && ec->env[0]!=NULL && ec->env[0]!=pin && ec->env[0]!=pcb 
 		&& ec->env[0]->id==id && ec->env[0]!=pp && (ec->env[0]->fPartial==0 || ec->env[0]->properties!=NULL)) {pp=ec->env[0]; rc=reload(pp,pcb);}
 
-	if (rc==RC_OK && (clrn.nClasses!=0 || clro.nClasses)) {
-		for (unsigned i=0,j=0; i<clrn.nClasses || j<clro.nClasses;) {
-			if (i<clrn.nClasses && (j>=clro.nClasses || clrn.classes[i]->cid<clro.classes[j]->cid)) {
-				if ((clrn.classes[i++]->notifications&CLASS_NOTIFY_JOIN)!=0) mctx.flags|=MF_CNOTIFY;
-			} else if (j<clro.nClasses && (i>=clrn.nClasses || clrn.classes[i]->cid>clro.classes[j]->cid)) {
-				if ((clro.classes[j++]->notifications&CLASS_NOTIFY_LEAVE)!=0) mctx.flags|=MF_CNOTIFY;
+	if (rc==RC_OK && (clrn.ndevs!=0 || clro.ndevs)) {
+		for (unsigned i=0,j=0; i<clrn.ndevs || j<clro.ndevs;) {
+			if (i<clrn.ndevs && (j>=clro.ndevs || clrn.devs[i]->cid<clro.devs[j]->cid)) {
+				if ((clrn.devs[i++]->notifications&CLASS_NOTIFY_JOIN)!=0) mctx.flags|=MF_CNOTIFY;
+			} else if (j<clro.ndevs && (i>=clrn.ndevs || clrn.devs[i]->cid>clro.devs[j]->cid)) {
+				if ((clro.devs[j++]->notifications&CLASS_NOTIFY_LEAVE)!=0) mctx.flags|=MF_CNOTIFY;
 			} else {
-				bool fCIndex=clrn.classes[i]->nIndexProps!=0; if (fCIndex) clru.nIndices++;
-				if (fCIndex || (mctx.flags&MF_MIGRATE)!=0 || (clrn.classes[i]->notifications&CLASS_NOTIFY_CHANGE)!=0 || clrn.classes[i]->acts!=NULL) {
-					if (clru.classes==NULL && (clru.classes=(const ClassRef**)mctx.malloc(min(clro.nClasses,clrn.nClasses)*sizeof(ClassRef*)))==NULL)
+				bool fCIndex=clrn.devs[i]->nIndexProps!=0; if (fCIndex) clru.nIndices++;
+				if (fCIndex || (mctx.flags&MF_MIGRATE)!=0 || (clrn.devs[i]->notifications&CLASS_NOTIFY_CHANGE)!=0 || clrn.devs[i]->acts!=NULL) {
+					if (clru.devs==NULL && (clru.devs=(const DataEventRef**)mctx.malloc(min(clro.ndevs,clrn.ndevs)*sizeof(DataEventRef*)))==NULL)
 						{rc=RC_NOMEM; goto finish;}
-					clru.classes[clru.nClasses++]=clrn.classes[i]; if (clrn.classes[i]->acts!=NULL) clru.nActions++;
-					if ((clrn.classes[i]->notifications&CLASS_NOTIFY_CHANGE)!=0) mctx.flags|=MF_CNOTIFY;
+					clru.devs[clru.ndevs++]=clrn.devs[i]; if (clrn.devs[i]->acts!=NULL) clru.nActions++;
+					if ((clrn.devs[i]->notifications&CLASS_NOTIFY_CHANGE)!=0) mctx.flags|=MF_CNOTIFY;
 				}
-				if (i<--clrn.nClasses) memmove(&clrn.classes[i],&clrn.classes[i+1],(clrn.nClasses-i)*sizeof(ClassRefT*));
-				if (j<--clro.nClasses) memmove(&clro.classes[j],&clro.classes[j+1],(clro.nClasses-j)*sizeof(ClassRefT*));
+				if (i<--clrn.ndevs) memmove(&clrn.devs[i],&clrn.devs[i+1],(clrn.ndevs-i)*sizeof(DataEventRefT*));
+				if (j<--clro.ndevs) memmove(&clro.devs[j],&clro.devs[j+1],(clro.ndevs-j)*sizeof(DataEventRefT*));
 			}
 		}
 	}
@@ -1115,19 +1024,19 @@ RC QueryPrc::modifyPIN(const EvalCtx& ectx,const PID& id,const Value *v,unsigned
 				if (mi->newV!=NULL) freeV(*mi->newV); else if ((mi->newV=mctx.alloc<Value>())==NULL) {rc=RC_NOMEM; break;}
 				nd.newValue=mi->newV; *mi->newV=*mi->pv; setHT(*mi->newV); mi->newV->eid=nd.eid;
 			} else if (mi->pv==NULL||mi->pv->op==OP_DELETE) nd.newValue=NULL;
-			else if (mi->pv->op!=OP_EDIT) nd.newValue=mi->pv; else {nd.newValue=mi->newV; nEdits++;}
+			else nd.newValue=mi->pv;
 			evt.nData++;
 		}
 	}
 
-	if (rc==RC_OK && clrn.nClasses!=0) rc=ctx->classMgr->index(ses,pcb,clrn,(pinDescr&HOH_DELETED)!=0?CI_UDELETE:CI_INSERT,(const PropInfo**)mctx.ppi,mctx.npi);
-	if (rc==RC_OK && clru.nClasses!=0 && ((mctx.flags&MF_MIGRATE)!=0||clru.nIndices>0)) rc=ctx->classMgr->index(ses,pcb,clru,CI_UPDATE,(const PropInfo**)mctx.ppi,mctx.npi,&oldAddr);
-	if (rc==RC_OK && clro.nClasses!=0) {PageAddr saddr=pcb->addr; *pcb=oldAddr; rc=ctx->classMgr->index(ses,pcb,clro,CI_DELETE,(const PropInfo**)mctx.ppi,mctx.npi); *pcb=saddr;}
+	if (rc==RC_OK && clrn.ndevs!=0) rc=ctx->classMgr->updateIndex(ses,pcb,clrn,(pinDescr&HOH_DELETED)!=0?CI_UDELETE:CI_INSERT,&mctx.mprops);
+	if (rc==RC_OK && clru.ndevs!=0 && ((mctx.flags&MF_MIGRATE)!=0||clru.nIndices>0)) rc=ctx->classMgr->updateIndex(ses,pcb,clru,CI_UPDATE,&mctx.mprops,&oldAddr);
+	if (rc==RC_OK && clro.ndevs!=0) {PageAddr saddr=pcb->addr; *pcb=oldAddr; rc=ctx->classMgr->updateIndex(ses,pcb,clro,CI_DELETE,&mctx.mprops); *pcb=saddr;}
 
 	if (rc==RC_OK) {
-		if (clrn.nActions!=0 && (rc=clrn.invokeActions(ses,pcb,CI_INSERT,&ectx))!=RC_OK) goto finish;
-		if (clru.nActions!=0 && (rc=clru.invokeActions(ses,pcb,CI_UPDATE,&ectx))!=RC_OK) goto finish;
-		if (clro.nActions!=0 && (rc=clro.invokeActions(ses,pcb,CI_DELETE,&ectx))!=RC_OK) goto finish;
+		if (clrn.nActions!=0 && (rc=clrn.publish(ses,pcb,CI_INSERT,&ectx))!=RC_OK) goto finish;
+		if (clru.nActions!=0 && (rc=clru.publish(ses,pcb,CI_UPDATE,&ectx))!=RC_OK) goto finish;
+		if (clro.nActions!=0 && (rc=clro.publish(ses,pcb,CI_DELETE,&ectx))!=RC_OK) goto finish;
 	}
 
 	if (pcb==&cb && !cb.pb.isNull()) {if (rc==RC_OK) ctx->heapMgr->reuse(cb.pb,ses,reserve,true); cb.pb.release(ses);}
@@ -1146,7 +1055,7 @@ RC QueryPrc::modifyPIN(const EvalCtx& ectx,const PID& id,const Value *v,unsigned
 		ChangeInfo inf={id,newDoc,NULL,NULL,STORE_INVALID_URIID,STORE_COLLECTION_ID}; FTList ftl(mctx);
 		for (mi=mctx.list; rc==RC_OK && mi!=NULL; mi=mi->next) if ((mi->flags&IX_MASK)!=0 && (mi->flags&(PM_INVALID|PM_SPILL))==0) {
 			pv=mi->pv; inf.propID=pv->property; inf.eid=mi->eid==STORE_COLLECTION_ID?mi->eid:mi->eltKey;
-			inf.oldV=mi->oldV; inf.newV=pv->op==OP_DELETE?NULL:pv->op==OP_EDIT?mi->newV:pv;
+			inf.oldV=mi->oldV; inf.newV=pv->op==OP_DELETE?NULL:pv;
 			rc=ctx->ftMgr->index(inf,&ftl,mi->flags&IX_MASK,/*(mi->flags&PM_SWORDS)!=0?*/FTMODE_STOPWORDS,ses);
 			// check IX_RENAME
 		}
@@ -1162,33 +1071,28 @@ RC QueryPrc::modifyPIN(const EvalCtx& ectx,const PID& id,const Value *v,unsigned
 			IStoreNotification::EventData *pev=(IStoreNotification::EventData*)ses->malloc(sizeof(IStoreNotification::EventData));
 			pev->cid=STORE_INVALID_URIID; pev->type=IStoreNotification::NE_PIN_UPDATED; evt.events=pev; evt.nEvents++;
 		}
-		if (clro.classes!=NULL) for (unsigned i=0; i<clro.nClasses; i++) if ((clro.classes[i]->notifications&CLASS_NOTIFY_LEAVE)!=0) {
+		if (clro.devs!=NULL) for (unsigned i=0; i<clro.ndevs; i++) if ((clro.devs[i]->notifications&CLASS_NOTIFY_LEAVE)!=0) {
 			IStoreNotification::EventData *pev=evt.events==NULL?
 				(IStoreNotification::EventData*)ses->malloc(sizeof(IStoreNotification::EventData)):
 				(IStoreNotification::EventData*)ses->realloc((void*)evt.events,sizeof(IStoreNotification::EventData)*(evt.nEvents+1));
-				evt.events=pev; pev+=evt.nEvents++; pev->cid=clro.classes[i]->cid; pev->type=IStoreNotification::NE_CLASS_INSTANCE_REMOVED; mctx.flags|=MF_NOTIFY;
+				evt.events=pev; pev+=evt.nEvents++; pev->cid=clro.devs[i]->cid; pev->type=IStoreNotification::NE_CLASS_INSTANCE_REMOVED; mctx.flags|=MF_NOTIFY;
 		}
-		if (clru.classes!=NULL) for (unsigned i=0; i<clru.nClasses; i++) if ((clru.classes[i]->notifications&CLASS_NOTIFY_CHANGE)!=0) {
+		if (clru.devs!=NULL) for (unsigned i=0; i<clru.ndevs; i++) if ((clru.devs[i]->notifications&CLASS_NOTIFY_CHANGE)!=0) {
 			IStoreNotification::EventData *pev=evt.events==NULL?
 				(IStoreNotification::EventData*)ses->malloc(sizeof(IStoreNotification::EventData)):
 				(IStoreNotification::EventData*)ses->realloc((void*)evt.events,sizeof(IStoreNotification::EventData)*(evt.nEvents+1));
-			evt.events=pev; pev+=evt.nEvents++; pev->cid=clru.classes[i]->cid; pev->type=IStoreNotification::NE_CLASS_INSTANCE_CHANGED; mctx.flags|=MF_NOTIFY;
+			evt.events=pev; pev+=evt.nEvents++; pev->cid=clru.devs[i]->cid; pev->type=IStoreNotification::NE_CLASS_INSTANCE_CHANGED; mctx.flags|=MF_NOTIFY;
 		}
-		if (clrn.classes!=NULL) for (unsigned i=0; i<clrn.nClasses; i++) if ((clrn.classes[i]->notifications&CLASS_NOTIFY_JOIN)!=0) {
+		if (clrn.devs!=NULL) for (unsigned i=0; i<clrn.ndevs; i++) if ((clrn.devs[i]->notifications&CLASS_NOTIFY_JOIN)!=0) {
 			IStoreNotification::EventData *pev=evt.events==NULL?
 				(IStoreNotification::EventData*)ses->malloc(sizeof(IStoreNotification::EventData)):
 				(IStoreNotification::EventData*)ses->realloc((void*)evt.events,sizeof(IStoreNotification::EventData)*(evt.nEvents+1));
-			evt.events=pev; pev+=evt.nEvents++; pev->cid=clrn.classes[i]->cid; pev->type=IStoreNotification::NE_CLASS_INSTANCE_ADDED; mctx.flags|=MF_NOTIFY;
+			evt.events=pev; pev+=evt.nEvents++; pev->cid=clrn.devs[i]->cid; pev->type=IStoreNotification::NE_CLASS_INSTANCE_ADDED; mctx.flags|=MF_NOTIFY;
 		}
 		uint64_t txid=ses!=NULL?ses->getTXID():INVALID_TXID;
 		IStoreNotification::NotificationEvent *pevt=new(ses) IStoreNotification::NotificationEvent;
 		if (pevt!=NULL) {
-			*pevt=evt; IStoreNotification::NotificationData *pnd=(IStoreNotification::NotificationData*)pevt->data; unsigned cnt;
-			if (nEdits>0) for (mi=mctx.list,cnt=0; cnt<nEdits && mi!=NULL; mi=mi->next) if ((mi->flags&PM_SPILL)==0) {
-				if (mi->pv!=NULL && mi->pv->op==OP_EDIT && pnd->newValue==mi->newV) {pnd->newValue=mi->pv; cnt++;}
-				pnd++;
-			}
-			try {ctx->queryMgr->notification->notify(pevt,1,txid);} catch (...) {}
+			*pevt=evt; try {ctx->queryMgr->notification->notify(pevt,1,txid);} catch (...) {}
 			ses->free(pevt);
 		}
 		ses->free((void*)evt.events);
@@ -1274,19 +1178,6 @@ RC QueryPrc::putHeapMod(HeapPageMgr::HeapPropMod *hpm,ModInfo *mi,byte *buf,usho
 		hpm->eltId=(mi->pInfo->flags&PM_NEWCOLL)!=0 && mi->pInfo->hprop==NULL && mi->pInfo->first==mi ? mi->eltKey : mi->eid;
 		hpm->eltKey=hpm->op!=OP_SET||(mi->pInfo->flags&(PM_NEWCOLL|PM_SCOLL))==(PM_NEWCOLL|PM_SCOLL)?mi->eltKey:STORE_COLLECTION_ID;
 		assert(hpm->op<OP_FIRST_EXPR);
-	}
-	if (hpm->op==OP_EDIT && (mi->flags&PM_ESTREAM)==0) {
-		// special descriptors for OP_EDIT
-		const Value *pv=mi->oldV; assert(pv!=NULL && (mi->pv->flags&VF_SSV)==0);
-		uint32_t esht=mi->pv->edit.shift==~0ULL?pv->length:uint32_t(mi->pv->edit.shift);
-		hpm->shift=ushort(esht); assert((esht&~0xFFFF)==0 && esht<=pv->length);
-		hpm->newData.ptr.offset=sht; hpm->newData.ptr.len=ushort(mi->pv->length);
-		hpm->newData.type.setType((ValueType)mi->pv->type,HDF_NORMAL);
-		memcpy(buf+sht,mi->pv->bstr,hpm->newData.ptr.len); sht+=(ushort)ceil(hpm->newData.ptr.len,HP_ALIGN);
-		hpm->oldData.ptr.offset=sht; hpm->oldData.ptr.len=ushort(mi->pv->edit.length);
-		hpm->oldData.type.setType((ValueType)mi->oldV->type,HDF_NORMAL);
-		memcpy(buf+sht,pv->bstr+esht,hpm->oldData.ptr.len); sht+=(ushort)ceil(hpm->oldData.ptr.len,HP_ALIGN);
-		return RC_OK;
 	}
 	// new value descriptor, empty for deletes
 	if ((mi->flags&PM_ESTREAM)!=0) {
@@ -1377,7 +1268,7 @@ RC QueryPrc::rename(ChangeInfo& val,PropertyID pid,unsigned flags,bool fSync)
 RC QueryPrc::undeletePINs(const EvalCtx& ectx,const PID *pids,unsigned nPins)
 {
 	if (ectx.ses==NULL) return RC_NOSESSION; TxSP tx(ectx.ses); RC rc=tx.start(); if (rc!=RC_OK) return rc;
-	Value und; und.setEdit(0u,(uint32_t)PIN_DELETED); und.setPropID(PROP_SPEC_SELF);
+	Value und; und.set((unsigned)~PIN_DELETED); und.setPropID(PROP_SPEC_SELF); und.setOp(OP_AND);
 	for (unsigned i=0; i<nPins; i++) if ((rc=modifyPIN(ectx,pids[i],&und,1,NULL,NULL,MODE_DELETED))!=RC_OK) return rc;
 	tx.ok(); return RC_OK;
 }

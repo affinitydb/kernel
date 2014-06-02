@@ -324,11 +324,56 @@ public:
 		if (nTs>=xTs) {ptrdiff_t sht=ins-ts; size_t old=xTs*sizeof(T); if ((ts=(T*)ma->realloc(ts,(xTs+=xTs==0?initX:xTs/factor)*sizeof(T),old))==NULL) return RC_NOMEM; ins=ts+sht;}
 		if (ins<&ts[nTs]) memmove(ins+1,ins,(uint8_t*)&ts[nTs]-(uint8_t*)ins); *ins=t; nTs++; if (ret!=NULL) *ret=ins; return RC_OK;
 	}
+	RC findOrAdd(Key key,T *&ret) {
+		T *p,*ins=NULL;
+		if ((p=(T*)BIN<T,Key,C>::find(key,(const T*)ts,nTs,&ins))!=NULL) {ret=p; return RC_FALSE;}
+		if (nTs>=xTs) {ptrdiff_t sht=ins-ts; size_t old=xTs*sizeof(T); if ((ts=(T*)ma->realloc(ts,(xTs+=xTs==0?initX:xTs/factor)*sizeof(T),old))==NULL) return RC_NOMEM; ins=ts+sht;}
+		if (ins<&ts[nTs]) memmove(ins+1,ins,(uint8_t*)&ts[nTs]-(uint8_t*)ins); nTs++; ret=ins; return RC_OK;
+	}
 	RC remove(unsigned i) {if (i>=nTs) return RC_FALSE; if (i<--nTs) memmove(&ts[i],&ts[i+1],(nTs-i)*sizeof(T)); return RC_OK;}
 	void moveTo(DynOArray<T,Key,C,initX,factor>& to) {if (to.ts!=NULL) to.ma->free(to.ts); to.ts=ts; to.nTs=nTs; to.xTs=xTs; ts=NULL; nTs=xTs=0;}
 	const T* find(Key key) const {return BIN<T,Key,C>::find(key,(const T*)ts,nTs);}
 	T* get(uint32_t& n) {T *pt=NULL; if ((n=nTs)!=0) {pt=ts; ts=NULL; xTs=nTs=0;} return pt;}
 	const T& operator[](unsigned idx) const {assert(idx<nTs); return ts[idx];}
+	operator unsigned () const {return nTs;}
+	void clear() {if (ts!=NULL) {ma->free(ts); ts=NULL;} nTs=xTs=0;}
+};
+
+/**
+ * dynamic ordered array of pointers template; supports binary search
+ */
+template<typename T,typename Key=T,class C=DefCmp<Key>,unsigned initX=16,unsigned factor=1> class DynOArrayPtr
+{
+protected:
+	IMemAlloc	*const ma;
+	T			**ts;
+	unsigned	nTs;
+	unsigned	xTs;
+public:
+	DynOArrayPtr(IMemAlloc *m) : ma(m),ts(NULL),nTs(0),xTs(0) {}
+	~DynOArrayPtr() {if (ts!=NULL) ma->free(ts);}
+	RC operator+=(T *t) {return add(t);}
+	RC operator-=(T *t) {
+		T **del=NULL; if (BIN<T,Key,C>::find((Key)*t,(const T**)ts,nTs,(const T***)&del)==NULL) return RC_FALSE;
+		assert(del!=NULL); if (del<&ts[--nTs]) memmove(del,del+1,(uint8_t*)&ts[nTs]-(uint8_t*)del); return RC_OK;
+	}
+	RC add(T *t,T ***ret=NULL) {
+		T **ins=NULL;
+		if (BIN<T,Key,C>::find((Key)*t,(const T**)ts,nTs,(const T***)&ins)!=NULL) {if (ret!=NULL) *ret=ins; return RC_FALSE;}
+		if (nTs>=xTs) {ptrdiff_t sht=ins-ts; size_t old=xTs*sizeof(T*); if ((ts=(T**)ma->realloc(ts,(xTs+=xTs==0?initX:xTs/factor)*sizeof(T*),old))==NULL) return RC_NOMEM; ins=ts+sht;}
+		if (ins<&ts[nTs]) memmove(ins+1,ins,(uint8_t*)&ts[nTs]-(uint8_t*)ins); *ins=t; nTs++; if (ret!=NULL) *ret=ins; return RC_OK;
+	}
+	RC findOrAdd(Key key,T **&ret) {
+		T **ins=NULL;
+		if (BIN<T,Key,C>::find(key,(const T**)ts,nTs,(const T***)&ins)!=NULL) {ret=ins; return RC_FALSE;}
+		if (nTs>=xTs) {ptrdiff_t sht=ins-ts; size_t old=xTs*sizeof(T*); if ((ts=(T**)ma->realloc(ts,(xTs+=xTs==0?initX:xTs/factor)*sizeof(T*),old))==NULL) return RC_NOMEM; ins=ts+sht;}
+		if (ins<&ts[nTs]) memmove(ins+1,ins,(uint8_t*)&ts[nTs]-(uint8_t*)ins); nTs++; ret=ins; return RC_OK;
+	}
+	RC remove(unsigned i) {if (i>=nTs) return RC_FALSE; if (i<--nTs) memmove(&ts[i],&ts[i+1],(nTs-i)*sizeof(T*)); return RC_OK;}
+	void moveTo(DynOArrayPtr<T,Key,C,initX,factor>& to) {if (to.ts!=NULL) to.ma->free(to.ts); to.ts=ts; to.nTs=nTs; to.xTs=xTs; ts=NULL; nTs=xTs=0;}
+	const T* find(Key key) const {return BIN<T,Key,C>::find(key,(const T **)ts,nTs);}
+	T** get(uint32_t& n) {T **pt=NULL; if ((n=nTs)!=0) {pt=ts; ts=NULL; xTs=nTs=0;} return pt;}
+	T*const& operator[](unsigned idx) const {assert(idx<nTs); return ts[idx];}
 	operator unsigned () const {return nTs;}
 	void clear() {if (ts!=NULL) {ma->free(ts); ts=NULL;} nTs=xTs=0;}
 };

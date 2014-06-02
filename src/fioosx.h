@@ -99,7 +99,7 @@ struct AioCnt
 class AsyncReqQ
 {
 public: 
-	static  Pool	lioReqs;
+	static  LIFO	lioReqs;
 	mutable	RWLock	lock;
 	AIOElt * q;
 
@@ -126,8 +126,8 @@ class FileMgr : public GFileMgr
 {
 public:
 #ifndef STORE_AIO_THREAD
-	static	Pool	freeIORequests;
-	static  Pool	asyncReqs;
+	static	LIFO	freeIORequests;
+	static  LIFO	asyncReqs;
 #endif
 	FileMgr(class StoreCtx *ct,int maxOpenFiles,const char *ldDir);
 	RC		open(FileID& fid,const char *fname,unsigned flags=0);

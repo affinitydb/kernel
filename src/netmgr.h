@@ -87,7 +87,7 @@ class NetMgr : public RPINHashTab, public PageMgr
 	long			xPINs;
 	TIMESTAMP		defExpiration;
 	TreeGlobalRoot	map;
-	Pool			freeRPINs;
+	LIFO			freeRPINs;
 public:
 	NetMgr(StoreCtx *ct,int hashSize=DEFAULT_RPINHASH_SIZE,int cacheSize=DEFAULT_CACHED_RPINS,TIMESTAMP dExp=DEFAULT_EXPIRATION);
 	virtual			~NetMgr();

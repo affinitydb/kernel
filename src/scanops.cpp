@@ -22,7 +22,7 @@ Written by Mark Venguerov 2004-2014
 #include "session.h"
 #include "ftindex.h"
 #include "idxcache.h"
-#include "classifier.h"
+#include "dataevent.h"
 #include "queryprc.h"
 #include "lock.h"
 #include "stmt.h"
@@ -45,7 +45,7 @@ FullScan::~FullScan()
 RC FullScan::init()
 {
 	PBlockP pb; heapPageID=INVALID_PAGEID; const HeapDirMgr::HeapDirPage *hd;
-	for (dirPageID=qx->ses->getStore()->theCB->getRoot(fClasses?MA_CLASSDIRFIRST:MA_HEAPDIRFIRST); dirPageID!=INVALID_PAGEID; ) {
+	for (dirPageID=qx->ses->getStore()->theCB->getRoot(fClasses?MA_DATAEVENTDIRFIRST:MA_HEAPDIRFIRST); dirPageID!=INVALID_PAGEID; ) {
 		if (pb.getPage(dirPageID,qx->ses->getStore()->hdirMgr,QMGR_SCAN,qx->ses)==NULL) {dirPageID=INVALID_PAGEID; break;}
 		hd=(const HeapDirMgr::HeapDirPage*)pb->getPageBuf();
 		for (idx=0; idx<hd->nSlots; ) {
@@ -145,7 +145,7 @@ RC FullScan::advance(const PINx *skip)
 RC FullScan::rewind()
 {
 	if (it!=NULL) {if (&it->getPageSet()!=&stx->defHeap) ((PageSet*)&it->getPageSet())->destroy(); qx->ses->free(it);}
-	heapPageID=INVALID_PAGEID; dirPageID=qx->ses->getStore()->theCB->getRoot(fClasses?MA_CLASSDIRFIRST:MA_HEAPDIRFIRST); idx=0;
+	heapPageID=INVALID_PAGEID; dirPageID=qx->ses->getStore()->theCB->getRoot(fClasses?MA_DATAEVENTDIRFIRST:MA_HEAPDIRFIRST); idx=0;
 	stx=&qx->ses->tx; state=state&~QST_EOF|QST_BOF; return RC_OK;
 }
 
@@ -156,10 +156,10 @@ void FullScan::print(SOutCtx& buf,int level) const
 
 //-----------------------------------------------------------------------------------------------
 
-ClassScan::ClassScan(QCtx *s,ClassID cid,unsigned qflags) : QueryOp(s,qflags|QO_UNIQUE|QO_STREAM|QO_IDSORT),scan(NULL),meta(NamedMgr::getMeta(cid))
+ClassScan::ClassScan(QCtx *s,DataEventID cid,unsigned qflags) : QueryOp(s,qflags|QO_UNIQUE|QO_STREAM|QO_IDSORT),scan(NULL),meta(NamedMgr::getMeta(cid))
 {
 	new(&key) SearchKey((uint64_t)cid);
-//	if (s->ses->getIdentity()!=STORE_OWNER && (cls->getFlags()&META_PROP_ACL)!=0) {	-> qflags
+//	if (s->ses->getIdentity()!=STORE_OWNER && (dev->getFlags()&META_PROP_ACL)!=0) {	-> qflags
 		//
 //	}
 }
@@ -171,7 +171,7 @@ ClassScan::~ClassScan()
 
 RC ClassScan::init()
 {
-	scan=meta!=0?qx->ses->getStore()->namedMgr->scan(qx->ses,NULL):qx->ses->getStore()->classMgr->getClassMap().scan(qx->ses,&key,&key,SCAN_EXACT);
+	scan=meta!=0?qx->ses->getStore()->namedMgr->scan(qx->ses,NULL):qx->ses->getStore()->classMgr->getDataEventMap().scan(qx->ses,&key,&key,SCAN_EXACT);
 	if (scan==NULL) return RC_NOMEM; RC rc;
 	if (nSkip>0 && (rc=scan->skip(nSkip))!=RC_OK || (rc=qx->ses->testAbortQ())!=RC_OK) {state|=QST_EOF|QST_BOF; return rc;}
 	return RC_OK;
@@ -203,7 +203,7 @@ RC ClassScan::advance(const PINx *skip)
 
 RC ClassScan::rewind()
 {
-	RC rc=scan!=NULL?scan->rewind():(scan=qx->ses->getStore()->classMgr->getClassMap().scan(qx->ses,&key,&key,SCAN_EXACT))!=NULL?RC_OK:RC_NOMEM;
+	RC rc=scan!=NULL?scan->rewind():(scan=qx->ses->getStore()->classMgr->getDataEventMap().scan(qx->ses,&key,&key,SCAN_EXACT))!=NULL?RC_OK:RC_NOMEM;
 	if (rc==RC_OK) state=state&~QST_EOF|QST_BOF;
 	return rc;
 }
@@ -211,7 +211,7 @@ RC ClassScan::rewind()
 RC ClassScan::count(uint64_t& cnt,unsigned nAbort)
 {
 	if (meta!=0) return QueryOp::count(cnt,nAbort);
-	RC rc=qx->ses->getStore()->classMgr->getClassMap().countValues(key,cnt);
+	RC rc=qx->ses->getStore()->classMgr->getDataEventMap().countValues(key,cnt);
 	if (rc==RC_NOTFOUND) {cnt=0; rc=RC_OK;}
 	return rc;
 }
@@ -233,7 +233,7 @@ SpecClassScan::~SpecClassScan()
 
 RC SpecClassScan::init()
 {
-	switch (cls) {
+	switch (dev) {
 	default: return RC_INTERNAL;
 	case CLASS_OF_STORES:
 		//???
@@ -247,7 +247,7 @@ RC SpecClassScan::init()
 
 RC SpecClassScan::advance(const PINx *)
 {
-	switch (cls) {
+	switch (dev) {
 	default: return RC_INTERNAL;
 	case CLASS_OF_STORES:
 		//???
@@ -261,7 +261,7 @@ RC SpecClassScan::advance(const PINx *)
 
 RC SpecClassScan::rewind()
 {
-	switch (cls) {
+	switch (dev) {
 	default: return RC_INTERNAL;
 	case CLASS_OF_STORES:
 		//???
@@ -275,7 +275,7 @@ RC SpecClassScan::rewind()
 
 RC SpecClassScan::count(uint64_t& cnt,unsigned nAbort)
 {
-	switch (cls) {
+	switch (dev) {
 	default: return RC_INTERNAL;
 	case CLASS_OF_STORES:
 		//???
@@ -290,7 +290,7 @@ RC SpecClassScan::count(uint64_t& cnt,unsigned nAbort)
 void SpecClassScan::print(SOutCtx& buf,int level) const
 {
 	buf.fill('\t',level); buf.append("class: ",7);
-	size_t l; const char *name=qx->ses->getStore()->namedMgr->getBuiltinName(cls,l);
+	size_t l; const char *name=qx->ses->getStore()->namedMgr->getBuiltinName(dev,l);
 	if (name!=NULL && l!=0) buf.append(name,l); else buf.append("???",3);
 	buf.append("\n",1);
 }
@@ -298,8 +298,8 @@ void SpecClassScan::print(SOutCtx& buf,int level) const
 
 //-----------------------------------------------------------------------------------------------
 
-IndexScan::IndexScan(QCtx *qc,ClassIndex& idx,unsigned flg,unsigned nr,unsigned qf) 
-: QueryOp(qc,qf|QO_STREAM|QO_UNIQUE|QO_REVERSIBLE),index(idx),classID(((Class&)idx).getID()),flags(flg),
+IndexScan::IndexScan(QCtx *qc,DataIndex& idx,unsigned flg,unsigned nr,unsigned qf) 
+: QueryOp(qc,qf|QO_STREAM|QO_UNIQUE|QO_REVERSIBLE),index(idx),classID(((DataEvent&)idx).getID()),flags(flg),
 	rangeIdx(0),scan(NULL),pids(NULL),nRanges(nr),vals(NULL)
 {
 	if (idx.getNSegs()==1) flags|=idx.getIndexSegs()->flags; if (nRanges==0) flags&=~SCAN_EXACT;
@@ -312,7 +312,7 @@ IndexScan::IndexScan(QCtx *qc,ClassIndex& idx,unsigned flg,unsigned nr,unsigned 
 			if (j>=pl.nProps) {pl.props[pl.nProps++]=is.propID; break;} else if (is.propID==pl.props[j]) break;
 			else if (is.propID<pl.props[j]) {memmove(&pl.props[j+1],&pl.props[j],(pl.nProps-j)*sizeof(PropertyID)); pl.props[j]=is.propID; pl.nProps++; break;}
 	}
-	if (qc->ses->getIdentity()!=STORE_OWNER && (((Class&)idx).getFlags()&META_PROP_ACL)!=0) {
+	if (qc->ses->getIdentity()!=STORE_OWNER && (((DataEvent&)idx).getFlags()&META_PROP_ACL)!=0) {
 		//
 	}
 }
@@ -508,8 +508,10 @@ RC ExprScan::init()
 	case VT_REFID: case VT_REF:
 		state|=QST_EOF; if (nSkip!=0) {nSkip--; return RC_EOF;}
 		if (res!=NULL) {
-			if (expr.type==VT_REFID) {*res=expr.id; res->epr.flags=PINEX_EXTPID;} 
-			else {
+			if (expr.type==VT_REFID) {
+				*res=expr.id; res->epr.flags=PINEX_EXTPID;
+				if ((qflags&(QO_RAW|QO_FORUPDATE))==0 && expr.fcalc!=0) return createCommOp();
+			} else {
 				res->copy((PIN*)expr.pin,(qflags&QO_FORUPDATE)!=0?PGCTL_ULOCK:0);
 				if ((qflags&(QO_RAW|QO_FORUPDATE))==0 && (res->getMetaType()&PMT_COMM)!=0) return createCommOp();
 			}
@@ -535,16 +537,14 @@ RC ExprScan::advance(const PINx *skip)
 	if (res!=NULL) {res->cleanup(); res->epr.flags=PINEX_EXTPID;}
 	switch (r.type) {
 	case VT_COLLECTION:
-		if (r.isNav()) {
-			while ((cv=r.nav->navigate(idx++==0?GO_FIRST:GO_NEXT))!=NULL)
-				if (cv->type==VT_REFID) {if (res!=NULL) *res=cv->id; return RC_OK;}
-				else if (cv->type==VT_REF) {if (res!=NULL) res->copy((PIN*)cv->pin,(qflags&QO_FORUPDATE)!=0?PGCTL_ULOCK:0); return RC_OK;}
-				// comm
-		} else while (idx<r.length) {
-			cv=&r.varray[idx++];
-			if (cv->type==VT_REFID) {if (res!=NULL) *res=cv->id; return RC_OK;}
-			else if (cv->type==VT_REF) {if (res!=NULL) res->copy((PIN*)cv->pin,(qflags&QO_FORUPDATE)!=0?PGCTL_ULOCK:0); return RC_OK;}
-			// comm
+		for (cv=r.isNav()?r.nav->navigate(idx++==0?GO_FIRST:GO_NEXT):idx<r.length?&r.varray[idx++]:NULL; cv!=NULL; cv=r.isNav()?(++idx,r.nav->navigate(GO_NEXT)):idx<r.length?&r.varray[idx++]:NULL) {
+			if (res!=NULL) {
+				if (cv->type==VT_REFID) *res=cv->id;
+				else if (cv->type==VT_REF) res->copy((PIN*)cv->pin,(qflags&QO_FORUPDATE)!=0?PGCTL_ULOCK:0);
+				else if (cv->type==VT_STRUCT) {res->setProps(cv->varray,cv->length,true); *res=PIN::noPID; res->epr.flags|=PINEX_DERIVED;}
+				else {w=*cv; w.setPropID(PROP_SPEC_VALUE); setHT(w); res->setProps(&w,1,true); *res=PIN::noPID; res->epr.flags|=PINEX_DERIVED;}
+			}
+			return RC_OK;
 		}
 		break;
 	case VT_STRUCT:

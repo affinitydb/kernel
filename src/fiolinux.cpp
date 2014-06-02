@@ -320,7 +320,7 @@ void FileMgr::_asyncIOCompletion(sigval_t val)
 #else
 namespace AfyKernel
 {
-Pool FileMgr::freeIORequests;
+LIFO FileMgr::freeIORequests;
 class IOCompletionRequest : public Request
 {
 	myaio	*const	aio;

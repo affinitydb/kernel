@@ -141,7 +141,7 @@ struct IOQueueElt
 	unsigned	iobits;
 };
 
-static Pool ioQueueBlocks(&sharedAlloc,0x20);
+static LIFO ioQueueBlocks(&sharedAlloc,0x20);
 
 class IOCtl
 {
@@ -272,9 +272,8 @@ public:
 					if (FD_ISSET(fd,&e)!=0) iobits|=E_BIT;
 #else
 					const pollfd &pfd=fdfs[idx];
-					if ((pfd.revents&POLLIN)!=0) iobits|=R_BIT;
-					if ((pfd.revents&POLLOUT)!=0) iobits|=W_BIT;
-					if ((pfd.revents&(POLLERR|POLLNVAL))!=0) iobits|=E_BIT;			//POLLHUP ???
+					if ((pfd.revents&POLLIN)!=0) iobits|=R_BIT; if ((pfd.revents&POLLOUT)!=0) iobits|=W_BIT;
+					if ((pfd.revents&(POLLERR|POLLNVAL))!=0||(pfd.revents&(POLLHUP|POLLIN))==POLLHUP) iobits|=E_BIT;	// delayed EOF if POLLIN
 #endif
 					if (iobits!=0) {
 						Session *ses=(Session*)iob->getSession(); n++;
@@ -432,7 +431,8 @@ public:
 		if ((iobits&E_BIT)!=0) {
 			rrc=wrc=convCode(getError()); if ((state&L_BIT)!=0) ioctl.remove(this,true); else ::closesocket(fd);
 			state=(state&~(R_BIT|W_BIT|E_BIT|L_BIT|READ_BIT|WRITE_BIT))|EREAD_BIT|EWRITE_BIT; fd=INVALID_SOCKET;
-			report(MSG_ERROR,"IOProcessor::process() error: %s\n",getErrMsg(rrc));
+			if ((state&RWAIT_BIT)!=0) {state&=~RWAIT_BIT; r_wait.signal();}
+			if ((state&WWAIT_BIT)!=0) {state&=~WWAIT_BIT; w_wait.signal();}
 		} else {
 			if ((iobits&R_BIT)!=0 && (state&(R_BIT|RWAIT_BIT))==(R_BIT|RWAIT_BIT)) {
 				if ((state&W_BIT)==0) {ioctl.remove(this,false); state&=~(R_BIT|W_BIT|E_BIT|L_BIT);} else {ioctl.set(this,0,R_BIT); state&=~R_BIT;}
@@ -795,17 +795,6 @@ RC Device::load(const Value &addr,unsigned)
 #endif
 		handle=INVALID_HANDLE_VALUE; return rc;
 	}
-#if 0
-	const Value *cmd;
-	if (addr.type==VT_STRUCT && (cmd=VBIN::find(PROP_SPEC_COMMAND,addr.varray,addr.length))!=NULL) {
-		switch (cmd->type) {
-		default: break;
-		case VT_STRUCT:
-			//???
-			break;
-		}
-	}
-#endif
 	return RC_OK;
 }
 
@@ -984,8 +973,8 @@ class Sockets : public IService
 	StoreCtx		*const	ctx;
 
 	static	TCPConnTable	*volatile TCPConns;
-	static	Pool			TCPCns;
-	static	Pool			listeners;
+	static	LIFO			TCPCns;
+	static	LIFO			listeners;
 	static	ElementID		sockEnum[LSOCKET_ENUM];
 	static	const char		*sockStr[LSOCKET_ENUM];
 	static int getSocket(const SockAddr& ai,SOCKET& sock,bool fListen=false) {
@@ -1164,8 +1153,8 @@ RC SockAddr::getAddr(const sockaddr_storage *ss,socklen_t ls,Value& addr,IMemAll
 }
 
 TCPConnTable	*volatile	Sockets::TCPConns=NULL;
-Pool						Sockets::TCPCns;
-Pool						Sockets::listeners;
+LIFO						Sockets::TCPCns;
+LIFO						Sockets::listeners;
 
 SocketListener::~SocketListener()
 {
@@ -1283,8 +1272,7 @@ void SocketProcessor::disconnect(bool fKeepalive)
 			}
 			TCPConnectionHolder *tch=new(p) TCPConnectionHolder(addr,fd); mgr.TCPConns->insert(tch);
 		} else if ((state&CLOSE_BIT)!=0) {
-			if ((state&L_BIT)==0) ::closesocket(fd);
-			else {ioctl.remove(this,true); state&=~(L_BIT|R_BIT|W_BIT|E_BIT);}
+			if ((state&L_BIT)==0) ::closesocket(fd); else {ioctl.remove(this,true); state&=~(L_BIT|R_BIT|W_BIT|E_BIT);}
 		}
 		fd=INVALID_SHANDLE; state|=CLOSE_BIT;
 	}
@@ -1336,17 +1324,39 @@ extern "C" AFY_EXP	bool mDNS_initService(ISession *ses,const Value *pars,unsigne
 extern "C" AFY_EXP	bool WEBAPP_initService(ISession *ses,const Value *pars,unsigned nPars,bool fNew);
 extern "C" AFY_EXP	bool XML_initService(ISession *ses,const Value *pars,unsigned nPars,bool fNew);
 extern "C" AFY_EXP	bool ZIGBEE_initService(ISession *ses,const Value *pars,unsigned nPars,bool fNew);
+extern "C" AFY_EXP	bool BLE_initService(ISession *ses,const Value *pars,unsigned nPars,bool fNew);
+extern "C" AFY_EXP	bool MODBUS_initService(ISession *ses,const Value *pars,unsigned nPars,bool fNew);
+extern "C" AFY_EXP	bool LOCALSENSOR_initService(ISession *ses,const Value *pars,unsigned nPars,bool fNew);
 const static struct InitStaticService
 {
 	Len_Str	name;
 	bool	(*initFunc)(ISession *ses,const Value *pars,unsigned nPars,bool fNew);
 } initStaticServiceTab[] =
 {
-	{{S_L("http")},		HTTP_initService},
-	{{S_L("mdns")},		mDNS_initService},
-	{{S_L("webapp")},	WEBAPP_initService},
-	{{S_L("xml")},		XML_initService},
-	{{S_L("zigbee")},	ZIGBEE_initService}
+#if defined(STATIC_LINK_ALL_SERVICES) || defined(STATIC_LINK_HTTP_SERVICE)
+	{{S_L("http")},			HTTP_initService},
+#endif
+#if defined(STATIC_LINK_ALL_SERVICES) || defined(STATIC_LINK_MDNS_SERVICE)
+	{{S_L("mdns")},			mDNS_initService},
+#endif
+#if defined(STATIC_LINK_ALL_SERVICES) || defined(STATIC_LINK_WEBAPP_SERVICE)
+	{{S_L("webapp")},		WEBAPP_initService},
+#endif
+#if defined(STATIC_LINK_ALL_SERVICES) || defined(STATIC_LINK_XML_SERVICE)
+	{{S_L("xml")},			XML_initService},
+#endif
+#if defined(STATIC_LINK_ALL_SERVICES) || defined(STATIC_LINK_ZIGBEE_SERVICE)
+	{{S_L("zigbee")},		ZIGBEE_initService},
+#endif
+#if defined(STATIC_LINK_ALL_SERVICES) || defined(STATIC_LINK_BLE_SERVICE)
+	{{S_L("ble")},			BLE_initService},
+#endif
+#if defined(STATIC_LINK_ALL_SERVICES) || defined(STATIC_LINK_MODBUS_SERVICE)
+	{{S_L("modbus")},		MODBUS_initService},
+#endif
+#if defined(STATIC_LINK_ALL_SERVICES) || defined(STATIC_LINK_LOCALSENSOR_SERVICE)
+	{{S_L("localsensor")},	LOCALSENSOR_initService},
+#endif
 };
 RC StoreCtx::initStaticService(const char *name,size_t l,Session *ses,const Value *pars,unsigned nPars,bool fNew)
 {
