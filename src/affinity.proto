@@ -1,6 +1,6 @@
 //**************************************************************************************
 //
-// Copyright © 2010-2013 GoPivotal, Inc. All rights reserved.
+// Copyright © 2010-2014 GoPivotal, Inc. All rights reserved.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -14,7 +14,7 @@
 // License for the specific language governing permissions and limitations
 // under the License.
 //
-// Written by Mark Venguerov 2010-2012
+// Written by Mark Venguerov 2010-2014
 //
 //**************************************************************************************
 
@@ -261,59 +261,40 @@ message Value {
 		OP_MOVE			= 3; // Move the element specified by Value::eid after the element specified by Value::ui (an eid in this case).
 		OP_MOVE_BEFORE	= 4; // Move the element specified by Value::eid before the element specified by Value::ui (an eid in this case).
 		OP_DELETE		= 5; // Delete the whole property, or a single collection element if Value::ui (an eid in this case) is specified.
-		OP_EDIT			= 6; // Edit a string (VT_STRING or VT_BSTR) or bits (VT_UINT, VT_UINT64).
-		OP_RENAME		= 7; // Rename the property, i.e. replace the Value::property itself (with the number specified in Value::ui). Value::type must be VT_URIID.
-		OP_PLUS			= 8; // Replace the stored value v1 with v2 = (v1 + this instance).
-		OP_MINUS		= 9; // Replace the stored value v1 with v2 = (v1 - this instance).
-		OP_MUL			= 10; // Replace the stored value v1 with v2 = (v1 * this instance).
-		OP_DIV			= 11; // Replace the stored value v1 with v2 = (v1 / this instance).
-		OP_MOD			= 12; // Replace the stored value v1 with v2 = v1 % this instance (remainder of division).
-		OP_NEG			= 13; // Replace the stored value v1 with -v1. The value specified in this instance is ignored.
-		OP_NOT			= 14; // Replace the stored value v1 with ~v1 or !v1 or -v1, depending on the type.
-		OP_AND			= 15; // Replace the stored value v1 with v2 = (v1 bitand this instance).
-		OP_OR			= 16; // Replace the stored value v1 with v2 = (v1 bitor this instance).
-		OP_XOR			= 17; // Replace the stored value v1 with v2 = (v1 xor this instance).
-		OP_LSHIFT		= 18; // Replace the stored value v1 with v2 = (v1 << this instance).
-		OP_RSHIFT		= 19; // Replace the stored value v1 with v2 = (v1 >> this instance).
-		OP_MIN			= 20; // Replace the stored value v1 with v2 = min(v1, this instance).
-		OP_MAX			= 21; // Replace the stored value v1 with v2 = max(v1, this instance).
-		OP_ABS			= 22; // Replace the stored value v1 with v2 = abs(v1). The value specified in this instance is ignored.
-		OP_LN			= 23; // Replace the stored value v1 with v2 = ln(v1). The value specified in this instance is ignored.
-		OP_EXP			= 24; // Replace the stored value v1 with v2 = exp(v1). The value specified in this instance is ignored.
-		OP_POW			= 25; // Replace the stored value v1 with v2 = pow(v1,this instance).
-		OP_SQRT			= 26; // Replace the stored value v1 with v2 = sqrt(v1). The value specified in this instance is ignored.
-		OP_SIN			= 27; // Sine.
-		OP_COS			= 28; // Cosine.
-		OP_TAN			= 29; // Tangent.
-		OP_ASIN			= 30; // Arcsine.
-		OP_ACOS			= 31; // Arccosine.
-		OP_ATAN			= 32; // Arctangent.
-		OP_FLOOR		= 33; // Replace the stored value v1 with v2 = floor(v1). The value specified in this instance is ignored.
-		OP_CEIL			= 34; // Replace the stored value v1 with v2 = ceil(v1). The value specified in this instance is ignored.
-		OP_CONCAT		= 35; // Concatenate this value to the stored value.
-		OP_LOWER		= 36; // Replace the stored value with its lower-case equivalent. The value specified in this instance is ignored.
-		OP_UPPER		= 37; // Replace the stored value with its upper-case equivalent. The value specified in this instance is ignored.
-		OP_TONUM		= 38; // Coerce the stored value to any of numeric types (VT_INT - VT_DOUBLE).
-		OP_TOINUM		= 39; // Coerce the stored value to an integer numeric type (VT_INT - VT_UINT64).
-		OP_CAST			= 40; // Coerce the stored value to the type defined by tghe second argument.
-	}
-	// For string/stream value editing (Value::op == OP_EDIT).
-	// Allows to insert, delete and replace ranges.
-	message StrEdit {
-		optional string str = 1; // For Value::type == VT_STRING. Specifies the characters to be inserted in the existing string. Can be empty.
-		optional bytes	bstr = 2; // For Value::type == VT_BSTR. Specifies the bytes to be inserted in the existing string. Can be empty.
-		required uint32 length = 3; // Specifies how many characters/bytes should be deleted from the original string, before insertion. Can be 0.
-		optional uint64 offset = 4; // Specifies the offset at which StrEdit::length should be deleted, and StrEdit::str/StrEdit::bstr should be inserted.
-	}
-	// To change multiple bits in an integer (Value::op == OP_EDIT).
-	message BitEdit {
-		required uint32 bits = 1;
-		required uint32 mask = 2;
-	}
-	// To change multiple bits in an 64-bit integer (Value::op == OP_EDIT).
-	message BitEdit64 {
-		required uint64 bits = 1;
-		required uint64 mask = 2;
+		OP_RENAME		= 6; // Rename the property, i.e. replace the Value::property itself (with the number specified in Value::ui). Value::type must be VT_URIID.
+		OP_PLUS			= 7; // Replace the stored value v1 with v2 = (v1 + this instance).
+		OP_MINUS		= 8; // Replace the stored value v1 with v2 = (v1 - this instance).
+		OP_MUL			= 9; // Replace the stored value v1 with v2 = (v1 * this instance).
+		OP_DIV			= 10; // Replace the stored value v1 with v2 = (v1 / this instance).
+		OP_MOD			= 11; // Replace the stored value v1 with v2 = v1 % this instance (remainder of division).
+		OP_NEG			= 12; // Replace the stored value v1 with -v1. The value specified in this instance is ignored.
+		OP_NOT			= 13; // Replace the stored value v1 with ~v1 or !v1 or -v1, depending on the type.
+		OP_AND			= 14; // Replace the stored value v1 with v2 = (v1 bitand this instance).
+		OP_OR			= 15; // Replace the stored value v1 with v2 = (v1 bitor this instance).
+		OP_XOR			= 16; // Replace the stored value v1 with v2 = (v1 xor this instance).
+		OP_LSHIFT		= 17; // Replace the stored value v1 with v2 = (v1 << this instance).
+		OP_RSHIFT		= 18; // Replace the stored value v1 with v2 = (v1 >> this instance).
+		OP_MIN			= 19; // Replace the stored value v1 with v2 = min(v1, this instance).
+		OP_MAX			= 20; // Replace the stored value v1 with v2 = max(v1, this instance).
+		OP_ABS			= 21; // Replace the stored value v1 with v2 = abs(v1). The value specified in this instance is ignored.
+		OP_LN			= 22; // Replace the stored value v1 with v2 = ln(v1). The value specified in this instance is ignored.
+		OP_EXP			= 23; // Replace the stored value v1 with v2 = exp(v1). The value specified in this instance is ignored.
+		OP_POW			= 24; // Replace the stored value v1 with v2 = pow(v1,this instance).
+		OP_SQRT			= 25; // Replace the stored value v1 with v2 = sqrt(v1). The value specified in this instance is ignored.
+		OP_SIN			= 26; // Sine.
+		OP_COS			= 27; // Cosine.
+		OP_TAN			= 28; // Tangent.
+		OP_ASIN			= 29; // Arcsine.
+		OP_ACOS			= 30; // Arccosine.
+		OP_ATAN			= 31; // Arctangent.
+		OP_FLOOR		= 32; // Replace the stored value v1 with v2 = floor(v1). The value specified in this instance is ignored.
+		OP_CEIL			= 33; // Replace the stored value v1 with v2 = ceil(v1). The value specified in this instance is ignored.
+		OP_CONCAT		= 34; // Concatenate this value to the stored value.
+		OP_LOWER		= 35; // Replace the stored value with its lower-case equivalent. The value specified in this instance is ignored.
+		OP_UPPER		= 36; // Replace the stored value with its upper-case equivalent. The value specified in this instance is ignored.
+		OP_TONUM		= 37; // Coerce the stored value to any of numeric types (VT_INT - VT_DOUBLE).
+		OP_TOINUM		= 38; // Coerce the stored value to an integer numeric type (VT_INT - VT_UINT64).
+		OP_CAST			= 39; // Coerce the stored value to the type defined by tghe second argument.
 	}
 	// For structs, collections and ranges.
 	message VArray {
@@ -367,13 +348,10 @@ message Value {
 	optional uint32		eid			= 18 [default = 4294967295]; // The pivot around which Value::op == OP_ADD* or OP_MOVE* operate.
 	optional uint32		meta		= 19; // Specialized additional specifiers, combination of MetaProps elements.
 
-	optional StrEdit	edit		= 20; // String editing specification, Value::op == OP_EDIT.
-	optional uint32		units		= 21; // [Enum to be provided soon.] Unit of measurement. Can be used with Value::type == VT_FLOAT or VT_DOUBLE.
-	optional VEnum		enu			= 22; // The VT_ENUM value.
-	optional VMap		map			= 23; // The VT_MAP value.
-	optional BitEdit	bedt		= 24; // Bit editing operation, Value::op == OP_EDIT.
-	optional BitEdit64	bedt64		= 25; // Bit editing operation for 64-bit integers, Value::op == OP_EDIT.
-	optional AArray		arr			= 26; // Fixed size array.
+	optional uint32		units		= 20; // [Enum to be provided soon.] Unit of measurement. Can be used with Value::type == VT_FLOAT or VT_DOUBLE.
+	optional VEnum		enu			= 21; // The VT_ENUM value.
+	optional VMap		map			= 22; // The VT_MAP value.
+	optional AArray		arr			= 23; // Fixed size array.
 
 	optional uint64		cid			= 128; // Client-side ID. Allows identifying the statement generated this result.
 }

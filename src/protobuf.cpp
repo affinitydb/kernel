@@ -62,8 +62,7 @@ using namespace AfyKernel;
 #define	VALUE_OP_TAG	_V(17)
 #define	EID_TAG			_V(18)
 #define	META_TAG		_V(19)
-#define	STREDIT_TAG		_L(20)
-#define	UNITS_TAG		_V(21)
+#define	UNITS_TAG		_V(20)
 
 #define	PID_ID_TAG		_V(1)
 #define	PID_IDENT_TAG	_V(2)
@@ -113,7 +112,7 @@ using namespace AfyKernel;
 const byte EncodePB::tags[VT_ALL] = 
 {
 	0, _V(5), _V(6), _V(7), _V(8), _S(9), _D(10), _V(16), _D(11), _D(12), _V(6), _V(6), _L(22), _L(3), _L(4), _L(13),
-	_L(13), _L(15), _L(15), _L(15), _L(15), _L(4), _L(4), _L(14), _L(14), _L(23), _L(14), _L(26), 0, _V(6), 0, 0
+	_L(13), _L(15), _L(15), _L(15), _L(15), _L(4), _L(4), _L(14), _L(14), _L(22), _L(14), _L(23), 0, _V(6), 0, 0
 };
 const byte EncodePB::types[VT_ALL] = 
 {
@@ -858,9 +857,6 @@ RC DecodePB::decode(const unsigned char *in,size_t lbuf,IMemAlloc *ra)
 				rv->id=PIN::noPID; rv->id.ident=STORE_OWNER; rv->pid=STORE_INVALID_URIID; rv->eid=STORE_COLLECTION_ID; rv->vid=STORE_CURRENT_VERSION;
 				is.pv->length=1; push_state(ST_REF,is.pv,in-buf0); defType=VT_REFIDPROP; continue;		// VT_REFIDELT?
 			case _V(16): is.pv->b=val!=0; is.pv->length=1; defType=VT_BOOL; break;
-			case STREDIT_TAG:
-				//...
-				break;
 			case _L(22):
 				is.pv->length=sizeof(VEnum); push_state(ST_ENUM,&is.pv,in-buf0); defType=VT_ENUM; continue;
 			case _L(23):
