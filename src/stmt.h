@@ -19,19 +19,12 @@ Written by Mark Venguerov 2004-2014
 **************************************************************************************/
 
 /**
- * IStmt and ICursor interfaces implementation
+ * IStmt interface implementation
  */
-#ifndef _QUERY_H_
-#define _QUERY_H_
+#ifndef _STMT_H_
+#define _STMT_H_
 
-#include "pin.h"
-#include "qbuild.h"
 #include "expr.h"
-#include "session.h"
-#include "idxtree.h"
-#include "txmgr.h"
-#include "pinex.h"
-#include "queryop.h"
 
 using namespace Afy;
 
@@ -49,9 +42,11 @@ namespace AfyKernel
 #define	QRY_CPARAMS		0x10000000			/**< class/family references contain parameters */
 #define	QRY_CALCWITH	0x08000000			/**< WITH contains calculated expressions */
 
-class SOutCtx;
-class SInCtx;
-class Cursor;
+class	SOutCtx;
+class	SInCtx;
+class	Cursor;
+class	QueryOp;
+struct	BuildCtx;
 
 /**
  * index segment reference descriptor
@@ -96,24 +91,11 @@ struct CondFT
 };
 
 /**
- * types of SELECT lists
+ * simplified statement types for quick processing
  */
-enum SelectType
+enum SimpleStmtType
 {
-	SEL_CONST,			/**< select returns constant expressions */
-	SEL_COUNT,			/**< SELECT COUNT(*) ... */
-	SEL_PID,			/**< SELECT afy:pinID ... */
-	SEL_FIRSTPID,		/**< SELECT FIRST afy:pinID ... */
-	SEL_VALUE,			/**< SELECT expr, aggregation is used, one result is returned */
-	SEL_VALUESET,		/**< SELECT expr, no aggregation */
-	SEL_DERIVED,		/**< SELECT list of expressions, aggregation is used, one result is returned */
-	SEL_DERIVEDSET,		/**< SELECT list of expressions, no aggregation */
-	SEL_DERIVEDPINSET,	/**< SELECT @{...} */
-	SEL_AUGMENTED,		/**< SELECT @,... */
-	SEL_PIN,			/**< SELECT FIRST * ... */
-	SEL_PINSET,			/**< SELECT * for non-join query */
-	SEL_COMPOUND,		/**< SELECT * for join query */
-	SEL_COMP_DERIVED	/**< SELECT list of expressions for join query */
+	SST_GENERIC, SST_UPDATE_AUTO, SST_UPDATE_SELF, SST_UPDATE_NAMED, SST_UPDATE_CLASS, SST_SELECT_NAMED, SST_SELECT_CLASS, SST_SELECT_FULL, SST_ALL
 };
 
 /**
@@ -160,7 +142,7 @@ protected:
 public:
 	virtual			~QVar();
 	virtual	RC		clone(MemAlloc *m,QVar*&) const = 0;
-	virtual	RC		build(class QBuildCtx& qctx,class QueryOp *&qop) const = 0;
+	virtual	RC		build(BuildCtx& qctx,QueryOp *&qop) const = 0;
 	virtual	RC		render(RenderPart,SOutCtx&) const;
 	virtual	RC		render(SOutCtx&) const;
 	virtual	size_t	serSize() const;
@@ -182,7 +164,8 @@ public:
 	friend	class	DropDataEvent;
 	friend	class	DataEventRegistry;
 	friend	class	QueryPrc;
-	friend	class	QBuildCtx;
+	friend	struct	BuildCtx;
+	friend	class	Cursor;
 	friend	class	SInCtx;
 	friend	class	SOutCtx;
 };
@@ -207,7 +190,7 @@ class SimpleVar : public QVar
 										condFT(NULL),fOrProps(false),path(NULL),nPathSeg(0) {}
 	virtual			~SimpleVar();
 	RC				clone(MemAlloc *m,QVar*&) const;
-	RC				build(class QBuildCtx& qctx,class QueryOp *&qop) const;
+	RC				build(BuildCtx& qctx,QueryOp *&qop) const;
 	RC				render(RenderPart,SOutCtx&) const;
 	size_t			serSize() const;
 	byte			*serialize(byte *buf) const;
@@ -248,7 +231,7 @@ class SetOpVar : public QVar
 	void			*operator new(size_t s,unsigned nv,MemAlloc *m) {return m->malloc(s+int(nv-2)*sizeof(QVarRef));}
 	SetOpVar(unsigned nv,QVarID i,byte ty,MemAlloc *m) : QVar(i,ty,m),nVars(nv) {}
 	RC				clone(MemAlloc *m,QVar*&) const;
-	RC				build(class QBuildCtx& qctx,class QueryOp *&qop) const;
+	RC				build(BuildCtx& qctx,QueryOp *&qop) const;
 	RC				render(RenderPart,SOutCtx&) const;
 	RC				render(SOutCtx&) const;
 	size_t			serSize() const;
@@ -271,7 +254,7 @@ class JoinVar : public QVar
 	JoinVar(unsigned nv,QVarID i,byte ty,MemAlloc *m) : QVar(i,ty,m),nVars(nv),condEJ(NULL) {stype=SEL_COMPOUND;}
 	virtual			~JoinVar();
 	RC				clone(MemAlloc *m,QVar*&) const;
-	RC				build(class QBuildCtx& qctx,class QueryOp *&qop) const;
+	RC				build(BuildCtx& qctx,QueryOp *&qop) const;
 	RC				render(RenderPart,SOutCtx&) const;
 	size_t			serSize() const;
 	byte			*serialize(byte *buf) const;
@@ -297,6 +280,7 @@ class Stmt : public IStmt
 {
 	const	STMT_OP	op;			/**< statement operation */
 	MemAlloc *const	ma;			/**< memory where this statement is allocated */
+	SimpleStmtType	sst;		/**< Stmt subtype for quick processing of simple statements */
 	unsigned		mode;		/**< execution mode */
 	TXI_LEVEL		txi;		/**< statement isolation level */
 	QVar			*top;		/**< topmost variable */
@@ -310,17 +294,18 @@ class Stmt : public IStmt
 		PINDscr	*pins;			/**< new PINs descriptors */
 		Value	*vals;			/**< modifiers for update */
 	};
-	unsigned	nValues;		/**< number of pins to insert or number update modifiers */
-	unsigned	nNested;		/**< number of nested PINs to be inserterd */
-	IntoClass	*into;			/**< class membership constraints */
-	uint32_t	nInto;			/**< number of class membership constraints */
-	unsigned	pmode;			/**< PIN creation flags or index in @... for UPDATE */
-	uint64_t	tpid;			/**< root PIN id for cross-references in graph insert */
-
+	unsigned		nValues;	/**< number of pins to insert or number update modifiers */
+	unsigned		nNested;	/**< number of nested PINs to be inserterd */
+	IntoClass		*into;		/**< class membership constraints */
+	uint32_t		nInto;		/**< number of class membership constraints */
+	unsigned		pmode;		/**< PIN creation flags or index in @... for UPDATE */
+	uint64_t		tpid;		/**< root PIN id for cross-references in graph insert */
+	unsigned		refCnt;		/**< number of references to this statement from a client program and cursors */
 public:
-	Stmt(unsigned md,MemAlloc *m,STMT_OP sop=STMT_QUERY,TXI_LEVEL tx=TXI_DEFAULT) : op(sop),ma(m),mode(md),txi(tx),top(NULL),nTop(0),vars(NULL),nVars(0),orderBy(NULL),nOrderBy(0)
-			{vals=NULL; nValues=nNested=0; into=NULL; nInto=0; pmode=0; tpid=STORE_INVALID_PID;}
+	Stmt(unsigned md,MemAlloc *m,STMT_OP sop=STMT_QUERY,TXI_LEVEL tx=TXI_DEFAULT) : op(sop),ma(m),sst(SST_GENERIC),mode(md),txi(tx),top(NULL),nTop(0),
+					vars(NULL),nVars(0),orderBy(NULL),nOrderBy(0),nValues(0),nNested(0),into(NULL),nInto(0),pmode(0),tpid(STORE_INVALID_PID),refCnt(1) {vals=NULL;}
 	virtual	~Stmt();
+	void operator	delete(void *p) throw() {if (p!=NULL) ((Stmt*)p)->ma->free(p);}
 	QVarID	addVariable(const SourceSpec *srcs=NULL,unsigned nSrcs=0,IExprNode *cond=NULL);
 	QVarID	addVariable(const PID& pid,PropertyID propID,IExprNode *cond=NULL);
 	QVarID	addVariable(IStmt *qry);
@@ -344,9 +329,9 @@ public:
 	RC		setValues(const Value *values,unsigned nValues,const IntoClass *into=NULL,unsigned nInto=0,uint64_t tid=0ULL);
 	RC		setWith(const Value *params,unsigned nParams);
 	STMT_OP	getOp() const;
-	RC		execute(ICursor **result=NULL,const Value *params=NULL,unsigned nParams=0,unsigned nReturn=~0u,unsigned nSkip=0,unsigned mode=0,uint64_t *nProcessed=NULL,TXI_LEVEL=TXI_DEFAULT) const;
-	RC		asyncexec(IStmtCallback *cb,const Value *params=NULL,unsigned nParams=0,unsigned nProcess=~0u,unsigned nSkip=0,unsigned mode=0,TXI_LEVEL=TXI_DEFAULT) const;
-	RC		execute(IStreamOut*& result,const Value *params=NULL,unsigned nParams=0,unsigned nReturn=~0u,unsigned nSkip=0,unsigned mode=0,TXI_LEVEL=TXI_DEFAULT) const;
+	RC		execute(ICursor **result=NULL,const Value *params=NULL,unsigned nParams=0,unsigned nReturn=~0u,unsigned nSkip=0,unsigned mode=0,uint64_t *nProcessed=NULL,TXI_LEVEL=TXI_DEFAULT);
+	RC		asyncexec(IStmtCallback *cb,const Value *params=NULL,unsigned nParams=0,unsigned nProcess=~0u,unsigned nSkip=0,unsigned mode=0,TXI_LEVEL=TXI_DEFAULT);
+	RC		execute(IStreamOut*& result,const Value *params=NULL,unsigned nParams=0,unsigned nReturn=~0u,unsigned nSkip=0,unsigned mode=0,TXI_LEVEL=TXI_DEFAULT);
 	RC		count(uint64_t& cnt,const Value *params=NULL,unsigned nParams=0,unsigned nAbort=~0u,unsigned mode=0,TXI_LEVEL=TXI_DEFAULT) const;
 	RC		exist(const Value *params=NULL,unsigned nParams=0,unsigned mode=0,TXI_LEVEL=TXI_DEFAULT) const;
 	RC		analyze(char *&plan,const Value *pars=NULL,unsigned nPars=0,unsigned md=0) const;
@@ -372,10 +357,11 @@ public:
 	RC		setValuesNoCopy(PINDscr *values,unsigned nVals);
 	RC		setValuesNoCopy(Value *values,unsigned nVals);
 	RC		setWithNoCopy(Value *params,unsigned nParams);
-	RC		getNested(PIN **ppins,PIN *pins,unsigned& cnt,Session *ses,PIN *parent=NULL) const;
-	static	RC	getNested(const Value *pv,unsigned nV,PIN **ppins,PIN *pins,unsigned& cnt,Session *ses,PIN *parent);
-	RC		insert(const EvalCtx& ectx,Value *ids,unsigned& cnt) const;
+	RC		getNested(PIN **ppins,PIN *pins,uint64_t& cnt,Session *ses,PIN *parent=NULL) const;
+	static	RC	getNested(const Value *pv,unsigned nV,PIN **ppins,PIN *pins,uint64_t& cnt,Session *ses,PIN *parent);
+	RC		insert(const EvalCtx& ectx,Value *ids,uint64_t& cnt) const;
 	RC		substitute(const Value *params,unsigned nParams,MemAlloc *ma);
+	void	ref() {refCnt++;}
 
 	RC		render(SOutCtx&) const;
 	size_t	serSize() const;
@@ -390,7 +376,7 @@ protected:
 	RC		render(const QVar *qv,SOutCtx& out) const;
 	RC		copyValues(Value *vals,unsigned nVals,unsigned& pn,DynOArrayBuf<uint64_t,uint64_t>& tids,Session *ses=NULL);
 	RC		countNestedNoCopy(Value *vals,unsigned nVals);
-	RC		execute(const EvalCtx& ectx,Value *res,unsigned nReturn=~0u,unsigned nSkip=0,unsigned md=0,uint64_t *nProcessed=NULL,TXI_LEVEL txl=TXI_DEFAULT,Cursor **pResult=NULL) const;
+	RC		execute(const EvalCtx& ectx,Value *res,unsigned nReturn=~0u,unsigned nSkip=0,unsigned md=0,uint64_t *nProcessed=NULL,TXI_LEVEL txl=TXI_DEFAULT,Cursor **pResult=NULL);
 	static	bool	classOK(const QVar *);
 	friend	class	DataEvent;
 	friend	class	DataEventMgr;
@@ -399,88 +385,11 @@ protected:
 	friend	class	ProcessStream;
 	friend	class	ServiceCtx;
 	friend	class	QueryPrc;
-	friend	class	QBuildCtx;
+	friend	class	Cursor;
 	friend	class	SimpleVar;
 	friend	class	SInCtx;
 };
 
-/**
- * ICursor implementation
- */
-class Cursor : public ICursor
-{
-	friend	class		Stmt;
-	EvalCtx				ectx;
-	Values				params;
-	QueryOp				*queryOp;
-	const	uint64_t	nReturn;
-	const	Value		*values;
-	const	unsigned	nValues;
-	const	unsigned	mode;
-	const	SelectType	stype;
-	const	STMT_OP		op;
-	PINx				**results;
-	unsigned			nResults;
-	PINx				qr,*pqr;
-	TXID				txid;
-	TXCID				txcid;
-	uint64_t			cnt;
-	TxSP				tx;
-	ValueC				retres;
-	bool				fSnapshot;
-	bool				fProc;
-	bool				fAdvance;
-	bool				fCopiedParams;
-	void	operator	delete(void *p) {if (p!=NULL) ((Cursor*)p)->ectx.ma->free(p);}
-	RC					skip();
-	RC					advance(bool fRet=true);
-	void				getPID(PID &id) {qr.getID(id);}
-	RC					extract(MemAlloc *ma,PIN *&,unsigned idx=0,bool fCopy=false);
-public:
-	Cursor(const EvalCtx &ec,QueryOp *qop,uint64_t nRet,unsigned md,const Value *vals,unsigned nV,const Values& with,STMT_OP sop=STMT_QUERY,SelectType ste=SEL_PINSET,bool fSS=false);
-	virtual				~Cursor();
-	RC					next(Value&);
-	RC					next(PID&);
-	IPIN				*next();
-	RC					rewind();
-	uint64_t			getCount() const;
-	void				destroy();
-
-	RC					connect();
-	SelectType			selectType() const {return stype;}
-	Session				*getSession() const {return ectx.ses;}
-	unsigned			getNResults() const {return nResults;}
-	RC					next(const PINx *&);
-	RC					rewindInt();
-	friend	class		CursorNav;
-};
-
-/**
- * query result set representation as a collection
- */
-class CursorNav : public INav
-{
-	MemAlloc	*const	ma;
-	Cursor				*curs;
-	const	Value		*cv;
-	unsigned			idx;
-	DynArray<Value,8>	vals;
-	const	bool		fPID;
-	bool				fColl;
-public:
-	CursorNav(MemAlloc *m,Cursor *cu,bool fP) : ma(m),curs(cu),cv(NULL),idx(0),vals(m),fPID(fP),fColl(false) {}
-	~CursorNav();
-	const	Value	*navigate(GO_DIR=GO_NEXT,ElementID=STORE_COLLECTION_ID);
-	ElementID		getCurrentID();
-	const	Value	*getCurrentValue();
-	RC				getElementByID(ElementID,Value&);
-	INav			*clone() const;
-	unsigned		count() const;
-	void			destroy();
-	static	RC		create(Cursor *cr,Value& res,unsigned md,MemAlloc *ma);
-private:
-	static	RC		getNext(Cursor *curs,Value& v,MemAlloc *ma,bool fPID);
-};
 
 };
 

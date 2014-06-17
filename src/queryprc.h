@@ -25,7 +25,6 @@ Written by Mark Venguerov 2004-2014
 #define _QUERYPRC_H_
 
 #include "modinfo.h"
-#include "qbuild.h"
 #include "queryop.h"
 #include "txmgr.h"
 #include "lock.h"
@@ -91,7 +90,6 @@ class QueryPrc
 	RC		makeRoom(PIN *pin,ushort lxtab,PBlock *pb,Session *ses,size_t reserve);
 	RC		rename(ChangeInfo& inf,PropertyID pid,unsigned flags,bool fSync);
 	RC		apply(const EvalCtx& ectx,STMT_OP op,PINx& qr,const Value *values,unsigned nValues,unsigned mode,PIN *pin=NULL);
-	RC		count(QueryOp *qop,uint64_t& cnt,unsigned nAbort,const OrderSegQ *os=NULL,unsigned nos=0);
 	RC		eval(const Value *pv,const EvalCtx& ctx,Value *res=NULL,unsigned mode=0);
 	RC		purge(PageID pageID,unsigned start,unsigned len,const uint32_t *bmp,PurgeType pt,Session *ses);
 	RC		updateComm(const EvalCtx &ectx,PIN *pin,const Value *v,unsigned nv,unsigned mode);

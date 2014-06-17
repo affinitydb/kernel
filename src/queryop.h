@@ -24,7 +24,6 @@ Written by Mark Venguerov 2004-2014
 #ifndef _QUERYOP_H_
 #define _QUERYOP_H_
 
-#include "qbuild.h"
 #include "expr.h"
 #include "dataevent.h"
 #include "propdnf.h"
@@ -45,16 +44,15 @@ namespace AfyKernel
 #define	QO_ALLPROPS		0x00000100			/**< all PIN properties should be returned */
 #define	QO_DELETED		0x00000200			/**< return soft-deleted PINs */
 #define	QO_CHECKED		0x00000400			/**< access permission is checked for this PIN */
-#define QO_VCOPIED		0x00000800			/**< data is copied from Stmt to QueryOp, must be deallocated */
-#define	QO_REORDER		0x00001000			/**< reordering of data is allowed */
-#define	QO_NODATA		0x00002000			/**< no property values is necessary to filter PINs, e.g. when only local PINs are required */
-#define	QO_UNI1			0x00004000			/**< first source is unique */
-#define	QO_UNI2			0x00008000			/**< second source is unique */
-#define	QO_RAW			0x00010000			/**< return PINs 'as-is', without communications, property calculation, etc. */
-#define	QO_HIDDEN		0x00020000			/**< return hidden pins in initialization */
-#define	QO_AUGMENT		0x00040000			/**< SEL_AUGMENTED for TransOp */
-#define	QO_LOADALL		0x00080000			/**< load all properties for TransOp or in Sort */
-#define	QO_FIRST		0x00100000			/**< return only first PIN/value */
+#define	QO_REORDER		0x00000800			/**< reordering of data is allowed */
+#define	QO_NODATA		0x00001000			/**< no property values is necessary to filter PINs, e.g. when only local PINs are required */
+#define	QO_UNI1			0x00002000			/**< first source is unique */
+#define	QO_UNI2			0x00004000			/**< second source is unique */
+#define	QO_RAW			0x00008000			/**< return PINs 'as-is', without communications, property calculation, etc. */
+#define	QO_HIDDEN		0x00010000			/**< return hidden pins in initialization */
+#define	QO_AUGMENT		0x00020000			/**< SEL_AUGMENTED for TransOp */
+#define	QO_LOADALL		0x00040000			/**< load all properties for TransOp or in Sort */
+#define	QO_FIRST		0x00080000			/**< return only first PIN/value */
 
 /**
  * query operator state flags
@@ -62,6 +60,7 @@ namespace AfyKernel
 #define	QST_INIT		0x80000000			/**< query operator was not initialized yet */
 #define	QST_BOF			0x40000000			/**< before first result received */
 #define	QST_EOF			0x20000000			/**< end of result set is encountered */
+#define	QST_CONNECTED	0x10000000			/**< operator is connected to its output */
 
 /**
  * flags for merge-sort operators
@@ -74,6 +73,7 @@ namespace AfyKernel
 #define	QOS_STR			0x0010				/**< store 1st source to process repeating */
 
 struct	CondIdx;
+struct	CondEJ;
 class	ExtSortFile;
 class	SOutCtx;
 
@@ -82,10 +82,11 @@ class	SOutCtx;
  */
 class QueryOp
 {
-	friend		class	QBuildCtx;
+	friend		class	Cursor;
 	friend		class	SimpleVar;
+	friend		struct	BuildCtx;
 protected:
-	QCtx		*const	qx;
+	EvalCtx		*const	ctx;
 	QueryOp		*const	queryOp;
 	unsigned			state;
 	unsigned			nSkip;
@@ -99,7 +100,7 @@ protected:
 	QueryOp				*extsrc;
 	RC					initSkip();
 public:
-						QueryOp(QCtx *qc,unsigned qf);
+						QueryOp(EvalCtx *ec,unsigned qf);
 						QueryOp(QueryOp *qop,unsigned qf);
 	virtual				~QueryOp();
 	virtual	void		connect(PINx **results,unsigned nRes=1);
@@ -111,13 +112,12 @@ public:
 	virtual	void		unique(bool);
 	virtual	void		reverse();
 	virtual	void		print(SOutCtx& buf,int level) const;
-	void	operator	delete(void *p) {if (p!=NULL) {QCtx *qx=((QueryOp*)p)->qx; qx->ses->free(p); qx->destroy();}}
-	void				setECtx(const EvalCtx *ect) {qx->ectx=ect;}
+	void	operator	delete(void*) {}
 	void				setSkip(unsigned n) {nSkip=n;}
 	void				setHidden() {qflags|=QO_HIDDEN;}
 	unsigned			getSkip() const {return nSkip;}
-	QCtx				*getQCtx() const {return qx;}
-	Session				*getSession() const {return qx->ses;}
+	EvalCtx				*getCtx() const {return ctx;}
+	Session				*getSession() const {return ctx->ses;}
 	unsigned			getNOuts() const {return nOuts;}
 	unsigned			getQFlags() const {return qflags;}
 	const	OrderSegQ	*getSort(unsigned& nS) const {nS=nSegs; return sort;}
@@ -144,8 +144,8 @@ class FullScan : public QueryOp
 	PageSet::it		*it;
 	PBlock			*initPB;
 public:
-	FullScan(QCtx *s,uint32_t msk=HOH_DELETED|HOH_HIDDEN,unsigned qf=0,bool fCl=false)
-		: QueryOp(s,qf|QO_UNIQUE|QO_STREAM|QO_ALLPROPS),mask(msk),fClasses(fCl),dirPageID(INVALID_PAGEID),heapPageID(INVALID_PAGEID),idx(~0u),slot(0),stx(&s->ses->tx),it(NULL),initPB(NULL) {}
+	FullScan(EvalCtx *qx,uint32_t msk=HOH_DELETED|HOH_HIDDEN,unsigned qf=0,bool fCl=false)
+		: QueryOp(qx,qf|QO_UNIQUE|QO_STREAM|QO_ALLPROPS),mask(msk),fClasses(fCl),dirPageID(INVALID_PAGEID),heapPageID(INVALID_PAGEID),idx(~0u),slot(0),stx(&qx->ses->tx),it(NULL),initPB(NULL) {}
 	virtual		~FullScan();
 	RC			init();
 	RC			advance(const PINx *skip=NULL);
@@ -163,7 +163,7 @@ class ClassScan : public QueryOp
 	TreeScan		*scan;
 	const uint16_t	meta;
 public:
-	ClassScan(QCtx *ses,DataEventID cid,unsigned md);
+	ClassScan(EvalCtx *qx,DataEventID cid,unsigned md);
 	virtual		~ClassScan();
 	RC			init();
 	RC			advance(const PINx *skip=NULL);
@@ -179,7 +179,7 @@ class SpecClassScan : public QueryOp
 {
 	const DataEventID	dev;
 public:
-	SpecClassScan(QCtx *qx,DataEventID cl,unsigned qf) : QueryOp(qx,qf|QO_UNIQUE|QO_STREAM|QO_ALLPROPS),dev(cl) {}
+	SpecClassScan(EvalCtx *qx,DataEventID cl,unsigned qf) : QueryOp(qx,qf|QO_UNIQUE|QO_STREAM|QO_ALLPROPS),dev(cl) {}
 	virtual		~SpecClassScan();
 	RC			init();
 	RC			advance(const PINx *skip=NULL);
@@ -207,9 +207,9 @@ class IndexScan : public QueryOp
 	RC					setScan(unsigned=0);
 	void				printKey(const SearchKey& key,SOutCtx& buf,const char *def,size_t ldef) const;
 public:
-	IndexScan(QCtx *ses,DataIndex& idx,unsigned flg,unsigned np,unsigned md);
+	IndexScan(EvalCtx *qx,DataIndex& idx,unsigned flg,unsigned np,unsigned md);
 	virtual				~IndexScan();
-	void				*operator new(size_t s,Session *ses,unsigned nRng,DataIndex& idx) {return ses->malloc(s+nRng*2*sizeof(SearchKey)+idx.getNSegs()*(sizeof(OrderSegQ)+sizeof(PropertyID)));}
+	void				*operator new(size_t s,MemAlloc *ma,unsigned nRng,DataIndex& idx) {return ma->malloc(s+nRng*2*sizeof(SearchKey)+idx.getNSegs()*(sizeof(OrderSegQ)+sizeof(PropertyID)));}
 	RC					init();
 	RC					advance(const PINx *skip=NULL);
 	RC					rewind();
@@ -231,7 +231,7 @@ class ExprScan : public QueryOp
 	Value		w;
 	unsigned	idx;
 public:
-	ExprScan(QCtx *s,const Value& v,unsigned md);
+	ExprScan(EvalCtx *qx,const Value& v,unsigned md);
 	virtual		~ExprScan();
 	RC			init();
 	RC			advance(const PINx *skip=NULL);
@@ -258,8 +258,8 @@ class FTScan : public QueryOp
 	unsigned				nPids;
 	PropertyID				pids[1];
 public:
-	void	*operator new(size_t s,Session *ses,unsigned nps,size_t lw) throw() {return ses->malloc(s+lw+(nps==0?0:(nps-1)*sizeof(PropertyID)));}
-	FTScan(QCtx *s,const char *w,size_t lW,const PropertyID *pids,unsigned nps,unsigned md,unsigned f,bool fStp);
+	void	*operator new(size_t s,MemAlloc *ma,unsigned nps,size_t lw) throw() {return ma->malloc(s+lw+(nps==0?0:(nps-1)*sizeof(PropertyID)));}
+	FTScan(EvalCtx *qx,const char *w,size_t lW,const PropertyID *pids,unsigned nps,unsigned md,unsigned f,bool fStp);
 	virtual		~FTScan();
 	RC			init();
 	RC			advance(const PINx *skip=NULL);
@@ -283,9 +283,9 @@ class PhraseFlt : public QueryOp
 	Value					current;
 	FTScanS					scans[1];
 public:
-	PhraseFlt(QCtx *s,FTScan *const *fts,unsigned ns,unsigned md);
+	PhraseFlt(EvalCtx *qx,FTScan *const *fts,unsigned ns,unsigned md);
 	virtual		~PhraseFlt();
-	void		*operator new(size_t s,Session *ses,unsigned ns) throw() {return ses->malloc(s+int(ns-1)*sizeof(FTScanS));}
+	void		*operator new(size_t s,MemAlloc *ma,unsigned ns) throw() {return ma->malloc(s+int(ns-1)*sizeof(FTScanS));}
 	RC			advance(const PINx *skip=NULL);
 	RC			rewind();
 	void		print(SOutCtx& buf,int level) const;
@@ -309,15 +309,15 @@ protected:
 	PINx				*pqr;
 	QueryOpS			ops[1];
 public:
-	MergeIDs(QCtx *s,QueryOp **o,unsigned no,QUERY_SETOP op,unsigned qf);
-	void	*operator new(size_t s,Session *ses,unsigned no) throw() {return ses->malloc(s+int(no-1)*sizeof(QueryOpS));}
+	MergeIDs(EvalCtx *qx,QueryOp **o,unsigned no,QUERY_SETOP op,unsigned qf);
+	void	*operator new(size_t s,MemAlloc *ma,unsigned no) throw() {return ma->malloc(s+int(no-1)*sizeof(QueryOpS));}
 	virtual	~MergeIDs();
 	void	connect(PINx **results,unsigned nRes);
 	RC		advance(const PINx *skip=NULL);
 	RC		rewind();
 	RC		loadData(PINx& qr,Value *pv,unsigned nv,ElementID eid=STORE_COLLECTION_ID,bool fSort=false,MemAlloc *ma=NULL);
 	void	print(SOutCtx& buf,int level) const;
-	friend	class	QBuildCtx;
+	friend	class	Cursor;
 };
 
 /**
@@ -354,8 +354,6 @@ __forceinline EncPINRef *storeValues(const PINx& qr,unsigned nValues,StackAlloc&
 	if (ep!=NULL) {ep->flags=qr.epr.flags; memcpy(ep->buf,qr.epr.buf,PINRef::len(qr.epr.buf));}
 	return ep;
 }
-
-struct CondEJ;
 
 /**
  * merge sorted streams of PINs
@@ -396,7 +394,7 @@ public:
 	RC		loadData(PINx& qr,Value *pv,unsigned nv,ElementID eid=STORE_COLLECTION_ID,bool fSort=false,MemAlloc *ma=NULL);
 	void	unique(bool);
 	void	print(SOutCtx& buf,int level) const;
-	friend	class	QBuildCtx;
+	friend	class	Cursor;
 };
 
 /**
@@ -425,7 +423,7 @@ class NestedLoop : public QueryOp
 	class	Expr		*cond;
 public:
 	NestedLoop(QueryOp *qop1,QueryOp *qop2,unsigned qf)
-		: QueryOp(qop1,qf|QO_JOIN|(qop1->getQFlags()&(QO_IDSORT|QO_ALLPROPS|QO_REVERSIBLE))),queryOp2(qop2),pexR(qx->ses),pR(&pexR),cond(NULL)
+		: QueryOp(qop1,qf|QO_JOIN|(qop1->getQFlags()&(QO_IDSORT|QO_ALLPROPS|QO_REVERSIBLE))),queryOp2(qop2),pexR(ctx->ses),pR(&pexR),cond(NULL)
 		{nOuts+=qop2->getNOuts(); sort=qop1->getSort(nSegs); props=qop1->getProps(nProps);}
 	virtual	~NestedLoop();
 	void	connect(PINx **results,unsigned nRes);
@@ -447,7 +445,7 @@ class LoadOp : public QueryOp
 public:
 	LoadOp(QueryOp *q,const PropList *p,unsigned nP,unsigned qf=0);
 	virtual		~LoadOp();
-	void*		operator new(size_t s,Session *ses,unsigned nP) throw() {return ses->malloc(s+nP*sizeof(PropList));}
+	void*		operator new(size_t s,MemAlloc *ma,unsigned nP) throw() {return ma->malloc(s+nP*sizeof(PropList));}
 	void		connect(PINx **results,unsigned nRes);
 	RC			advance(const PINx *skip=NULL);
 	RC			count(uint64_t& cnt,unsigned nAbort=~0u);
@@ -476,7 +474,8 @@ public:
 	void		connect(PINx **results,unsigned nRes);
 	RC			advance(const PINx *skip=NULL);
 	void		print(SOutCtx& buf,int level) const;
-	friend	class	QBuildCtx;
+	friend	struct	BuildCtx;
+	friend	class	Cursor;
 };
 
 /**
@@ -523,6 +522,7 @@ class Sort : public QueryOp
 	OrderSegQ				sortSegs[1];
 
 public:
+	Sort(QueryOp *qop,const OrderSegQ *os,unsigned nSegs,unsigned qf,unsigned nP,const PropList *pids,unsigned nPids);
 	virtual		~Sort();
 	void		connect(PINx **results,unsigned nRes);
 	RC			init();
@@ -532,8 +532,7 @@ public:
 	RC			loadData(PINx& qr,Value *pv,unsigned nv,ElementID eid=STORE_COLLECTION_ID,bool fSort=false,MemAlloc *ma=NULL);
 	void		unique(bool);
 	void		print(SOutCtx& buf,int level) const;
-	Sort(QueryOp *qop,const OrderSegQ *os,unsigned nSegs,unsigned qf,unsigned nP,const PropList *pids,unsigned nPids);
-	void*		operator new(size_t s,Session *ses,unsigned nSegs,unsigned nPids) throw() {return ses->malloc(s+int(nSegs-1)*sizeof(OrderSegQ)+nPids*sizeof(PropList)+nSegs*sizeof(unsigned));}
+	void*		operator new(size_t s,MemAlloc *ma,unsigned nSegs,unsigned nPids) throw() {return ma->malloc(s+int(nSegs-1)*sizeof(OrderSegQ)+nPids*sizeof(PropList)+nSegs*sizeof(unsigned));}
 	const	Value	*getvalues() const;
 	__forceinline void	swap(unsigned i,unsigned j) {assert(pins!=NULL); EncPINRef *tmp=pins[i]; pins[i]=pins[j]; pins[j]=tmp;}
 	__forceinline int	cmp(unsigned i,unsigned j) const {assert(pins!=NULL); return cmp(pins[i],pins[j]);}
@@ -584,10 +583,9 @@ class TransOp : public QueryOp
 	const	unsigned	nGroup;
 	const	Expr		*having;
 	AggAcc				*ac;
-	EvalCtx				ectx;
 public:
 	TransOp(QueryOp *q,const Values *d,unsigned nD,const Values& aggs,const OrderSegQ *gs,unsigned nG,const Expr *hv,unsigned qf);
-	TransOp(QCtx *qc,const Values *d,unsigned nD,unsigned qf);
+	TransOp(EvalCtx *qx,const Values *d,unsigned nD,unsigned qf);
 	virtual		~TransOp();
 	void		connect(PINx **results,unsigned nRes);
 	RC			init();
@@ -604,7 +602,7 @@ class CommOp : public QueryOp
 	ServiceCtx	*sctx;
 	Values		params;
 public:
-	CommOp(QCtx *s,ServiceCtx *sc,const Values& vv,unsigned md) : QueryOp(s,md),sctx(sc) {params=vv;}
+	CommOp(EvalCtx *qx,ServiceCtx *sc,const Values& vv,unsigned md) : QueryOp(qx,md),sctx(sc) {params=vv;}
 	virtual		~CommOp();
 	RC			advance(const PINx *skip=NULL);
 };

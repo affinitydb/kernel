@@ -26,13 +26,63 @@ Written by Mark Venguerov 2004-2014
 #ifndef _EXPR_H_
 #define _EXPR_H_
 
-#include "modinfo.h"
-#include "pinex.h"
+#include "session.h"
 
 using namespace Afy;
 
 namespace AfyKernel
 {
+class	ExprNode;
+class	SOutCtx;
+struct	PropListP;
+struct	Values;
+struct	RExpCtx;
+
+/**
+ * evaluation context type
+ */
+enum EvalCtxType
+{
+	ECT_QUERY, ECT_INSERT, ECT_DETECT, ECT_ACTION
+};
+
+/**
+ * types of context variables (in Value.refV.flags)
+ */
+enum QCtxVT
+{
+	QV_PARAMS, QV_CTX, QV_CORRELATED, QV_AGGS, QV_GROUP, QV_REXP, QV_ALL
+};
+
+#define	VAR_CTX		((QV_CTX+1)<<13)
+#define	VAR_CORR	((QV_CORRELATED+1)<<13)
+#define	VAR_AGGS	((QV_AGGS+1)<<13)
+#define	VAR_GROUP	((QV_GROUP+1)<<13)
+#define	VAR_REXP	((QV_REXP+1)<<13)
+#define	VAR_NAMED	((QV_ALL+1)<<13)
+
+/**
+ * expression/statement evaluation context
+ */
+struct EvalCtx
+{
+	MemAlloc	*const	ma;
+	Session		*const	ses;
+	PIN			**const	env;
+	unsigned	const	nEnv;
+	PIN			**const	vars;
+	unsigned	const	nVars;
+	const Values *const	params;
+	unsigned	const	nParams;
+	const EvalCtx *const stack;
+	mutable	EvalCtxType	ect;
+	mutable RExpCtx		*rctx;
+	const		void	*modp;
+	EvalCtx(Session *s,EvalCtxType e=ECT_QUERY,const EvalCtx *st=NULL) : ma(s),ses(s),env(NULL),nEnv(0),vars(NULL),nVars(0),params(NULL),nParams(0),stack(st),ect(e),rctx(NULL),modp(NULL) {}
+	EvalCtx(const EvalCtx& e,EvalCtxType et=ECT_QUERY) : ma(e.ma),ses(e.ses),env(e.env),nEnv(e.nEnv),vars(e.vars),nVars(e.nVars),params(e.params),nParams(e.nParams),stack(e.stack),ect(et),rctx(NULL),modp(e.modp) {}
+	EvalCtx(Session *s,PIN **en,unsigned ne,PIN **v,unsigned nV,const Values *par=NULL,unsigned nP=0,const EvalCtx *stk=NULL,MemAlloc *m=NULL,EvalCtxType e=ECT_QUERY,const void *mp=NULL)
+		: ma(m!=NULL?m:(MemAlloc*)s),ses(s),env(en),nEnv(ne),vars(v),nVars(nV),params(par),nParams(nP),stack(stk),ect(e),rctx(NULL),modp(mp) {}
+};
 
 /**
  * various constants used in expression p-code
@@ -103,10 +153,11 @@ namespace AfyKernel
 #define	NO_DAT2			0x0010
 #define	NO_ITV2			0x0020
 
-class	ExprNode;
-class	SOutCtx;
-struct	PropListP;
-struct	Values;
+class ExprPropCmp
+{
+public:
+	__forceinline static int cmp(uint32_t x,uint32_t y) {return cmp3(x&STORE_MAX_URIID,y&STORE_MAX_URIID);}
+};
 
 /**
  * expression header
@@ -122,58 +173,6 @@ struct ExprHdr
 	uint16_t		nProps;						/**< number of properties referred by this expression */
 	ExprHdr(uint32_t lE,uint16_t nS,uint8_t nSx,uint8_t v,uint16_t flg,uint16_t nP) : lExpr(lE),nStack(nS),nSubx(nSx),var(v),flags(flg),nProps(nP) {}
 	ExprHdr(const ExprHdr& hdr) : lExpr(hdr.lExpr),nStack(hdr.nStack),nSubx(hdr.nSubx),var(hdr.var),flags(hdr.flags),nProps(hdr.nProps) {}
-};
-
-/**
- * Regular expression matching result
- */
-
-struct	RxSht {size_t sht,len;};
-
-struct RExpCtx : public DynArray<RxSht>
-{	
-	char	*rxstr;
-	bool	fFree;
-	RExpCtx(MemAlloc *m,char *s=NULL,bool f=false) : DynArray<RxSht>(m),rxstr(s),fFree(f) {}
-	~RExpCtx() {if (rxstr!=NULL && fFree) ma->free(rxstr);}
-	void operator=(RExpCtx& rhs) {if (rxstr!=NULL && fFree) ma->free(rxstr); rxstr=rhs.rxstr; fFree=rhs.fFree; rhs.fFree=false; DynArray<RxSht>::operator=(rhs);}
-};
-
-/**
- * evaluation context type
- */
-enum EvalCtxType
-{
-	ECT_QUERY, ECT_INSERT, ECT_DETECT, ECT_ACTION
-};
-
-/**
- * expression/statement evaluation context
- */
-struct EvalCtx
-{
-	MemAlloc	*const	ma;
-	Session		*const	ses;
-	PIN			**const	env;
-	unsigned	const	nEnv;
-	PIN			**const	vars;
-	unsigned	const	nVars;
-	const Values *const	params;
-	unsigned	const	nParams;
-	const EvalCtx *const stack;
-	mutable EvalCtxType	ect;
-	mutable RExpCtx		*rctx;
-	const	ModProps	*modp;
-	EvalCtx(Session *s,EvalCtxType e=ECT_QUERY,const EvalCtx *st=NULL) : ma(s),ses(s),env(NULL),nEnv(0),vars(NULL),nVars(0),params(NULL),nParams(0),stack(st),ect(e),rctx(NULL),modp(NULL) {}
-	EvalCtx(const EvalCtx& e,EvalCtxType et=ECT_QUERY) : ma(e.ma),ses(e.ses),env(e.env),nEnv(e.nEnv),vars(e.vars),nVars(e.nVars),params(e.params),nParams(e.nParams),stack(e.stack),ect(et),rctx(NULL),modp(e.modp) {}
-	EvalCtx(Session *s,PIN **en,unsigned ne,PIN **v,unsigned nV,const Values *par=NULL,unsigned nP=0,const EvalCtx *stk=NULL,MemAlloc *m=NULL,EvalCtxType e=ECT_QUERY,const ModProps *mp=NULL)
-		: ma(m!=NULL?m:(MemAlloc*)s),ses(s),env(en),nEnv(ne),vars(v),nVars(nV),params(par),nParams(nP),stack(stk),ect(e),rctx(NULL),modp(mp) {}
-};
-
-class ExprPropCmp
-{
-public:
-	__forceinline static int cmp(uint32_t x,uint32_t y) {return cmp3(x&STORE_MAX_URIID,y&STORE_MAX_URIID);}
 };
 
 /**
@@ -339,6 +338,20 @@ class ExprCompileCtx {
 
 };
 
+/**
+ * Regular expression matching result
+ */
+struct	RxSht {size_t sht,len;};
+
+struct RExpCtx : public DynArray<RxSht>
+{	
+	char	*rxstr;
+	bool	fFree;
+	RExpCtx(MemAlloc *m,char *s=NULL,bool f=false) : DynArray<RxSht>(m),rxstr(s),fFree(f) {}
+	~RExpCtx() {if (rxstr!=NULL && fFree) ma->free(rxstr);}
+	void operator=(RExpCtx& rhs) {if (rxstr!=NULL && fFree) ma->free(rxstr); rxstr=rhs.rxstr; fFree=rhs.fFree; rhs.fFree=false; DynArray<RxSht>::operator=(rhs);}
+};
+
 class CmpValue
 {
 public:
@@ -373,6 +386,49 @@ struct AggAcc
 };
 
 /**
+ * Common code for PathOp and PathIt
+ */
+class Path
+{
+protected:
+	struct PathState {
+		PathState	*next;
+		int			state;
+		unsigned	idx;
+		unsigned	rcnt;
+		unsigned	vidx;
+		unsigned	cidx;
+		PID			id;
+		Value		v[2];
+	};
+	MemAlloc		*const	ma;
+	const	PathSeg	*const	path;
+	const	unsigned		nPathSeg;
+	const	bool			fCopied;
+	bool					fThrough;
+	PathState				*pst;
+	PathState				*freePst;
+protected:
+	Path(MemAlloc *m,const PathSeg *ps,unsigned nP,bool fC) 
+		: ma(m),path(ps),nPathSeg(nP),fCopied(fC),fThrough(true),pst(NULL),freePst(NULL)
+			{for (unsigned i=0; i<nP; i++) if (ps[i].rmin!=0) {fThrough=false; break;}}
+	~Path() {
+		PathState *ps,*ps2;
+		for (ps=pst; ps!=NULL; ps=ps2) {ps2=ps->next; freeV(ps->v[0]); freeV(ps->v[1]); ma->free(ps);}
+		for (ps=freePst; ps!=NULL; ps=ps2) {ps2=ps->next; ma->free(ps);}
+		if (fCopied) destroyPath((PathSeg*)path,nPathSeg,ma);
+	}
+	RC push(const PID& id) {
+		PathState *ps;
+		if (pst!=NULL && pst->vidx!=0) for (ps=pst; ps!=NULL && ps->idx==pst->idx; ps=ps->next) if (ps->id==id) {if (pst->state==2) pst->vidx++; return RC_OK;}
+		if ((ps=freePst)!=NULL) freePst=ps->next; else if ((ps=new(ma) PathState)==NULL) return RC_NOMEM;
+		if (pst==NULL) ps->idx=0,ps->rcnt=1; else if (pst->vidx==0) ps->idx=pst->idx+1,ps->rcnt=1; else ps->idx=pst->idx,ps->rcnt=pst->rcnt+1;
+		ps->state=0; ps->vidx=2; ps->cidx=0; ps->id=id; ps->v[0].setEmpty(); ps->v[1].setEmpty(); ps->next=pst; pst=ps; return RC_OK;
+	}
+	void pop() {PathState *ps=pst; if (ps!=NULL) {pst=ps->next; freeV(ps->v[0]); freeV(ps->v[1]); ps->next=freePst; freePst=ps;}}
+};
+
+/**
  * path expression iterator
  * represents path expression as a collection
  */
@@ -393,6 +449,133 @@ public:
 	unsigned		count() const;
 	void			destroy();
 	friend	class	Expr;
+};
+
+/**
+ * loadPIN/loadV flags
+ */
+#define	LOAD_CARDINALITY	0x8000
+#define	LOAD_EXT_ADDR		0x4000
+#define	LOAD_SSV			0x2000
+#define	LOAD_REF			0x1000
+#define	LOAD_COLLECTION		0x0800
+#define	LOAD_CLIENT			0x0400
+#define	LOAD_RAW			0x0200
+
+/**
+ * Internal MODE_* flags
+ */
+#define	MODE_COUNT			0x80000000
+#define	MODE_MANY_PINS		0x40000000
+#define	MODE_PREFIX_READ	0x40000000
+#define	MODE_OLDLEN			0x20000000
+#define	MODE_SAME_PROPS		0x20000000
+#define	MODE_REFRESH		0x10000000
+
+#define	MODE_DEVENT			0x00008000
+#define	MODE_NODEL			0x00004000		
+#define	MODE_NO_RINDEX		0x00002000
+#define	MODE_COMPOUND		0x00002000
+#define	MODE_CHECKBI		0x00002000
+#define	MODE_CASCADE		0x00001000
+#define	MODE_FSM			0x00001000
+#define	MODE_PID			0x00000800
+#define	MODE_INMEM			0x00000400
+
+/**
+ * types of SELECT lists
+ */
+enum SelectType
+{
+	SEL_CONST,			/**< select returns constant expressions */
+	SEL_COUNT,			/**< SELECT COUNT(*) ... */
+	SEL_PID,			/**< SELECT afy:pinID ... */
+	SEL_FIRSTPID,		/**< SELECT FIRST afy:pinID ... */
+	SEL_VALUE,			/**< SELECT expr, aggregation is used, one result is returned */
+	SEL_VALUESET,		/**< SELECT expr, no aggregation */
+	SEL_DERIVED,		/**< SELECT list of expressions, aggregation is used, one result is returned */
+	SEL_DERIVEDSET,		/**< SELECT list of expressions, no aggregation */
+	SEL_DERIVEDPINSET,	/**< SELECT @{...} */
+	SEL_AUGMENTED,		/**< SELECT @,... */
+	SEL_PIN,			/**< SELECT FIRST * ... */
+	SEL_PINSET,			/**< SELECT * for non-join query */
+	SEL_COMPOUND,		/**< SELECT * for join query */
+	SEL_COMP_DERIVED	/**< SELECT list of expressions for join query */
+};
+
+/**
+ * internal Value::flags flags (maximum 0x40)
+ */
+#define VF_PART				0x08
+#define	VF_REF				0x10
+#define	VF_STRING			0x20
+#define	VF_SSV				0x40
+
+#define	SORT_MASK			(ORD_DESC|ORD_NCASE|ORD_NULLS_BEFORE|ORD_NULLS_AFTER)
+
+#define	ORDER_EXPR	0x8000
+
+/**
+ * internal descriptor for ordering segment
+ */
+struct OrderSegQ
+{
+	union {
+		PropertyID	pid;
+		Expr		*expr;
+	};
+	uint16_t		flags;
+	uint8_t			var;
+	uint8_t			aggop;
+	uint32_t		lPref;
+	RC				conv(const OrderSeg& sg,MemAlloc *ma);
+};
+
+/**
+ * dynamic array of property IDs
+ */
+struct PropList
+{
+	PropertyID		*props;
+	uint16_t		nProps;
+	mutable	bool	fFree;
+};
+
+/**
+ * property ID holder for multiple variables
+ */
+struct PropListP
+{
+	PropList	*pls;
+	unsigned	nPls;
+	MemAlloc	*const	ma;
+	PropList	pbuf[16];
+	PropListP(MemAlloc *m) : pls(pbuf),nPls(0),ma(m) {}
+	~PropListP() {for (unsigned i=0; i<nPls; i++) if (pls[i].fFree) ma->free(pls[i].props); if (pls!=pbuf) ma->free(pls);}
+	RC			merge(uint16_t var,const PropertyID *pid,unsigned nPids,bool fForce=false,bool fFlags=false);
+	RC			operator+=(const PropListP &rhs);
+	RC			checkVar(uint16_t var);
+};
+
+/**
+ * dynamic array of values
+ */
+struct Values
+{
+	const Value	*vals;
+	uint16_t	nValues;
+	bool		fFree;
+	Values() : vals(NULL),nValues(0),fFree(false) {}
+	Values(const Values& vv) : vals(vv.vals),nValues(vv.nValues),fFree(false) {}
+	Values(const Value *pv,unsigned nv,bool fF=false) : vals(pv),nValues((uint16_t)nv),fFree(fF) {}
+};
+
+// used in filter, sort, etc. operators
+struct QueryWithParams
+{
+	class	Stmt	*qry;
+	unsigned		nParams;
+	Value			*params;
 };
 
 };

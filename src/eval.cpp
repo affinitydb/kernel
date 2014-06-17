@@ -309,7 +309,7 @@ RC Expr::eval(Value& result,const EvalCtx& ctx) const
 			if (ff) {afy_dec32(codePtr,eid); eid=afy_dec32zz(eid);}
 			if (((u=*codePtr++)&CND_EXT)!=0) u|=*codePtr++<<8;
 			rc=RC_TRUE; pi=NULL;
-			if (ctx.ect!=ECT_DETECT || ctx.modp!=NULL && (pi=ctx.modp->find(((uint32_t*)(&hdr+1))[vdx]&STORE_MAX_URIID))==NULL) rc=RC_FALSE;
+			if (ctx.ect!=ECT_DETECT || ctx.modp!=NULL && (pi=((ModProps*)ctx.modp)->find(((uint32_t*)(&hdr+1))[vdx]&STORE_MAX_URIID))==NULL) rc=RC_FALSE;
 			else if (ff && pi!=NULL) {
 				//???
 			}
@@ -1594,7 +1594,7 @@ void Expr::hashValue(const Value &v,unsigned flags,SHA256& sha)
 		if (pin->id.isPID()) sha.add((byte*)&pin->id,sizeof(PID));
 		for (i=0; i<pin->nProperties; i++) hashValue(pin->properties[i],HASH_PROPERTY,sha);
 		sha.add((byte*)&pin->properties,sizeof(pin->properties));
-		i=pin->mode&(PIN_NO_REPLICATION|PIN_NOTIFY|PIN_REPLICATED|PIN_HIDDEN|PIN_PERSISTENT|PIN_TRANSIENT|PIN_IMMUTABLE|PIN_DELETED);
+		i=pin->mode&(PIN_NO_REPLICATION|PIN_REPLICATED|PIN_HIDDEN|PIN_PERSISTENT|PIN_TRANSIENT|PIN_IMMUTABLE|PIN_DELETED);
 		sha.add((byte*)&i,sizeof(i)); sha.add((byte*)&pin->meta,sizeof(pin->meta)); break;
 	case VT_REFID: sha.add((byte*)&v.id,sizeof(PID)); break;
 	case VT_COLLECTION:
@@ -1602,7 +1602,7 @@ void Expr::hashValue(const Value &v,unsigned flags,SHA256& sha)
 			for (cv=v.nav->navigate(GO_FIRST),i=0; cv!=NULL; cv=v.nav->navigate(GO_NEXT),i++) hashValue(*cv,HASH_EID,sha);
 		} else 
 			for (i=0; i<v.length; i++) hashValue(v.varray[i],HASH_EID,sha);
-		sha.add((byte*)i,sizeof(uint32_t)); break;
+		sha.add((byte*)&i,sizeof(uint32_t)); break;
 	case VT_STRUCT:
 		for (i=0; i<v.length; i++) hashValue(v.varray[i],HASH_PROPERTY,sha);
 		sha.add((byte*)&v.length,sizeof(uint32_t)); break;
@@ -1634,7 +1634,7 @@ void Expr::hashValue(const Value &v,unsigned flags,SHA256& sha)
 		break;
 	}
 	if ((flags&HASH_PROPERTY)!=0) {sha.add((byte*)&v.property,sizeof(PropertyID)); sha.add((byte*)&v.meta,1);}
-	if ((flags&HASH_EID)!=0) sha.add((byte*)v.eid,sizeof(ElementID));
+	if ((flags&HASH_EID)!=0) sha.add((byte*)&v.eid,sizeof(ElementID));
 }
 
 RC Expr::calcHash(ExprOp op,Value& res,const Value *more,int nargs,unsigned,const EvalCtx& ctx)

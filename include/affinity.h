@@ -69,7 +69,7 @@ namespace Afy
 	/**
 	 * special property and class IDs
 	 */
-	#define	CLASS_OF_CLASSES			Afy::URIID(0)				/**< Fixed ID of the class of all classes and data events */
+	#define	CLASS_OF_DATAEVENTS			Afy::URIID(0)				/**< Fixed ID of the class of all classes and data events */
 	#define	CLASS_OF_TIMERS				Afy::URIID(1)				/**< Class of all timers */
 	#define	CLASS_OF_LISTENERS			Afy::URIID(2)				/**< Class of all listeners */
 	#define	CLASS_OF_LOADERS			Afy::URIID(3)				/**< Class of all loaders (i.e. PINs describing external loadable service libraries) */
@@ -195,13 +195,12 @@ namespace Afy
 	 * PIN creation flags (starts with 0x40000000 for compatibility with protobuf)
 	 */
 	#define	PIN_NO_REPLICATION			0x40000000	/**< marks a PIN as one which shouldn't be replicated (set only when the PIN is committed) */
-	#define	PIN_NOTIFY					0x20000000	/**< PIN generates notifications when committed, modified or deleted */
-	#define	PIN_REPLICATED				0x10000000	/**< PIN is replicated to another store or is a replica */
-	#define	PIN_HIDDEN					0x08000000	/**< special PIN - totally hidden from search/replication - accessible only through its PID */
-	#define	PIN_PERSISTENT				0x04000000	/**< PIN is committed to persistent storage */
-	#define	PIN_TRANSIENT				0x02000000	/**< PIN used as a message, not indexed, not persisted */
-	#define	PIN_IMMUTABLE				0x01000000	/**< immutable PIN (e.g. external event) */
-	#define	PIN_DELETED					0x00800000	/**< PIN has been soft-deleted */
+	#define	PIN_REPLICATED				0x20000000	/**< PIN is replicated to another store or is a replica */
+	#define	PIN_HIDDEN					0x10000000	/**< special PIN - totally hidden from search/replication - accessible only through its PID */
+	#define	PIN_PERSISTENT				0x08000000	/**< PIN is committed to persistent storage */
+	#define	PIN_TRANSIENT				0x04000000	/**< PIN used as a message, not indexed, not persisted */
+	#define	PIN_IMMUTABLE				0x02000000	/**< immutable PIN (e.g. external event) */
+	#define	PIN_DELETED					0x01000000	/**< PIN has been soft-deleted */
 
 	/**
 	 * PIN metatype flags
@@ -245,7 +244,6 @@ namespace Afy
 
 	/**
 	 * class-related notification flags
-	 * @see ISession::setNotification()
 	 */
 	#define CLASS_NOTIFY_JOIN			0x0001		/**< a pin becomes a member of the class */
 	#define CLASS_NOTIFY_LEAVE			0x0002		/**< a pin stops to be a member of the class */
@@ -873,7 +871,6 @@ namespace Afy
 		virtual	RC			modify(const Value *values,unsigned nValues,unsigned mode=0,const ElementID *eids=NULL,unsigned *pNFailed=NULL) = 0;	/**< modify PIN, can be applied to uncommitted PINs */
 
 		virtual	RC			setExpiration(uint32_t) = 0;				/**< set expiration time for cached remote PINs */
-		virtual	RC			setNotification(bool fReset=false) = 0;		/**< switch notification generation on or off for this PIN */
 		virtual	RC			setReplicated() = 0;						/**< set 'replicatable' status */
 		virtual	RC			hide() = 0;									/**< exclude from indexes and hide */
 		virtual	RC			deletePIN() = 0;							/**< soft-delete PIN from persistent stoarge */
@@ -1117,11 +1114,11 @@ namespace Afy
 		virtual	STMT_OP	getOp() const = 0;																										/**< get statement type */
 
 		virtual	RC		execute(ICursor **result=NULL,const Value *params=NULL,unsigned nParams=0,unsigned nProcess=~0u,unsigned nSkip=0,		/**< execute statement, return result set iterator or number of affected PINs */
-										unsigned mode=0,uint64_t *nProcessed=NULL,TXI_LEVEL=TXI_DEFAULT) const = 0;
+										unsigned mode=0,uint64_t *nProcessed=NULL,TXI_LEVEL=TXI_DEFAULT) = 0;
 		virtual	RC		asyncexec(IStmtCallback *cb,const Value *params=NULL,unsigned nParams=0,unsigned nProcess=~0u,unsigned nSkip=0,			/**< execute statement asynchronously */
-										unsigned mode=0,TXI_LEVEL=TXI_DEFAULT) const = 0;
+										unsigned mode=0,TXI_LEVEL=TXI_DEFAULT) = 0;
 		virtual	RC		execute(IStreamOut*& result,const Value *params=NULL,unsigned nParams=0,unsigned nProcess=~0u,unsigned nSkip=0,			/**< execute statement, return results as a protobuf stream */
-										unsigned mode=0,TXI_LEVEL=TXI_DEFAULT) const = 0;
+										unsigned mode=0,TXI_LEVEL=TXI_DEFAULT) = 0;
 		virtual	RC		count(uint64_t& cnt,const Value *params=NULL,unsigned nParams=0,unsigned nAbort=~0u,									/**< count statement results */
 										unsigned mode=0,TXI_LEVEL=TXI_DEFAULT) const = 0;
 		virtual	RC		exist(const Value *params=NULL,unsigned nParams=0,unsigned mode=0,TXI_LEVEL=TXI_DEFAULT) const = 0;						/**< check if any PINs satfisfy query conditions */

@@ -46,11 +46,11 @@ RC PINx::loadPIN(PIN *&pin,unsigned md,VersionID vid)
 RC PINx::loadProps(unsigned md,const PropertyID *pids,unsigned nPids)
 {
 	assert(!pb.isNull() && hpin!=NULL);
-	RC rc=RC_OK; unsigned nProps=hpin->nProps; const DataSS *dss=NULL; fPartial=0;
+	RC rc=RC_OK; unsigned nProps=hpin->nProps,old=nProperties; const DataSS *dss=NULL; fPartial=0;
 //	if (!ses->inWriteTx() && tv!=NULL && (!tv->fCommited || (dss=tv->stack)!=NULL && dss->fNew)) return RC_DELETED;
 	if ((nProperties=nProps)!=0) {
 		if (pids!=NULL) {if (nPids==0 || pids[0]==PROP_SPEC_ANY) pids=NULL; else if (nPids!=0 && nPids<nProperties) {nProperties=nPids; fPartial=1;}}
-		if ((properties=(Value*)ses->realloc(properties,nProperties*sizeof(Value)))==NULL) return RC_NOMEM;
+		if (nProperties!=old && (properties=(Value*)ses->realloc(properties,nProperties*sizeof(Value),old*sizeof(Value)))==NULL) return RC_NOMEM;
 		const HeapPageMgr::HeapV *hprop=hpin->getPropTab(),*const hend=hprop+hpin->nProps,*hpr; fSSV=0;
 		for (unsigned i=0; i<nProperties; ++i,++hprop) {
 			const PropertyID pid=pids!=NULL?pids[i]&STORE_MAX_URIID:hprop->getPropID();

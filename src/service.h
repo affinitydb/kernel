@@ -113,8 +113,8 @@ public:
 	RC					srvrc;
 	const Value			*errInfo;
 private:
-	RC					build(const Value *vals,unsigned nVals);
-	RC					getProcessor(ProcDscr *prc,const Value *vals,unsigned nVals,char *buf);
+	RC					build(const Value *vals,unsigned nVals,bool fSrvInfo=false);
+	RC					getProcessor(ProcDscr *prc,const Value *vals,unsigned nVals,char *buf,bool fSrvInfo);
 	void				fill(ProcDscr *prc,IService *isrv,const Value *vals,unsigned nVals);
 	void				nextFlush() {for (;;) if (++flushIdx>=nProcs) {flushIdx=~0u; break;} else if ((procs[flushIdx].dscr&(ISRV_NEEDFLUSH|ISRV_DELAYED))!=0) break;}
 	ProcDscr			*flush(Value& inp) {
@@ -175,7 +175,7 @@ public:
 	StartListener(const Value *p,unsigned n,MemAlloc *ma);
 	RC		process(Session *ses);
 	void	destroy(Session *ses);
-	static	RC	loadListener(PINx& cb);
+	static	RC	loadListener(PINx& pin);
 };
 
 /**
@@ -189,7 +189,7 @@ public:
 	LoadService(const Value *p,unsigned n,MemAlloc *ma);
 	RC		process(Session *ses);
 	void	destroy(Session *ses);
-	static	RC	loadLoader(PINx& cb);
+	static	RC	loadLoader(PINx& pin);
 };
 
 /**

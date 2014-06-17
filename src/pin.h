@@ -41,50 +41,6 @@ namespace AfyKernel
 #define MODP_NCPY	0x0004
 
 /**
- * Common code for PathOp and PathIt
- */
-
-class Path
-{
-protected:
-	struct PathState {
-		PathState	*next;
-		int			state;
-		unsigned	idx;
-		unsigned	rcnt;
-		unsigned	vidx;
-		unsigned	cidx;
-		PID			id;
-		Value		v[2];
-	};
-	MemAlloc		*const	ma;
-	const	PathSeg	*const	path;
-	const	unsigned		nPathSeg;
-	const	bool			fCopied;
-	bool					fThrough;
-	PathState				*pst;
-	PathState				*freePst;
-protected:
-	Path(MemAlloc *m,const PathSeg *ps,unsigned nP,bool fC) 
-		: ma(m),path(ps),nPathSeg(nP),fCopied(fC),fThrough(true),pst(NULL),freePst(NULL)
-			{for (unsigned i=0; i<nP; i++) if (ps[i].rmin!=0) {fThrough=false; break;}}
-	~Path() {
-		PathState *ps,*ps2;
-		for (ps=pst; ps!=NULL; ps=ps2) {ps2=ps->next; freeV(ps->v[0]); freeV(ps->v[1]); ma->free(ps);}
-		for (ps=freePst; ps!=NULL; ps=ps2) {ps2=ps->next; ma->free(ps);}
-		if (fCopied) destroyPath((PathSeg*)path,nPathSeg,ma);
-	}
-	RC push(const PID& id) {
-		PathState *ps;
-		if (pst!=NULL && pst->vidx!=0) for (ps=pst; ps!=NULL && ps->idx==pst->idx; ps=ps->next) if (ps->id==id) {if (pst->state==2) pst->vidx++; return RC_OK;}
-		if ((ps=freePst)!=NULL) freePst=ps->next; else if ((ps=new(ma) PathState)==NULL) return RC_NOMEM;
-		if (pst==NULL) ps->idx=0,ps->rcnt=1; else if (pst->vidx==0) ps->idx=pst->idx+1,ps->rcnt=1; else ps->idx=pst->idx,ps->rcnt=pst->rcnt+1;
-		ps->state=0; ps->vidx=2; ps->cidx=0; ps->id=id; ps->v[0].setEmpty(); ps->v[1].setEmpty(); ps->next=pst; pst=ps; return RC_OK;
-	}
-	void pop() {PathState *ps=pst; if (ps!=NULL) {pst=ps->next; freeV(ps->v[0]); freeV(ps->v[1]); ps->next=freePst; freePst=ps;}}
-};
-
-/**
  * Class PIN implements IPIN interface
  * @see method descriptions in affinity.h
  */
@@ -129,7 +85,6 @@ public:
 	IPIN		*project(const PropertyID *properties,unsigned nProperties,const PropertyID *newProps=NULL,unsigned mode=0);
 	RC			modify(const Value *values,unsigned nValues,unsigned mode,const ElementID *eids,unsigned*);
 	RC			setExpiration(uint32_t);
-	RC			setNotification(bool fReset=false);
 	RC			setReplicated();
 	RC			hide();
 	RC			deletePIN();
@@ -154,6 +109,7 @@ public:
 	RC			getV(PropertyID pid,Value& v,unsigned mode=0,MemAlloc *ma=NULL,ElementID eid=STORE_COLLECTION_ID);
 	RC			getV(PropertyID pid,Value& v,unsigned mode,const Value& idx,MemAlloc *ma=NULL);
 	RC			getV(PropertyID pid,const Value *&pv);
+	RC			getAllProps(Value*& props,unsigned& nProps,MemAlloc *ma);
 	RC			modify(const Value *pv,unsigned epos,unsigned eid,unsigned flags);
 	void		setProps(const Value *pv,unsigned nv) {properties=(Value*)pv; nProperties=nv;}
 	void		setMode(uint32_t md) {mode=md;}
@@ -199,7 +155,6 @@ public:
 	friend	class	LoadOp;
 	friend	class	CommOp;
 	friend	class	BatchInsert;
-	friend	class	LoadService;
 	friend	class	StartListener;
 	friend	class	SOutCtx;
 	friend	class	Expr;

@@ -180,7 +180,7 @@ RC RPIN::load(int,unsigned flags)
 		PIN *pin=NULL; Session *ses=Session::getSession();
 		if (read(ses,pin)==RC_OK && pin!=NULL) {
 			MiniTx tx(ses); pin->id=ID; const_cast<PIN*>(pin)->addr=PageAddr::noAddr;
-			pin->mode=pin->mode&PIN_NOTIFY|PIN_IMMUTABLE; size_t sz;
+			pin->mode=pin->mode&PIN_IMMUTABLE; size_t sz;
 			if ((rc=mgr.ctx->queryMgr->persistPINs(EvalCtx(ses,ECT_INSERT),&pin,1,MODE_NO_RINDEX,NULL,&sz))==RC_OK) {
 				addr=pin->addr; *(PageID*)dbuf=addr.pageID; *(PageIdx*)(dbuf+sizeof(PageID))=addr.idx; getTimestamp(expiration);
 				expiration+=ses!=NULL&&ses->getDefaultExpiration()!=0?ses->getDefaultExpiration():mgr.defExpiration;

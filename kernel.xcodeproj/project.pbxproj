@@ -23,6 +23,8 @@
 		1CB9E1D616D35DCA0052636C /* pin.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 1CB9E1D316D35DCA0052636C /* pin.cpp */; };
 		1CB9E1D716D35DCA0052636C /* pin.h in Headers */ = {isa = PBXBuildFile; fileRef = 1CB9E1D416D35DCA0052636C /* pin.h */; };
 		1CB9E1D816D35DCA0052636C /* service.h in Headers */ = {isa = PBXBuildFile; fileRef = 1CB9E1D516D35DCA0052636C /* service.h */; };
+		1CBD090B194B497500B91A22 /* cursor.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 1CBD0909194B497500B91A22 /* cursor.cpp */; };
+		1CBD090C194B497500B91A22 /* cursor.h in Headers */ = {isa = PBXBuildFile; fileRef = 1CBD090A194B497500B91A22 /* cursor.h */; };
 		1CCB96DC172F77DA00906023 /* afysock.h in Headers */ = {isa = PBXBuildFile; fileRef = 1CCB96DB172F77DA00906023 /* afysock.h */; };
 		1CDF48501794FFC300FA0FBD /* named.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 1CDF484E1794FFC300FA0FBD /* named.cpp */; };
 		1CDF48511794FFC300FA0FBD /* named.h in Headers */ = {isa = PBXBuildFile; fileRef = 1CDF484F1794FFC300FA0FBD /* named.h */; };
@@ -89,8 +91,6 @@
 		4C507BF81671A3BA00C45622 /* propdnf.h in Headers */ = {isa = PBXBuildFile; fileRef = 4C507B911671A3BA00C45622 /* propdnf.h */; };
 		4C507BF91671A3BA00C45622 /* protobuf.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 4C507B921671A3BA00C45622 /* protobuf.cpp */; };
 		4C507BFA1671A3BA00C45622 /* protobuf.h in Headers */ = {isa = PBXBuildFile; fileRef = 4C507B931671A3BA00C45622 /* protobuf.h */; };
-		4C507BFB1671A3BA00C45622 /* qbuild.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 4C507B941671A3BA00C45622 /* qbuild.cpp */; };
-		4C507BFC1671A3BA00C45622 /* qbuild.h in Headers */ = {isa = PBXBuildFile; fileRef = 4C507B951671A3BA00C45622 /* qbuild.h */; };
 		4C507BFD1671A3BA00C45622 /* qmgr.h in Headers */ = {isa = PBXBuildFile; fileRef = 4C507B961671A3BA00C45622 /* qmgr.h */; };
 		4C507BFE1671A3BA00C45622 /* queryop.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 4C507B971671A3BA00C45622 /* queryop.cpp */; };
 		4C507BFF1671A3BA00C45622 /* queryop.h in Headers */ = {isa = PBXBuildFile; fileRef = 4C507B981671A3BA00C45622 /* queryop.h */; };
@@ -145,6 +145,8 @@
 		1CB9E1D316D35DCA0052636C /* pin.cpp */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.cpp.cpp; path = pin.cpp; sourceTree = "<group>"; };
 		1CB9E1D416D35DCA0052636C /* pin.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = pin.h; sourceTree = "<group>"; };
 		1CB9E1D516D35DCA0052636C /* service.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = service.h; sourceTree = "<group>"; };
+		1CBD0909194B497500B91A22 /* cursor.cpp */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.cpp.cpp; path = cursor.cpp; sourceTree = "<group>"; };
+		1CBD090A194B497500B91A22 /* cursor.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = cursor.h; sourceTree = "<group>"; };
 		1CCB96DB172F77DA00906023 /* afysock.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = afysock.h; sourceTree = "<group>"; };
 		1CDF484E1794FFC300FA0FBD /* named.cpp */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.cpp.cpp; path = named.cpp; sourceTree = "<group>"; };
 		1CDF484F1794FFC300FA0FBD /* named.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = named.h; sourceTree = "<group>"; };
@@ -213,8 +215,6 @@
 		4C507B911671A3BA00C45622 /* propdnf.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = propdnf.h; sourceTree = "<group>"; };
 		4C507B921671A3BA00C45622 /* protobuf.cpp */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.cpp.cpp; path = protobuf.cpp; sourceTree = "<group>"; };
 		4C507B931671A3BA00C45622 /* protobuf.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = protobuf.h; sourceTree = "<group>"; };
-		4C507B941671A3BA00C45622 /* qbuild.cpp */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.cpp.cpp; path = qbuild.cpp; sourceTree = "<group>"; };
-		4C507B951671A3BA00C45622 /* qbuild.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = qbuild.h; sourceTree = "<group>"; };
 		4C507B961671A3BA00C45622 /* qmgr.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = qmgr.h; sourceTree = "<group>"; };
 		4C507B971671A3BA00C45622 /* queryop.cpp */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.cpp.cpp; path = queryop.cpp; sourceTree = "<group>"; };
 		4C507B981671A3BA00C45622 /* queryop.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = queryop.h; sourceTree = "<group>"; };
@@ -267,6 +267,8 @@
 		4C507B4D1671A3BA00C45622 /* src */ = {
 			isa = PBXGroup;
 			children = (
+				1CBD0909194B497500B91A22 /* cursor.cpp */,
+				1CBD090A194B497500B91A22 /* cursor.h */,
 				1C3A895E19352070006F795B /* modinfo.h */,
 				1C5C35DE1929AA230017780E /* dataevent.cpp */,
 				1C5C35DF1929AA230017780E /* dataevent.h */,
@@ -346,8 +348,6 @@
 				4C507B911671A3BA00C45622 /* propdnf.h */,
 				4C507B921671A3BA00C45622 /* protobuf.cpp */,
 				4C507B931671A3BA00C45622 /* protobuf.h */,
-				4C507B941671A3BA00C45622 /* qbuild.cpp */,
-				4C507B951671A3BA00C45622 /* qbuild.h */,
 				4C507B961671A3BA00C45622 /* qmgr.h */,
 				4C507B971671A3BA00C45622 /* queryop.cpp */,
 				4C507B981671A3BA00C45622 /* queryop.h */,
@@ -455,10 +455,10 @@
 				4C507BF41671A3BA00C45622 /* pgtree.h in Headers */,
 				4C507BF51671A3BA00C45622 /* pinex.h in Headers */,
 				4C507BF71671A3BA00C45622 /* pinref.h in Headers */,
+				1CBD090C194B497500B91A22 /* cursor.h in Headers */,
 				1C5483F818F5B1E3004FB2BC /* event.h in Headers */,
 				4C507BF81671A3BA00C45622 /* propdnf.h in Headers */,
 				4C507BFA1671A3BA00C45622 /* protobuf.h in Headers */,
-				4C507BFC1671A3BA00C45622 /* qbuild.h in Headers */,
 				4C507BFD1671A3BA00C45622 /* qmgr.h in Headers */,
 				1C3A895F19352070006F795B /* modinfo.h in Headers */,
 				4C507BFF1671A3BA00C45622 /* queryop.h in Headers */,
@@ -550,6 +550,7 @@
 				4C507BCE1671A3BA00C45622 /* fioosx.cpp in Sources */,
 				4C507BD01671A3BA00C45622 /* fiowin.cpp in Sources */,
 				4C507BD21671A3BA00C45622 /* fsmgr.cpp in Sources */,
+				1CBD090B194B497500B91A22 /* cursor.cpp in Sources */,
 				4C507BD41671A3BA00C45622 /* ftindex.cpp in Sources */,
 				4C507BD61671A3BA00C45622 /* ftproceng.cpp in Sources */,
 				4C507BD71671A3BA00C45622 /* idxcache.cpp in Sources */,
@@ -570,7 +571,6 @@
 				4C507BF31671A3BA00C45622 /* pgtree.cpp in Sources */,
 				4C507BF61671A3BA00C45622 /* pinref.cpp in Sources */,
 				4C507BF91671A3BA00C45622 /* protobuf.cpp in Sources */,
-				4C507BFB1671A3BA00C45622 /* qbuild.cpp in Sources */,
 				4C507BFE1671A3BA00C45622 /* queryop.cpp in Sources */,
 				4C507C001671A3BA00C45622 /* queryprc.cpp in Sources */,
 				4C507C021671A3BA00C45622 /* recover.cpp in Sources */,

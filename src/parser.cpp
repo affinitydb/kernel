@@ -20,7 +20,7 @@ Written by Mark Venguerov 2010-2014
 
 #include "queryprc.h"
 #include "stmt.h"
-#include "expr.h"
+#include "cursor.h"
 #include "parser.h"
 #include "maps.h"
 #include "dataevent.h"
@@ -330,7 +330,6 @@ const static struct
 	{{S_L("IMMUTABLE")},		PIN_IMMUTABLE},
 	{{S_L("PERSISTENT")},		PIN_PERSISTENT},
 	{{S_L("NO_REPLICATION")},	PIN_NO_REPLICATION},
-	{{S_L("NOTIFY")},			PIN_NOTIFY},
 	{{S_L("HIDDEN")},			PIN_HIDDEN},
 };
 
@@ -423,24 +422,26 @@ static RC renderElement(ElementID eid,SOutCtx& out,bool fBefore=false)
 	return RC_OK;
 }
 
-static RC renderOrder(const OrderSegQ *seg,unsigned nSegs,SOutCtx& out,bool fExprOnly=false)
+RC SOutCtx::renderOrder(const OrderSegQ *seg,unsigned nSegs,const QVar *var,bool fExprOnly)
 {
 	RC rc;
 	for (unsigned i=0; i<nSegs; i++,seg++) {
-		if (i!=0 && !out.append(",",1)) return RC_NOMEM;
+		if (i!=0 && !append(",",1)) return RC_NOMEM;
 		if ((seg->flags&ORDER_EXPR)!=0) {
-			if ((rc=seg->expr->render(0,out))!=RC_OK) return rc;
+			if ((rc=seg->expr->render(0,*this))!=RC_OK) return rc;
 		} else {
-			if ((seg->flags&ORD_NCASE)!=0 && !out.append(UPPER_S"(",sizeof(UPPER_S))) return RC_NOMEM;
-			if ((rc=out.renderName(seg->pid))!=RC_OK) return rc;
-			if ((seg->flags&ORD_NCASE)!=0 && !out.append(")",1)) return RC_NOMEM;
+			if ((seg->flags&ORD_NCASE)!=0 && !append(UPPER_S"(",sizeof(UPPER_S))) return RC_NOMEM;
+			const QVar *qv=NULL; unsigned save=flags;
+			if (var!=NULL && var->getType()<QRY_SIMPLE && (qv=var->getRefVar(seg->var))!=NULL) flags|=SOM_VAR_NAMES;
+			if ((rc=renderName(seg->pid,NULL,qv))!=RC_OK) return rc; flags=save;
+			if ((seg->flags&ORD_NCASE)!=0 && !append(")",1)) return RC_NOMEM;
 		}
 		if (!fExprOnly) {
-			if ((seg->flags&ORD_DESC)!=0 && !out.append(" "DESC_S,sizeof(DESC_S))) return RC_NOMEM;
+			if ((seg->flags&ORD_DESC)!=0 && !append(" "DESC_S,sizeof(DESC_S))) return RC_NOMEM;
 			if ((seg->flags&ORD_NULLS_BEFORE)!=0) {
-				if (!out.append(" "NULLS_S" "FIRST_S,sizeof(NULLS_S)+sizeof(FIRST_S))) return RC_NOMEM;
+				if (!append(" "NULLS_S" "FIRST_S,sizeof(NULLS_S)+sizeof(FIRST_S))) return RC_NOMEM;
 			} else if ((seg->flags&ORD_NULLS_AFTER)!=0) {
-				if (!out.append(" "NULLS_S" "LAST_S,sizeof(NULLS_S)+sizeof(LAST_S))) return RC_NOMEM;
+				if (!append(" "NULLS_S" "LAST_S,sizeof(NULLS_S)+sizeof(LAST_S))) return RC_NOMEM;
 			}
 		}
 	}
@@ -499,7 +500,7 @@ RC Stmt::render(SOutCtx& out) const
 		if ((rc=top->render(out))!=RC_OK) return rc;
 		if (orderBy!=NULL && nOrderBy>0) {
 			if (!out.append(" "ORDER_S" "BY_S" ",sizeof(ORDER_S)+sizeof(BY_S)+1)) return RC_NOMEM;
-			rc=renderOrder(orderBy,nOrderBy,out);
+			rc=out.renderOrder(orderBy,nOrderBy,top);
 		}
 		break;
 	case STMT_START_TX:
@@ -693,12 +694,13 @@ RC QVar::render(SOutCtx& out) const
 	if ((out.flags&SOM_MATCH)!=0 && (rc=render(RP_MATCH,out))!=RC_OK) return rc;
 	if (groupBy!=NULL && nGroupBy!=0) {
 		if (!out.append(" " GROUP_S " " BY_S " ",sizeof(GROUP_S)+sizeof(BY_S)+1)) return RC_NOMEM;
-		if ((rc=renderOrder(groupBy,nGroupBy,out))!=RC_OK) return rc;
+		const QVar *save=out.cvar; out.cvar=this;
+		if ((rc=out.renderOrder(groupBy,nGroupBy,this))!=RC_OK) return rc;
 		if (having!=NULL) {
 			if (!out.append(" " HAVING_S " ",sizeof(HAVING_S)+1)) return RC_NOMEM;
 			if ((rc=having->render(0,out))!=RC_OK) return rc;
 		}
-		if (!out.append(" ",1)) return RC_NOMEM;
+		if (!out.append(" ",1)) return RC_NOMEM; out.cvar=save;
 	}
 	return RC_OK;
 }
@@ -1442,7 +1444,7 @@ RC SOutCtx::renderValue(const Value& v,JRType jr) {
 			}
 			break;
 		case VAR_GROUP:
-			if (cvar!=NULL && cvar->groupBy!=NULL && v.refV.refN<cvar->nGroupBy) return renderOrder(&cvar->groupBy[v.refV.refN],1,*this,true);
+			if (cvar!=NULL && cvar->groupBy!=NULL && v.refV.refN<cvar->nGroupBy) return renderOrder(&cvar->groupBy[v.refV.refN],1,cvar,true);
 			break;
 		case VAR_REXP:
 			if (v.length!=0) {size_t l=sprintf(cbuf,"/%d",v.refV.id); if (!append(cbuf,l)) return RC_NOMEM;}
@@ -1533,7 +1535,7 @@ RC SOutCtx::renderJSON(Cursor *cr,uint64_t& cnt)
 {
 	RC rc=RC_OK; cnt=0; size_t l=1; cbuf[0]='['; 
 	Value ret; const unsigned nRes=cr->getNResults();
-	while (rc==RC_OK && (rc=((Cursor*)cr)->next(ret))==RC_OK) {
+	while (rc==RC_OK && (rc=cr->next(ret))==RC_OK) {
 		if (ret.type==VT_REF || nRes>1 && ret.type==VT_COLLECTION && !ret.isNav()) {
 			const Value *pvs=&ret;
 			if (nRes>1) {cbuf[l++]='['; if (ret.type==VT_COLLECTION) pvs=ret.varray;}

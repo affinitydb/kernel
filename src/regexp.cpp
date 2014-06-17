@@ -71,7 +71,6 @@ Written by Mark Venguerov 2004-2014
 #include "regexp.h"
 #include "expr.h"
 #include "parser.h"
-#include "qbuild.h"
 #include "queryprc.h"
 #include "service.h"
 

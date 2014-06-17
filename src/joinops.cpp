@@ -28,23 +28,23 @@ using namespace AfyKernel;
 
 const static char *j_ops[]={"semijoin", "join", "left outer join", "right outer join", "full outer join", "union", "except", "intersect"};
 
-MergeIDs::MergeIDs(QCtx *s,QueryOp **o,unsigned no,QUERY_SETOP so,unsigned qf) : QueryOp(s,qf|QO_JOIN|QO_IDSORT|QO_UNIQUE|QO_STREAM),nOps(no),op(so),cur(~0u),pqr(NULL)
+MergeIDs::MergeIDs(EvalCtx *qx,QueryOp **o,unsigned no,QUERY_SETOP so,unsigned qf) : QueryOp(qx,qf|QO_JOIN|QO_IDSORT|QO_UNIQUE|QO_STREAM),nOps(no),op(so),cur(~0u),pqr(NULL)
 {
 	nOuts=1; for (unsigned i=0; i<no; i++) {ops[i].qop=o[i]; ops[i].state=QOS_ADV; ops[i].epr.buf[0]=0;} assert(so==QRY_UNION||so==QRY_INTERSECT||so==QRY_EXCEPT);
 }
 
 MergeIDs::~MergeIDs()
 {
-	if (pqr!=NULL) {pqr->~PINx(); qx->ses->free(pqr);}
-	for (unsigned i=0; i<nOps; i++) delete ops[i].qop;
+	if (pqr!=NULL) pqr->~PINx();
+	for (unsigned i=0; i<nOps; i++) if (ops[i].qop!=NULL) ops[i].qop->~QueryOp();
 }
 
 void MergeIDs::connect(PINx **results,unsigned nRes)
 {
-	if (results!=NULL && nRes!=0) res=results[0];
+	if (results!=NULL && nRes!=0) {res=results[0]; state|=QST_CONNECTED;}
 	if (op==QRY_EXCEPT) {
 		ops[0].qop->connect(results,nRes);
-		if ((pqr=new(qx->ses) PINx(qx->ses))!=NULL) ops[1].qop->connect(&pqr,1);
+		if ((pqr=new(ctx->ma) PINx(ctx->ses))!=NULL) ops[1].qop->connect(&pqr,1);
 	} else for (unsigned i=0; i<nOps; i++) ops[i].qop->connect(results,nRes);	///???
 }
 
@@ -79,7 +79,7 @@ RC MergeIDs::advance(const PINx *skip)
 		ops[0].state|=QOS_ADV; ops[1].state|=QOS_ADV;
 		if ((cmp=res->epr.cmp(pqr->epr))>0) ops[0].state&=~QOS_ADV; else if (cmp<0) {ops[1].state&=~QOS_ADV; return RC_OK;}
 	} else {
-		PINx skp(qx->ses); if (cur!=~0u && (skip==NULL || ops[cur].epr.cmp(skip->epr)<=0)) {skp.epr=ops[cur].epr; skip=&skp;}
+		PINx skp(ctx->ses); if (cur!=~0u && (skip==NULL || ops[cur].epr.cmp(skip->epr)<=0)) {skp.epr=ops[cur].epr; skip=&skp;}
 		for (unsigned i=0,nOK=0,flags=0; nOK<nOps; ) {
 			QueryOpS& qs=ops[i]; res->cleanup(); if ((qs.state&QST_EOF)!=0) {rc=RC_EOF; break;}
 			if ((rc=qs.qop->next(skip))!=RC_OK) {qs.state|=QST_EOF; break;}
@@ -122,14 +122,14 @@ void MergeIDs::print(SOutCtx& buf,int level) const
 //------------------------------------------------------------------------------------------------
 
 MergeOp::MergeOp(QueryOp *qop1,QueryOp *qop2,const CondEJ *ce,unsigned ne,QUERY_SETOP qo,const Expr *cn,unsigned qf)
-	: QueryOp(qop1,qf|QO_JOIN|QO_UNIQUE),queryOp2(qop2),op(qo),ej(ce),nej(ne),cond(cn),didx(0),pexR(qx->ses),pR(&pexR),pids(NULL),
-	index1(NULL),index2(NULL),rvals((MemAlloc*)qop1->getQCtx()->ses),rvbuf(qop1->getQCtx()->ses),nRp(0),iRp(0),pV1(vls),pV2(vls+ne)
+	: QueryOp(qop1,qf|QO_JOIN|QO_UNIQUE),queryOp2(qop2),op(qo),ej(ce),nej(ne),cond(cn),didx(0),pexR(ctx->ses),pR(&pexR),pids(NULL),
+	index1(NULL),index2(NULL),rvals((MemAlloc*)ctx->ses),rvbuf(ctx->ses),nRp(0),iRp(0),pV1(vls),pV2(vls+ne)
 {
 	const unsigned qf1=qop1->getQFlags(); qflags|=qf1&QO_IDSORT; nOuts+=qop2->getNOuts();
 	if ((qf1&qop2->getQFlags()&QO_UNIQUE)!=0 && ce->propID2==PROP_SPEC_PINID) qflags|=QO_UNIQUE;
 	sort=qop1->getSort(nSegs); props1.props=props2.props=NULL; props1.nProps=props2.nProps=0; props1.fFree=props2.fFree=false;
 	if (ne>1) {
-		if ((props1.props=(unsigned*)qx->ses->malloc(ne*(sizeof(unsigned)*2+sizeof(PropertyID)*2)))==NULL) throw RC_NOMEM;
+		if ((props1.props=(unsigned*)ctx->ma->malloc(ne*(sizeof(unsigned)*2+sizeof(PropertyID)*2)))==NULL) throw RC_NOMEM;
 		props2.props=props1.props+ne; index1=(unsigned*)(props2.props+ne); index2=index1+ne; props1.fFree=true;
 		for (unsigned n=0; ce!=NULL; ce=ce->next,++n) {
 			PropertyID *ins,*pi=(PropertyID*)BIN<PropertyID>::find(ce->propID1,props1.props,props1.nProps,&ins);
@@ -140,25 +140,20 @@ MergeOp::MergeOp(QueryOp *qop1,QueryOp *qop2,const CondEJ *ce,unsigned ne,QUERY_
 			index2[n]=(unsigned)(pi-props2.props);
 		}
 	}
-	if ((qf&QO_VCOPIED)!=0 && cn!=NULL && (cn=Expr::clone(cn,qx->ses))==NULL) throw RC_NOMEM;
 	for (unsigned i=0; i<ne; i++) {pV1[i].setError(); pV2[i].setError();}
 }
 
 MergeOp::~MergeOp()
 {
-	if (pids!=NULL) delete pids;
-	if (props1.props!=NULL) qx->ses->free(props1.props);
 	cleanup(pV1); cleanup(pV2);
-	if ((qflags&QO_VCOPIED)!=0) {
-		qx->ses->free((void*)ej); if (cond!=NULL) ((Expr*)cond)->destroy();
-	}
-	delete queryOp2;
+	if (pids!=NULL) pids->~PIDStore();
+	if (queryOp2!=NULL) queryOp2->~QueryOp();
 }
 
 void MergeOp::connect(PINx **results,unsigned nRes)
 {
 	if (results!=NULL && nRes!=0) {
-		res=results[0]; unsigned nOuts1=queryOp->getNOuts();
+		res=results[0]; state|=QST_CONNECTED; unsigned nOuts1=queryOp->getNOuts();
 		queryOp->connect(results,nRes>nOuts1?nOuts1:nRes);
 		if (nRes==1) queryOp2->connect(&pR);
 		else if (nOuts1+queryOp2->getNOuts()<=nRes) {
@@ -215,14 +210,14 @@ RC MergeOp::advance(const PINx *skip)
 			}
 		}
 		int c=0; assert((state&(QOS_ADV1|QOS_ADV2))==0);
-		if (nej==1) c=cmp(*pV1,*pV2,ej->flags|CND_SORT,qx->ses);
+		if (nej==1) c=cmp(*pV1,*pV2,ej->flags|CND_SORT,ctx->ma);
 		else {
 			const CondEJ *ce=ej; 
-			for (unsigned i=0; i<nej; i++,ce=ce->next) if ((c=cmp(pV1[index1[i]],pV2[index2[i]],ce->flags|CND_SORT,qx->ses))!=0) break;
+			for (unsigned i=0; i<nej; i++,ce=ce->next) if ((c=cmp(pV1[index1[i]],pV2[index2[i]],ce->flags|CND_SORT,ctx->ma))!=0) break;
 		}
 #if 0
 		//if (c==0) {
-			SOutCtx out(qx->ses);
+			SOutCtx out(ctx->ses);
 			if (pV1->type==VT_BSTR) pV1->type=VT_STRING;
 			if (pV2->type==VT_BSTR) pV2->type=VT_STRING;
 			res->getID(id); out.renderPID(id); 
@@ -230,7 +225,7 @@ RC MergeOp::advance(const PINx *skip)
 			out.append(c<0?" < ":c==0?" = ":" > ",3);
 			pR->getID(id); out.renderPID(id);
 			if (ej->propID2!=PROP_SPEC_PINID) {out.append(":",1); out.renderValue(*pV2);}
-			size_t l; byte *p=out.result(l); report(MSG_DEBUG,"%.*s\n",l,p); qx->ses->free(p);
+			size_t l; byte *p=out.result(l); report(MSG_DEBUG,"%.*s\n",l,p); ctx->ma->free(p);
 		//}
 #endif
 		if (c>0) {
@@ -259,7 +254,7 @@ RC MergeOp::advance(const PINx *skip)
 				state|=(qflags&(QO_UNI1|QO_UNI2))==(QO_UNI1|QO_UNI2)?QOS_ADV1|QOS_ADV2:QOS_ADV1;
 				if (res->epr.buf[0]!=0 && PINRef::isColl(res->epr.buf) && (qflags&QO_UNIQUE)!=0) {
 					if (pids!=NULL) {if ((*pids)[*res]) continue;}
-					else if ((pids=new(qx->ses) PIDStore(qx->ses))==NULL) return RC_NOMEM;
+					else if ((pids=new(ctx->ma) PIDStore(ctx->ses))==NULL) return RC_NOMEM;
 					if ((rc=((*pids)+=*res))!=RC_OK) return rc;
 					PINRef::changeFColl(res->epr.buf,false);
 				}
@@ -284,7 +279,7 @@ RC MergeOp::advance(const PINx *skip)
 			}
 			if (cond!=NULL) {
 				PIN *pp[2]={res,pR};
-				if (!cond->condSatisfied(EvalCtx(qx->ses,NULL,0,pp,2,qx->vals,QV_ALL,qx->ectx,qx->ses,(qflags&QO_CLASS)!=0?ECT_DETECT:ECT_QUERY))) continue;
+				if (!cond->condSatisfied(EvalCtx(ctx->ses,NULL,0,pp,2,ctx->params,QV_ALL,ctx,ctx->ses,(qflags&QO_CLASS)!=0?ECT_DETECT:ECT_QUERY))) continue;
 			}
 			res->fReload=pR->fReload=1; return RC_OK;
 		}
@@ -294,7 +289,7 @@ RC MergeOp::advance(const PINx *skip)
 RC MergeOp::rewind()
 {
 	if ((state&QST_BOF)!=0) return RC_OK;
-	if (pids!=NULL) {delete pids; pids=NULL;}
+	if (pids!=NULL) {pids->~PIDStore(); pids=NULL;}
 	cleanup(pV1); cleanup(pV2);
 	rvals.clear(); rvbuf.truncate(TR_REL_NONE); nRp=iRp=0;
 	pR->cleanup();
@@ -315,7 +310,7 @@ RC MergeOp::loadData(PINx& qr,Value *pv,unsigned nv,ElementID eid,bool fSort,Mem
 void MergeOp::unique(bool f)
 {
 	if (queryOp!=NULL) queryOp->unique(f); 
-	if (f) qflags|=QO_UNIQUE; else {qflags&=~QO_UNIQUE; delete pids; pids=NULL;}
+	if (f) qflags|=QO_UNIQUE; else {qflags&=~QO_UNIQUE; if (pids!=NULL) {pids->~PIDStore(); pids=NULL;}}
 }
 
 void MergeOp::print(SOutCtx& buf,int level) const
@@ -337,20 +332,21 @@ void MergeOp::print(SOutCtx& buf,int level) const
 
 HashOp::~HashOp()
 {
-	delete queryOp2; delete pids;
+	if (pids!=NULL) pids->~PIDStore();
+	if (queryOp2!=NULL) queryOp2->~QueryOp();
 }
 
 RC HashOp::init()
 {
 	RC rc=RC_OK; assert(pids==NULL);
 	if (queryOp2!=NULL) {
-		PINx qr(qx->ses),*pqr=&qr; queryOp2->connect(&pqr);
-		for (PINx qr2(qx->ses); (rc=queryOp2->next())==RC_OK; ) {
-			if (pids==NULL && (pids=new(qx->ses) PIDStore(qx->ses))==NULL) return RC_NOMEM;
+		PINx qr(ctx->ses),*pqr=&qr; queryOp2->connect(&pqr);
+		for (PINx qr2(ctx->ses); (rc=queryOp2->next())==RC_OK; ) {
+			if (pids==NULL && (pids=new(ctx->ma) PIDStore(ctx->ses))==NULL) return RC_NOMEM;
 			(*pids)+=qr;
 		}
 	}
-	if (rc!=RC_EOF) {delete pids; pids=NULL; return rc;}
+	if (rc!=RC_EOF) {if (pids!=NULL) {pids->~PIDStore(); pids=NULL;} return rc;}
 	return pids!=NULL?RC_OK:RC_EOF;
 }
 
@@ -372,13 +368,13 @@ void HashOp::print(SOutCtx& buf,int level) const
 
 NestedLoop::~NestedLoop()
 {
-	delete queryOp2; if (cond!=NULL) cond->destroy();
+	if (queryOp2!=NULL) queryOp2->~QueryOp();
 }
 
 void NestedLoop::connect(PINx **results,unsigned nRes)
 {
 	if (results!=NULL && nRes!=0) {
-		res=results[0]; unsigned nOuts1=queryOp->getNOuts();
+		res=results[0]; state|=QST_CONNECTED; unsigned nOuts1=queryOp->getNOuts();
 		queryOp->connect(results,nRes>nOuts1?nOuts1:nRes);
 		if (nRes==1) queryOp2->connect(&pR);
 		else if (nOuts1+queryOp2->getNOuts()<=nRes) {
@@ -414,7 +410,7 @@ RC NestedLoop::advance(const PINx *skip)
 				//rc=getData()
 			}
 			if (rc!=RC_OK) {state|=QST_EOF; return rc;} PIN *pp[2]={res,pR}; 
-			if (cond->condSatisfied(EvalCtx(qx->ses,NULL,0,pp,2))) return RC_OK;
+			if (cond->condSatisfied(EvalCtx(ctx->ses,NULL,0,pp,2))) return RC_OK;
 		}
 	}
 }

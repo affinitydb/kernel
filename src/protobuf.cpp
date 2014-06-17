@@ -330,7 +330,7 @@ RC EncodePB::encode(unsigned char *buf,size_t& lbuf)
 				case 0:
 					if (os.pin->id.isPID()) {sz=length(os.pin->id); oSize=1+afy_len16(sz)+sz;} else oSize=0;
 					if (rtt!=RTT_PIDS) {
-						sz=os.pin->mode&(PIN_NO_REPLICATION|PIN_NOTIFY|PIN_REPLICATED|PIN_HIDDEN); if (sz!=0) oSize+=1+afy_len32(sz);
+						sz=os.pin->mode&(PIN_NO_REPLICATION|PIN_REPLICATED|PIN_HIDDEN); if (sz!=0) oSize+=1+afy_len32(sz);
 						if (os.pin->nProperties!=0) oSize+=1+afy_len32(os.pin->nProperties);
 						if (os.pin->properties!=NULL) for (i=0; i<os.pin->nProperties; i++)
 							{sz64=length(os.pin->properties[i],VT_FULL); oSize+=1+afy_len64(sz64)+sz64;}		// save ???
@@ -351,7 +351,7 @@ RC EncodePB::encode(unsigned char *buf,size_t& lbuf)
 					if (os.pin->id.isPID()) {push_state(ST_PID,&os.pin->id,ID_TAG); continue;}
 				case 4:
 					os.state++; 
-					if (rtt!=RTT_PIDS && (sz=os.pin->mode&(PIN_NO_REPLICATION|PIN_NOTIFY|PIN_REPLICATED|PIN_HIDDEN))!=0) VAR_OUT(MODE_TAG,afy_enc32,sz);
+					if (rtt!=RTT_PIDS && (sz=os.pin->mode&(PIN_NO_REPLICATION|PIN_REPLICATED|PIN_HIDDEN))!=0) VAR_OUT(MODE_TAG,afy_enc32,sz);
 				case 5:
 					os.state++; if (rtt!=RTT_PIDS && os.pin->nProperties!=0) VAR_OUT(NVALUES_TAG,afy_enc32,os.pin->nProperties);
 				case 6:
@@ -803,7 +803,7 @@ RC DecodePB::decode(const unsigned char *in,size_t lbuf,IMemAlloc *ra)
 			default: set_skip(); continue;
 			case OP_TAG: u.pin.op=(uint8_t)val; break;
 			case ID_TAG: const_cast<PID&>(u.pin.id)=PIN::noPID; push_state(ST_PID,const_cast<PID*>(&u.pin.id),in-buf0); continue;
-			case MODE_TAG: u.pin.mode=(uint32_t)val&(PIN_NO_REPLICATION|PIN_NOTIFY|PIN_REPLICATED|PIN_HIDDEN); break;
+			case MODE_TAG: u.pin.mode=(uint32_t)val&(PIN_NO_REPLICATION|PIN_REPLICATED|PIN_HIDDEN); break;
 			case NVALUES_TAG:
 				if (is.idx>(uint32_t)val) return RC_CORRUPTED;
 				if (val!=0) {
@@ -1065,9 +1065,9 @@ RC ProcessStream::next(const unsigned char *in,size_t lbuf)
 					{Cursor *cr=NULL; Result res={RC_OK,0,modOp[u.stmt.stmt->getOp()]};
 					Values vpar(u.stmt.params,u.stmt.nParams); EvalCtx ectx(ses,NULL,0,NULL,0,&vpar,1,NULL,NULL,u.stmt.stmt->getOp()==STMT_INSERT||u.stmt.stmt->getOp()==STMT_UPDATE?ECT_INSERT:ECT_QUERY);
 					if ((rc=u.stmt.stmt->execute(ectx,NULL,u.stmt.limit,u.stmt.offset,u.stmt.mode,&res.cnt,TXI_DEFAULT,outStr!=NULL&&u.stmt.rtt!=RTT_COUNT?&cr:(Cursor**)0))==RC_OK && rc==RC_OK) {
-						assert(obuf!=NULL); RTTYPE rtt=u.stmt.rtt; const PINx *ret=NULL; Value w;
+						assert(obuf!=NULL); RTTYPE rtt=u.stmt.rtt; PINx *ret=NULL; Value w;
 						if (rtt==RTT_DEFAULT) {SelectType st=cr->selectType(); rtt=st==SEL_COUNT?RTT_COUNT:st==SEL_PINSET||st==SEL_AUGMENTED||st==SEL_COMPOUND?RTT_PINS:RTT_VALUES;}
-						while (rc==RC_OK && (rc=cr->next(ret))==RC_OK) {
+						while (rc==RC_OK && (rc=cr->next(ret,true))==RC_OK) {
 							switch (rtt) {
 							case RTT_DEFAULT:
 							case RTT_COUNT: break;
@@ -1165,7 +1165,7 @@ RC ProcessStream::commitPINs()
 	return rc;
 }
 
-RC Stmt::execute(IStreamOut*& result,const Value *params,unsigned nParams,unsigned nReturn,unsigned nSkip,unsigned md,TXI_LEVEL txi) const
+RC Stmt::execute(IStreamOut*& result,const Value *params,unsigned nParams,unsigned nReturn,unsigned nSkip,unsigned md,TXI_LEVEL txi)
 {
 	try {
 		result=NULL; Cursor *cr; uint64_t nProcessed=0;

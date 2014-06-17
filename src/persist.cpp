@@ -88,12 +88,12 @@ RC QueryPrc::persistPINs(const EvalCtx& ectx,PIN *const *pins,unsigned nPins,uns
 	AllocPage *pages=NULL,*allocPages=NULL,*forcedPages=NULL; unsigned nNewPages=0; PIN **metaPINs=NULL; unsigned nInserted=0; unsigned *allocTab=NULL;
 	for (i=0; i<nPins; i++) if ((pin=pins[i])!=NULL) {
 		pin->mode&=~COMMIT_MASK; if (pin->addr.defined()) continue;
-		if (((pin->mode|=mode&(PIN_NO_REPLICATION|PIN_NOTIFY|PIN_HIDDEN))&PIN_NO_REPLICATION)!=0) pin->mode&=~PIN_REPLICATED;
+		if (((pin->mode|=mode&(PIN_NO_REPLICATION|PIN_HIDDEN))&PIN_NO_REPLICATION)!=0) pin->mode&=~PIN_REPLICATED;
 		if (pin->id.ident==STORE_INVALID_IDENTITY) {
 			if (ectx.ses->isRestore()) {rc=RC_INVPARAM; goto finish;}
 			if (!pin->id.isEmpty()) {PINMapElt pe={pin->id.pid,pin}; pinMap+=pe; pin->id.setEmpty();}
 		} else if (!isRemote(pin->id)) {pin->mode|=COMMIT_FORCED; fForced=true;}
-		if ((pin->mode&PIN_HIDDEN)!=0) pin->mode=pin->mode&~(PIN_REPLICATED|PIN_NOTIFY)|PIN_NO_REPLICATION;
+		if ((pin->mode&PIN_HIDDEN)!=0) pin->mode=pin->mode&~(PIN_REPLICATED)|PIN_NO_REPLICATION;
 		size_t plen0=pin->length=sizeof(HeapPageMgr::HeapPIN)+(pin->id.isEmpty()||(pin->mode&COMMIT_FORCED)!=0?0:
 													pin->id.ident==STORE_OWNER?sizeof(uint64_t):sizeof(uint64_t)+sizeof(IdentityID));
 		size_t lBig=0,lOther=0; unsigned nBig=0; ElementID rPrefix=pin->getPrefix(ctx); PropertyID xPropID=STORE_INVALID_URIID;
@@ -113,7 +113,7 @@ RC QueryPrc::persistPINs(const EvalCtx& ectx,PIN *const *pins,unsigned nPins,uns
 					if ((rc=copyV(ectx.env[0]->properties,ectx.env[0]->nProperties,props,pin->ma))!=RC_OK) goto finish;
 					tmp=pin->properties; np=pin->nProperties; pin->properties=props; pin->nProperties=ectx.env[0]->nProperties;
 					for (unsigned i=0; i<np; i++) if (&tmp[i]!=pv) pin->modify(&tmp[i],STORE_LAST_ELEMENT,prefix,0);
-					pin->mode|=ectx.env[0]->mode&(PIN_NO_REPLICATION|PIN_NOTIFY|PIN_REPLICATED|PIN_HIDDEN|PIN_PERSISTENT|PIN_TRANSIENT);
+					pin->mode|=ectx.env[0]->mode&(PIN_NO_REPLICATION|PIN_REPLICATED|PIN_HIDDEN|PIN_PERSISTENT|PIN_TRANSIENT);
 					if (pin->fNoFree==0) freeV(tmp,np,pin->ma); 
 					fComm=pin->findProperty(PROP_SPEC_SERVICE)!=NULL; pin->length=plen0; lBig=lOther=0; nBig=0; j=~0u; continue;
 				}
@@ -323,10 +323,7 @@ RC QueryPrc::persistPINs(const EvalCtx& ectx,PIN *const *pins,unsigned nPins,uns
 			hpin->nProps=ushort(pin->nProperties); hpin->fmtExtra=HDF_COMPACT; hpin->meta=pin->meta;
 			if ((mode&MODE_TEMP_ID)!=0) hpin->hdr.descr|=HOH_TEMP_ID;
 			if ((pin->mode&PIN_HIDDEN)!=0) hpin->hdr.descr|=HOH_HIDDEN;
-			else {
-				if ((pin->mode&PIN_NOTIFY)!=0) hpin->hdr.descr|=HOH_NOTIFICATION;
-				if ((pin->mode&COMMIT_FTINDEX)!=0) hpin->hdr.descr|=HOH_FT;
-			}
+			else if ((pin->mode&COMMIT_FTINDEX)!=0) hpin->hdr.descr|=HOH_FT;
 			if ((pin->mode&PIN_NO_REPLICATION)!=0) hpin->hdr.descr|=HOH_NOREPLICATION;
 			else if ((pin->mode&PIN_REPLICATED)!=0) hpin->hdr.descr|=HOH_REPLICATED;
 			if ((pin->mode&PIN_IMMUTABLE)!=0) hpin->hdr.descr|=HOH_IMMUTABLE;
@@ -408,16 +405,12 @@ finish:
 			}
 			if (rc==RC_OK && (pin->mode&(PIN_DELETED|PIN_HIDDEN))==0) {
 //				if (replication!=NULL && (pin->mode&(PIN_NO_REPLICATION|PIN_REPLICATED))==PIN_REPLICATED) rc=ectx.ses->replicate(pin);
-				if (rc==RC_OK && ctx->queryMgr->notification!=NULL && ((pin->mode&PIN_NOTIFY)!=0||(clr.notif&CLASS_NOTIFY_NEW)!=0)) {
+				if (rc==RC_OK && ctx->queryMgr->notification!=NULL && (clr.notif&CLASS_NOTIFY_NEW)!=0) {
 					IStoreNotification::NotificationEvent evt={pin->id,NULL,0,NULL,0,ectx.ses->isReplication()};
 					if ((evt.events=(IStoreNotification::EventData*)mem.malloc((clr.ndevs+1)*sizeof(IStoreNotification::EventData)))!=NULL) {
 						if ((clr.notif&CLASS_NOTIFY_NEW)!=0) for (unsigned i=0; i<clr.ndevs; i++) if ((clr.devs[i]->notifications&CLASS_NOTIFY_NEW)!=0) {
 							IStoreNotification::EventData& ev=(IStoreNotification::EventData&)evt.events[evt.nEvents++];
 							ev.type=IStoreNotification::NE_CLASS_INSTANCE_ADDED; ev.cid=clr.devs[i]->cid;
-						}
-						if ((pin->mode&PIN_NOTIFY)!=0) {
-							IStoreNotification::EventData& ev=(IStoreNotification::EventData&)evt.events[evt.nEvents];
-							ev.cid=STORE_INVALID_URIID; ev.type=IStoreNotification::NE_PIN_CREATED; evt.nEvents++;
 						}
 						if (evt.nEvents>0) {
 							evt.nData=pin->nProperties;

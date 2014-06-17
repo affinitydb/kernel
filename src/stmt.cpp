@@ -285,7 +285,7 @@ RC Stmt::addOutputNoCopy(QVarID var,Value *os,unsigned nO)
 			ExprNode *et=(ExprNode*)vv.exprt; Expr *exp; if (et->op==OP_PIN) fPIN=true;
 			if (et->op==OP_CAST && et->operands[0].type==VT_VARREF) {vv=et->operands[0]; vv.refV.type=(ushort)et->operands[1].ui; ma->free(et);}
 			else if (et->nops==1 && et->op<OP_ALL && (SInCtx::opDscr[et->op].flags&_A)!=0 && qv->aggrs.nValues<256) {
-				if ((qv->aggrs.vals=(Value*)ma->realloc((Value*)qv->aggrs.vals,(qv->aggrs.nValues+1)*sizeof(Value)))==NULL) return RC_NOMEM;
+				if ((qv->aggrs.vals=(Value*)ma->realloc((Value*)qv->aggrs.vals,(qv->aggrs.nValues+1)*sizeof(Value),qv->aggrs.nValues*sizeof(Value)))==NULL) return RC_NOMEM;
 				Value &to=((Value*)qv->aggrs.vals)[qv->aggrs.nValues];
 				if (et->operands[0].type==VT_EXPRTREE) {
 					Expr *ag; if ((rc=Expr::compile((ExprNode*)et->operands[0].exprt,ag,ma,false))==RC_OK) to.set(ag,1); else return rc;
@@ -636,14 +636,14 @@ RC Stmt::setValuesNoCopy(Value *values,unsigned nVals)
 	return RC_OK;
 }
 
-RC Stmt::getNested(const Value *pv,unsigned nV,PIN **ppins,PIN *pins,unsigned& cnt,Session *ses,PIN *parent)
+RC Stmt::getNested(const Value *pv,unsigned nV,PIN **ppins,PIN *pins,uint64_t& cnt,Session *ses,PIN *parent)
 {
 	RC rc; Value *pp; assert(parent!=NULL && parent->fNoFree==0);
 	for (unsigned i=0; i<nV; i++) if (pv[i].fcalc!=0) switch (pv[i].type) {
 	default: break;
 	case VT_STMT:
 		if (pv[i].stmt->getOp()==STMT_INSERT) {
-			const unsigned cnt0=cnt; const Stmt *st=(Stmt*)pv[i].stmt;
+			const uint64_t cnt0=cnt; const Stmt *st=(Stmt*)pv[i].stmt;
 			if ((rc=st->getNested(ppins,pins,cnt,ses,parent))!=RC_OK) return rc;
 			if (cnt>cnt0) {
 				Value *pp=(Value*)&pv[i]; assert(ppins[cnt0]!=NULL);
@@ -667,7 +667,7 @@ RC Stmt::getNested(const Value *pv,unsigned nV,PIN **ppins,PIN *pins,unsigned& c
 	return RC_OK;
 }
 
-RC Stmt::getNested(PIN **ppins,PIN *npins,unsigned& cnt,Session *ses,PIN *parent) const
+RC Stmt::getNested(PIN **ppins,PIN *npins,uint64_t& cnt,Session *ses,PIN *parent) const
 {
 	RC rc; PID tid=PIN::noPID; tid.pid=tpid; unsigned n=0;
 	do {
@@ -682,7 +682,7 @@ RC Stmt::getNested(PIN **ppins,PIN *npins,unsigned& cnt,Session *ses,PIN *parent
 			assert(cnt!=0); Value prnt; prnt.set(parent); prnt.setPropID(PROP_SPEC_PARENT); fNF=false;
 			if ((rc=VBIN::insert(pv,nVals,PROP_SPEC_PARENT,prnt,(MemAlloc*)ses))!=RC_OK && rc!=RC_FALSE) return rc;
 		}
-		PIN *pin=ppins[cnt]=new(&npins[cnt]) PIN(ses,0,pv,nVals,fNF); *pin=tid; cnt++;
+		PIN *pin=ppins[(unsigned)cnt]=new(&npins[(unsigned)cnt]) PIN(ses,0,pv,nVals,fNF); *pin=tid; cnt++;
 		if (nNested!=0 && (rc=getNested(pv,nVals,ppins,npins,cnt,ses,pin))!=RC_OK) return rc;
 	} while ((mode&MODE_MANY_PINS)!=0 && ++n<nValues);
 	return RC_OK;
@@ -750,7 +750,7 @@ RC Stmt::processCond(ExprNode *node,QVar *qv,DynArray<const ExprNode*> *exprs)
 							break;
 						}
 					if (cs==NULL) {
-						if ((sv->srcs=(SourceSpec*)sv->ma->realloc((void*)sv->srcs,(sv->nSrcs+1)*sizeof(SourceSpec)))==NULL) return RC_NOMEM;
+						if ((sv->srcs=(SourceSpec*)sv->ma->realloc((void*)sv->srcs,(sv->nSrcs+1)*sizeof(SourceSpec),sv->nSrcs*sizeof(SourceSpec)))==NULL) return RC_NOMEM;
 						cs=(SourceSpec*)&sv->srcs[sv->nSrcs]; cs->objectID=node->operands[1].uid; cs->params=NULL; cs->nParams=0; sv->nSrcs++;
 					}
 					if (node->nops>2 && (rc=copyV(&node->operands[2],cs->nParams=node->nops-2,*(Value**)&cs->params,sv->ma))!=RC_OK) return rc;
@@ -1455,7 +1455,7 @@ RC JoinVar::deserialize(const byte *&buf,const byte *const ebuf,QVarID id,byte t
 
 size_t Stmt::serSize() const
 {
-	size_t len=2+afy_len32(mode)+afy_len32(nVars)+afy_len32(nOrderBy);
+	size_t len=3+afy_len32(mode)+afy_len32(nVars)+afy_len32(nOrderBy);
 	for (QVar *qv=vars; qv!=NULL; qv=qv->next) len+=qv->serSize();
 	if (orderBy!=NULL && nOrderBy!=0) for (unsigned i=0; i<nOrderBy; i++) {
 		const OrderSegQ& sq=orderBy[i]; len+=2+afy_len16(sq.flags)+afy_len32(sq.lPref)+((sq.flags&ORDER_EXPR)!=0?sq.expr->serSize():afy_len32(sq.pid));
@@ -1486,7 +1486,7 @@ size_t Stmt::serSize() const
 
 byte *Stmt::serialize(byte *buf) const
 {
-	*buf++=(byte)op; *buf++=(byte)txi; afy_enc32(buf,mode); afy_enc32(buf,nVars);
+	*buf++=(byte)op; *buf++=(byte)txi; *buf++=sst; afy_enc32(buf,mode); afy_enc32(buf,nVars);
 	for (QVar *qv=vars; qv!=NULL; qv=qv->next) buf=qv->serQV(buf);
 	afy_enc32(buf,nOrderBy);
 	if (orderBy!=NULL && nOrderBy!=0) for (unsigned i=0; i<nOrderBy; i++) {
@@ -1523,12 +1523,13 @@ byte *Stmt::serialize(byte *buf) const
 
 RC Stmt::deserialize(Stmt *&res,const byte *&buf,const byte *const ebuf,MemAlloc *ma)
 {
-	STMT_OP op; unsigned mode; TXI_LEVEL txi;
-	if (buf+1>=ebuf || (op=(STMT_OP)*buf++)<STMT_QUERY || op>=STMT_OP_ALL
-		|| (txi=(TXI_LEVEL)*buf++)<TXI_DEFAULT || txi>=TXI_SERIALIZABLE) return RC_CORRUPTED;
+	STMT_OP op; unsigned mode; TXI_LEVEL txi; SimpleStmtType sst;
+	if (buf+2>=ebuf || (op=(STMT_OP)*buf++)<STMT_QUERY || op>=STMT_OP_ALL
+		|| (txi=(TXI_LEVEL)*buf++)<TXI_DEFAULT || txi>=TXI_SERIALIZABLE
+		|| (sst=(SimpleStmtType)*buf++)>=SST_ALL) return RC_CORRUPTED;
 	CHECK_dec32(buf,mode,ebuf);
 	Stmt *stmt=res=new(ma) Stmt(mode,ma,op,txi);  if (stmt==NULL) return RC_NOMEM;
-	QVar **pqv=&stmt->vars,*qv; unsigned nv; RC rc=RC_OK;
+	QVar **pqv=&stmt->vars,*qv; unsigned nv; RC rc=RC_OK; stmt->sst=sst;
 	CHECK_dec32(buf,nv,ebuf);
 	for (unsigned i=0; i<nv; i++) {
 		if ((rc=QVar::deserialize(buf,ebuf,ma,qv))!=RC_OK) {stmt->destroy(); res=NULL; return rc;}
@@ -1606,5 +1607,6 @@ RC Stmt::deserialize(Stmt *&res,const byte *&buf,const byte *const ebuf,MemAlloc
 
 void Stmt::destroy()
 {
-	try {this->~Stmt(); ma->free(this);} catch (RC) {} catch (...) {report(MSG_ERROR,"Exception in IStmt::destroy()\n");}
+	try {if (refCnt==0) report(MSG_ERROR,"Invalid refCnt in IStmt::destroy()\n"); else if (--refCnt==0) delete this;}
+	catch (RC) {} catch (...) {report(MSG_ERROR,"Exception in IStmt::destroy()\n");}
 }

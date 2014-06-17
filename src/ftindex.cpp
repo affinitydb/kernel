@@ -20,7 +20,7 @@ Written by Mark Venguerov 2004-2014
 
 #include "ftindex.h"
 #include "queryprc.h"
-#include "txmgr.h"
+#include "cursor.h"
 #include "blob.h"
 
 using namespace AfyKernel;
@@ -238,9 +238,8 @@ RC FTIndexMgr::rebuildIndex(Session *ses)
 {
 	RC rc=RC_OK; MiniTx tx(ses,MTX_FLUSH|MTX_GLOB);
 	if ((rc=indexFT.dropTree())==RC_OK) {
-		PINx qr(ses),*pqr=&qr; ses->resetAbortQ(); QCtx qc(ses); qc.ref();
-		FullScan fs(&qc,HOH_DELETED|HOH_HIDDEN); fs.connect(&pqr); RWLockP lck(&lock,RW_X_LOCK);
-		while ((rc=fs.next())==RC_OK) {
+		Cursor cu(ses); RWLockP lck(&lock,RW_X_LOCK); PINx *pin;
+		if ((rc=cu.init(STORE_INVALID_URIID,HOH_DELETED|HOH_HIDDEN))==RC_OK) while ((rc=cu.next(pin))==RC_OK) {
 #if 0
 			assert(!qr.pb.isNull() && qr.hpin!=NULL);
 			StackAlloc sa(ses); FTList ftl(sa); Value v; qr.getV(PROP_SPEC_DOCUMENT,v,0,ses);

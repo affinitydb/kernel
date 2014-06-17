@@ -114,6 +114,7 @@ public:
 	RC		renderVarName(const QVar *qv);																		/**< render variable name for PathSQL statement */
 	RC		renderRep(const Value& rep);																		/**< render path expression segment repeater '{...}' */
 	RC		renderPath(const struct PathSeg& ps);																/**< render path expression */
+	RC		renderOrder(const OrderSegQ *seg,unsigned nSegs,const QVar *var,bool fExprOnly=false);				/**< render ORDER BY or GROUP BY */
 	RC		renderProperty(const Value &v,unsigned flags);														/**< render property name, optional meta-properties and optional value */
 	char	*renderAll();																						/**< append prologue if necessary */
 	RC		renderJSON(class Cursor *cr,uint64_t& cnt);															/**< render JSON output from a cursor */
@@ -129,8 +130,8 @@ public:
 	void	saveFlags(unsigned& s) const {s=flags&(SOM_VAR_NAMES|SOM_WHERE|SOM_MATCH|SOM_AND);}
 	void	restoreFlags(unsigned s) {flags=flags&~(SOM_VAR_NAMES|SOM_WHERE|SOM_MATCH|SOM_AND)|s;}
 	bool	fill(char c,int n) {if (n==0) return true; byte *pp=alloc(n); return pp==NULL?false:(memset(pp,c,n),true);}
-	byte	*result(size_t& len) {byte *p=ptr; ptr=NULL; len=cLen; if (cLen<xLen/2) p=(byte*)ses->realloc(p,cLen); cLen=xLen=0; return p;}
-	operator char*() {char *p=(char*)ptr; ptr=NULL; if (cLen+1!=xLen) p=(char*)ses->realloc(p,cLen+1); if (p!=NULL) p[cLen]=0; return p;}
+	byte	*result(size_t& len) {byte *p=ptr; ptr=NULL; len=cLen; if (cLen<xLen/2) p=(byte*)ses->realloc(p,cLen,xLen); cLen=xLen=0; return p;}
+	operator char*() {char *p=(char*)ptr; ptr=NULL; if (cLen+1!=xLen) p=(char*)ses->realloc(p,cLen+1,xLen); if (p!=NULL) p[cLen]=0; return p;}
 	byte	*alloc(size_t l) {if (cLen+l>xLen && !expand(l)) return NULL; assert(ptr!=NULL); byte *p=ptr+cLen; cLen+=l; return p;}
 	bool	expand(size_t l);
 	friend	class	Stmt;

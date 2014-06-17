@@ -155,12 +155,11 @@ enum OpMode {
 
 enum PINFlags {
 	PF_NO_REPLICATION	= 1073741824;	// Marks a pin as one which shouldn't be replicated (only when the pin is committed).
-	PF_NOTIFY			= 536870912;	// PIN generates notifications when modified.
-	PF_REPLICATED		= 268435456;	// PIN is replicated to another store or is a replica.
-	PF_HIDDEN			= 134217728;	// Special pin - totally hidden from search/replication - accessible only through its PID.
-	PF_INMEM			= 67108864;		// PIN is not persisted - no PID generated.
-	PF_TRANSIENT		= 33554432;		// PIN is discarded in commitPINs (used as a message).
-	PF_IMMUTABLE		= 16777216;		// Immutable PIN.
+	PF_REPLICATED		= 536870912;	// PIN is replicated to another store or is a replica.
+	PF_HIDDEN			= 268435456;	// Special pin - totally hidden from search/replication - accessible only through its PID.
+	PF_PERSISTENT		= 134217728;	// PIN is committed to persistent storage.
+	PF_TRANSIENT		= 67108864;		// PIN is discarded in commitPINs (used as a message).
+	PF_IMMUTABLE		= 33554432;		// Immutable PIN.
 }
 
 enum MetaProps {

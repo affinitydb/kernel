@@ -19,10 +19,12 @@ Written by Mark Venguerov 2013
 **************************************************************************************/
 
 #include "named.h"
-#include "queryprc.h"
+#include "stmt.h"
+#include "cursor.h"
 #include "maps.h"
 #include "event.h"
 #include "service.h"
+#include "queryprc.h"
 
 using namespace AfyKernel;
 
@@ -35,7 +37,7 @@ NamedMgr::NamedMgr(StoreCtx *ct)
 }
 
 const BuiltinURI NamedMgr::builtinURIs[] = {
-	{S_L("Classes"),		CLASS_OF_CLASSES},
+	{S_L("Classes"),		CLASS_OF_DATAEVENTS},
 	{S_L("Timers"),			CLASS_OF_TIMERS},
 	{S_L("Listeners"),		CLASS_OF_LISTENERS},
 	{S_L("Loaders"),		CLASS_OF_LOADERS},
@@ -179,7 +181,7 @@ RC NamedMgr::createBuiltinObjects(Session *ses)
 			break;
 		}
 		if (nProps==0) continue; PIN *pin;
-		if ((rc=ctx->classMgr->initClassPIN(ses,CLASS_OF_CLASSES+i,props,nProps,pin))!=RC_OK) break;
+		if ((rc=ctx->classMgr->initClassPIN(ses,CLASS_OF_DATAEVENTS+i,props,nProps,pin))!=RC_OK) break;
 		classPINs[nClasses++]=pin;
 	}
 	fInit=true;
@@ -200,35 +202,31 @@ RC NamedMgr::restoreXPropID(Session *ses)
 
 RC NamedMgr::loadObjects(Session *ses,bool fSafe)
 {
-	RC rc=RC_OK;
+	RC rc=RC_OK; PINx *pcb;
 	if (!fInit) {
 		MutexP lck(&lock);
 		if (!fInit) {
-			PINx cb(ses),*pcb=&cb;
-			{QCtx qc(ses); qc.ref(); ClassScan cs(&qc,CLASS_OF_LOADERS,QO_HIDDEN); cs.connect(&pcb);
-			while ((rc=cs.next())==RC_OK && (rc=cb.getBody())==RC_OK && (rc=LoadService::loadLoader(cb))==RC_OK);}
+			{Cursor cu(ses); if ((rc=cu.init(CLASS_OF_LOADERS))==RC_OK) while ((rc=cu.next(pcb,true))==RC_OK && (rc=LoadService::loadLoader(*pcb))==RC_OK);}
 
-			if (rc==RC_OK || rc==RC_EOF) {
-				QCtx qc(ses); qc.ref(); ClassScan cs(&qc,CLASS_OF_CLASSES,QO_HIDDEN); cs.connect(&pcb);
-				while ((rc=cs.next())==RC_OK && (rc=cb.getBody())==RC_OK && (rc=CreateDataEvent::loadClass(cb,fSafe))==RC_OK);
-			}
+			if (rc==RC_OK || rc==RC_EOF)
+				{Cursor cu(ses); if ((rc=cu.init(CLASS_OF_DATAEVENTS,QO_HIDDEN))==RC_OK) while ((rc=cu.next(pcb,true))==RC_OK && (rc=CreateDataEvent::loadClass(*pcb,fSafe))==RC_OK);}
 
 			if (!fSafe) {
 				if (rc==RC_OK || rc==RC_EOF) {
-					QCtx qc(ses); qc.ref(); ClassScan cs(&qc,CLASS_OF_FSMCTX,QO_HIDDEN); cs.connect(&pcb);
-					while ((rc=cs.next())==RC_OK && (rc=cb.getBody())==RC_OK && (rc=StartFSM::loadFSM(cb))==RC_OK);
+					Cursor cu(ses); 
+					if ((rc=cu.init(CLASS_OF_FSMCTX,QO_HIDDEN))==RC_OK) while ((rc=cu.next(pcb,true))==RC_OK && (rc=StartFSM::loadFSM(*pcb))==RC_OK);
 				}
 				if (rc==RC_OK || rc==RC_EOF) {
-					QCtx qc(ses); qc.ref(); ClassScan cs(&qc,CLASS_OF_HANDLERS,QO_HIDDEN); cs.connect(&pcb);
-					while ((rc=cs.next())==RC_OK && (rc=cb.getBody())==RC_OK /*&& (rc=StartFSM::loadFSM(cb))==RC_OK*/);
+					Cursor cu(ses);
+					if ((rc=cu.init(CLASS_OF_HANDLERS,QO_HIDDEN))==RC_OK) while ((rc=cu.next(pcb,true))==RC_OK /*&& (rc=StartFSM::loadFSM(*pcb))==RC_OK*/);
 				}
 				if (rc==RC_OK || rc==RC_EOF) {
-					QCtx qc(ses); qc.ref(); ClassScan cs(&qc,CLASS_OF_LISTENERS,QO_HIDDEN); cs.connect(&pcb);
-					while ((rc=cs.next())==RC_OK && (rc=cb.getBody())==RC_OK && (rc=StartListener::loadListener(cb))==RC_OK);
+					Cursor cu(ses);
+					if ((rc=cu.init(CLASS_OF_LISTENERS,QO_HIDDEN))==RC_OK) while ((rc=cu.next(pcb,true))==RC_OK && (rc=StartListener::loadListener(*pcb))==RC_OK);
 				}
 				if (rc==RC_OK || rc==RC_EOF) {
-					QCtx qc(ses); qc.ref(); ClassScan cs(&qc,CLASS_OF_TIMERS,QO_HIDDEN); cs.connect(&pcb);
-					while ((rc=cs.next())==RC_OK && (rc=cb.getBody())==RC_OK && (rc=ctx->tqMgr->loadTimer(cb))==RC_OK);
+					Cursor cu(ses);
+					if ((rc=cu.init(CLASS_OF_TIMERS,QO_HIDDEN))==RC_OK) while ((rc=cu.next(pcb,true))==RC_OK && (rc=ctx->tqMgr->loadTimer(*pcb))==RC_OK);
 				}
 			}
 			fInit=true; if (rc==RC_EOF) rc=RC_OK;

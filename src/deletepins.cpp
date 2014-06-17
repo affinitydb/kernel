@@ -71,7 +71,7 @@ RC QueryPrc::deletePINs(const EvalCtx& ectx,const PIN *const *pins,const PID *pi
 			ushort pinDescr=pcb->hpin->hdr.descr; unsigned nProps=pcb->hpin->nProps; DataEventID cid=STORE_INVALID_URIID;
 			if ((pcb->hpin->meta&PMT_COMM)!=0) 	ses->removeServiceCtx(pid);
 			if ((pcb->hpin->meta&PMT_DATAEVENT)!=0 && ((mode&MODE_DEVENT)==0 || (hprop=pcb->hpin->findProperty(PROP_SPEC_OBJID))!=NULL &&
-				pcb->loadVH(v,hprop,0,ses)==RC_OK && v.type==VT_URIID && ((cid=v.uid)==CLASS_OF_CLASSES||cid==CLASS_OF_PACKAGES||cid==CLASS_OF_NAMED))) throw RC_NOACCESS;
+				pcb->loadVH(v,hprop,0,ses)==RC_OK && v.type==VT_URIID && ((cid=v.uid)==CLASS_OF_DATAEVENTS||cid==CLASS_OF_PACKAGES||cid==CLASS_OF_NAMED))) throw RC_NOACCESS;
 			if (!fPurge && (pinDescr&HOH_DELETED)!=0) break;
 			if ((mode&MODE_CHECK_STAMP)!=0 && pins!=NULL && np<nPins) {
 				// check stamp && pcb->hpin->getStamp()!=pins[np]->stamp) throw RC_REPEAT;
@@ -84,7 +84,7 @@ RC QueryPrc::deletePINs(const EvalCtx& ectx,const PIN *const *pins,const PID *pi
 					fti.docID=v.id; assert(v.type==VT_REFID);
 				}
 			}
-			const bool fNotify=(pinDescr&HOH_HIDDEN)==0 && notification!=NULL && ((clr.notif&CLASS_NOTIFY_DELETE)!=0 || (pinDescr&HOH_NOTIFICATION)!=0); bool fSSV=false;
+			const bool fNotify=(pinDescr&HOH_HIDDEN)==0 && notification!=NULL && (clr.notif&CLASS_NOTIFY_DELETE)!=0; bool fSSV=false;
 			if (nProps!=0) {
 				if (fNotify) {
 					if ((vals=(Value*)ses->malloc((nvals=nProps)*(sizeof(Value)+sizeof(IStoreNotification::NotificationData))))==NULL) throw RC_NOMEM;
@@ -204,10 +204,6 @@ RC QueryPrc::deletePINs(const EvalCtx& ectx,const PIN *const *pins,const PID *pi
 				IStoreNotification::NotificationEvent evt={pid,NULL,0,ndata,nProps,fRepSes};
 				if ((evt.events=(IStoreNotification::EventData*)ses->malloc((clr.ndevs+1)*sizeof(IStoreNotification::EventData)))!=NULL) {
 					evt.nEvents=0;
-					if ((pinDescr&HOH_NOTIFICATION)!=0) {
-						IStoreNotification::EventData& ev=(IStoreNotification::EventData&)evt.events[0];
-						ev.cid=STORE_INVALID_URIID; ev.type=IStoreNotification::NE_PIN_DELETED; evt.nEvents++;
-					}
 					if ((clr.notif&CLASS_NOTIFY_DELETE)!=0) for (i=0; i<clr.ndevs; i++) if ((clr.devs[i]->notifications&CLASS_NOTIFY_DELETE)!=0) {
 						IStoreNotification::EventData& ev=(IStoreNotification::EventData&)evt.events[evt.nEvents++];
 						ev.type=IStoreNotification::NE_CLASS_INSTANCE_REMOVED; ev.cid=clr.devs[i]->cid;

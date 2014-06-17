@@ -44,19 +44,18 @@ namespace AfyKernel
 
 #define MF_REPSES		0x00000001
 #define	MF_MODDOC		0x00000002
-#define	MF_NOTIFY		0x00000004
-#define	MF_CNOTIFY		0x00000008
-#define	MF_SSVS			0x00000010
-#define	MF_BIGC			0x00000020
-#define	MF_LASTUPD		0x00000040
-#define	MF_UPDBY		0x00000080
-#define	MF_DELSSV		0x00000100
-#define	MF_REMOTE		0x00000200
-#define	MF_LOCEID		0x00000400
-#define	MF_MOVED		0x00000800
-#define	MF_MIGRATE		0x00001000
-#define	MF_REFRESH		0x00002000
-#define	MF_ADDACL		0x00004000
+#define	MF_CNOTIFY		0x00000004
+#define	MF_SSVS			0x00000008
+#define	MF_BIGC			0x00000010
+#define	MF_LASTUPD		0x00000020
+#define	MF_UPDBY		0x00000040
+#define	MF_DELSSV		0x00000080
+#define	MF_REMOTE		0x00000100
+#define	MF_LOCEID		0x00000200
+#define	MF_MOVED		0x00000400
+#define	MF_MIGRATE		0x00000800
+#define	MF_REFRESH		0x00001000
+#define	MF_ADDACL		0x00002000
 
 struct ExtCollectionInfo
 {
@@ -269,7 +268,6 @@ RC QueryPrc::modifyPIN(const EvalCtx& ectx,const PID& id,const Value *v,unsigned
 			mask=(pv->op==OP_AND?~pv->ui:pv->ui);
 			if ((mask&PIN_HIDDEN)!=0) {if (pv->op==OP_OR) newDescr|=HOH_HIDDEN; else newDescr&=~HOH_HIDDEN;}
 			if ((mask&PIN_DELETED)!=0) {if (pv->op==OP_OR) newDescr|=HOH_DELETED; else newDescr&=~HOH_DELETED;}
-			if ((mask&PIN_NOTIFY)!=0) {if (pv->op==OP_OR) newDescr|=HOH_NOTIFICATION; else newDescr&=~HOH_NOTIFICATION;}
 			if ((mask&PIN_NO_REPLICATION)!=0) {if (pv->op==OP_OR) newDescr|=HOH_NOREPLICATION; else newDescr&=~HOH_NOREPLICATION;}
 			if ((mask&PIN_REPLICATED)!=0) {if (pv->op==OP_OR) newDescr|=HOH_REPLICATED; else newDescr&=~HOH_REPLICATED;}
 			if ((mask&PIN_IMMUTABLE)!=0) {if (pv->op==OP_OR) newDescr|=HOH_IMMUTABLE; else newDescr&=~HOH_IMMUTABLE;}
@@ -351,12 +349,13 @@ RC QueryPrc::modifyPIN(const EvalCtx& ectx,const PID& id,const Value *v,unsigned
 			if (pv->fcalc==0) break;
 		case VT_VARREF: case VT_EXPRTREE: case VT_CURRENT:
 			if (op!=OP_SET && !fAdd && op<OP_FIRST_EXPR) return RC_INVPARAM;
-			if (mi==NULL && (mi=mctx.addMod(pv,n,pi,op))==NULL) return RC_NOMEM;
-			if (mi->newV!=NULL) {/*???*/freeV(*mi->newV);} else if ((mi->newV=mctx.alloc<Value>())==NULL) return RC_NOMEM; 	// ????????????????????????????
-			if ((rc=eval(pv,EvalCtx(ses,ectx.env,ectx.nEnv,(PIN**)&pcb,1,ectx.params,ectx.nParams,ectx.stack,&mctx,ECT_INSERT),mi->newV,MODE_PID))!=RC_OK) return rc;
-			if (pcb->pb.isNull()) {pcb=&cb; if (cb.pb.getPage(cb.addr.pageID,ctx->heapMgr,PGCTL_XLOCK,ses)==NULL || cb.fill()==NULL) return RC_NOTFOUND;}
-			if (pv->type==VT_STMT && ((Stmt*)pv->stmt)->op==STMT_INSERT && (mi->newV->meta&META_PROP_PART)!=0) newDescr|=HOH_PARTS;
-			mi->eltKey=mi->eid=STORE_COLLECTION_ID; flags|=PM_CALCULATED; mi->pv=pv=mi->newV; break;
+			if ((rc=eval(pv,EvalCtx(ses,ectx.env,ectx.nEnv,(PIN**)&pcb,1,ectx.params,ectx.nParams,ectx.stack,&mctx,ECT_INSERT),&w,MODE_PID))!=RC_OK) return rc;
+			if (w.isEmpty()) continue;
+			if (mi==NULL && (mi=mctx.addMod(pv,n,pi,op))==NULL) {freeV(w); return RC_NOMEM;}
+			if (mi->newV!=NULL) {/*???*/freeV(*mi->newV);} else if ((mi->newV=mctx.alloc<Value>())==NULL) {freeV(w); return RC_NOMEM;} 	// ????????????????????????????
+			if (pcb->pb.isNull()) {pcb=&cb; if (cb.pb.getPage(cb.addr.pageID,ctx->heapMgr,PGCTL_XLOCK,ses)==NULL || cb.fill()==NULL) {freeV(w); return RC_NOTFOUND;}}
+			if (pv->type==VT_STMT && ((Stmt*)pv->stmt)->op==STMT_INSERT && (w.meta&META_PROP_PART)!=0) newDescr|=HOH_PARTS;
+			*mi->newV=w; mi->eltKey=mi->eid=STORE_COLLECTION_ID; flags|=PM_CALCULATED; mi->pv=pv=mi->newV; break;
 		}
 		if (pv->type==VT_COLLECTION) {
 			flags|=PM_MODCOLL;
@@ -411,12 +410,10 @@ RC QueryPrc::modifyPIN(const EvalCtx& ectx,const PID& id,const Value *v,unsigned
 					}
 					if ((mode&MODE_NO_EID)==0) pv->eid=mi->eltKey;
 				}
-				if ((pinDescr&HOH_NOTIFICATION)!=0) mctx.flags|=MF_NOTIFY;
 				if ((pv->meta&META_PROP_SSTORAGE)!=0) flags|=PM_FORCESSV;
 				mi->flags|=flags; pi->flags|=PM_NEWVALUES; continue;
 			}
 			if ((pi->flags&PM_BIGC)!=0) mctx.flags|=MF_BIGC;
-			if ((pinDescr&HOH_NOTIFICATION)!=0) mctx.flags|=MF_NOTIFY;
 			if ((pi->hprop->type.flags&META_PROP_SSTORAGE)!=0) flags|=PM_FORCESSV;
 
 			if (eid==STORE_COLLECTION_ID) {
@@ -987,7 +984,7 @@ RC QueryPrc::modifyPIN(const EvalCtx& ectx,const PID& id,const Value *v,unsigned
 	if (pcb->hpin==NULL) goto finish;
 	if (pcb->hpin->nProps>0 && (newDescr&HOH_DELETED)==0) rc=ctx->classMgr->detect(pcb,clrn,ses,&mctx.mprops);
 	
-	if ((((mctx.flags&MF_NOTIFY)!=0 || (pinDescr|newDescr)&HOH_FT)!=0) && (pinDescr&HOH_HIDDEN)==0 || clro.ndevs!=0 || clrn.ndevs!=0) mctx.flags|=MF_REFRESH;
+	if (((pinDescr|newDescr)&HOH_FT)!=0 && (pinDescr&HOH_HIDDEN)==0 || clro.ndevs!=0 || clrn.ndevs!=0) mctx.flags|=MF_REFRESH;
 
 	if (pin!=NULL) rc=reload(pin,pcb);
 	for (ec=&ectx,pp=NULL; rc==RC_OK && ec!=NULL; ec=ec->stack) if (ec->env!=NULL && ec->nEnv!=0 && ec->env[0]!=NULL && ec->env[0]!=pin && ec->env[0]!=pcb 
@@ -1013,7 +1010,7 @@ RC QueryPrc::modifyPIN(const EvalCtx& ectx,const PID& id,const Value *v,unsigned
 		}
 	}
 
-	if (rc==RC_OK && ctx->queryMgr->notification!=NULL && (pinDescr&HOH_HIDDEN)==0 && (mctx.flags&(MF_NOTIFY|MF_CNOTIFY))!=0 
+	if (rc==RC_OK && ctx->queryMgr->notification!=NULL && (pinDescr&HOH_HIDDEN)==0 && (mctx.flags&MF_CNOTIFY)!=0 
 												&& (evt.data=new(ses) IStoreNotification::NotificationData[mctx.nev])!=NULL) {
 		unsigned cnt=0;
 		for (mi=mctx.list; cnt<mctx.nev && mi!=NULL; mi=mi->next) if ((mi->flags&(PM_SPILL|PM_INVALID))==0) {
@@ -1067,27 +1064,23 @@ RC QueryPrc::modifyPIN(const EvalCtx& ectx,const PID& id,const Value *v,unsigned
 //	if (rc==RC_OK && replication!=NULL && (pinDescr&(HOH_HIDDEN|HOH_REPLICATED))==HOH_REPLICATED && (mctx.flags&MF_REPSES)==0) {}
 
 	if (rc==RC_OK && ctx->queryMgr->notification!=NULL && (pinDescr&HOH_HIDDEN)==0 && evt.data!=NULL) {
-		if ((mctx.flags&MF_NOTIFY)!=0) {
-			IStoreNotification::EventData *pev=(IStoreNotification::EventData*)ses->malloc(sizeof(IStoreNotification::EventData));
-			pev->cid=STORE_INVALID_URIID; pev->type=IStoreNotification::NE_PIN_UPDATED; evt.events=pev; evt.nEvents++;
-		}
 		if (clro.devs!=NULL) for (unsigned i=0; i<clro.ndevs; i++) if ((clro.devs[i]->notifications&CLASS_NOTIFY_LEAVE)!=0) {
 			IStoreNotification::EventData *pev=evt.events==NULL?
 				(IStoreNotification::EventData*)ses->malloc(sizeof(IStoreNotification::EventData)):
 				(IStoreNotification::EventData*)ses->realloc((void*)evt.events,sizeof(IStoreNotification::EventData)*(evt.nEvents+1));
-				evt.events=pev; pev+=evt.nEvents++; pev->cid=clro.devs[i]->cid; pev->type=IStoreNotification::NE_CLASS_INSTANCE_REMOVED; mctx.flags|=MF_NOTIFY;
+				evt.events=pev; pev+=evt.nEvents++; pev->cid=clro.devs[i]->cid; pev->type=IStoreNotification::NE_CLASS_INSTANCE_REMOVED;
 		}
 		if (clru.devs!=NULL) for (unsigned i=0; i<clru.ndevs; i++) if ((clru.devs[i]->notifications&CLASS_NOTIFY_CHANGE)!=0) {
 			IStoreNotification::EventData *pev=evt.events==NULL?
 				(IStoreNotification::EventData*)ses->malloc(sizeof(IStoreNotification::EventData)):
 				(IStoreNotification::EventData*)ses->realloc((void*)evt.events,sizeof(IStoreNotification::EventData)*(evt.nEvents+1));
-			evt.events=pev; pev+=evt.nEvents++; pev->cid=clru.devs[i]->cid; pev->type=IStoreNotification::NE_CLASS_INSTANCE_CHANGED; mctx.flags|=MF_NOTIFY;
+			evt.events=pev; pev+=evt.nEvents++; pev->cid=clru.devs[i]->cid; pev->type=IStoreNotification::NE_CLASS_INSTANCE_CHANGED;
 		}
 		if (clrn.devs!=NULL) for (unsigned i=0; i<clrn.ndevs; i++) if ((clrn.devs[i]->notifications&CLASS_NOTIFY_JOIN)!=0) {
 			IStoreNotification::EventData *pev=evt.events==NULL?
 				(IStoreNotification::EventData*)ses->malloc(sizeof(IStoreNotification::EventData)):
 				(IStoreNotification::EventData*)ses->realloc((void*)evt.events,sizeof(IStoreNotification::EventData)*(evt.nEvents+1));
-			evt.events=pev; pev+=evt.nEvents++; pev->cid=clrn.devs[i]->cid; pev->type=IStoreNotification::NE_CLASS_INSTANCE_ADDED; mctx.flags|=MF_NOTIFY;
+			evt.events=pev; pev+=evt.nEvents++; pev->cid=clrn.devs[i]->cid; pev->type=IStoreNotification::NE_CLASS_INSTANCE_ADDED;
 		}
 		uint64_t txid=ses!=NULL?ses->getTXID():INVALID_TXID;
 		IStoreNotification::NotificationEvent *pevt=new(ses) IStoreNotification::NotificationEvent;
@@ -1243,7 +1236,7 @@ RC QueryPrc::reload(PIN *pin,PINx *pcb)
 		pin->properties=pcb->hpin->nProps!=0?new(pin->ma) Value[pcb->hpin->nProps]:NULL; pin->fNoFree=0;
 	} else if (pcb->hpin->nProps!=0) {
 		if (pin->properties!=NULL) for (unsigned i=0; i<pin->nProperties; i++) freeV(pin->properties[i]);
-		if ((pin->properties=(Value*)pin->ma->realloc(pin->properties,size))==NULL) return RC_NOMEM;
+		if ((pin->properties=(Value*)pin->ma->realloc(pin->properties,size,pin->nProperties*sizeof(Value)))==NULL) return RC_NOMEM;
 	} else {
 		freeV((Value*)pin->properties,pin->nProperties,pin->ma); pin->properties=NULL;
 	}

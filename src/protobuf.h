@@ -20,9 +20,8 @@ Written by Mark Venguerov 2010 - 2012
 
 #ifndef _PROTOBUF_H_
 
-#include "pin.h"
 #include "stmt.h"
-#include "expr.h"
+#include "cursor.h"
 #include "parser.h"
 
 using namespace Afy;

@@ -348,6 +348,7 @@
     <ClInclude Include="include\units.h" />
     <ClInclude Include="src\blob.h" />
     <ClInclude Include="src\buffer.h" />
+    <ClInclude Include="src\cursor.h" />
     <ClInclude Include="src\dataevent.h" />
     <ClInclude Include="src\dlalloc.h" />
     <ClInclude Include="src\ecc.h" />
@@ -381,7 +382,6 @@
     <ClInclude Include="src\idxtree.h" />
     <ClInclude Include="src\propdnf.h" />
     <ClInclude Include="src\protobuf.h" />
-    <ClInclude Include="src\qbuild.h" />
     <ClInclude Include="src\qmgr.h" />
     <ClInclude Include="src\queryop.h" />
     <ClInclude Include="src\queryprc.h" />
@@ -401,6 +401,7 @@
     <ClCompile Include="src\blob.cpp" />
     <ClCompile Include="src\buffer.cpp" />
     <ClCompile Include="src\builtin.cpp" />
+    <ClCompile Include="src\cursor.cpp" />
     <ClCompile Include="src\dataevent.cpp" />
     <ClCompile Include="src\deletepins.cpp" />
     <ClCompile Include="src\dlalloc.cpp" />
@@ -442,7 +443,6 @@
     <ClCompile Include="src\service.cpp" />
     <ClCompile Include="src\sort.cpp" />
     <ClCompile Include="src\idxtree.cpp" />
-    <ClCompile Include="src\qbuild.cpp" />
     <ClCompile Include="src\queryop.cpp" />
     <ClCompile Include="src\queryprc.cpp" />
     <ClCompile Include="src\recover.cpp" />

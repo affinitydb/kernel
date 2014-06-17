@@ -21,7 +21,7 @@ Written by Mark Venguerov 2004-2014
 #include "dataevent.h"
 #include "queryprc.h"
 #include "stmt.h"
-#include "expr.h"
+#include "cursor.h"
 #include "txmgr.h"
 #include "maps.h"
 #include "blob.h"
@@ -451,11 +451,11 @@ RC DataEventMgr::rebuildAll(Session *ses)
 {
 	if (ses==NULL) return RC_NOSESSION; assert(ctx->namedMgr->fInit && ses->inWriteTx());
 	RC rc=dataEventMap.dropTree(); if (rc!=RC_OK) return rc;
-	PINx qr(ses),*pqr=&qr; ses->resetAbortQ(); MutexP lck(&lock); DetectedEvents clr(ses,ses->getStore());
-	QCtx qc(ses); qc.ref(); FullScan fs(&qc,0); fs.connect(&pqr);
-	while (rc==RC_OK && (rc=fs.next())==RC_OK) {
-		if ((qr.hpin->hdr.descr&HOH_DELETED)==0 && (rc=detect(&qr,clr,ses))==RC_OK && clr.devs!=NULL && clr.ndevs>0) 
-			rc=updateIndex(ses,&qr,clr,CI_INSERT); // data for other indices!!!
+	ses->resetAbortQ(); MutexP lck(&lock);
+	Cursor cu(ses); DetectedEvents clr(ses,ses->getStore()); PINx *pin;
+	if ((rc=cu.init())==RC_OK) while (rc==RC_OK && (rc=cu.next(pin))==RC_OK) {
+		if ((pin->hpin->hdr.descr&HOH_DELETED)==0 && (rc=detect(pin,clr,ses))==RC_OK && clr.devs!=NULL && clr.ndevs>0) 
+			rc=updateIndex(ses,pin,clr,CI_INSERT); // data for other indices!!!
 		clr.ndevs=clr.nIndices=0;
 	}
 	return rc==RC_EOF?RC_OK:rc;
@@ -594,7 +594,7 @@ struct IndexData
 	bool			fSkip;
 public:
 	IndexData(Session *s,DataEventID id,const Stmt *q,unsigned flg,unsigned nS) : ses(s),nSegs(nS),cid(id),qry(q),flags(flg),fSkip(true) {}
-	virtual	RC initClassCreate(CreateDataEvent& cc,PIN *pin) {
+	virtual	RC initDataEventCreate(CreateDataEvent& cc,PIN *pin) {
 		if ((cc.query=qry->clone(STMT_OP_ALL,ses))==NULL) return RC_NOMEM; RC rc;
 		if ((rc=ses->getStore()->classMgr->createActions(pin,cc.acts))!=RC_OK) return rc;
 		const Value *cv=pin->findProperty(PROP_SPEC_WINDOW);
@@ -609,12 +609,12 @@ public:
 /**
  * class index container
  */
-struct ClassData : public IndexData, public SubTreeInit
+struct DataEventData : public IndexData, public SubTreeInit
 {
 	RefData		refs;
 	const bool	fSorted;
 	bool		fFlushed;
-	ClassData(Session *ses,StackAlloc *sa,DataEventID id,const Stmt *q,unsigned flg,bool fS) : IndexData(ses,id,q,flg,0),SubTreeInit(sa),refs(sa,false),fSorted(fS),fFlushed(false) {}
+	DataEventData(Session *ses,StackAlloc *sa,DataEventID id,const Stmt *q,unsigned flg,bool fS) : IndexData(ses,id,q,flg,0),SubTreeInit(sa),refs(sa,false),fSorted(fS),fFlushed(false) {}
 	RC	insert(const byte *ext,SearchKey *key=NULL) {return fSorted && !fFlushed && !PINRef::isMoved(ext)?SubTreeInit::insert(ses,ext):refs.add(ext);}
 	RC	flush(Tree& tr,bool fFinal) {
 		RC rc=RC_OK;
@@ -674,7 +674,7 @@ struct FamilyData : public IndexData, public TreeStdRoot
 		}
 	}
 	void *operator new(size_t s,unsigned nSegs,MemAlloc *ma) {return ma->malloc(s+int(nSegs-1)*sizeof(IndexSeg));}
-	RC initClassCreate(CreateDataEvent& cc,PIN *pin) {cc.fmt=fmt; cc.anchor=anchor; cc.root=root; cc.height=height; memcpy(cc.indexSegs,indexSegs,nSegs*sizeof(IndexSeg)); return IndexData::initClassCreate(cc,pin);}
+	RC initDataEventCreate(CreateDataEvent& cc,PIN *pin) {cc.fmt=fmt; cc.anchor=anchor; cc.root=root; cc.height=height; memcpy(cc.indexSegs,indexSegs,nSegs*sizeof(IndexSeg)); return IndexData::initDataEventCreate(cc,pin);}
 	PageID startPage(const SearchKey *key,int& level,bool fRead,bool fBefore) {bool f=root==INVALID_PAGEID; PageID pid=TreeStdRoot::startPage(key,level,fRead,fBefore); if (f) anchor=pid; return pid;}
 	TreeFactory		*getFactory() const {return NULL;}
 	IndexFormat		indexFormat() const {return fmt;}
@@ -718,7 +718,7 @@ struct FamilyData : public IndexData, public TreeStdRoot
 	};
 };
 
-struct ClassCtx
+struct IndexingCtx
 {
 	Session			*ses;
 	IndexData		**cid;
@@ -753,7 +753,7 @@ RC DataEventMgr::buildIndex(PIN *const *pins,unsigned nPINs,Session *ses,bool fD
 	if (pins==NULL || nPINs==0) return RC_INVPARAM; if (ses==NULL) return RC_NOSESSION; 
 	assert(ctx->namedMgr->fInit && ses->inWriteTx());
 
-	IndexData **cid; StackAlloc sa(ses);
+	IndexData **cid; StackAlloc sa(ses); DataEventID commonBase=STORE_INVALID_URIID;
 	if ((cid=new(&sa) IndexData*[nPINs])!=NULL) memset(cid,0,nPINs*sizeof(IndexData*)); else return RC_NOMEM;
 	Value *indexed=NULL; unsigned nIndexed=0,xIndexed=0,xSegs=0; unsigned nIndex=0; RC rc=RC_OK;
 	for (unsigned i=0; i<nPINs; i++) {
@@ -767,7 +767,7 @@ RC DataEventMgr::buildIndex(PIN *const *pins,unsigned nPINs,Session *ses,bool fD
 		if (qry->top->type==QRY_SIMPLE) {pci=((SimpleVar*)qry->top)->condIdx; nSegs=(ushort)((SimpleVar*)qry->top)->nCondIdx;}
 		if (pin->findProperty(PROP_SPEC_ACL)!=NULL) flags|=META_PROP_ACL;
 		cid[i]=nSegs!=0?(IndexData*)new(nSegs,&sa) FamilyData(ses,id,qry,flags,pci,nSegs,&sa,fSorted):
-						(IndexData*)new(&sa) ClassData(ses,&sa,id,qry,flags,fSorted);
+						(IndexData*)new(&sa) DataEventData(ses,&sa,id,qry,flags,fSorted);
 		if (cid[i]==NULL) {rc=RC_NOMEM; break;}
 		if ((flags&META_PROP_INDEXED)!=0 && (pci!=NULL || Stmt::classOK(qry->top)) && qry->top->type==QRY_SIMPLE
 													&& ((SimpleVar*)qry->top)->checkXPropID((PropertyID)ctx->namedMgr->xPropID)) {
@@ -797,40 +797,35 @@ RC DataEventMgr::buildIndex(PIN *const *pins,unsigned nPINs,Session *ses,bool fD
 #endif
 
 	StackAlloc::SubMark mrk; sa.mark(mrk); unsigned nS=StoreCtx::getNStores();
-	ClassCtx cctx={ses,cid,nPINs,&sa,mrk,0,INDEX_BUF_LIMIT/max(nS,1u)};
+	IndexingCtx cctx={ses,cid,nPINs,&sa,mrk,0,INDEX_BUF_LIMIT/max(nS,1u)};
 
 	if (rc==RC_OK && nIndex!=0) {
-		MutexP lck(&lock); bool fTest=false; PINx qr(ses),*pqr=&qr; QueryOp *qop=NULL; ses->resetAbortQ(); QCtx qc(ses);
-		if (nIndex==1 && cid[0]->qry!=NULL && !fDrop) {
-			QBuildCtx qctx(ses,NULL,cid[0]->qry,0,MODE_DEVENT|MODE_NODEL);
-			if ((rc=qctx.process(qop))==RC_OK && qop!=NULL) qop->setHidden();
-		} else {
-			qc.ref(); rc=(qop=new(ses) FullScan(&qc,0,QO_RAW))!=NULL?RC_OK:RC_NOMEM; fTest=true;
-		}
-		if (qop!=NULL) qop->connect(&pqr);	//??? many ???
+		MutexP lck(&lock); bool fTest=false; ses->resetAbortQ(); Cursor cu(ses);
+		rc=nIndex==1&&cid[0]->qry!=NULL&&!fDrop?cu.init((Stmt*)cid[0]->qry,~0ULL,0,MODE_DEVENT|MODE_NODEL):(fTest=true,cu.init(commonBase));
 		const Value **vals=NULL; struct ArrayVal {ArrayVal *prev; const Value *cv; uint32_t idx,vidx;} *freeAV=NULL;
 		if (xSegs>0 && (vals=(const Value**)alloca(xSegs*sizeof(Value*)))==NULL) rc=RC_NOMEM;
-		PINx pc(ses); PIN *pp[2]={pqr,(PIN*)&pc}; EvalCtx ctx2(ses,pp,2,(PIN**)&pqr,1);
-		while (rc==RC_OK && (rc=qop->next())==RC_OK) {
-			byte extc[XPINREFSIZE]; bool fExtC=false,fLoaded=false;
-			if (qr.epr.buf[0]!=0) PINRef::changeFColl(qr.epr.buf,false);
+
+		PINx pc(ses); PIN *pp[2]={NULL,(PIN*)&pc}; PINx *pin;
+		while (rc==RC_OK && (rc=cu.next(pin))==RC_OK) {
+			byte extc[XPINREFSIZE]; bool fExtC=false,fLoaded=false; pp[0]=pin;
+			if (pin->epr.buf[0]!=0) PINRef::changeFColl(pin->epr.buf,false);
 			for (cctx.idx=0; cctx.idx<nPINs; cctx.idx++) {
 				IndexData &ci=*cid[cctx.idx]; if (ci.fSkip) continue;
-				if (fTest && (qr.hpin->hdr.descr&HOH_DELETED)!=0) continue;
+				if (fTest && (pin->hpin->hdr.descr&HOH_DELETED)!=0) continue;
 				if (pc.id!=pins[cctx.idx]->id) {pc.cleanup(); pc.id=pins[cctx.idx]->id;}
-				if (!fTest || ci.qry->checkConditions(ctx2,0,true)) {
-					if (qr.epr.buf[0]==0 && qr.pack()!=RC_OK) continue;
-					if (ci.nSegs==0) rc=cctx.insert(ci,qr.epr.buf,NULL);
+				if (!fTest || ci.qry->checkConditions(cu.getCtx(),0,true)) {
+					if (pin->epr.buf[0]==0 && pin->pack()!=RC_OK) continue;
+					if (ci.nSegs==0) rc=cctx.insert(ci,pin->epr.buf,NULL);
 					else {
 						unsigned nidxd,nNulls=0;
-						if (qr.properties!=NULL) nidxd=qr.nProperties;
+						if (pin->properties!=NULL) nidxd=pin->nProperties;
 						else {
 							nidxd=nIndexed; assert(indexed!=NULL && nIndexed>0);
 							if (!fLoaded) {
-								if (qr.hpin!=NULL || (rc=qr.getBody())==RC_OK) fLoaded=true; else break;		// release?
+								if (pin->hpin!=NULL || (rc=pin->getBody())==RC_OK) fLoaded=true; else break;		// release?
 								bool fSSV=false;
 								for (unsigned i=0; i<nIndexed; i++) {
-									RC rc=qr.getV(indexed[i].property,indexed[i]);
+									RC rc=pin->getV(indexed[i].property,indexed[i]);
 									if (rc!=RC_OK) {if (rc==RC_NOTFOUND) {rc=RC_OK; nNulls++;} else {fLoaded=false; break;}} 
 									else if ((indexed[i].flags&VF_SSV)!=0) fSSV=true;
 								}
@@ -850,13 +845,13 @@ RC DataEventMgr::buildIndex(PIN *const *pins,unsigned nPINs,Session *ses,bool fD
 									else if ((av=(ArrayVal*)ses->malloc(sizeof(ArrayVal)))==NULL) {rc=RC_NOMEM; break;}
 									av->prev=avs; avs=av; av->idx=0; av->cv=cv; av->vidx=k; if (avs0==NULL) avs0=av;
 									vals[k]=!cv->isNav()?cv->varray:cv->nav->navigate(GO_FIRST);
-									if (!fExtC) {memcpy(extc,qr.epr.buf,PINRef::len(qr.epr.buf)); PINRef::changeFColl(extc,true); fExtC=true;}
+									if (!fExtC) {memcpy(extc,pin->epr.buf,PINRef::len(pin->epr.buf)); PINRef::changeFColl(extc,true); fExtC=true;}
 								}
 							}
 							if (nNulls<nSegs) for (;;) {		// || derived!
 								SearchKey key;
 								if ((rc=key.toKey(vals,nSegs,fi.indexSegs,-1,ses,&sa))==RC_TYPE||rc==RC_SYNTAX) rc=RC_OK;
-								else if (rc==RC_OK) {if ((rc=cctx.insert(fi,avs!=NULL?extc:qr.epr.buf,&key))!=RC_OK) break;}
+								else if (rc==RC_OK) {if ((rc=cctx.insert(fi,avs!=NULL?extc:pin->epr.buf,&key))!=RC_OK) break;}
 								else break;
 								bool fNext=false;
 								for (ArrayVal *av=avs; !fNext && av!=NULL; av=av->prev) {
@@ -881,7 +876,7 @@ RC DataEventMgr::buildIndex(PIN *const *pins,unsigned nPINs,Session *ses,bool fD
 				{PropertyID pid=indexed[i].property; freeV(indexed[i]); indexed[i].setError(pid);}
 		}
 		while (freeAV!=NULL) {ArrayVal *av=freeAV; freeAV=av->prev; ses->free(av);}
-		qr.cleanup(); if (qop!=NULL) delete qop; if (rc==RC_EOF) rc=RC_OK;
+		if (rc==RC_EOF) rc=RC_OK;
 	}
 	if (indexed!=NULL) ses->free(indexed);
 #ifdef REPORT_INDEX_CREATION_TIMES
@@ -891,7 +886,7 @@ RC DataEventMgr::buildIndex(PIN *const *pins,unsigned nPINs,Session *ses,bool fD
 		IndexData &ci=*cid[i]; if (!ci.fSkip && (ci.flags&META_PROP_INMEM)==0 && (rc=ci.flush(dataEventMap,true))!=RC_OK) break;
 		CreateDataEvent *cc=new(ci.nSegs,(MemAlloc*)ses) CreateDataEvent(ci.cid,pins[i]->id,pins[i]->addr,(ushort)ci.nSegs,ci.flags);
 		if (cc==NULL) {rc=RC_NOMEM; break;} 
-		if ((rc=ci.initClassCreate(*cc,pins[i]))!=RC_OK || (rc=ses->addOnCommit(cc))!=RC_OK) {cc->destroy(ses); break;}
+		if ((rc=ci.initDataEventCreate(*cc,pins[i]))!=RC_OK || (rc=ses->addOnCommit(cc))!=RC_OK) {cc->destroy(ses); break;}
 	}
 
 #ifdef REPORT_INDEX_CREATION_TIMES
@@ -1055,9 +1050,9 @@ RC DataEventMgr::updateIndex(Session *ses,PIN *pin,const DetectedEvents& clr,Dat
 			const unsigned nSegs=cidx->nSegs; DataIndexOp kop=op;
 			unsigned nModSegs=0,phaseMask=op!=CI_UPDATE||!fMigrated?0:PHASE_UPDATE,phaseMask2=PHASE_INSERT|PHASE_DELETE|PHASE_UPDATE|PHASE_UPDCOLL;
 			if (nSegs>xSegs) {
-				pks=(SegInfo*)ses->realloc(pks!=keysegs?pks:(SegInfo*)0,(xSegs=nSegs)*sizeof(SegInfo));
-				pps=(const Value**)ses->realloc(pps!=psegs?pps:(const Value**)0,xSegs*sizeof(Value*));
-				if (pks==NULL || pps==NULL) {ses->free(pks); ses->free(pps); return RC_NOMEM;}
+				pks=(SegInfo*)ses->realloc(pks!=keysegs?pks:(SegInfo*)0,nSegs*sizeof(SegInfo),xSegs*sizeof(SegInfo));
+				pps=(const Value**)ses->realloc(pps!=psegs?pps:(const Value**)0,nSegs*sizeof(Value*),xSegs*sizeof(Value*));
+				if (pks==NULL || pps==NULL) {ses->free(pks); ses->free(pps); return RC_NOMEM;} xSegs=nSegs;
 			}
 			if (fMigrated && lext2==0 && op!=CI_UDELETE && op!=CI_INSERT) {pr.addr=*oldAddr; lext2=pr.enc(ext2);}
 			for (unsigned k=0; k<nSegs; k++) {

@@ -42,13 +42,12 @@ Written by Mark Venguerov 2004-2014
 
 #define HOH_TYPEMASK		0x0003
 
-#define	HOH_COMPOUND		0x0008		// PIN has compound properties (i.e. VT_COLLECTION, VT_MAP, VT_STRUCT)
-#define	HOH_TEMP_ID			0x0010		// page slot to be re-used, when PIN is purged
-#define	HOH_SSVS			0x0020		// PIN has SSVs(separately stored values)
-#define	HOH_IMMUTABLE		0x0040		// PIN is immutable
-#define	HOH_PARTS			0x0080		// PIN contains references to parts
-#define	HOH_REPLICATED		0x0100		// PIN is or can be replicated
-#define	HOH_NOTIFICATION	0x0200		// PIN modifications generate notifications
+#define	HOH_COMPOUND		0x0010		// PIN has compound properties (i.e. VT_COLLECTION, VT_MAP, VT_STRUCT)
+#define	HOH_TEMP_ID			0x0020		// page slot to be re-used, when PIN is purged
+#define	HOH_SSVS			0x0040		// PIN has SSVs(separately stored values)
+#define	HOH_IMMUTABLE		0x0080		// PIN is immutable
+#define	HOH_PARTS			0x0100		// PIN contains references to parts
+#define	HOH_REPLICATED		0x0200		// PIN is or can be replicated
 #define	HOH_MULTIPART		0x0400		// is not contiguous on page
 #define	HOH_COMPACTREF		0x0800		// contains compressed refs to other PINs on this page
 #define	HOH_NOREPLICATION	0x1000		// PIN is not replicated

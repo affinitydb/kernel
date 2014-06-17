@@ -75,7 +75,7 @@ bool PIN::isLocal() const
 
 unsigned PIN::getFlags() const
 {
-	try {return mode&(PIN_NO_REPLICATION|PIN_NOTIFY|PIN_REPLICATED|PIN_HIDDEN|PIN_PERSISTENT|PIN_TRANSIENT|PIN_IMMUTABLE|PIN_DELETED);}
+	try {return mode&(PIN_NO_REPLICATION|PIN_REPLICATED|PIN_HIDDEN|PIN_PERSISTENT|PIN_TRANSIENT|PIN_IMMUTABLE|PIN_DELETED);}
 	catch (...) {report(MSG_ERROR,"Exception in IPIN::getFlags()\n"); return 0;}
 }
 
@@ -125,20 +125,6 @@ RC PIN::hide()
 		}
 		return RC_OK;
 	} catch (RC rc) {return rc;} catch (...) {report(MSG_ERROR,"Exception in IPIN::setNoIndex()\n"); return RC_INTERNAL;}
-}
-
-RC PIN::setNotification(bool fReset)
-{
-	try {
-		if (fReset) mode&=~PIN_NOTIFY; else mode|=PIN_NOTIFY;
-		if (addr.defined()) {
-			Session *ses=Session::getSession(); if (ses==NULL) return RC_NOSESSION; if (ses->inReadTx()) return RC_READTX;
-			StoreCtx *ctx=ses->getStore(); if (ctx->inShutdown()) return RC_SHUTDOWN; if (ctx->isServerLocked()) return RC_READONLY;
-			TxGuard txg(ses); Value w; w.set((unsigned)PIN_NOTIFY); w.setPropID(PROP_SPEC_SELF); w.setOp(OP_OR);
-			RC rc=ctx->queryMgr->modifyPIN(EvalCtx(ses,ECT_INSERT),id,&w,1,NULL,this,0); if (rc!=RC_OK) return rc;
-		}
-		return RC_OK;
-	} catch (RC rc) {return rc;} catch (...) {report(MSG_ERROR,"Exception in IPIN::setNotification(...)\n"); return RC_INTERNAL;}
 }
 
 RC PIN::deletePIN()
@@ -209,7 +195,7 @@ RC PIN::getPINValue(Value& res,Session *ses) const
 IPIN *PIN::clone(const Value *overwriteValues,unsigned nOverwriteValues,unsigned md)
 {
 	try {
-		unsigned pmd=(md&(PIN_NO_REPLICATION|PIN_NOTIFY|PIN_REPLICATED|PIN_HIDDEN|PIN_TRANSIENT))|(mode&(PIN_REPLICATED|PIN_NO_REPLICATION|PIN_HIDDEN));
+		unsigned pmd=(md&(PIN_NO_REPLICATION|PIN_REPLICATED|PIN_HIDDEN|PIN_TRANSIENT))|(mode&(PIN_REPLICATED|PIN_NO_REPLICATION|PIN_HIDDEN));
 		PIN *newp=new(ma) PIN(ma,pmd); if (newp==NULL) return NULL;
 		newp->properties=(Value*)ma->malloc(nProperties*sizeof(Value));
 		if (newp->properties==NULL) {delete newp; return NULL;}
@@ -242,7 +228,7 @@ IPIN *PIN::clone(const Value *overwriteValues,unsigned nOverwriteValues,unsigned
 IPIN *PIN::project(const PropertyID *props,unsigned nProps,const PropertyID *newProps,unsigned md)
 {
 	try {
-		unsigned pmd=(md&(PIN_NO_REPLICATION|PIN_NOTIFY|PIN_REPLICATED|PIN_HIDDEN|PIN_TRANSIENT))|(mode&(PIN_REPLICATED|PIN_NO_REPLICATION|PIN_HIDDEN));
+		unsigned pmd=(md&(PIN_NO_REPLICATION|PIN_REPLICATED|PIN_HIDDEN|PIN_TRANSIENT))|(mode&(PIN_REPLICATED|PIN_NO_REPLICATION|PIN_HIDDEN));
 		PIN *newp=new(ma) PIN(ma,pmd); if (newp==NULL) return NULL;
 		if (props!=NULL && nProps>0) {
 			newp->properties=(Value*)ma->malloc(nProps*sizeof(Value));
@@ -293,8 +279,8 @@ RC PIN::modify(const Value *pv,unsigned epos,unsigned eid,unsigned flags)
 	if (pv->property==PROP_SPEC_SELF) {
 		if (pv->type!=VT_UINT) return RC_TYPE;
 		switch (pv->op) {
-		case OP_AND: mode&=~(~pv->ui&(PIN_TRANSIENT|PIN_DELETED|PIN_IMMUTABLE|PIN_PERSISTENT|PIN_HIDDEN|PIN_REPLICATED|PIN_NOTIFY|PIN_NO_REPLICATION)); return RC_OK;
-		case OP_OR: mode|=pv->ui&(PIN_TRANSIENT|PIN_DELETED|PIN_IMMUTABLE|PIN_PERSISTENT|PIN_HIDDEN|PIN_REPLICATED|PIN_NOTIFY|PIN_NO_REPLICATION); return RC_OK;
+		case OP_AND: mode&=~(~pv->ui&(PIN_TRANSIENT|PIN_DELETED|PIN_IMMUTABLE|PIN_PERSISTENT|PIN_HIDDEN|PIN_REPLICATED|PIN_NO_REPLICATION)); return RC_OK;
+		case OP_OR: mode|=pv->ui&(PIN_TRANSIENT|PIN_DELETED|PIN_IMMUTABLE|PIN_PERSISTENT|PIN_HIDDEN|PIN_REPLICATED|PIN_NO_REPLICATION); return RC_OK;
 		default: return RC_INVOP;
 		}
 	}
@@ -555,6 +541,18 @@ RC PIN::getV(PropertyID pid,Value& v,unsigned md,const Value &idx,MemAlloc *ma)
 	if ((md&LOAD_CARDINALITY)==0) {v.setError(); return RC_INVPARAM;} else {v.set(0u); return RC_OK;}
 }
 
+RC PIN::getAllProps(Value*& props,unsigned& nProps,MemAlloc *pma)
+{
+	RC rc; 
+	if (fPartial!=0) {assert(fPINx!=0); if ((rc=load(LOAD_SSV))!=RC_OK) return rc;}
+	nProps=nProperties;
+	if ((props=properties)!=NULL) {
+		if (fNoFree==0 && ma->getAType()==pma->getAType()) {properties=NULL; nProperties=0; if (fPINx!=0) fPartial=1;}
+		else if ((rc=copyV(properties,nProperties,props,pma))!=RC_OK) return rc;
+	}
+	return RC_OK;
+}
+
 RC PIN::isMemberOf(DataEventID *&devs,unsigned& ndevs)
 {
 	try {
@@ -649,7 +647,7 @@ RC PIN::allocSubPIN(unsigned nProps,IPIN *&pin,Value *&values,unsigned mode) con
 
 void PIN::destroy()
 {
-	try {if (ma!=NULL) delete this;} catch (RC) {} catch (...) {report(MSG_ERROR,"Exception in IPIN::destroy()\n");}
+	try {this->~PIN(); if (ma!=NULL) ma->free(this);} catch (RC) {} catch (...) {report(MSG_ERROR,"Exception in IPIN::destroy()\n");}
 }
 
 //-----------------------------------------------------------------------------
@@ -765,7 +763,6 @@ void PINx::copyFlags()
 		if ((dscr&HOH_REPLICATED)==0) mode|=PIN_IMMUTABLE; else mode=mode&~PIN_IMMUTABLE|PIN_REPLICATED;
 	} else if ((dscr&HOH_NOREPLICATION)!=0) mode|=PIN_NO_REPLICATION;
 	else if ((dscr&HOH_REPLICATED)!=0) mode|=PIN_REPLICATED;
-	if ((dscr&HOH_NOTIFICATION)!=0) mode|=PIN_NOTIFY;
 	if ((dscr&HOH_HIDDEN)!=0) mode|=PIN_HIDDEN;
 	if ((dscr&HOH_DELETED)!=0) mode|=PIN_DELETED;
 	if (hpin->nProps!=0) fPartial=1;		// cb.tv ????
@@ -1292,7 +1289,7 @@ RC Session::checkBuiltinProp(Value &v,TIMESTAMP &ts,bool fInsert)
 
 RC Session::newPINFlags(unsigned& md,const PID *&orig)
 {
-	unsigned m=md; md&=(PIN_NO_REPLICATION|PIN_NOTIFY|PIN_REPLICATED|PIN_HIDDEN|PIN_TRANSIENT);
+	unsigned m=md; md&=(PIN_NO_REPLICATION|PIN_REPLICATED|PIN_HIDDEN|PIN_TRANSIENT);
 	if ((itf&(ITF_DEFAULT_REPLICATION|ITF_REPLICATION))!=0 && (md&PIN_NO_REPLICATION)==0) md|=PIN_REPLICATED;
 	if (orig!=NULL && !orig->isPID()) orig=NULL;
 	if (isRestore()) {if (orig==NULL) return RC_INVPARAM; else if ((m&MODE_DELETED)!=0) md|=PIN_DELETED;}
@@ -1366,7 +1363,7 @@ RC BatchInsert::clone(IPIN *p,const Value *values,unsigned nValues,unsigned md)
 {
 	try {
 		if (ses->getStore()->inShutdown()) return RC_SHUTDOWN; PIN *pin=(PIN*)p; RC rc;
-		unsigned pmd=(md&(PIN_NO_REPLICATION|PIN_NOTIFY|PIN_REPLICATED|PIN_HIDDEN|PIN_TRANSIENT))|(pin->mode&(PIN_REPLICATED|PIN_NO_REPLICATION|PIN_HIDDEN));
+		unsigned pmd=(md&(PIN_NO_REPLICATION|PIN_REPLICATED|PIN_HIDDEN|PIN_TRANSIENT))|(pin->mode&(PIN_REPLICATED|PIN_NO_REPLICATION|PIN_HIDDEN));
 		PIN *newp=new(this) PIN(this,pmd); if (newp==NULL) return RC_NOMEM;
 		newp->properties=(Value*)malloc(pin->nProperties*sizeof(Value)); if (newp->properties==NULL) return RC_NOMEM;
 		for (unsigned i=0; (newp->nProperties=i)<pin->nProperties; i++)
